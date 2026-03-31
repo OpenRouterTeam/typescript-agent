@@ -360,7 +360,7 @@ pnpm test:e2e    # Integration tests (requires API key)
 
 ## Documentation
 
-Full documentation is available at [openrouter.ai/docs](https://openrouter.ai/docs).
+Full `callModel` documentation is available at [openrouter.ai/docs/sdks/typescript/call-model](https://openrouter.ai/docs/sdks/typescript/call-model/overview).
 
 ## License
 
