@@ -111,6 +111,7 @@
   },
   "files": [
     "esm",
+    "src",
     "package.json",
     "README.md",
     "LICENSE"
