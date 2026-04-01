@@ -9,8 +9,8 @@ importers:
   .:
     dependencies:
       '@openrouter/sdk':
-        specifier: latest
-        version: 0.10.2
+        specifier: git+https://github.com/OpenRouterTeam/typescript-sdk.git#add-prepare-script
+        version: https://codeload.github.com/OpenRouterTeam/typescript-sdk/tar.gz/b08f491543b86ad9b8bbb44057fdf09db7cf339d
       zod:
         specifier: ^4.0.0
         version: 4.3.6
@@ -353,8 +353,9 @@ packages:
     resolution: {integrity: sha512-oGB+UxlgWcgQkgwo8GcEGwemoTFt3FIO9ababBmaGwXIoBKZ+GTy0pP185beGg7Llih/NSHSV2XAs1lnznocSg==}
     engines: {node: '>= 8'}
 
-  '@openrouter/sdk@0.10.2':
-    resolution: {integrity: sha512-od0aWkk+vhndEI78YyPvPgMxv2+32KO4MRrk8lFxro/YABKAHkozXugc+x3YeNf/d9KQaBO6M4Rut1uf+yeD2g==}
+  '@openrouter/sdk@https://codeload.github.com/OpenRouterTeam/typescript-sdk/tar.gz/b08f491543b86ad9b8bbb44057fdf09db7cf339d':
+    resolution: {tarball: https://codeload.github.com/OpenRouterTeam/typescript-sdk/tar.gz/b08f491543b86ad9b8bbb44057fdf09db7cf339d}
+    version: 0.10.1
 
   '@rollup/rollup-android-arm-eabi@4.60.1':
     resolution: {integrity: sha512-d6FinEBLdIiK+1uACUttJKfgZREXrF0Qc2SmLII7W2AD8FfiZ9Wjd+rD/iRuf5s5dWrr1GgwXCvPqOuDquOowA==}
@@ -1705,7 +1706,7 @@ snapshots:
       '@nodelib/fs.scandir': 2.1.5
       fastq: 1.20.1
 
-  '@openrouter/sdk@0.10.2':
+  '@openrouter/sdk@https://codeload.github.com/OpenRouterTeam/typescript-sdk/tar.gz/b08f491543b86ad9b8bbb44057fdf09db7cf339d':
     dependencies:
       zod: 4.3.6
 
