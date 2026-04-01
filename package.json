@@ -126,7 +126,7 @@
     "prepare": "npm run build"
   },
   "dependencies": {
-    "@openrouter/sdk": "latest",
+    "@openrouter/sdk": "git+https://github.com/OpenRouterTeam/typescript-sdk.git#add-prepare-script",
     "zod": "^4.0.0"
   },
   "devDependencies": {
