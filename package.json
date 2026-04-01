@@ -2,7 +2,7 @@
   "name": "@openrouter/agent",
   "version": "0.1.0",
   "author": "OpenRouter",
-  "description": "Agent toolkit for building AI applications with OpenRouter — tool orchestration, streaming, multi-turn conversations, and format compatibility.",
+  "description": "Agent toolkit for building AI applications with OpenRouter \u2014 tool orchestration, streaming, multi-turn conversations, and format compatibility.",
   "keywords": [
     "openrouter",
     "agent",
@@ -18,87 +18,70 @@
   "main": "./esm/index.js",
   "exports": {
     ".": {
-      "source": "./src/index.ts",
       "types": "./esm/index.d.ts",
       "default": "./esm/index.js"
     },
     "./call-model": {
-      "source": "./src/inner-loop/call-model.ts",
       "types": "./esm/inner-loop/call-model.d.ts",
       "default": "./esm/inner-loop/call-model.js"
     },
     "./tool-types": {
-      "source": "./src/lib/tool-types.ts",
       "types": "./esm/lib/tool-types.d.ts",
       "default": "./esm/lib/tool-types.js"
     },
     "./model-result": {
-      "source": "./src/lib/model-result.ts",
       "types": "./esm/lib/model-result.d.ts",
       "default": "./esm/lib/model-result.js"
     },
     "./async-params": {
-      "source": "./src/lib/async-params.ts",
       "types": "./esm/lib/async-params.d.ts",
       "default": "./esm/lib/async-params.js"
     },
     "./stop-conditions": {
-      "source": "./src/lib/stop-conditions.ts",
       "types": "./esm/lib/stop-conditions.d.ts",
       "default": "./esm/lib/stop-conditions.js"
     },
     "./tool": {
-      "source": "./src/lib/tool.ts",
       "types": "./esm/lib/tool.d.ts",
       "default": "./esm/lib/tool.js"
     },
     "./anthropic-compat": {
-      "source": "./src/lib/anthropic-compat.ts",
       "types": "./esm/lib/anthropic-compat.d.ts",
       "default": "./esm/lib/anthropic-compat.js"
     },
     "./chat-compat": {
-      "source": "./src/lib/chat-compat.ts",
       "types": "./esm/lib/chat-compat.d.ts",
       "default": "./esm/lib/chat-compat.js"
     },
     "./claude-constants": {
-      "source": "./src/lib/claude-constants.ts",
       "types": "./esm/lib/claude-constants.d.ts",
       "default": "./esm/lib/claude-constants.js"
     },
     "./claude-type-guards": {
-      "source": "./src/lib/claude-type-guards.ts",
       "types": "./esm/lib/claude-type-guards.d.ts",
       "default": "./esm/lib/claude-type-guards.js"
     },
     "./conversation-state": {
-      "source": "./src/lib/conversation-state.ts",
       "types": "./esm/lib/conversation-state.d.ts",
       "default": "./esm/lib/conversation-state.js"
     },
     "./next-turn-params": {
-      "source": "./src/lib/next-turn-params.ts",
       "types": "./esm/lib/next-turn-params.d.ts",
       "default": "./esm/lib/next-turn-params.js"
     },
     "./stream-transformers": {
-      "source": "./src/lib/stream-transformers.ts",
       "types": "./esm/lib/stream-transformers.d.ts",
       "default": "./esm/lib/stream-transformers.js"
     },
     "./tool-context": {
-      "source": "./src/lib/tool-context.ts",
       "types": "./esm/lib/tool-context.d.ts",
       "default": "./esm/lib/tool-context.js"
     },
     "./tool-event-broadcaster": {
-      "source": "./src/lib/tool-event-broadcaster.ts",
       "types": "./esm/lib/tool-event-broadcaster.d.ts",
       "default": "./esm/lib/tool-event-broadcaster.js"
     },
     "./turn-context": {
-      "source": "./src/lib/turn-context.ts",
       "types": "./esm/lib/turn-context.d.ts",
       "default": "./esm/lib/turn-context.js"
     },
@@ -122,10 +105,11 @@
     "test:e2e": "vitest --run --project e2e",
     "test:watch": "vitest --watch --project unit",
     "typecheck": "tsc --noEmit",
-    "compile": "tsc"
+    "compile": "tsc",
+    "prepare": "npm run build"
   },
   "dependencies": {
-    "@openrouter/sdk": "latest",
+    "@openrouter/sdk": "git+https://github.com/OpenRouterTeam/typescript-sdk.git#add-prepare-script",
     "zod": "^4.0.0"
   },
   "devDependencies": {
@@ -139,5 +123,11 @@
     "typescript": "~5.8.3",
     "typescript-eslint": "^8.26.0",
     "vitest": "^3.2.4"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "@openrouter/sdk",
+      "esbuild"
+    ]
   }
 }
