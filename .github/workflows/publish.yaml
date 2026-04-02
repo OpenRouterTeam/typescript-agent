@@ -1,8 +1,30 @@
 name: Release
 
 on:
-  push:
-    branches: [main]
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: >
+          Release mode:
+          - "version" — Creates a "Version Packages" PR that bumps versions and
+            updates CHANGELOG.md based on pending changesets. Run this first.
+          - "publish" — Publishes the package to npm with provenance. Only run
+            this AFTER the Version Packages PR has been merged to main.
+          NOTE: @openrouter/agent releases must be coordinated with @openrouter/sdk
+          because callModel changes are typically coupled with SDK type changes.
+        required: true
+        type: choice
+        options:
+          - version
+          - publish
+        default: version
+      dry-run:
+        description: >
+          Dry run: If enabled, simulates the release without making any changes.
+          Useful for verifying what would happen before committing to a release.
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: write # For creating releases and the Version Packages PR
@@ -30,13 +52,23 @@ jobs:
 
       - run: pnpm run test
 
-      - name: Create Release PR or Publish
-        id: changesets
+      - name: Create Version Packages PR
+        if: inputs.mode == 'version'
         uses: changesets/action@v1
         with:
-          publish: pnpm publish --no-git-checks --provenance --access public
           title: "chore: version packages"
           commit: "chore: version packages"
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Publish to npm
+        if: inputs.mode == 'publish' && !inputs.dry-run
+        run: pnpm publish --no-git-checks --provenance --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Publish to npm (dry run)
+        if: inputs.mode == 'publish' && inputs.dry-run
+        run: pnpm publish --no-git-checks --provenance --access public --dry-run
+        env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
