@@ -30,6 +30,7 @@ function createMockResponse(
     tools: [],
     toolChoice: 'auto',
     parallelToolCalls: false,
+    instructions: null,
     ...overrides,
   };
 }
