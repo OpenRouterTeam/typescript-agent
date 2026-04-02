@@ -26,6 +26,7 @@ function createMockResponse(
     presencePenalty: null,
     frequencyPenalty: null,
     metadata: null,
+    instructions: null,
     tools: [],
     toolChoice: 'auto',
     parallelToolCalls: false,
