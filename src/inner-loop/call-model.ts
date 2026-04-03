@@ -6,6 +6,7 @@ import type { Tool } from '../lib/tool-types.js';
 
 import { type GetResponseOptions, ModelResult } from '../lib/model-result.js';
 import { convertToolsToAPIFormat } from '../lib/tool-executor.js';
+import { resolveHooks } from '../lib/hooks-resolve.js';
 
 // Re-export CallModelInput for convenience
 export type { CallModelInput } from '../lib/async-params.js';
@@ -91,6 +92,7 @@ export function callModel<
     sharedContextSchema,
     onTurnStart,
     onTurnEnd,
+    hooks,
     ...apiRequest
   } = request;
 
@@ -152,5 +154,6 @@ export function callModel<
     ...(onTurnEnd !== undefined && {
       onTurnEnd,
     }),
+    ...(hooks !== undefined && { hooks: resolveHooks(hooks) }),
   } as GetResponseOptions<TTools, TShared>);
 }
