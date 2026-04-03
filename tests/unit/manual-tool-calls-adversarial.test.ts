@@ -280,15 +280,8 @@ describe('manual tool calls — adversarial edge cases', () => {
           (i as OutputFunctionCallItem).name === 'submit',
       );
 
-      // BUG DETECTOR: if the dedup is missing, this would be 2.
-      // The current PR code DOES NOT dedup — it yields from rounds AND from
-      // yieldManualToolCalls unconditionally. This test documents the exposure.
-      // If the count is > 1 the consumer sees the same tool call twice.
-      expect(manualCalls.length).toBeGreaterThanOrEqual(1);
-
-      // Ideally this should be exactly 1. The test below is stricter:
-      // Uncomment when dedup is added:
-      // expect(manualCalls).toHaveLength(1);
+      // With callId-based dedup, the manual tool call should appear exactly once
+      expect(manualCalls).toHaveLength(1);
     });
 
     it('should yield manual tool calls from finalResponse when no rounds executed (pure manual scenario)', async () => {

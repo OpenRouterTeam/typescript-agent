@@ -577,14 +577,6 @@ export class ModelResult<
     return !!tool && !hasExecuteFunction(tool);
   }
 
-  private *yieldManualToolCalls(response: models.OpenResponsesResult): Generator<models.OutputFunctionCallItem> {
-    for (const item of response.output) {
-      if (isFunctionCallItem(item) && this.isManualToolCall(item)) {
-        yield item;
-      }
-    }
-  }
-
   /**
    * Execute tools that can auto-execute (don't require approval) in parallel.
    *
@@ -1683,11 +1675,15 @@ export class ModelResult<
       // Execute tools if needed
       await this.executeToolsIfNeeded();
 
+      // Track yielded call IDs to avoid duplicates across rounds and finalResponse
+      const yieldedCallIds = new Set<string>();
+
       // Yield function calls and their outputs for each executed tool
       for (const round of this.allToolExecutionRounds) {
         // First yield the function_call items from the response that triggered tool execution
         for (const item of round.response.output) {
           if (isFunctionCallItem(item)) {
+            yieldedCallIds.add(item.callId);
             yield item;
           }
         }
@@ -1697,9 +1693,14 @@ export class ModelResult<
         }
       }
 
-      // Yield manual tool function_call items from finalResponse
+      // Yield manual tool function_call items from finalResponse, skipping duplicates
       if (this.finalResponse) {
-        yield* this.yieldManualToolCalls(this.finalResponse);
+        for (const item of this.finalResponse.output) {
+          if (isFunctionCallItem(item) && this.isManualToolCall(item) && !yieldedCallIds.has(item.callId)) {
+            yieldedCallIds.add(item.callId);
+            yield item;
+          }
+        }
       }
 
       // If tools were executed, yield the final message from finalResponse
