@@ -572,6 +572,19 @@ export class ModelResult<
     });
   }
 
+  private isManualToolCall(item: models.OutputFunctionCallItem): boolean {
+    const tool = this.options.tools?.find((t) => t.function.name === item.name);
+    return !!tool && !hasExecuteFunction(tool);
+  }
+
+  private *yieldManualToolCalls(response: models.OpenResponsesResult): Generator<models.OutputFunctionCallItem> {
+    for (const item of response.output) {
+      if (isFunctionCallItem(item) && this.isManualToolCall(item)) {
+        yield item;
+      }
+    }
+  }
+
   /**
    * Execute tools that can auto-execute (don't require approval) in parallel.
    *
@@ -1684,9 +1697,13 @@ export class ModelResult<
         }
       }
 
-      // If tools were executed, yield the final message (if there is one)
+      // Yield manual tool function_call items from finalResponse
+      if (this.finalResponse) {
+        yield* this.yieldManualToolCalls(this.finalResponse);
+      }
+
+      // If tools were executed, yield the final message from finalResponse
       if (this.finalResponse && this.allToolExecutionRounds.length > 0) {
-        // Check if the final response contains a message
         const hasMessage = this.finalResponse.output.some(
           (item: unknown) => hasTypeProperty(item) && item.type === 'message',
         );
