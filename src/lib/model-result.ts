@@ -572,6 +572,11 @@ export class ModelResult<
     });
   }
 
+  private isManualToolCall(item: models.OutputFunctionCallItem): boolean {
+    const tool = this.options.tools?.find((t) => t.function.name === item.name);
+    return !!tool && !hasExecuteFunction(tool);
+  }
+
   /**
    * Execute tools that can auto-execute (don't require approval) in parallel.
    *
@@ -1670,11 +1675,15 @@ export class ModelResult<
       // Execute tools if needed
       await this.executeToolsIfNeeded();
 
+      // Track yielded call IDs to avoid duplicates across rounds and finalResponse
+      const yieldedCallIds = new Set<string>();
+
       // Yield function calls and their outputs for each executed tool
       for (const round of this.allToolExecutionRounds) {
         // First yield the function_call items from the response that triggered tool execution
         for (const item of round.response.output) {
           if (isFunctionCallItem(item)) {
+            yieldedCallIds.add(item.callId);
             yield item;
           }
         }
@@ -1684,9 +1693,18 @@ export class ModelResult<
         }
       }
 
-      // If tools were executed, yield the final message (if there is one)
+      // Yield manual tool function_call items from finalResponse, skipping duplicates
+      if (this.finalResponse) {
+        for (const item of this.finalResponse.output) {
+          if (isFunctionCallItem(item) && this.isManualToolCall(item) && !yieldedCallIds.has(item.callId)) {
+            yieldedCallIds.add(item.callId);
+            yield item;
+          }
+        }
+      }
+
+      // If tools were executed, yield the final message from finalResponse
       if (this.finalResponse && this.allToolExecutionRounds.length > 0) {
-        // Check if the final response contains a message
         const hasMessage = this.finalResponse.output.some(
           (item: unknown) => hasTypeProperty(item) && item.type === 'message',
         );
