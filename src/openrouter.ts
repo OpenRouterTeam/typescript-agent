@@ -1,4 +1,5 @@
 import { OpenRouterCore } from '@openrouter/sdk/core';
+import type { SDKHooks } from '@openrouter/sdk/hooks/hooks';
 import type { SDKOptions } from '@openrouter/sdk/lib/config';
 import type { RequestOptions } from '@openrouter/sdk/lib/sdks';
 import type { $ZodObject, $ZodShape, infer as zodInfer } from 'zod/v4/core';
@@ -10,13 +11,17 @@ import type { Tool } from './lib/tool-types.js';
 
 export type { SDKOptions } from '@openrouter/sdk/lib/config';
 
-export class OpenRouter {
-  private client: OpenRouterCore;
+/**
+ * SDK options extended with optional hooks for request/response interception.
+ * The underlying `ClientSDK` accepts hooks at runtime but its constructor type
+ * (`SDKOptions`) does not include them. This type bridges that gap.
+ */
+export type OpenRouterOptions = SDKOptions & { hooks?: SDKHooks };
 
-  constructor(options?: SDKOptions) {
-    this.client = new OpenRouterCore(options);
+export class OpenRouter extends OpenRouterCore {
+  constructor(options?: OpenRouterOptions) {
+    super(options);
   }
-
   callModel = <
     TTools extends readonly Tool[],
     TSharedSchema extends $ZodObject<$ZodShape> | undefined = undefined,
@@ -29,6 +34,6 @@ export class OpenRouter {
     },
     options?: RequestOptions,
   ): ModelResult<TTools, TShared> => {
-    return callModel(this.client, request, options);
+    return callModel(this, request, options);
   };
 }

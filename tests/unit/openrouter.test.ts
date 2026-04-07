@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { OpenRouterCore } from '@openrouter/sdk/core';
 import { OpenRouter } from '../../src/openrouter.js';
 import { ModelResult } from '../../src/lib/model-result.js';
 
@@ -38,5 +39,32 @@ describe('OpenRouter', () => {
       serverURL: 'https://custom.endpoint.com',
     });
     expect(openrouter).toBeInstanceOf(OpenRouter);
+  });
+
+  it('should be an instance of OpenRouterCore', () => {
+    const openrouter = new OpenRouter({ apiKey: 'test-key' });
+    expect(openrouter).toBeInstanceOf(OpenRouterCore);
+  });
+
+  it('should pass constructor options through to the instance', () => {
+    const openrouter = new OpenRouter({
+      apiKey: 'test-key',
+      serverURL: 'https://custom.endpoint.com',
+    });
+    expect(openrouter).toBeInstanceOf(OpenRouterCore);
+    // Verify the instance was constructed with the provided options
+    expect(openrouter._options.serverURL).toBe('https://custom.endpoint.com');
+  });
+
+  it('should be usable as both OpenRouter and OpenRouterCore', () => {
+    const openrouter = new OpenRouter({ apiKey: 'test-key' });
+    expect(openrouter).toBeInstanceOf(OpenRouter);
+    expect(openrouter).toBeInstanceOf(OpenRouterCore);
+    // Calling callModel should still work
+    const result = openrouter.callModel({
+      model: 'openai/gpt-4o',
+      input: 'Hello',
+    });
+    expect(result).toBeInstanceOf(ModelResult);
   });
 });
