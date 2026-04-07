@@ -1,5 +1,11 @@
 # @openrouter/agent
 
+## 0.1.2
+
+### Patch Changes
+
+- [#13](https://github.com/OpenRouterTeam/typescript-agent/pull/13) [`93a88a8`](https://github.com/OpenRouterTeam/typescript-agent/commit/93a88a875dcce623202b6747843d3d513f032d12) Thanks [@mattapperson](https://github.com/mattapperson)! - fix: export OpenRouter class from package entry point
+
 ## 0.1.1
 
 ### Patch Changes
