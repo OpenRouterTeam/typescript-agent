@@ -85,6 +85,10 @@
       "types": "./esm/lib/turn-context.d.ts",
       "default": "./esm/lib/turn-context.js"
     },
+    "./openrouter": {
+      "types": "./esm/openrouter.d.ts",
+      "default": "./esm/openrouter.js"
+    },
     "./package.json": "./package.json"
   },
   "sideEffects": false,
