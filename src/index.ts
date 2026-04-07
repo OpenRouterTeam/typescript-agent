@@ -51,6 +51,8 @@ export type {
 
 // High-level model calling
 export { callModel } from './inner-loop/call-model.js';
+export { OpenRouter } from './openrouter.js';
+export type { SDKOptions } from './openrouter.js';
 export { fromClaudeMessages, toClaudeMessage } from './lib/anthropic-compat.js';
 export { hasAsyncFunctions, resolveAsyncFunctions } from './lib/async-params.js';
 export { fromChatMessages, toChatMessage } from './lib/chat-compat.js';
