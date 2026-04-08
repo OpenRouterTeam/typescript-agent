@@ -112,3 +112,51 @@ export {
 } from './lib/tool-types.js';
 // Turn context helpers
 export { buildTurnContext, normalizeInputToArray } from './lib/turn-context.js';
+
+// Hooks system
+export { HooksManager } from './lib/hooks-manager.js';
+export { resolveHooks } from './lib/hooks-resolve.js';
+export { matchesTool } from './lib/hooks-matchers.js';
+export { HookName } from './lib/hooks-types.js';
+export type {
+  HookContext,
+  HookHandler,
+  HookEntry,
+  HookReturn,
+  HookRegistry,
+  HookDefinition,
+  AsyncOutput,
+  ToolMatcher,
+  EmitResult,
+  InlineHookConfig,
+  HooksManagerOptions,
+  BuiltInHookDefinitions,
+  PreToolUsePayload,
+  PreToolUseResult,
+  PostToolUsePayload,
+  PostToolUseFailurePayload,
+  StopPayload,
+  StopResult,
+  PermissionRequestPayload,
+  PermissionRequestResult,
+  UserPromptSubmitPayload,
+  UserPromptSubmitResult,
+  SessionStartPayload,
+  SessionEndPayload,
+} from './lib/hooks-types.js';
+export {
+  BUILT_IN_HOOKS,
+  BUILT_IN_HOOK_NAMES,
+  PreToolUsePayloadSchema,
+  PreToolUseResultSchema,
+  PostToolUsePayloadSchema,
+  PostToolUseFailurePayloadSchema,
+  StopPayloadSchema,
+  StopResultSchema,
+  PermissionRequestPayloadSchema,
+  PermissionRequestResultSchema,
+  UserPromptSubmitPayloadSchema,
+  UserPromptSubmitResultSchema,
+  SessionStartPayloadSchema,
+  SessionEndPayloadSchema,
+} from './lib/hooks-schemas.js';
