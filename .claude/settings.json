@@ -2,7 +2,11 @@
   "hooks": {
     "stop": [
       {
-        "command": "pnpm run lint && pnpm run typecheck",
+        "command": "pnpm run lint",
+        "blocking": true
+      },
+      {
+        "command": "pnpm run typecheck",
         "blocking": true
       }
     ]
