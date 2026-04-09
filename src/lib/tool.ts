@@ -1,16 +1,14 @@
 import type { $ZodObject, $ZodShape, $ZodType, infer as zodInfer } from 'zod/v4/core';
-
-import {
-  type ManualTool,
-  type NextTurnParamsFunctions,
-  SHARED_CONTEXT_KEY,
-  type Tool,
-  type ToolApprovalCheck,
-  type ToolExecuteContext,
-  ToolType,
-  type ToolWithExecute,
-  type ToolWithGenerator,
+import type {
+  ManualTool,
+  NextTurnParamsFunctions,
+  Tool,
+  ToolApprovalCheck,
+  ToolExecuteContext,
+  ToolWithExecute,
+  ToolWithGenerator,
 } from './tool-types.js';
+import { SHARED_CONTEXT_KEY, ToolType } from './tool-types.js';
 
 //#region Config Types
 

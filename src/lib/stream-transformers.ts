@@ -7,8 +7,6 @@ import type {
   UnsupportedContent,
 } from '../api-shape-helpers/claude-message.js';
 import type { ReusableReadableStream } from './reusable-stream.js';
-import type { ParsedToolCall, Tool } from './tool-types.js';
-
 import {
   isFileCitationAnnotation,
   isFilePathAnnotation,
@@ -31,6 +29,7 @@ import {
   isURLCitationAnnotation,
   isWebSearchCallOutputItem,
 } from './stream-type-guards.js';
+import type { ParsedToolCall, Tool } from './tool-types.js';
 
 /**
  * Extract text deltas from responses stream events

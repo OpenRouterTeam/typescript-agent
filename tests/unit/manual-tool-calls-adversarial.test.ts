@@ -1,3 +1,5 @@
+import type { OpenRouterCore } from '@openrouter/sdk/core';
+import type { OpenResponsesResult } from '@openrouter/sdk/models/openresponsesresult';
 import type {
   OpenResponsesStreamEvent,
   OpenResponsesStreamEventResponseCompleted,
@@ -7,16 +9,13 @@ import type {
   OpenResponsesStreamEventResponseOutputItemDone,
 } from '@openrouter/sdk/models/openresponsesstreamevent';
 import type { OutputFunctionCallItem } from '@openrouter/sdk/models/outputfunctioncallitem';
-import type { OpenRouterCore } from '@openrouter/sdk/core';
-import type { StreamableOutputItem } from '../../src/lib/stream-transformers.js';
-import type { OpenResponsesResult } from '@openrouter/sdk/models/openresponsesresult';
-
 import { describe, expect, it } from 'vitest';
 import { z } from 'zod/v4';
-import { ReusableReadableStream } from '../../src/lib/reusable-stream.js';
 import { ModelResult } from '../../src/lib/model-result.js';
-import { ToolType } from '../../src/lib/tool-types.js';
+import { ReusableReadableStream } from '../../src/lib/reusable-stream.js';
+import type { StreamableOutputItem } from '../../src/lib/stream-transformers.js';
 import { isFunctionCallItem } from '../../src/lib/stream-type-guards.js';
+import { ToolType } from '../../src/lib/tool-types.js';
 
 // ============================================================================
 // Helpers
@@ -36,6 +35,7 @@ function createImmediateStream(
   return new ReusableReadableStream(readable);
 }
 
+// biome-ignore lint: test helper function
 function makeFunctionCallItem(
   callId: string,
   name: string,
@@ -43,7 +43,14 @@ function makeFunctionCallItem(
   itemId: string,
   status: 'completed' | 'in_progress' = 'completed',
 ): OutputFunctionCallItem {
-  return { type: 'function_call', id: itemId, callId, name, arguments: args, status };
+  return {
+    type: 'function_call',
+    id: itemId,
+    callId,
+    name,
+    arguments: args,
+    status,
+  };
 }
 
 function outputItemAddedEvent(
@@ -54,7 +61,14 @@ function outputItemAddedEvent(
   return {
     type: 'response.output_item.added',
     outputIndex: 0,
-    item: { type: 'function_call', id: itemId, callId, name, arguments: '', status: 'in_progress' },
+    item: {
+      type: 'function_call',
+      id: itemId,
+      callId,
+      name,
+      arguments: '',
+      status: 'in_progress',
+    },
     sequenceNumber: 0,
   };
 }
@@ -87,6 +101,7 @@ function argsDoneEvent(
   };
 }
 
+// biome-ignore lint: test helper function
 function outputItemDoneEvent(
   callId: string,
   name: string,
@@ -96,7 +111,14 @@ function outputItemDoneEvent(
   return {
     type: 'response.output_item.done',
     outputIndex: 0,
-    item: { type: 'function_call', id: itemId, callId, name, arguments: args, status: 'completed' },
+    item: {
+      type: 'function_call',
+      id: itemId,
+      callId,
+      name,
+      arguments: args,
+      status: 'completed',
+    },
     sequenceNumber: 0,
   };
 }
@@ -159,8 +181,12 @@ function manualTool(name: string) {
     function: {
       name,
       description: `Manual tool: ${name}`,
-      inputSchema: z.object({ data: z.string() }),
-      outputSchema: z.object({ ok: z.boolean() }),
+      inputSchema: z.object({
+        data: z.string(),
+      }),
+      outputSchema: z.object({
+        ok: z.boolean(),
+      }),
     },
   } as const;
 }
@@ -171,9 +197,15 @@ function autoTool(name: string) {
     function: {
       name,
       description: `Auto tool: ${name}`,
-      inputSchema: z.object({ data: z.string() }),
-      outputSchema: z.object({ ok: z.boolean() }),
-      execute: async () => ({ ok: true }),
+      inputSchema: z.object({
+        data: z.string(),
+      }),
+      outputSchema: z.object({
+        ok: z.boolean(),
+      }),
+      execute: async () => ({
+        ok: true,
+      }),
     },
   } as const;
 }
@@ -187,14 +219,25 @@ function setupModelResult(
     finalResponse?: OpenResponsesResult | null;
     allToolExecutionRounds?: Array<{
       round: number;
-      toolCalls: Array<{ id: string; name: string; arguments: string }>;
+      toolCalls: Array<{
+        id: string;
+        name: string;
+        arguments: string;
+      }>;
       response: OpenResponsesResult;
-      toolResults: Array<{ type: 'function_call_output'; callId: string; output: string }>;
+      toolResults: Array<{
+        type: 'function_call_output';
+        callId: string;
+        output: string;
+      }>;
     }>;
   },
 ) {
   const modelResult = new ModelResult({
-    request: { model: 'test-model', input: 'test' },
+    request: {
+      model: 'test-model',
+      input: 'test',
+    },
     client: {} as unknown as OpenRouterCore,
     tools,
   });
@@ -215,6 +258,7 @@ function setupModelResult(
   return modelResult;
 }
 
+// biome-ignore lint: test helper function
 function streamEventsForToolCall(callId: string, name: string, args: string, itemId: string) {
   return [
     outputItemAddedEvent(callId, name, itemId),
@@ -243,11 +287,19 @@ describe('manual tool calls — adversarial edge cases', () => {
       const manualFc = makeFunctionCallItem('call_m1', 'submit', '{"data":"x"}', 'fc_m1');
       const autoFc = makeFunctionCallItem('call_a1', 'fetch_data', '{"data":"y"}', 'fc_a1');
 
-      const roundResponse = makeResponse([autoFc, manualFc]);
-      const finalResp = makeResponse([manualFc]);
+      const roundResponse = makeResponse([
+        autoFc,
+        manualFc,
+      ]);
+      const finalResp = makeResponse([
+        manualFc,
+      ]);
 
       const modelResult = setupModelResult(
-        [autoTool('fetch_data'), manualTool('submit')],
+        [
+          autoTool('fetch_data'),
+          manualTool('submit'),
+        ],
         [], // no stream events needed — we drive via rounds + finalResponse
         {
           finalResponse: finalResp,
@@ -255,11 +307,19 @@ describe('manual tool calls — adversarial edge cases', () => {
             {
               round: 1,
               toolCalls: [
-                { id: 'call_a1', name: 'fetch_data', arguments: '{"data":"y"}' },
+                {
+                  id: 'call_a1',
+                  name: 'fetch_data',
+                  arguments: '{"data":"y"}',
+                },
               ],
               response: roundResponse,
               toolResults: [
-                { type: 'function_call_output', callId: 'call_a1', output: '{"ok":true}' },
+                {
+                  type: 'function_call_output',
+                  callId: 'call_a1',
+                  output: '{"ok":true}',
+                },
               ],
             },
           ],
@@ -275,7 +335,10 @@ describe('manual tool calls — adversarial edge cases', () => {
       // PLUS yieldManualToolCalls may try to yield the manual one again from finalResponse.
       // Count how many times the manual tool call appears.
       const manualCalls = items.filter(
-        (i) => typeof i === 'object' && i !== null && 'type' in i &&
+        (i) =>
+          typeof i === 'object' &&
+          i !== null &&
+          'type' in i &&
           (i as OutputFunctionCallItem).type === 'function_call' &&
           (i as OutputFunctionCallItem).name === 'submit',
       );
@@ -286,10 +349,14 @@ describe('manual tool calls — adversarial edge cases', () => {
 
     it('should yield manual tool calls from finalResponse when no rounds executed (pure manual scenario)', async () => {
       const manualFc = makeFunctionCallItem('call_m1', 'submit', '{"data":"x"}', 'fc_m1');
-      const finalResp = makeResponse([manualFc]);
+      const finalResp = makeResponse([
+        manualFc,
+      ]);
 
       const modelResult = setupModelResult(
-        [manualTool('submit')],
+        [
+          manualTool('submit'),
+        ],
         [], // no stream events — finalResponse only
         {
           finalResponse: finalResp,
@@ -303,7 +370,10 @@ describe('manual tool calls — adversarial edge cases', () => {
       }
 
       const manualCalls = items.filter(
-        (i) => typeof i === 'object' && i !== null && 'type' in i &&
+        (i) =>
+          typeof i === 'object' &&
+          i !== null &&
+          'type' in i &&
           (i as OutputFunctionCallItem).type === 'function_call' &&
           (i as OutputFunctionCallItem).name === 'submit',
       );
@@ -321,12 +391,23 @@ describe('manual tool calls — adversarial edge cases', () => {
       const fc2 = makeFunctionCallItem('call_2', 'tool_b', '{"data":"b"}', 'fc_2');
       const fc3 = makeFunctionCallItem('call_3', 'tool_c', '{"data":"c"}', 'fc_3');
 
-      const finalResp = makeResponse([fc1, fc2, fc3]);
+      const finalResp = makeResponse([
+        fc1,
+        fc2,
+        fc3,
+      ]);
 
       const modelResult = setupModelResult(
-        [manualTool('tool_a'), manualTool('tool_b'), manualTool('tool_c')],
+        [
+          manualTool('tool_a'),
+          manualTool('tool_b'),
+          manualTool('tool_c'),
+        ],
         [],
-        { finalResponse: finalResp, allToolExecutionRounds: [] },
+        {
+          finalResponse: finalResp,
+          allToolExecutionRounds: [],
+        },
       );
 
       const items: unknown[] = [];
@@ -335,13 +416,20 @@ describe('manual tool calls — adversarial edge cases', () => {
       }
 
       const calls = items.filter(
-        (i) => typeof i === 'object' && i !== null && 'type' in i &&
+        (i) =>
+          typeof i === 'object' &&
+          i !== null &&
+          'type' in i &&
           (i as OutputFunctionCallItem).type === 'function_call',
       );
 
       expect(calls).toHaveLength(3);
       const names = calls.map((c) => (c as OutputFunctionCallItem).name);
-      expect(names).toEqual(['tool_a', 'tool_b', 'tool_c']);
+      expect(names).toEqual([
+        'tool_a',
+        'tool_b',
+        'tool_c',
+      ]);
     });
   });
 
@@ -351,13 +439,25 @@ describe('manual tool calls — adversarial edge cases', () => {
   describe('unknown tool name handling', () => {
     it('should NOT yield function_call for a tool name that does not exist in the tools list', async () => {
       // Model hallucinated a tool name that isn't registered
-      const unknownFc = makeFunctionCallItem('call_u1', 'nonexistent_tool', '{"data":"x"}', 'fc_u1');
-      const finalResp = makeResponse([unknownFc]);
+      const unknownFc = makeFunctionCallItem(
+        'call_u1',
+        'nonexistent_tool',
+        '{"data":"x"}',
+        'fc_u1',
+      );
+      const finalResp = makeResponse([
+        unknownFc,
+      ]);
 
       const modelResult = setupModelResult(
-        [manualTool('real_tool')],
+        [
+          manualTool('real_tool'),
+        ],
         [],
-        { finalResponse: finalResp, allToolExecutionRounds: [] },
+        {
+          finalResponse: finalResp,
+          allToolExecutionRounds: [],
+        },
       );
 
       const items: unknown[] = [];
@@ -366,7 +466,10 @@ describe('manual tool calls — adversarial edge cases', () => {
       }
 
       const calls = items.filter(
-        (i) => typeof i === 'object' && i !== null && 'type' in i &&
+        (i) =>
+          typeof i === 'object' &&
+          i !== null &&
+          'type' in i &&
           (i as OutputFunctionCallItem).type === 'function_call',
       );
 
@@ -380,21 +483,37 @@ describe('manual tool calls — adversarial edge cases', () => {
       // We set allToolExecutionRounds to simulate that the auto tool already ran,
       // and finalResponse contains the auto tool's function_call.
       const autoFc = makeFunctionCallItem('call_a1', 'auto_fetch', '{"data":"x"}', 'fc_a1');
-      const roundResponse = makeResponse([autoFc]);
-      const finalResp = makeResponse([autoFc]);
+      const roundResponse = makeResponse([
+        autoFc,
+      ]);
+      const finalResp = makeResponse([
+        autoFc,
+      ]);
 
       const modelResult = setupModelResult(
-        [autoTool('auto_fetch')],
+        [
+          autoTool('auto_fetch'),
+        ],
         [],
         {
           finalResponse: finalResp,
           allToolExecutionRounds: [
             {
               round: 1,
-              toolCalls: [{ id: 'call_a1', name: 'auto_fetch', arguments: '{"data":"x"}' }],
+              toolCalls: [
+                {
+                  id: 'call_a1',
+                  name: 'auto_fetch',
+                  arguments: '{"data":"x"}',
+                },
+              ],
               response: roundResponse,
               toolResults: [
-                { type: 'function_call_output', callId: 'call_a1', output: '{"ok":true}' },
+                {
+                  type: 'function_call_output',
+                  callId: 'call_a1',
+                  output: '{"ok":true}',
+                },
               ],
             },
           ],
@@ -409,7 +528,10 @@ describe('manual tool calls — adversarial edge cases', () => {
       // yieldManualToolCalls should NOT yield auto_fetch because it has an execute function.
       // The only function_calls should come from the round iteration, not from yieldManualToolCalls.
       const manualCalls = items.filter(
-        (i) => typeof i === 'object' && i !== null && 'type' in i &&
+        (i) =>
+          typeof i === 'object' &&
+          i !== null &&
+          'type' in i &&
           (i as OutputFunctionCallItem).type === 'function_call' &&
           (i as OutputFunctionCallItem).name === 'auto_fetch',
       );
@@ -428,9 +550,16 @@ describe('manual tool calls — adversarial edge cases', () => {
       const completionEvent = responseCompletedEvent([]);
 
       const modelResult = setupModelResult(
-        [manualTool('submit')],
-        [completionEvent],
-        { finalResponse: null, allToolExecutionRounds: [] },
+        [
+          manualTool('submit'),
+        ],
+        [
+          completionEvent,
+        ],
+        {
+          finalResponse: null,
+          allToolExecutionRounds: [],
+        },
       );
 
       const items: unknown[] = [];
@@ -445,9 +574,14 @@ describe('manual tool calls — adversarial edge cases', () => {
       const finalResp = makeResponse([]);
 
       const modelResult = setupModelResult(
-        [manualTool('submit')],
+        [
+          manualTool('submit'),
+        ],
         [],
-        { finalResponse: finalResp, allToolExecutionRounds: [] },
+        {
+          finalResponse: finalResp,
+          allToolExecutionRounds: [],
+        },
       );
 
       const items: unknown[] = [];
@@ -470,15 +604,29 @@ describe('manual tool calls — adversarial edge cases', () => {
         id: 'msg_1',
         role: 'assistant' as const,
         status: 'completed' as const,
-        content: [{ type: 'output_text' as const, text: 'Here is your result', annotations: [] }],
+        content: [
+          {
+            type: 'output_text' as const,
+            text: 'Here is your result',
+            annotations: [],
+          },
+        ],
       };
 
-      const finalResp = makeResponse([messageItem, manualFc]);
+      const finalResp = makeResponse([
+        messageItem,
+        manualFc,
+      ]);
 
       const modelResult = setupModelResult(
-        [manualTool('submit')],
+        [
+          manualTool('submit'),
+        ],
         [],
-        { finalResponse: finalResp, allToolExecutionRounds: [] },
+        {
+          finalResponse: finalResp,
+          allToolExecutionRounds: [],
+        },
       );
 
       const items: unknown[] = [];
@@ -487,7 +635,10 @@ describe('manual tool calls — adversarial edge cases', () => {
       }
 
       const calls = items.filter(
-        (i) => typeof i === 'object' && i !== null && 'type' in i &&
+        (i) =>
+          typeof i === 'object' &&
+          i !== null &&
+          'type' in i &&
           (i as OutputFunctionCallItem).type === 'function_call',
       );
 
@@ -510,11 +661,15 @@ describe('manual tool calls — adversarial edge cases', () => {
 
       const events: OpenResponsesStreamEvent[] = [
         ...streamEventsForToolCall('call_m1', manualName, manualArgs, 'fc_m1'),
-        responseCompletedEvent([manualFc]),
+        responseCompletedEvent([
+          manualFc,
+        ]),
       ];
 
       const modelResult = setupModelResult(
-        [manualTool(manualName)],
+        [
+          manualTool(manualName),
+        ],
         events,
       );
 
@@ -541,11 +696,17 @@ describe('manual tool calls — adversarial edge cases', () => {
       const events: OpenResponsesStreamEvent[] = [
         ...streamEventsForToolCall('call_1', 'tool_a', '{"data":"a"}', 'fc_1'),
         ...streamEventsForToolCall('call_2', 'tool_b', '{"data":"b"}', 'fc_2'),
-        responseCompletedEvent([fc1, fc2]),
+        responseCompletedEvent([
+          fc1,
+          fc2,
+        ]),
       ];
 
       const modelResult = setupModelResult(
-        [manualTool('tool_a'), manualTool('tool_b')],
+        [
+          manualTool('tool_a'),
+          manualTool('tool_b'),
+        ],
         events,
       );
 
@@ -559,9 +720,7 @@ describe('manual tool calls — adversarial edge cases', () => {
       );
 
       expect(completedFunctionCalls).toHaveLength(2);
-      const names = completedFunctionCalls.map(
-        (fc) => (fc as OutputFunctionCallItem).name,
-      );
+      const names = completedFunctionCalls.map((fc) => (fc as OutputFunctionCallItem).name);
       expect(names).toContain('tool_a');
       expect(names).toContain('tool_b');
     });
@@ -573,12 +732,19 @@ describe('manual tool calls — adversarial edge cases', () => {
   describe('edge case: empty arguments string', () => {
     it('should yield manual tool call even when arguments is an empty string', async () => {
       const fc = makeFunctionCallItem('call_1', 'no_args_tool', '', 'fc_1');
-      const finalResp = makeResponse([fc]);
+      const finalResp = makeResponse([
+        fc,
+      ]);
 
       const modelResult = setupModelResult(
-        [manualTool('no_args_tool')],
+        [
+          manualTool('no_args_tool'),
+        ],
         [],
-        { finalResponse: finalResp, allToolExecutionRounds: [] },
+        {
+          finalResponse: finalResp,
+          allToolExecutionRounds: [],
+        },
       );
 
       const items: unknown[] = [];
@@ -587,7 +753,10 @@ describe('manual tool calls — adversarial edge cases', () => {
       }
 
       const calls = items.filter(
-        (i) => typeof i === 'object' && i !== null && 'type' in i &&
+        (i) =>
+          typeof i === 'object' &&
+          i !== null &&
+          'type' in i &&
           (i as OutputFunctionCallItem).type === 'function_call',
       );
 
@@ -603,12 +772,19 @@ describe('manual tool calls — adversarial edge cases', () => {
     it('should still yield manual tool calls even with in_progress status', async () => {
       // Sometimes the API may return items with unexpected statuses
       const fc = makeFunctionCallItem('call_1', 'submit', '{"data":"x"}', 'fc_1', 'in_progress');
-      const finalResp = makeResponse([fc]);
+      const finalResp = makeResponse([
+        fc,
+      ]);
 
       const modelResult = setupModelResult(
-        [manualTool('submit')],
+        [
+          manualTool('submit'),
+        ],
         [],
-        { finalResponse: finalResp, allToolExecutionRounds: [] },
+        {
+          finalResponse: finalResp,
+          allToolExecutionRounds: [],
+        },
       );
 
       const items: unknown[] = [];
@@ -617,7 +793,10 @@ describe('manual tool calls — adversarial edge cases', () => {
       }
 
       const calls = items.filter(
-        (i) => typeof i === 'object' && i !== null && 'type' in i &&
+        (i) =>
+          typeof i === 'object' &&
+          i !== null &&
+          'type' in i &&
           (i as OutputFunctionCallItem).type === 'function_call',
       );
 
@@ -635,10 +814,15 @@ describe('manual tool calls — adversarial edge cases', () => {
   describe('edge case: no tools configured', () => {
     it('should not crash when tools array is empty and finalResponse has function_calls', async () => {
       const fc = makeFunctionCallItem('call_1', 'ghost_tool', '{"data":"x"}', 'fc_1');
-      const finalResp = makeResponse([fc]);
+      const finalResp = makeResponse([
+        fc,
+      ]);
 
       const modelResult = new ModelResult({
-        request: { model: 'test-model', input: 'test' },
+        request: {
+          model: 'test-model',
+          input: 'test',
+        },
         client: {} as unknown as OpenRouterCore,
         tools: [],
       });
@@ -656,7 +840,10 @@ describe('manual tool calls — adversarial edge cases', () => {
 
       // No tools registered, so isManualToolCall returns false for everything
       const calls = items.filter(
-        (i) => typeof i === 'object' && i !== null && 'type' in i &&
+        (i) =>
+          typeof i === 'object' &&
+          i !== null &&
+          'type' in i &&
           (i as OutputFunctionCallItem).type === 'function_call',
       );
       expect(calls).toHaveLength(0);
@@ -675,24 +862,48 @@ describe('manual tool calls — adversarial edge cases', () => {
         id: 'msg_1',
         role: 'assistant' as const,
         status: 'completed' as const,
-        content: [{ type: 'output_text' as const, text: 'Done!', annotations: [] }],
+        content: [
+          {
+            type: 'output_text' as const,
+            text: 'Done!',
+            annotations: [],
+          },
+        ],
       };
 
-      const roundResponse = makeResponse([autoFc]);
-      const finalResp = makeResponse([manualFc, messageItem]);
+      const roundResponse = makeResponse([
+        autoFc,
+      ]);
+      const finalResp = makeResponse([
+        manualFc,
+        messageItem,
+      ]);
 
       const modelResult = setupModelResult(
-        [autoTool('fetch_data'), manualTool('submit')],
+        [
+          autoTool('fetch_data'),
+          manualTool('submit'),
+        ],
         [],
         {
           finalResponse: finalResp,
           allToolExecutionRounds: [
             {
               round: 1,
-              toolCalls: [{ id: 'call_a1', name: 'fetch_data', arguments: '{"data":"y"}' }],
+              toolCalls: [
+                {
+                  id: 'call_a1',
+                  name: 'fetch_data',
+                  arguments: '{"data":"y"}',
+                },
+              ],
               response: roundResponse,
               toolResults: [
-                { type: 'function_call_output', callId: 'call_a1', output: '{"ok":true}' },
+                {
+                  type: 'function_call_output',
+                  callId: 'call_a1',
+                  output: '{"ok":true}',
+                },
               ],
             },
           ],
@@ -706,13 +917,23 @@ describe('manual tool calls — adversarial edge cases', () => {
 
       // Find indices of manual function_call and message
       const manualIdx = items.findIndex(
-        (i) => typeof i === 'object' && i !== null && 'type' in i &&
+        (i) =>
+          typeof i === 'object' &&
+          i !== null &&
+          'type' in i &&
           (i as OutputFunctionCallItem).type === 'function_call' &&
           (i as OutputFunctionCallItem).name === 'submit',
       );
       const messageIdx = items.findIndex(
-        (i) => typeof i === 'object' && i !== null && 'type' in i &&
-          (i as { type: string }).type === 'message',
+        (i) =>
+          typeof i === 'object' &&
+          i !== null &&
+          'type' in i &&
+          (
+            i as {
+              type: string;
+            }
+          ).type === 'message',
       );
 
       // Manual tool calls must come before the message

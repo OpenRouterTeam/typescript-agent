@@ -1,7 +1,6 @@
 import type * as models from '@openrouter/sdk/models';
-import type { ClaudeMessageParam } from '../api-shape-helpers/claude-message.js';
-
 import { describe, expect, it } from 'vitest';
+import type { ClaudeMessageParam } from '../api-shape-helpers/claude-message.js';
 import { fromClaudeMessages, toClaudeMessage } from './anthropic-compat.js';
 
 /**

@@ -6,12 +6,15 @@ import { applyNextTurnParamsToRequest } from './next-turn-params.js';
 /**
  * Creates a minimal ResponsesRequest for testing applyNextTurnParamsToRequest.
  */
-function createBaseRequest(
-  overrides?: Partial<models.ResponsesRequest>,
-): models.ResponsesRequest {
+function createBaseRequest(overrides?: Partial<models.ResponsesRequest>): models.ResponsesRequest {
   return {
     model: 'openai/gpt-4',
-    input: [{ role: 'user', content: 'hello' }],
+    input: [
+      {
+        role: 'user',
+        content: 'hello',
+      },
+    ],
     ...overrides,
   };
 }
@@ -31,7 +34,9 @@ describe('applyNextTurnParamsToRequest', () => {
   });
 
   it('should convert null values to undefined', () => {
-    const request = createBaseRequest({ temperature: 0.7 });
+    const request = createBaseRequest({
+      temperature: 0.7,
+    });
     const result = applyNextTurnParamsToRequest(request, {
       temperature: null,
       maxOutputTokens: null,
@@ -60,7 +65,9 @@ describe('applyNextTurnParamsToRequest', () => {
   });
 
   it('should handle empty computedParams without changing the request', () => {
-    const request = createBaseRequest({ temperature: 0.5 });
+    const request = createBaseRequest({
+      temperature: 0.5,
+    });
     const result = applyNextTurnParamsToRequest(request, {});
 
     expect(result.temperature).toBe(0.5);

@@ -15,19 +15,25 @@ function isNonClaudeRole(role: unknown): boolean {
 }
 
 function isClaudeToolResultBlock(block: unknown): boolean {
-  if (!isRecord(block)) return false;
+  if (!isRecord(block)) {
+    return false;
+  }
   return block['type'] === ClaudeContentBlockType.ToolResult;
 }
 
 function isClaudeImageBlockWithSource(block: unknown): boolean {
-  if (!isRecord(block)) return false;
+  if (!isRecord(block)) {
+    return false;
+  }
   return (
     block['type'] === ClaudeContentBlockType.Image && 'source' in block && isRecord(block['source'])
   );
 }
 
 function isClaudeToolUseBlockWithId(block: unknown): boolean {
-  if (!isRecord(block)) return false;
+  if (!isRecord(block)) {
+    return false;
+  }
   return (
     block['type'] === ClaudeContentBlockType.ToolUse &&
     'id' in block &&
@@ -37,9 +43,15 @@ function isClaudeToolUseBlockWithId(block: unknown): boolean {
 
 function hasClaudeSpecificBlocks(content: unknown[]): boolean {
   for (const block of content) {
-    if (isClaudeToolResultBlock(block)) return true;
-    if (isClaudeImageBlockWithSource(block)) return true;
-    if (isClaudeToolUseBlockWithId(block)) return true;
+    if (isClaudeToolResultBlock(block)) {
+      return true;
+    }
+    if (isClaudeImageBlockWithSource(block)) {
+      return true;
+    }
+    if (isClaudeToolUseBlockWithId(block)) {
+      return true;
+    }
   }
   return false;
 }
@@ -57,9 +69,15 @@ export function isClaudeStyleMessages(input: unknown): input is ClaudeMessagePar
   }
 
   for (const msg of input) {
-    if (!isRecord(msg)) continue;
-    if (!('role' in msg)) continue;
-    if ('type' in msg) continue; // Claude messages don't have top-level "type"
+    if (!isRecord(msg)) {
+      continue;
+    }
+    if (!('role' in msg)) {
+      continue;
+    }
+    if ('type' in msg) {
+      continue; // Claude messages don't have top-level "type"
+    }
 
     // If we find a non-Claude role, it's not Claude format
     if (isNonClaudeRole(msg['role'])) {

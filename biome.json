@@ -1,0 +1,136 @@
+{
+  "$schema": "https://biomejs.dev/schemas/2.4.8/schema.json",
+  "vcs": {
+    "enabled": true,
+    "clientKind": "git",
+    "useIgnoreFile": true,
+    "defaultBranch": "origin/main"
+  },
+  "plugins": [
+    ".grit/no-iife.grit",
+    ".grit/use-named-arguments.grit",
+    ".grit/prefer-nullish-over-optional-nullable.grit"
+  ],
+  "files": {
+    "ignoreUnknown": false,
+    "includes": [
+      "**",
+      "!**/*.json",
+      "!!**/biome.json",
+      "!esm/**"
+    ]
+  },
+  "formatter": {
+    "enabled": true,
+    "indentStyle": "space",
+    "indentWidth": 2,
+    "lineWidth": 100,
+    "expand": "always",
+    "attributePosition": "multiline"
+  },
+  "assist": {
+    "actions": {
+      "source": {
+        "organizeImports": {
+          "level": "on"
+        }
+      }
+    }
+  },
+  "linter": {
+    "enabled": true,
+    "rules": {
+      "recommended": true,
+      "complexity": {
+        "useLiteralKeys": "off",
+        "noExtraBooleanCast": "off",
+        "noForEach": "off",
+        "noBannedTypes": "error",
+        "noUselessSwitchCase": "off"
+      },
+      "style": {
+        "noNonNullAssertion": "off",
+        "useNodejsImportProtocol": "error",
+        "useTemplate": "off",
+        "useBlockStatements": "error",
+        "noParameterAssign": "error",
+        "useConst": "error",
+        "useAsConstAssertion": "error",
+        "useDefaultParameterLast": "error",
+        "useEnumInitializers": "error",
+        "useSelfClosingElements": "error",
+        "useSingleVarDeclarator": "error",
+        "noUnusedTemplateLiteral": "error",
+        "useNumberNamespace": "error",
+        "noInferrableTypes": "error",
+        "noUselessElse": "error",
+        "useImportType": {
+          "level": "on",
+          "options": {
+            "style": "separatedType"
+          }
+        }
+      },
+      "correctness": {
+        "noUnusedImports": "error",
+        "useExhaustiveDependencies": "off",
+        "noInnerDeclarations": "error",
+        "useParseIntRadix": "error"
+      },
+      "suspicious": {
+        "noExplicitAny": "off",
+        "noAssignInExpressions": "error",
+        "noAsyncPromiseExecutor": "off",
+        "noFallthroughSwitchClause": "error",
+        "noConsole": "off",
+        "noDoubleEquals": {
+          "level": "error",
+          "options": {
+            "ignoreNull": false
+          }
+        },
+        "noExtraNonNullAssertion": "error"
+      },
+      "performance": {
+        "recommended": true,
+        "noAccumulatingSpread": "error"
+      },
+      "security": {
+        "recommended": true
+      }
+    }
+  },
+  "javascript": {
+    "formatter": {
+      "expand": "always",
+      "lineWidth": 100,
+      "arrowParentheses": "always",
+      "quoteProperties": "asNeeded",
+      "trailingCommas": "all",
+      "semicolons": "always",
+      "bracketSpacing": true,
+      "bracketSameLine": false,
+      "quoteStyle": "single",
+      "enabled": true
+    }
+  },
+  "overrides": [
+    {
+      "includes": [
+        "tests/**",
+        "**/*.test.ts",
+        "**/*.spec.ts"
+      ],
+      "linter": {
+        "rules": {
+          "suspicious": {
+            "noExplicitAny": "off"
+          },
+          "correctness": {
+            "useYield": "off"
+          }
+        }
+      }
+    }
+  ]
+}

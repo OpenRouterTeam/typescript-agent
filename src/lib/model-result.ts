@@ -1,9 +1,55 @@
 import type { OpenRouterCore } from '@openrouter/sdk/core';
+import { betaResponsesSend } from '@openrouter/sdk/funcs/betaResponsesSend';
 import type { EventStream } from '@openrouter/sdk/lib/event-streams';
 import type { RequestOptions } from '@openrouter/sdk/lib/sdks';
 import type * as models from '@openrouter/sdk/models';
 import type { $ZodObject, $ZodShape } from 'zod/v4/core';
-import type { CallModelInput } from './async-params.js';
+import type { CallModelInput, ResolvedCallModelInput } from './async-params.js';
+import { hasAsyncFunctions, resolveAsyncFunctions } from './async-params.js';
+import {
+  appendToMessages,
+  createInitialState,
+  createRejectedResult,
+  createUnsentResult,
+  extractTextFromResponse as extractTextFromResponseState,
+  partitionToolCalls,
+  unsentResultsToAPIFormat,
+  updateState,
+} from './conversation-state.js';
+import {
+  applyNextTurnParamsToRequest,
+  executeNextTurnParamsFunctions,
+} from './next-turn-params.js';
+import { ReusableReadableStream } from './reusable-stream.js';
+import { isStopConditionMet, stepCountIs } from './stop-conditions.js';
+import type { ItemInProgress, StreamableOutputItem } from './stream-transformers.js';
+import {
+  buildItemsStream,
+  buildResponsesMessageStream,
+  buildToolCallStream,
+  consumeStreamForCompletion,
+  extractReasoningDeltas,
+  extractResponsesMessageFromResponse,
+  extractTextDeltas,
+  extractTextFromResponse,
+  extractToolCallsFromResponse,
+  extractToolDeltas,
+  itemsStreamHandlers,
+  streamTerminationEvents,
+} from './stream-transformers.js';
+import {
+  hasTypeProperty,
+  isFunctionCallItem,
+  isOutputTextDeltaEvent,
+  isReasoningDeltaEvent,
+  isResponseCompletedEvent,
+  isResponseFailedEvent,
+  isResponseIncompleteEvent,
+} from './stream-type-guards.js';
+import type { ContextInput } from './tool-context.js';
+import { resolveContext, ToolContextStore } from './tool-context.js';
+import { ToolEventBroadcaster } from './tool-event-broadcaster.js';
+import { executeTool } from './tool-executor.js';
 import type {
   ConversationState,
   InferToolEventsUnion,
@@ -21,57 +67,6 @@ import type {
   TurnStartEvent,
   UnsentToolResult,
 } from './tool-types.js';
-
-import { betaResponsesSend } from '@openrouter/sdk/funcs/betaResponsesSend';
-import {
-  hasAsyncFunctions,
-  type ResolvedCallModelInput,
-  resolveAsyncFunctions,
-} from './async-params.js';
-import {
-  appendToMessages,
-  createInitialState,
-  createRejectedResult,
-  createUnsentResult,
-  extractTextFromResponse as extractTextFromResponseState,
-  partitionToolCalls,
-  unsentResultsToAPIFormat,
-  updateState,
-} from './conversation-state.js';
-import {
-  applyNextTurnParamsToRequest,
-  executeNextTurnParamsFunctions,
-} from './next-turn-params.js';
-import { ReusableReadableStream } from './reusable-stream.js';
-import { isStopConditionMet, stepCountIs } from './stop-conditions.js';
-import {
-  buildItemsStream,
-  buildResponsesMessageStream,
-  buildToolCallStream,
-  consumeStreamForCompletion,
-  extractReasoningDeltas,
-  extractResponsesMessageFromResponse,
-  extractTextDeltas,
-  extractTextFromResponse,
-  extractToolCallsFromResponse,
-  extractToolDeltas,
-  type ItemInProgress,
-  itemsStreamHandlers,
-  type StreamableOutputItem,
-  streamTerminationEvents,
-} from './stream-transformers.js';
-import {
-  hasTypeProperty,
-  isFunctionCallItem,
-  isOutputTextDeltaEvent,
-  isReasoningDeltaEvent,
-  isResponseCompletedEvent,
-  isResponseFailedEvent,
-  isResponseIncompleteEvent,
-} from './stream-type-guards.js';
-import { type ContextInput, resolveContext, ToolContextStore } from './tool-context.js';
-import { ToolEventBroadcaster } from './tool-event-broadcaster.js';
-import { executeTool } from './tool-executor.js';
 import { hasExecuteFunction, isToolCallOutputEvent } from './tool-types.js';
 
 /**
@@ -252,7 +247,9 @@ export class ModelResult<
    * Wraps the initial stream events with turn.start(0) / turn.end(0) delimiters.
    */
   private startInitialStreamPipe(): void {
-    if (this.initialStreamPipeStarted) return;
+    if (this.initialStreamPipeStarted) {
+      return;
+    }
     this.initialStreamPipeStarted = true;
 
     const broadcaster = this.ensureTurnBroadcaster();
@@ -263,6 +260,7 @@ export class ModelResult<
 
     const stream = this.reusableStream;
 
+    // biome-ignore lint: IIFE used for fire-and-forget async pipe
     this.initialPipePromise = (async () => {
       broadcaster.push({
         type: 'turn.start',
@@ -450,7 +448,9 @@ export class ModelResult<
    * @param response - The API response to save
    */
   private async saveResponseToState(response: models.OpenResponsesResult): Promise<void> {
-    if (!this.stateAccessor || !this.currentState) return;
+    if (!this.stateAccessor || !this.currentState) {
+      return;
+    }
 
     const outputItems = Array.isArray(response.output)
       ? response.output
@@ -486,7 +486,9 @@ export class ModelResult<
   private async saveToolResultsToState(
     toolResults: models.FunctionCallOutputItem[],
   ): Promise<void> {
-    if (!this.currentState) return;
+    if (!this.currentState) {
+      return;
+    }
     await this.saveStateSafely({
       messages: appendToMessages(this.currentState.messages, toolResults),
     });
@@ -502,10 +504,14 @@ export class ModelResult<
   private async checkForInterruption(
     currentResponse: models.OpenResponsesResult,
   ): Promise<boolean> {
-    if (!this.stateAccessor) return false;
+    if (!this.stateAccessor) {
+      return false;
+    }
 
     const freshState = await this.stateAccessor.load();
-    if (!freshState?.interruptedBy) return false;
+    if (!freshState?.interruptedBy) {
+      return false;
+    }
 
     // Save partial state
     if (this.currentState) {
@@ -615,7 +621,9 @@ export class ModelResult<
     for (let i = 0; i < settledResults.length; i++) {
       const settled = settledResults[i];
       const tc = toolCalls[i];
-      if (!settled || !tc) continue;
+      if (!settled || !tc) {
+        continue;
+      }
 
       if (settled.status === 'rejected') {
         const errorMessage =
@@ -649,7 +657,9 @@ export class ModelResult<
     currentRound: number,
     currentResponse: models.OpenResponsesResult,
   ): Promise<boolean> {
-    if (!this.options.tools) return false;
+    if (!this.options.tools) {
+      return false;
+    }
 
     const turnContext: TurnContext = {
       numberOfTurns: currentRound,
@@ -663,7 +673,9 @@ export class ModelResult<
       this.requireApprovalFn ?? undefined,
     );
 
-    if (needsApproval.length === 0) return false;
+    if (needsApproval.length === 0) {
+      return false;
+    }
 
     // Validate: approval requires state accessor
     if (!this.stateAccessor) {
@@ -717,7 +729,7 @@ export class ModelResult<
         const errorMessage =
           `Failed to parse tool call arguments for "${toolCall.name}": The model provided invalid JSON. ` +
           `Raw arguments received: "${rawArgs}". ` +
-          `Please provide valid JSON arguments for this tool call.`;
+          'Please provide valid JSON arguments for this tool call.';
 
         this.broadcastToolResult(toolCall.id, {
           error: errorMessage,
@@ -772,7 +784,9 @@ export class ModelResult<
     for (let i = 0; i < settledResults.length; i++) {
       const settled = settledResults[i];
       const originalToolCall = toolCalls[i];
-      if (!settled || !originalToolCall) continue;
+      if (!settled || !originalToolCall) {
+        continue;
+      }
 
       if (settled.status === 'rejected') {
         const errorMessage =
@@ -800,7 +814,9 @@ export class ModelResult<
       }
 
       const value = settled.value;
-      if (!value) continue;
+      if (!value) {
+        continue;
+      }
 
       if (value.type === 'parse_error') {
         toolResults.push(value.output);
@@ -958,11 +974,11 @@ export class ModelResult<
       }
 
       return consumeStreamForCompletion(followUpStream);
-    } else if (this.isNonStreamingResponse(value)) {
-      return value;
-    } else {
-      throw new Error('Unexpected response type from API');
     }
+    if (this.isNonStreamingResponse(value)) {
+      return value;
+    }
+    throw new Error('Unexpected response type from API');
   }
 
   /**
@@ -1015,7 +1031,9 @@ export class ModelResult<
   private async saveStateSafely(
     updates?: Partial<Omit<ConversationState<TTools>, 'id' | 'createdAt' | 'updatedAt'>>,
   ): Promise<void> {
-    if (!this.stateAccessor || !this.currentState) return;
+    if (!this.stateAccessor || !this.currentState) {
+      return;
+    }
 
     if (updates) {
       this.currentState = updateState(this.currentState, updates);
@@ -1038,7 +1056,9 @@ export class ModelResult<
   private clearOptionalStateProperties(
     props: Array<'pendingToolCalls' | 'unsentToolResults' | 'interruptedBy' | 'partialResponse'>,
   ): void {
-    if (!this.currentState) return;
+    if (!this.currentState) {
+      return;
+    }
     for (const prop of props) {
       delete this.currentState[prop];
     }
@@ -1057,6 +1077,7 @@ export class ModelResult<
       return this.initPromise;
     }
 
+    // biome-ignore lint: IIFE used for lazy initialization pattern
     this.initPromise = (async () => {
       // Load or create state if accessor provided
       if (this.stateAccessor) {
@@ -1121,8 +1142,7 @@ export class ModelResult<
 
       // If we have state with existing messages, use those as input
       if (
-        this.currentState &&
-        this.currentState.messages &&
+        this.currentState?.messages &&
         Array.isArray(this.currentState.messages) &&
         this.currentState.messages.length > 0
       ) {
@@ -1208,7 +1228,9 @@ export class ModelResult<
     // Process approvals - execute the approved tools
     for (const callId of this.approvedToolCalls) {
       const toolCall = pendingCalls.find((tc) => tc.id === callId);
-      if (!toolCall) continue;
+      if (!toolCall) {
+        continue;
+      }
 
       const tool = this.options.tools?.find((t) => t.function.name === toolCall.name);
       if (!tool || !hasExecuteFunction(tool)) {
@@ -1240,7 +1262,9 @@ export class ModelResult<
     // Process rejections
     for (const callId of this.rejectedToolCalls) {
       const toolCall = pendingCalls.find((tc) => tc.id === callId);
-      if (!toolCall) continue;
+      if (!toolCall) {
+        continue;
+      }
 
       unsentResults.push(createRejectedResult(callId, String(toolCall.name), 'Rejected by user'));
     }
@@ -1267,8 +1291,12 @@ export class ModelResult<
 
     // Clear optional properties if they should be empty
     const propsToClear: Array<'pendingToolCalls' | 'unsentToolResults'> = [];
-    if (remainingPending.length === 0) propsToClear.push('pendingToolCalls');
-    if (unsentResults.length === 0) propsToClear.push('unsentToolResults');
+    if (remainingPending.length === 0) {
+      propsToClear.push('pendingToolCalls');
+    }
+    if (unsentResults.length === 0) {
+      propsToClear.push('unsentToolResults');
+    }
     if (propsToClear.length > 0) {
       this.clearOptionalStateProperties(propsToClear);
       await this.saveStateSafely();
@@ -1287,10 +1315,14 @@ export class ModelResult<
    * Continue execution with unsent tool results
    */
   private async continueWithUnsentResults(): Promise<void> {
-    if (!this.currentState || !this.stateAccessor) return;
+    if (!this.currentState || !this.stateAccessor) {
+      return;
+    }
 
     const unsentResults = this.currentState.unsentToolResults ?? [];
-    if (unsentResults.length === 0) return;
+    if (unsentResults.length === 0) {
+      return;
+    }
 
     // Convert to API format
     const toolOutputs = unsentResultsToAPIFormat(unsentResults);
@@ -1357,6 +1389,7 @@ export class ModelResult<
       return this.toolExecutionPromise;
     }
 
+    // biome-ignore lint: IIFE used for lazy initialization pattern
     this.toolExecutionPromise = (async () => {
       await this.initStream();
 
@@ -1696,7 +1729,11 @@ export class ModelResult<
       // Yield manual tool function_call items from finalResponse, skipping duplicates
       if (this.finalResponse) {
         for (const item of this.finalResponse.output) {
-          if (isFunctionCallItem(item) && this.isManualToolCall(item) && !yieldedCallIds.has(item.callId)) {
+          if (
+            isFunctionCallItem(item) &&
+            this.isManualToolCall(item) &&
+            !yieldedCallIds.has(item.callId)
+          ) {
             yieldedCallIds.add(item.callId);
             yield item;
           }
