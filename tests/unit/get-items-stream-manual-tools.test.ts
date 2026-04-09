@@ -1,3 +1,4 @@
+import type { OpenRouterCore } from '@openrouter/sdk/core';
 import type {
   OpenResponsesStreamEvent,
   OpenResponsesStreamEventResponseCompleted,
@@ -7,15 +8,13 @@ import type {
   OpenResponsesStreamEventResponseOutputItemDone,
 } from '@openrouter/sdk/models/openresponsesstreamevent';
 import type { OutputFunctionCallItem } from '@openrouter/sdk/models/outputfunctioncallitem';
-import type { OpenRouterCore } from '@openrouter/sdk/core';
-import type { StreamableOutputItem } from '../../src/lib/stream-transformers.js';
-
 import { describe, expect, it } from 'vitest';
 import { z } from 'zod/v4';
-import { ReusableReadableStream } from '../../src/lib/reusable-stream.js';
 import { ModelResult } from '../../src/lib/model-result.js';
-import { ToolType } from '../../src/lib/tool-types.js';
+import { ReusableReadableStream } from '../../src/lib/reusable-stream.js';
+import type { StreamableOutputItem } from '../../src/lib/stream-transformers.js';
 import { isFunctionCallItem } from '../../src/lib/stream-type-guards.js';
+import { ToolType } from '../../src/lib/tool-types.js';
 
 // ============================================================================
 // Synthetic event factories
@@ -83,6 +82,7 @@ function functionCallArgsDoneEvent(
   };
 }
 
+// biome-ignore lint: test helper function
 function outputItemDoneFunctionCallEvent(
   callId: string,
   name: string,
@@ -116,7 +116,9 @@ function responseCompletedEvent(
       model: 'test-model',
       status: 'completed',
       completedAt: 0,
-      output: [functionCallItem],
+      output: [
+        functionCallItem,
+      ],
       error: null,
       incompleteDetails: null,
       temperature: null,
@@ -167,15 +169,24 @@ describe('getItemsStream with manual tools — duplicate detection', () => {
       function: {
         name: TOOL_NAME,
         description: 'Submit a weather report summary.',
-        inputSchema: z.object({ summary: z.string() }),
-        outputSchema: z.object({ success: z.boolean() }),
+        inputSchema: z.object({
+          summary: z.string(),
+        }),
+        outputSchema: z.object({
+          success: z.boolean(),
+        }),
       },
     } as const;
 
     const modelResult = new ModelResult({
-      request: { model: 'test-model', input: 'test' },
+      request: {
+        model: 'test-model',
+        input: 'test',
+      },
       client: {} as unknown as OpenRouterCore,
-      tools: [manualTool],
+      tools: [
+        manualTool,
+      ],
     });
 
     // Bypass initStream by directly setting private fields.

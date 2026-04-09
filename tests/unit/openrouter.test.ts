@@ -1,7 +1,7 @@
-import { describe, expect, it } from 'vitest';
 import { OpenRouterCore } from '@openrouter/sdk/core';
-import { OpenRouter } from '../../src/openrouter.js';
+import { describe, expect, it } from 'vitest';
 import { ModelResult } from '../../src/lib/model-result.js';
+import { OpenRouter } from '../../src/openrouter.js';
 
 describe('OpenRouter', () => {
   it('should instantiate without options', () => {
@@ -10,12 +10,16 @@ describe('OpenRouter', () => {
   });
 
   it('should instantiate with apiKey option', () => {
-    const openrouter = new OpenRouter({ apiKey: 'test-key' });
+    const openrouter = new OpenRouter({
+      apiKey: 'test-key',
+    });
     expect(openrouter).toBeInstanceOf(OpenRouter);
   });
 
   it('should return a ModelResult from callModel', () => {
-    const openrouter = new OpenRouter({ apiKey: 'test-key' });
+    const openrouter = new OpenRouter({
+      apiKey: 'test-key',
+    });
     const result = openrouter.callModel({
       model: 'openai/gpt-4o',
       input: 'Hello',
@@ -24,7 +28,9 @@ describe('OpenRouter', () => {
   });
 
   it('should preserve this binding when callModel is destructured', () => {
-    const openrouter = new OpenRouter({ apiKey: 'test-key' });
+    const openrouter = new OpenRouter({
+      apiKey: 'test-key',
+    });
     const { callModel } = openrouter;
     const result = callModel({
       model: 'openai/gpt-4o',
@@ -42,7 +48,9 @@ describe('OpenRouter', () => {
   });
 
   it('should be an instance of OpenRouterCore', () => {
-    const openrouter = new OpenRouter({ apiKey: 'test-key' });
+    const openrouter = new OpenRouter({
+      apiKey: 'test-key',
+    });
     expect(openrouter).toBeInstanceOf(OpenRouterCore);
   });
 
@@ -57,7 +65,9 @@ describe('OpenRouter', () => {
   });
 
   it('should be usable as both OpenRouter and OpenRouterCore', () => {
-    const openrouter = new OpenRouter({ apiKey: 'test-key' });
+    const openrouter = new OpenRouter({
+      apiKey: 'test-key',
+    });
     expect(openrouter).toBeInstanceOf(OpenRouter);
     expect(openrouter).toBeInstanceOf(OpenRouterCore);
     // Calling callModel should still work

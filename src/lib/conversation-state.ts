@@ -15,7 +15,9 @@ import { normalizeInputToArray } from './turn-context.js';
 function isValidUnsentToolResult<TTools extends readonly Tool[]>(
   obj: unknown,
 ): obj is UnsentToolResult<TTools> {
-  if (typeof obj !== 'object' || obj === null) return false;
+  if (typeof obj !== 'object' || obj === null) {
+    return false;
+  }
   return (
     'callId' in obj &&
     typeof obj.callId === 'string' &&
@@ -31,7 +33,9 @@ function isValidUnsentToolResult<TTools extends readonly Tool[]>(
 function isValidParsedToolCall<TTools extends readonly Tool[]>(
   obj: unknown,
 ): obj is ParsedToolCall<TTools[number]> {
-  if (typeof obj !== 'object' || obj === null) return false;
+  if (typeof obj !== 'object' || obj === null) {
+    return false;
+  }
   return (
     'id' in obj &&
     typeof obj.id === 'string' &&
@@ -122,7 +126,9 @@ export async function toolRequiresApproval<TTools extends readonly Tool[]>(
 
   // Fall back to tool-level setting
   const tool = tools.find((t) => t.function.name === toolCall.name);
-  if (!tool) return false;
+  if (!tool) {
+    return false;
+  }
 
   const requireApproval = tool.function.requireApproval;
 

@@ -92,7 +92,8 @@ export type ToolContextMapWithShared<
   TShared extends Record<string, unknown> = Record<string, never>,
 > = ToolContextMap<T> &
   (TShared extends Record<string, never>
-    ? {}
+    ? // biome-ignore lint/complexity/noBannedTypes: empty object is intentional for conditional type
+      {}
     : {
         shared: TShared;
       });
@@ -220,7 +221,7 @@ export interface ToolFunctionWithGenerator<
   execute: (
     params: zodInfer<TInput>,
     context?: ToolExecuteContext<TName, TContext>,
-  ) => AsyncGenerator<zodInfer<TEvent> | zodInfer<TOutput>, zodInfer<TOutput> | void>;
+  ) => AsyncGenerator<zodInfer<TEvent> | zodInfer<TOutput>, zodInfer<TOutput> | undefined>;
 }
 
 /**

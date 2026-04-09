@@ -1,9 +1,8 @@
-import type { ParsedToolCall, Tool, TurnContext } from '../../src/lib/tool-types.js';
-
 import { describe, expect, it } from 'vitest';
 import { z } from 'zod/v4';
 import { tool } from '../../src/lib/tool.js';
 import { executeGeneratorTool } from '../../src/lib/tool-executor.js';
+import type { ParsedToolCall, Tool, TurnContext } from '../../src/lib/tool-types.js';
 
 describe('executeGeneratorTool - return value capture', () => {
   const mockContext: TurnContext = {

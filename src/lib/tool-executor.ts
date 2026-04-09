@@ -1,4 +1,7 @@
+import * as z4 from 'zod/v4';
 import type { $ZodObject, $ZodShape, $ZodType } from 'zod/v4/core';
+import type { ToolContextStore } from './tool-context.js';
+import { buildToolExecuteContext } from './tool-context.js';
 import type {
   APITool,
   ParsedToolCall,
@@ -7,9 +10,6 @@ import type {
   ToolExecutionResult,
   TurnContext,
 } from './tool-types.js';
-
-import * as z4 from 'zod/v4';
-import { buildToolExecuteContext, type ToolContextStore } from './tool-context.js';
 import { hasExecuteFunction, isGeneratorTool, isRegularExecuteTool } from './tool-types.js';
 
 // Re-export ZodError for convenience
@@ -154,6 +154,7 @@ export function parseToolCallArguments(argumentsString: string): unknown {
 /**
  * Build a ToolExecuteContext for a tool from a TurnContext and optional context store
  */
+// biome-ignore lint: parameters match the internal API shape
 function buildExecuteCtx(
   tool: Tool,
   turnContext: TurnContext,
@@ -172,6 +173,7 @@ function buildExecuteCtx(
 /**
  * Execute a regular (non-generator) tool
  */
+// biome-ignore lint: parameters match the internal API shape
 export async function executeRegularTool(
   tool: Tool,
   toolCall: ParsedToolCall<Tool>,
@@ -224,6 +226,7 @@ export async function executeRegularTool(
  * - Last yield is validated against outputSchema (final result sent to model)
  * - Generator must emit at least one value
  */
+// biome-ignore lint: parameters match the internal API shape
 export async function executeGeneratorTool(
   tool: Tool,
   toolCall: ParsedToolCall<Tool>,
@@ -305,6 +308,7 @@ export async function executeGeneratorTool(
  * Execute a tool call
  * Automatically detects if it's a regular or generator tool
  */
+// biome-ignore lint: parameters match the internal API shape
 export async function executeTool(
   tool: Tool,
   toolCall: ParsedToolCall<Tool>,

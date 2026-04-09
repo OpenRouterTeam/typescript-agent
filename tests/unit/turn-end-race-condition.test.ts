@@ -109,6 +109,7 @@ describe('turn.end race condition', () => {
     const reusableStream = new ReusableReadableStream(stream);
 
     // Fire-and-forget pipe (the buggy pattern)
+    // biome-ignore lint: IIFE used in test to reproduce race condition
     const pipePromise = (async () => {
       broadcaster.push({
         type: 'turn.start',
@@ -129,6 +130,7 @@ describe('turn.end race condition', () => {
     const broadcastConsumer = broadcaster.createConsumer();
 
     // Simulate executeToolsIfNeeded completing before the pipe finishes
+    // biome-ignore lint: IIFE used in test to reproduce race condition
     const executionPromise = (async () => {
       await new Promise((r) => setTimeout(r, 5));
     })().finally(() => {
@@ -182,6 +184,7 @@ describe('turn.end race condition', () => {
     );
     const reusableStream = new ReusableReadableStream(stream);
 
+    // biome-ignore lint: IIFE used in test to reproduce race condition
     const pipePromise = (async () => {
       broadcaster.push({
         type: 'turn.start',
@@ -202,6 +205,7 @@ describe('turn.end race condition', () => {
     const broadcastConsumer = broadcaster.createConsumer();
 
     // FIX: await pipePromise before calling complete()
+    // biome-ignore lint: IIFE used in test to reproduce race condition
     const executionPromise = (async () => {
       await new Promise((r) => setTimeout(r, 5));
     })().finally(async () => {

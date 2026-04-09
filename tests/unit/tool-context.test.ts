@@ -1,5 +1,3 @@
-import type { TurnContext } from '../../src/lib/tool-types.js';
-
 import { describe, expect, it } from 'vitest';
 import * as z4 from 'zod/v4';
 import { tool } from '../../src/lib/tool.js';
@@ -9,6 +7,7 @@ import {
   resolveContext,
   ToolContextStore,
 } from '../../src/lib/tool-context.js';
+import type { TurnContext } from '../../src/lib/tool-types.js';
 
 //#region ToolContextStore
 

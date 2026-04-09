@@ -1,12 +1,10 @@
+import { OpenRouter, ToolType } from '@openrouter/sdk';
 import type { ClaudeMessageParam } from '@openrouter/sdk/models/claude-message';
 import type { OpenResponsesFunctionCallOutput } from '@openrouter/sdk/models/openresponsesfunctioncalloutput';
+import type { OpenResponsesNonStreamingResponse } from '@openrouter/sdk/models/openresponsesnonstreamingresponse';
+import type { OpenResponsesStreamEvent } from '@openrouter/sdk/models/openresponsesstreamevent';
 import type { OutputFunctionCallItem } from '@openrouter/sdk/models/outputfunctioncallitem';
 import type { ResponsesOutputMessage } from '@openrouter/sdk/models/responsesoutputmessage';
-import type { ChatStreamEvent, ResponseStreamEvent } from '../../src/lib/tool-types.js';
-
-import { OpenRouter, ToolType } from '@openrouter/sdk';
-import { OpenResponsesNonStreamingResponse } from '@openrouter/sdk/models/openresponsesnonstreamingresponse';
-import { OpenResponsesStreamEvent } from '@openrouter/sdk/models/openresponsesstreamevent';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { z } from 'zod/v4';
 import { fromClaudeMessages } from '../../src/lib/anthropic-compat.js';
@@ -17,6 +15,7 @@ import {
   isResponseCompletedEvent,
   isResponseIncompleteEvent,
 } from '../../src/lib/stream-type-guards.js';
+import type { ChatStreamEvent, ResponseStreamEvent } from '../../src/lib/tool-types.js';
 import { isToolPreliminaryResultEvent } from '../../src/lib/tool-types.js';
 
 /**
@@ -26,25 +25,26 @@ function transformToChatStreamEvent(event: ResponseStreamEvent): ChatStreamEvent
   if (isToolPreliminaryResultEvent(event)) {
     // Pass through tool preliminary results as-is
     return event;
-  } else if (isOutputTextDeltaEvent(event)) {
+  }
+  if (isOutputTextDeltaEvent(event)) {
     // Transform text deltas to content.delta
     return {
       type: 'content.delta',
       delta: event.delta,
     };
-  } else if (isResponseCompletedEvent(event) || isResponseIncompleteEvent(event)) {
+  }
+  if (isResponseCompletedEvent(event) || isResponseIncompleteEvent(event)) {
     // Transform completion events to message.complete
     return {
       type: 'message.complete',
       response: event.response,
     };
-  } else {
-    // Pass-through all other events with original event wrapped
-    return {
-      type: event.type,
-      event,
-    };
   }
+  // Pass-through all other events with original event wrapped
+  return {
+    type: event.type,
+    event,
+  };
 }
 
 describe('callModel E2E Tests', () => {
@@ -819,7 +819,11 @@ describe('callModel E2E Tests', () => {
         ],
       });
 
-      const items: (ResponsesOutputMessage | OpenResponsesFunctionCallOutput | OutputFunctionCallItem)[] = [];
+      const items: (
+        | ResponsesOutputMessage
+        | OpenResponsesFunctionCallOutput
+        | OutputFunctionCallItem
+      )[] = [];
 
       for await (const item of response.getNewMessagesStream()) {
         items.push(item);
@@ -870,7 +874,11 @@ describe('callModel E2E Tests', () => {
         ],
       });
 
-      const items: (ResponsesOutputMessage | OpenResponsesFunctionCallOutput | OutputFunctionCallItem)[] = [];
+      const items: (
+        | ResponsesOutputMessage
+        | OpenResponsesFunctionCallOutput
+        | OutputFunctionCallItem
+      )[] = [];
 
       for await (const item of response.getNewMessagesStream()) {
         items.push(item);
@@ -1351,6 +1359,7 @@ describe('callModel E2E Tests', () => {
 
       // Get full text and stream concurrently
       const textPromise = response.getText();
+      // biome-ignore lint: IIFE used in test for async consumption
       const streamPromise = (async () => {
         const deltas: string[] = [];
         for await (const delta of response.getTextStream()) {
@@ -1385,6 +1394,7 @@ describe('callModel E2E Tests', () => {
       });
 
       // Start two concurrent stream consumers
+      // biome-ignore lint: IIFE used in test for async consumption
       const textStreamPromise = (async () => {
         const deltas: string[] = [];
         for await (const delta of response.getTextStream()) {
@@ -1393,6 +1403,7 @@ describe('callModel E2E Tests', () => {
         return deltas;
       })();
 
+      // biome-ignore lint: IIFE used in test for async consumption
       const newMessagesStreamPromise = (async () => {
         const messages: (ResponsesOutputMessage | OpenResponsesFunctionCallOutput)[] = [];
         for await (const message of response.getNewMessagesStream()) {

@@ -16,12 +16,11 @@ export type { SDKOptions } from '@openrouter/sdk/lib/config';
  * The underlying `ClientSDK` accepts hooks at runtime but its constructor type
  * (`SDKOptions`) does not include them. This type bridges that gap.
  */
-export type OpenRouterOptions = SDKOptions & { hooks?: SDKHooks };
+export type OpenRouterOptions = SDKOptions & {
+  hooks?: SDKHooks;
+};
 
 export class OpenRouter extends OpenRouterCore {
-  constructor(options?: OpenRouterOptions) {
-    super(options);
-  }
   callModel = <
     TTools extends readonly Tool[],
     TSharedSchema extends $ZodObject<$ZodShape> | undefined = undefined,

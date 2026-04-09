@@ -73,11 +73,17 @@ describe('ToolEventBroadcaster', () => {
       const results2: string[] = [];
 
       await Promise.all([
+        // biome-ignore lint: IIFE used in test for async consumption
         (async () => {
-          for await (const e of consumer1) results1.push(e);
+          for await (const e of consumer1) {
+            results1.push(e);
+          }
         })(),
+        // biome-ignore lint: IIFE used in test for async consumption
         (async () => {
-          for await (const e of consumer2) results2.push(e);
+          for await (const e of consumer2) {
+            results2.push(e);
+          }
         })(),
       ]);
 
@@ -110,7 +116,9 @@ describe('ToolEventBroadcaster', () => {
 
       // Consumer 1 continues from position 1
       const remaining1: number[] = [];
-      for await (const e of consumer1) remaining1.push(e);
+      for await (const e of consumer1) {
+        remaining1.push(e);
+      }
       expect(remaining1).toEqual([
         2,
         3,
@@ -118,7 +126,9 @@ describe('ToolEventBroadcaster', () => {
 
       // Consumer 2 gets all events from position 0
       const all2: number[] = [];
-      for await (const e of consumer2) all2.push(e);
+      for await (const e of consumer2) {
+        all2.push(e);
+      }
       expect(all2).toEqual([
         1,
         2,
@@ -133,6 +143,7 @@ describe('ToolEventBroadcaster', () => {
       const consumer = broadcaster.createConsumer();
 
       // Start consuming before events arrive
+      // biome-ignore lint: IIFE used in test for async consumption
       const consumePromise = (async () => {
         const results: number[] = [];
         for await (const event of consumer) {
@@ -160,6 +171,7 @@ describe('ToolEventBroadcaster', () => {
       const consumer = broadcaster.createConsumer();
 
       const received: number[] = [];
+      // biome-ignore lint: IIFE used in test for async consumption
       const consumePromise = (async () => {
         for await (const event of consumer) {
           received.push(event);
@@ -220,6 +232,7 @@ describe('ToolEventBroadcaster', () => {
       const consumer = broadcaster.createConsumer();
 
       // Start consuming (will wait)
+      // biome-ignore lint: IIFE used in test for async consumption
       const consumePromise = (async () => {
         const results: number[] = [];
         for await (const event of consumer) {
