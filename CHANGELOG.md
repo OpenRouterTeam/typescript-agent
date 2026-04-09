@@ -1,5 +1,15 @@
 # @openrouter/agent
 
+## 0.3.0
+
+### Minor Changes
+
+- [#19](https://github.com/OpenRouterTeam/typescript-agent/pull/19) [`2b23076`](https://github.com/OpenRouterTeam/typescript-agent/commit/2b2307683b55debcd406eb68a3b95030a14bfaaf) Thanks [@mattapperson](https://github.com/mattapperson)! - Re-export SDK model types and add clean item type aliases so consumers don't need to depend on `@openrouter/sdk` directly.
+
+### Patch Changes
+
+- [#20](https://github.com/OpenRouterTeam/typescript-agent/pull/20) [`f0d2d72`](https://github.com/OpenRouterTeam/typescript-agent/commit/f0d2d72d042c2acb73d911c5aeb40ccb72ffaf9f) Thanks [@mattapperson](https://github.com/mattapperson)! - Re-export `EasyInputMessageContentInputImage`, `OutputInputImage`, and `OpenAIResponsesToolChoiceUnion` from `@openrouter/sdk/models` so consumers can use these types without a direct SDK dependency.
+
 ## 0.2.0
 
 ### Minor Changes
