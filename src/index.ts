@@ -10,6 +10,7 @@ export type {
   ChatAssistantMessage,
   ChatMessages,
   EasyInputMessage,
+  EasyInputMessageContentInputImage,
   EasyInputMessageContentUnion1,
   EasyInputMessageRoleUnion,
   // Error event
@@ -24,11 +25,13 @@ export type {
   InputsUnion,
   InputText,
   InputVideo,
+  OpenAIResponsesToolChoiceUnion,
   OpenResponsesResult,
   // Output item types (StreamableOutputItem members)
   OutputFileSearchCallItem,
   OutputFunctionCallItem,
   OutputImageGenerationCallItem,
+  OutputInputImage,
   OutputMessage,
   OutputReasoningItem,
   OutputWebSearchCallItem,
