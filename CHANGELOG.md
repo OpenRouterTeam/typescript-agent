@@ -1,5 +1,19 @@
 # @openrouter/agent
 
+## 0.2.0
+
+### Minor Changes
+
+- Re-export SDK model types (`ResponsesRequest`, `OutputMessage`, `FunctionCallItem`, etc.) from `@openrouter/sdk/models` so consumers don't need a direct dependency on `@openrouter/sdk`.
+- Add clean item type aliases (`Item`, `UserMessageItem`, `AssistantMessageItem`, `FunctionResultItem`, etc.) via new `@openrouter/agent` exports.
+- Add `OpenRouter` wrapper class that extends `OpenRouterCore` for a simplified API (`@openrouter/agent/openrouter`).
+
+### Patch Changes
+
+- Replace ESLint with Biome for linting and formatting.
+- Add CI auto-release workflow on push to main.
+- Correct item type aliases to match SDK runtime types.
+
 ## 0.1.2
 
 ### Patch Changes
