@@ -6,42 +6,37 @@ export type { RequestOptions } from '@openrouter/sdk/lib/sdks';
 export type {
   // Core request/response
   BaseInputsUnion,
-  InputsUnion,
-  OpenResponsesResult,
-  ResponsesRequest,
-  StreamEvents,
-  Usage,
-
   // Message & item types
   ChatAssistantMessage,
   ChatMessages,
   EasyInputMessage,
   EasyInputMessageContentUnion1,
   EasyInputMessageRoleUnion,
+  // Error event
+  ErrorEvent,
   FunctionCallItem,
   FunctionCallOutputItem,
-  InputMessageItem,
-  OutputMessage,
-
   // Content input types (multimodal)
   InputAudio,
   InputFile,
   InputImage,
+  InputMessageItem,
+  InputsUnion,
   InputText,
   InputVideo,
-
+  OpenResponsesResult,
   // Output item types (StreamableOutputItem members)
   OutputFileSearchCallItem,
   OutputFunctionCallItem,
   OutputImageGenerationCallItem,
+  OutputMessage,
   OutputReasoningItem,
   OutputWebSearchCallItem,
-
   // Response output content
   ResponseOutputText,
-
-  // Error event
-  ErrorEvent,
+  ResponsesRequest,
+  StreamEvents,
+  Usage,
 } from '@openrouter/sdk/models';
 
 // Clean item type aliases

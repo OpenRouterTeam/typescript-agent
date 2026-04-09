@@ -16,7 +16,9 @@ import type { ToolPreliminaryResultEvent } from './tool-types.js';
  * persisted in conversation history (as opposed to newly created input).
  * This is a local convention — the SDK's `EasyInputMessage` has no `id` field.
  */
-type WithID<T> = T & { id: string };
+type WithID<T> = T & {
+  id: string;
+};
 
 /** A function call initiated by the model */
 export type CallFunctionToolItem = OutputFunctionCallItem;
@@ -25,16 +27,24 @@ export type CallFunctionToolItem = OutputFunctionCallItem;
 export type AssistantMessageItem = OutputMessage;
 
 /** A new user message for input (not yet persisted, no id) */
-export type NewUserMessageItem = EasyInputMessage & { role: 'user' };
+export type NewUserMessageItem = EasyInputMessage & {
+  role: 'user';
+};
 
 /** A user message from conversation history (has an assigned id) */
-export type UserMessageItem = WithID<EasyInputMessage> & { role: 'user' };
+export type UserMessageItem = WithID<EasyInputMessage> & {
+  role: 'user';
+};
 
 /** A system message from conversation history (has an assigned id) */
-export type SystemMessageItem = WithID<EasyInputMessage> & { role: 'system' };
+export type SystemMessageItem = WithID<EasyInputMessage> & {
+  role: 'system';
+};
 
 /** A developer message from conversation history (has an assigned id) */
-export type DeveloperMessageItem = WithID<EasyInputMessage> & { role: 'developer' };
+export type DeveloperMessageItem = WithID<EasyInputMessage> & {
+  role: 'developer';
+};
 
 /** Reasoning output from the model */
 export type ReasoningItem = OutputReasoningItem;
