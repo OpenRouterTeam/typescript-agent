@@ -1,3 +1,62 @@
+// SDK type re-exports — every SDK type used in this package's public API
+// so consumers don't need to depend on @openrouter/sdk directly.
+
+export type { RequestOptions } from '@openrouter/sdk/lib/sdks';
+
+export type {
+  // Core request/response
+  BaseInputsUnion,
+  // Message & item types
+  ChatAssistantMessage,
+  ChatMessages,
+  EasyInputMessage,
+  EasyInputMessageContentUnion1,
+  EasyInputMessageRoleUnion,
+  // Error event
+  ErrorEvent,
+  FunctionCallItem,
+  FunctionCallOutputItem,
+  // Content input types (multimodal)
+  InputAudio,
+  InputFile,
+  InputImage,
+  InputMessageItem,
+  InputsUnion,
+  InputText,
+  InputVideo,
+  OpenResponsesResult,
+  // Output item types (StreamableOutputItem members)
+  OutputFileSearchCallItem,
+  OutputFunctionCallItem,
+  OutputImageGenerationCallItem,
+  OutputMessage,
+  OutputReasoningItem,
+  OutputWebSearchCallItem,
+  // Response output content
+  ResponseOutputText,
+  ResponsesRequest,
+  StreamEvents,
+  Usage,
+} from '@openrouter/sdk/models';
+
+// Clean item type aliases
+export type {
+  AssistantMessageItem,
+  CallFileSearchItem,
+  CallFunctionToolItem,
+  CallImageGenerationItem,
+  CallWebSearchItem,
+  DeveloperMessageItem,
+  ErrorItem,
+  FunctionProgressItem,
+  FunctionResultItem,
+  Item,
+  NewUserMessageItem,
+  ReasoningItem,
+  SystemMessageItem,
+  UserMessageItem,
+} from './lib/item-types.js';
+
 // Message format compatibility helpers
 
 // High-level model calling
