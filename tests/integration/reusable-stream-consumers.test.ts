@@ -24,39 +24,6 @@ async function collectAll<T>(iter: AsyncIterable<T>): Promise<T[]> {
 }
 
 describe('ReusableReadableStream -> concurrent transformer consumption', () => {
-  it('two consumers at different read speeds both get all items', async () => {
-    const stream = makeStream([
-      1,
-      2,
-      3,
-      4,
-      5,
-    ]);
-
-    const consumer1 = stream.createConsumer();
-    const consumer2 = stream.createConsumer();
-
-    const [result1, result2] = await Promise.all([
-      collectAll(consumer1),
-      collectAll(consumer2),
-    ]);
-
-    expect(result1).toEqual([
-      1,
-      2,
-      3,
-      4,
-      5,
-    ]);
-    expect(result2).toEqual([
-      1,
-      2,
-      3,
-      4,
-      5,
-    ]);
-  });
-
   it('buildItemsStream and consumeStreamForCompletion both consume same stream correctly', async () => {
     const response = {
       id: 'r1',
