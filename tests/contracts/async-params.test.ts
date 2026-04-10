@@ -1,0 +1,105 @@
+import { describe, expect, it } from 'vitest';
+
+import { resolveAsyncFunctions } from '../../src/lib/async-params.js';
+
+describe('resolveAsyncFunctions - three field types handled distinctly', () => {
+  const turnCtx = {
+    numberOfTurns: 2,
+  } as any;
+
+  it('static values (model, temperature as literals) -> passed through unchanged', async () => {
+    const result = await resolveAsyncFunctions(
+      {
+        model: 'gpt-4',
+        temperature: 0.7,
+      } as any,
+      turnCtx,
+    );
+    expect(result.model).toBe('gpt-4');
+    expect(result.temperature).toBe(0.7);
+  });
+
+  it('function values -> resolved by calling with context, result stored', async () => {
+    const result = await resolveAsyncFunctions(
+      {
+        temperature: (ctx: any) => ctx.numberOfTurns * 0.1,
+      } as any,
+      turnCtx,
+    );
+    expect(result.temperature).toBe(0.2);
+  });
+
+  it('client-only fields (stopWhen, state, requireApproval, context, onTurnStart, onTurnEnd) -> stripped entirely', async () => {
+    const result = await resolveAsyncFunctions(
+      {
+        model: 'gpt-4',
+        stopWhen: () => true,
+        state: {
+          get: () => null,
+        },
+        requireApproval: () => false,
+        context: {
+          shared: {},
+        },
+        onTurnStart: () => {},
+        onTurnEnd: () => {},
+      } as any,
+      turnCtx,
+    );
+    expect(result).not.toHaveProperty('stopWhen');
+    expect(result).not.toHaveProperty('state');
+    expect(result).not.toHaveProperty('requireApproval');
+    expect(result).not.toHaveProperty('context');
+    expect(result).not.toHaveProperty('onTurnStart');
+    expect(result).not.toHaveProperty('onTurnEnd');
+    expect(result.model).toBe('gpt-4');
+  });
+
+  it('tools field -> preserved (exception to client-only stripping)', async () => {
+    const tools = [
+      {
+        type: 'function',
+        function: {
+          name: 'test',
+        },
+      },
+    ];
+    const result = await resolveAsyncFunctions(
+      {
+        model: 'gpt-4',
+        tools,
+      } as any,
+      turnCtx,
+    );
+    expect(result).toHaveProperty('tools');
+  });
+
+  it('function error -> wraps with field name context', async () => {
+    await expect(
+      resolveAsyncFunctions(
+        {
+          temperature: () => {
+            throw new Error('boom');
+          },
+        } as any,
+        turnCtx,
+      ),
+    ).rejects.toThrow('Failed to resolve async function for field "temperature"');
+  });
+
+  it('mix of static + function + client-only in one call -> all handled correctly', async () => {
+    const result = await resolveAsyncFunctions(
+      {
+        model: 'gpt-4',
+        temperature: (ctx: any) => ctx.numberOfTurns * 0.1,
+        stopWhen: () => true,
+        input: 'hello',
+      } as any,
+      turnCtx,
+    );
+    expect(result.model).toBe('gpt-4');
+    expect(result.temperature).toBe(0.2);
+    expect(result).not.toHaveProperty('stopWhen');
+    expect(result.input).toBe('hello');
+  });
+});
