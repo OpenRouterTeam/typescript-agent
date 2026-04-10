@@ -9,6 +9,7 @@ import {
   extractMessageFromResponse,
   extractToolCallsFromResponse,
 } from '../../src/lib/stream-transformers.js';
+import { TEST_MODEL } from '../test-constants.js';
 
 function makeStream(events: any[]): ReusableReadableStream<any> {
   const source = new ReadableStream({
@@ -59,7 +60,7 @@ describe('Dual-format output: same response -> structurally distinct formats', (
       ],
       status: 'completed' as const,
       outputText: 'Found results',
-      model: 'test-model',
+      model: TEST_MODEL,
       usage: {
         totalTokens: 100,
         inputTokens: 50,

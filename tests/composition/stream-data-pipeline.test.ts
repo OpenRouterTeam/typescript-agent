@@ -5,6 +5,7 @@ import {
   extractToolCallsFromResponse,
   responseHasToolCalls,
 } from '../../src/lib/stream-transformers.js';
+import { TEST_MODEL } from '../test-constants.js';
 
 function makeStream<T>(items: T[]): ReusableReadableStream<T> {
   const source = new ReadableStream<T>({
@@ -113,7 +114,7 @@ describe('Stream data pipeline: source -> guards -> transformers -> consumers', 
       ],
       status: 'completed' as const,
       outputText: '',
-      model: 'test-model',
+      model: TEST_MODEL,
       usage: {
         totalTokens: 100,
         inputTokens: 50,
@@ -146,7 +147,7 @@ describe('Stream data pipeline: source -> guards -> transformers -> consumers', 
       ],
       status: 'completed' as const,
       outputText: 'Hello',
-      model: 'test-model',
+      model: TEST_MODEL,
       usage: {
         totalTokens: 100,
         inputTokens: 50,

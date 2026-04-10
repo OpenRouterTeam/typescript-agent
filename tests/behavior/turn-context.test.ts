@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { buildTurnContext, normalizeInputToArray } from '../../src/lib/turn-context.js';
+import { TEST_MODEL } from '../test-constants.js';
 
 describe('turn context - buildTurnContext', () => {
   it('sets numberOfTurns from options', () => {
@@ -27,7 +28,7 @@ describe('turn context - buildTurnContext', () => {
 
   it('includes turnRequest when provided', () => {
     const request = {
-      model: 'gpt-4',
+      model: TEST_MODEL,
       input: 'hello',
     } as any;
     const ctx = buildTurnContext({

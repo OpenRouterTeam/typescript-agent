@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { resolveAsyncFunctions } from '../../src/lib/async-params.js';
 import { buildTurnContext } from '../../src/lib/turn-context.js';
+import { TEST_MODEL, TEST_MODEL_ALT } from '../test-constants.js';
 
 describe('buildTurnContext -> resolveAsyncFunctions', () => {
   it('parameter function receives TurnContext with correct numberOfTurns', async () => {
@@ -9,7 +10,7 @@ describe('buildTurnContext -> resolveAsyncFunctions', () => {
     });
     const result = await resolveAsyncFunctions(
       {
-        model: 'gpt-4',
+        model: TEST_MODEL,
         temperature: (ctx: any) => ctx.numberOfTurns * 0.1,
       } as any,
       turnCtx,
@@ -31,10 +32,10 @@ describe('buildTurnContext -> resolveAsyncFunctions', () => {
     });
     const result = await resolveAsyncFunctions(
       {
-        model: (ctx: any) => (ctx.toolCall ? 'gpt-4-turbo' : 'gpt-4'),
+        model: (ctx: any) => (ctx.toolCall ? TEST_MODEL_ALT : TEST_MODEL),
       } as any,
       turnCtx,
     );
-    expect(result.model).toBe('gpt-4-turbo');
+    expect(result.model).toBe(TEST_MODEL_ALT);
   });
 });

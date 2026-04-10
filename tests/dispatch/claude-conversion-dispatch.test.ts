@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { convertToClaudeMessage } from '../../src/lib/stream-transformers.js';
+import { TEST_MODEL } from '../test-constants.js';
 
 describe('convertToClaudeMessage routes items via output item guards', () => {
   it('same response with message + function_call: isOutputMessage -> text block, isFunctionCallItem -> tool_use block', () => {
@@ -31,7 +32,7 @@ describe('convertToClaudeMessage routes items via output item guards', () => {
       ],
       status: 'completed' as const,
       outputText: 'Hello',
-      model: 'test-model',
+      model: TEST_MODEL,
       usage: {
         totalTokens: 100,
         inputTokens: 50,
@@ -72,7 +73,7 @@ describe('convertToClaudeMessage routes items via output item guards', () => {
       ],
       status: 'completed' as const,
       outputText: '',
-      model: 'test-model',
+      model: TEST_MODEL,
       usage: {
         totalTokens: 100,
         inputTokens: 50,

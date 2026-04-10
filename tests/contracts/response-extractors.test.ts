@@ -4,6 +4,7 @@ import {
   extractMessageFromResponse,
   extractResponsesMessageFromResponse,
 } from '../../src/lib/stream-transformers.js';
+import { TEST_MODEL } from '../test-constants.js';
 
 function makeResponse(text: string) {
   return {
@@ -25,7 +26,7 @@ function makeResponse(text: string) {
     ],
     status: 'completed' as const,
     outputText: text,
-    model: 'test-model',
+    model: TEST_MODEL,
     usage: {
       totalTokens: 100,
       inputTokens: 50,
@@ -84,7 +85,7 @@ describe('Response extractors - same response, distinct shapes', () => {
       ],
       status: 'completed' as const,
       outputText: '',
-      model: 'test-model',
+      model: TEST_MODEL,
       usage: {
         totalTokens: 100,
         inputTokens: 50,

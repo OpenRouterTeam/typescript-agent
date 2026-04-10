@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import { fromClaudeMessages, toClaudeMessage } from '../../src/lib/anthropic-compat.js';
 import { fromChatMessages, toChatMessage } from '../../src/lib/chat-compat.js';
+import { TEST_MODEL } from '../test-constants.js';
 
 describe('Bidirectional format conversion', () => {
   it('Claude round-trip: Claude messages -> fromClaudeMessages -> OR format -> each block type maps distinctly', () => {
@@ -82,7 +83,7 @@ describe('Bidirectional format conversion', () => {
       ],
       status: 'completed' as const,
       outputText: 'Here are cats',
-      model: 'test-model',
+      model: TEST_MODEL,
       usage: {
         totalTokens: 100,
         inputTokens: 50,
@@ -155,7 +156,7 @@ describe('Bidirectional format conversion', () => {
       ],
       status: 'completed' as const,
       outputText: 'Response',
-      model: 'test-model',
+      model: TEST_MODEL,
       usage: {
         totalTokens: 100,
         inputTokens: 50,

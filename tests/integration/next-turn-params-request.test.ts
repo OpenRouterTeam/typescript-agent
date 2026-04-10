@@ -4,6 +4,7 @@ import {
   applyNextTurnParamsToRequest,
   executeNextTurnParamsFunctions,
 } from '../../src/lib/next-turn-params.js';
+import { TEST_MODEL } from '../test-constants.js';
 
 describe('Next-turn params -> request modification -> API readiness', () => {
   it('executeNextTurnParamsFunctions computes new temperature -> applyNextTurnParamsToRequest produces request with updated temperature', async () => {
@@ -29,7 +30,7 @@ describe('Next-turn params -> request modification -> API readiness', () => {
       },
     ];
     const request = {
-      model: 'gpt-4',
+      model: TEST_MODEL,
       temperature: 0.7,
       input: 'hello',
     };
@@ -41,7 +42,7 @@ describe('Next-turn params -> request modification -> API readiness', () => {
 
     const modified = applyNextTurnParamsToRequest(request as any, params);
     expect(modified.temperature).toBe(0.3);
-    expect(modified.model).toBe('gpt-4');
+    expect(modified.model).toBe(TEST_MODEL);
     expect(modified.input).toBe('hello');
   });
 });

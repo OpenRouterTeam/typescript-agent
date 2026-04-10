@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import { resolveAsyncFunctions } from '../../src/lib/async-params.js';
 import { stepCountIs } from '../../src/lib/stop-conditions.js';
+import { TEST_MODEL } from '../test-constants.js';
 
 describe('Async resolution + clean API request', () => {
   it('mixed input: static model, function temperature, client-only stopWhen -> three paths verified in one call', async () => {
@@ -11,7 +12,7 @@ describe('Async resolution + clean API request', () => {
 
     const result = await resolveAsyncFunctions(
       {
-        model: 'gpt-4',
+        model: TEST_MODEL,
         temperature: (ctx: any) => ctx.numberOfTurns * 0.1,
         stopWhen: stepCountIs(5),
         input: 'hello',
@@ -20,7 +21,7 @@ describe('Async resolution + clean API request', () => {
     );
 
     // Static: preserved
-    expect(result.model).toBe('gpt-4');
+    expect(result.model).toBe(TEST_MODEL);
     // Function: resolved
     expect(result.temperature).toBe(0.2);
     // Client-only: stripped

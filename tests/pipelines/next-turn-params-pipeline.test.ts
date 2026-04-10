@@ -7,6 +7,7 @@ import {
   buildNextTurnParamsContext,
   executeNextTurnParamsFunctions,
 } from '../../src/lib/next-turn-params.js';
+import { TEST_MODEL } from '../test-constants.js';
 
 describe('Next-turn parameter adjustment pipeline', () => {
   it('dynamic temperature: search tool with nextTurnParams.temperature -> context -> execute -> apply -> request updated', async () => {
@@ -22,14 +23,14 @@ describe('Next-turn parameter adjustment pipeline', () => {
     });
 
     const request = {
-      model: 'gpt-4',
+      model: TEST_MODEL,
       temperature: 0.5,
       input: 'hello',
     };
 
     // Step 1: Build context from request
     const ctx = buildNextTurnParamsContext(request as any);
-    expect(ctx.model).toBe('gpt-4');
+    expect(ctx.model).toBe(TEST_MODEL);
     expect(ctx.temperature).toBe(0.5);
 
     // Step 2: Execute nextTurnParams functions
@@ -57,7 +58,7 @@ describe('Next-turn parameter adjustment pipeline', () => {
     // Step 3: Apply to request
     const modified = applyNextTurnParamsToRequest(request as any, params);
     expect(modified.temperature).toBe(0.9);
-    expect(modified.model).toBe('gpt-4');
+    expect(modified.model).toBe(TEST_MODEL);
     expect(modified.input).toBe('hello');
   });
 });

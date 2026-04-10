@@ -8,17 +8,18 @@ import {
 } from '../../src/lib/next-turn-params.js';
 import { tool } from '../../src/lib/tool.js';
 import type { ParsedToolCall, Tool } from '../../src/lib/tool-types.js';
+import { TEST_MODEL } from '../test-constants.js';
 
 describe('next-turn params - buildNextTurnParamsContext', () => {
   it('extracts relevant fields from request', () => {
     const request: models.ResponsesRequest = {
-      model: 'gpt-4',
+      model: TEST_MODEL,
       input: 'hello',
       temperature: 0.7,
       maxOutputTokens: 1000,
     } as any;
     const ctx = buildNextTurnParamsContext(request);
-    expect(ctx.model).toBe('gpt-4');
+    expect(ctx.model).toBe(TEST_MODEL);
     expect(ctx.input).toBe('hello');
     expect(ctx.temperature).toBe(0.7);
     expect(ctx.maxOutputTokens).toBe(1000);
@@ -57,7 +58,7 @@ describe('next-turn params - executeNextTurnParamsFunctions', () => {
       },
     };
     const request = {
-      model: 'gpt-4',
+      model: TEST_MODEL,
       input: 'hello',
     } as any;
     const result = await executeNextTurnParamsFunctions(
@@ -175,7 +176,7 @@ describe('next-turn params - executeNextTurnParamsFunctions', () => {
 describe('next-turn params - applyNextTurnParamsToRequest', () => {
   it('merges computed params into request', () => {
     const request = {
-      model: 'gpt-4',
+      model: TEST_MODEL,
       temperature: 0.7,
       input: 'test',
     } as any;
@@ -184,12 +185,12 @@ describe('next-turn params - applyNextTurnParamsToRequest', () => {
     };
     const result = applyNextTurnParamsToRequest(request, computed);
     expect(result.temperature).toBe(0.2);
-    expect(result.model).toBe('gpt-4');
+    expect(result.model).toBe(TEST_MODEL);
   });
 
   it('converts null values to undefined for API compatibility', () => {
     const request = {
-      model: 'gpt-4',
+      model: TEST_MODEL,
     } as any;
     const computed = {
       temperature: null,
@@ -200,7 +201,7 @@ describe('next-turn params - applyNextTurnParamsToRequest', () => {
 
   it('returns new object without mutating original', () => {
     const request = {
-      model: 'gpt-4',
+      model: TEST_MODEL,
       temperature: 0.7,
     } as any;
     const result = applyNextTurnParamsToRequest(request, {
@@ -212,7 +213,7 @@ describe('next-turn params - applyNextTurnParamsToRequest', () => {
 
   it('handles empty computed params', () => {
     const request = {
-      model: 'gpt-4',
+      model: TEST_MODEL,
       temperature: 0.7,
     } as any;
     const result = applyNextTurnParamsToRequest(request, {});

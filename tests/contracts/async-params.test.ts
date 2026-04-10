@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { resolveAsyncFunctions } from '../../src/lib/async-params.js';
+import { TEST_MODEL } from '../test-constants.js';
 
 describe('resolveAsyncFunctions - three field types handled distinctly', () => {
   const turnCtx = {
@@ -10,12 +11,12 @@ describe('resolveAsyncFunctions - three field types handled distinctly', () => {
   it('static values (model, temperature as literals) -> passed through unchanged', async () => {
     const result = await resolveAsyncFunctions(
       {
-        model: 'gpt-4',
+        model: TEST_MODEL,
         temperature: 0.7,
       } as any,
       turnCtx,
     );
-    expect(result.model).toBe('gpt-4');
+    expect(result.model).toBe(TEST_MODEL);
     expect(result.temperature).toBe(0.7);
   });
 
@@ -32,7 +33,7 @@ describe('resolveAsyncFunctions - three field types handled distinctly', () => {
   it('client-only fields (stopWhen, state, requireApproval, context, onTurnStart, onTurnEnd) -> stripped entirely', async () => {
     const result = await resolveAsyncFunctions(
       {
-        model: 'gpt-4',
+        model: TEST_MODEL,
         stopWhen: () => true,
         state: {
           get: () => null,
@@ -52,7 +53,7 @@ describe('resolveAsyncFunctions - three field types handled distinctly', () => {
     expect(result).not.toHaveProperty('context');
     expect(result).not.toHaveProperty('onTurnStart');
     expect(result).not.toHaveProperty('onTurnEnd');
-    expect(result.model).toBe('gpt-4');
+    expect(result.model).toBe(TEST_MODEL);
   });
 
   it('tools field -> preserved (exception to client-only stripping)', async () => {
@@ -66,7 +67,7 @@ describe('resolveAsyncFunctions - three field types handled distinctly', () => {
     ];
     const result = await resolveAsyncFunctions(
       {
-        model: 'gpt-4',
+        model: TEST_MODEL,
         tools,
       } as any,
       turnCtx,
@@ -90,14 +91,14 @@ describe('resolveAsyncFunctions - three field types handled distinctly', () => {
   it('mix of static + function + client-only in one call -> all handled correctly', async () => {
     const result = await resolveAsyncFunctions(
       {
-        model: 'gpt-4',
+        model: TEST_MODEL,
         temperature: (ctx: any) => ctx.numberOfTurns * 0.1,
         stopWhen: () => true,
         input: 'hello',
       } as any,
       turnCtx,
     );
-    expect(result.model).toBe('gpt-4');
+    expect(result.model).toBe(TEST_MODEL);
     expect(result.temperature).toBe(0.2);
     expect(result).not.toHaveProperty('stopWhen');
     expect(result.input).toBe('hello');

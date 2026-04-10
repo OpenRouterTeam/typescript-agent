@@ -5,6 +5,7 @@ import {
   getUnsupportedContentSummary,
   hasUnsupportedContent,
 } from '../../src/lib/stream-transformers.js';
+import { TEST_MODEL } from '../test-constants.js';
 
 describe('Claude conversion deep pipeline', () => {
   it('multi-item response: message + function_call + reasoning + web_search -> each guard routes to distinct block', () => {
@@ -51,7 +52,7 @@ describe('Claude conversion deep pipeline', () => {
       ],
       status: 'completed' as const,
       outputText: 'Hello',
-      model: 'test-model',
+      model: TEST_MODEL,
       usage: {
         totalTokens: 200,
         inputTokens: 100,
@@ -107,7 +108,7 @@ describe('Claude conversion deep pipeline', () => {
       ],
       status: 'completed' as const,
       outputText: 'Here is the answer',
-      model: 'test-model',
+      model: TEST_MODEL,
       usage: {
         totalTokens: 100,
         inputTokens: 50,
@@ -149,7 +150,7 @@ describe('Claude conversion deep pipeline', () => {
       ],
       status: 'completed' as const,
       outputText: '',
-      model: 'test-model',
+      model: TEST_MODEL,
       usage: {
         totalTokens: 100,
         inputTokens: 50,

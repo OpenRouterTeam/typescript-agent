@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { toClaudeMessage } from '../../src/lib/anthropic-compat.js';
 import { toChatMessage } from '../../src/lib/chat-compat.js';
+import { TEST_MODEL } from '../test-constants.js';
 
 function makeResponse(text: string) {
   return {
@@ -22,7 +23,7 @@ function makeResponse(text: string) {
     ],
     status: 'completed' as const,
     outputText: text,
-    model: 'test-model',
+    model: TEST_MODEL,
     usage: {
       totalTokens: 100,
       inputTokens: 50,

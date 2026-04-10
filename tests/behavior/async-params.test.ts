@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { hasAsyncFunctions, resolveAsyncFunctions } from '../../src/lib/async-params.js';
 import type { TurnContext } from '../../src/lib/tool-types.js';
+import { TEST_MODEL } from '../test-constants.js';
 
 const turnCtx: TurnContext = {
   numberOfTurns: 2,
@@ -9,18 +10,18 @@ const turnCtx: TurnContext = {
 describe('async params - resolveAsyncFunctions', () => {
   it('passes through static values unchanged', async () => {
     const input = {
-      model: 'gpt-4',
+      model: TEST_MODEL,
       temperature: 0.7,
       input: 'hi',
     } as any;
     const result = await resolveAsyncFunctions(input, turnCtx);
-    expect(result.model).toBe('gpt-4');
+    expect(result.model).toBe(TEST_MODEL);
     expect(result.temperature).toBe(0.7);
   });
 
   it('resolves sync function fields with turnContext', async () => {
     const input = {
-      model: 'gpt-4',
+      model: TEST_MODEL,
       temperature: (ctx: TurnContext) => ctx.numberOfTurns * 0.1,
       input: 'test',
     } as any;
@@ -30,7 +31,7 @@ describe('async params - resolveAsyncFunctions', () => {
 
   it('resolves async function fields with turnContext', async () => {
     const input = {
-      model: 'gpt-4',
+      model: TEST_MODEL,
       temperature: async (ctx: TurnContext) => ctx.numberOfTurns * 0.15,
       input: 'test',
     } as any;
@@ -40,7 +41,7 @@ describe('async params - resolveAsyncFunctions', () => {
 
   it('strips client-only fields (stopWhen, state, requireApproval, context, etc.)', async () => {
     const input = {
-      model: 'gpt-4',
+      model: TEST_MODEL,
       input: 'test',
       stopWhen: () => true,
       state: {},
@@ -56,7 +57,7 @@ describe('async params - resolveAsyncFunctions', () => {
 
   it('wraps field resolution errors with field name', async () => {
     const input = {
-      model: 'gpt-4',
+      model: TEST_MODEL,
       temperature: () => {
         throw new Error('compute failed');
       },
@@ -70,7 +71,7 @@ describe('async params - hasAsyncFunctions', () => {
   it('returns true when any field is a function', () => {
     expect(
       hasAsyncFunctions({
-        model: 'gpt-4',
+        model: TEST_MODEL,
         temperature: () => 0.5,
       }),
     ).toBe(true);
@@ -79,7 +80,7 @@ describe('async params - hasAsyncFunctions', () => {
   it('returns false when all fields are static values', () => {
     expect(
       hasAsyncFunctions({
-        model: 'gpt-4',
+        model: TEST_MODEL,
         temperature: 0.5,
       }),
     ).toBe(false);
