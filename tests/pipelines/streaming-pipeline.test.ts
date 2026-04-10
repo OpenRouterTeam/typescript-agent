@@ -7,7 +7,7 @@ import {
   extractTextDeltas,
 } from '../../src/lib/stream-transformers.js';
 
-function makeStream(events: any[]): ReusableReadableStream<any> {
+function makeStream(events: StreamEvents[]): ReusableReadableStream<StreamEvents> {
   const source = new ReadableStream({
     start(controller) {
       for (const event of events) {
@@ -119,9 +119,9 @@ describe('Full streaming pipeline: raw events -> guards -> transformers -> consu
     const stream = makeStream(events);
     const items = await collectAll(buildItemsStream(stream));
 
-    const messageItems = items.filter((i: any) => i.type === 'message');
-    const fnCallItems = items.filter((i: any) => i.type === 'function_call');
-    const reasoningItems = items.filter((i: any) => i.type === 'reasoning');
+    const messageItems = items.filter((i) => i.type === 'message');
+    const fnCallItems = items.filter((i) => i.type === 'function_call');
+    const reasoningItems = items.filter((i) => i.type === 'reasoning');
 
     // Each type present and distinct
     expect(messageItems.length).toBeGreaterThan(0);
@@ -129,11 +129,11 @@ describe('Full streaming pipeline: raw events -> guards -> transformers -> consu
     expect(reasoningItems.length).toBeGreaterThan(0);
 
     // Message items have text
-    expect((messageItems[messageItems.length - 1] as any).content[0].text).toBe('Hello');
+    expect(messageItems[messageItems.length - 1].content[0].text).toBe('Hello');
     // Function call items have arguments
-    expect((fnCallItems[fnCallItems.length - 1] as any).arguments).toBe('{"q":"test"}');
+    expect(fnCallItems[fnCallItems.length - 1].arguments).toBe('{"q":"test"}');
     // Reasoning items have content
-    expect((reasoningItems[reasoningItems.length - 1] as any).summary[0].text).toBe('thinking');
+    expect(reasoningItems[reasoningItems.length - 1].summary[0].text).toBe('thinking');
   });
 
   it('completion: isResponseCompletedEvent true -> consumeStreamForCompletion returns response -> stream terminates', async () => {

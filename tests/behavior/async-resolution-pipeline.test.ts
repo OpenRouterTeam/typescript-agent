@@ -2,21 +2,21 @@ import { describe, expect, it } from 'vitest';
 
 import { resolveAsyncFunctions } from '../../src/lib/async-params.js';
 import { stepCountIs } from '../../src/lib/stop-conditions.js';
-import { TEST_MODEL } from '../test-constants.js';
+import { makeCallModelInput, makeTurnContext, TEST_MODEL } from '../test-constants.js';
 
 describe('Async resolution + clean API request', () => {
   it('mixed input: static model, function temperature, client-only stopWhen -> three paths verified in one call', async () => {
-    const turnCtx = {
+    const turnCtx = makeTurnContext({
       numberOfTurns: 2,
-    } as any;
+    });
 
     const result = await resolveAsyncFunctions(
-      {
+      makeCallModelInput({
         model: TEST_MODEL,
-        temperature: (ctx: any) => ctx.numberOfTurns * 0.1,
+        temperature: (ctx: { numberOfTurns: number }) => ctx.numberOfTurns * 0.1,
         stopWhen: stepCountIs(5),
         input: 'hello',
-      } as any,
+      }),
       turnCtx,
     );
 

@@ -41,7 +41,7 @@ describe('convertToClaudeMessage -> unsupported content utilities', () => {
       },
     };
 
-    const claude = convertToClaudeMessage(response as any);
+    const claude = convertToClaudeMessage(response);
     // unsupported_content is a property on the message, not content blocks
     expect(hasUnsupportedContent(claude)).toBe(true);
     const summary = getUnsupportedContentSummary(claude);

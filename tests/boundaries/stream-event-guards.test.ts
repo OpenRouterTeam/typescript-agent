@@ -11,6 +11,7 @@ import {
   isResponseFailedEvent,
   isResponseIncompleteEvent,
 } from '../../src/lib/stream-type-guards.js';
+import { makeRequest } from '../test-constants.js';
 
 const guards = [
   {
@@ -66,7 +67,7 @@ describe('Stream event type guards - mutual exclusion', () => {
       it(`returns true for its own event type: ${guard.type}`, () => {
         const event = {
           type: guard.type,
-        } as any;
+        };
         expect(guard.fn(event)).toBe(true);
       });
 
@@ -74,21 +75,21 @@ describe('Stream event type guards - mutual exclusion', () => {
         const other = guards.find((g) => g.type !== guard.type)!;
         const event = {
           type: other.type,
-        } as any;
+        };
         expect(guard.fn(event)).toBe(false);
       });
 
       it('returns false for objects missing type or with wrong type', () => {
-        expect(guard.fn({} as any)).toBe(false);
+        expect(guard.fn(makeRequest({}))).toBe(false);
         expect(
           guard.fn({
             type: 'unrelated.event',
-          } as any),
+          } as unknown as StreamEvents),
         ).toBe(false);
         expect(
           guard.fn({
             type: '',
-          } as any),
+          } as unknown as StreamEvents),
         ).toBe(false);
       });
     });

@@ -14,7 +14,7 @@ describe('Stream guards vs output item guards - domain separation', () => {
       role: 'assistant',
       content: [],
     };
-    expect(isOutputTextDeltaEvent(item as any)).toBe(false);
+    expect(isOutputTextDeltaEvent(item as unknown as StreamEvents)).toBe(false);
   });
 
   it('isOutputMessage rejects a TextDeltaEvent (stream event, not item)', () => {
@@ -32,7 +32,7 @@ describe('Stream guards vs output item guards - domain separation', () => {
       name: 'test',
       arguments: '{}',
     };
-    expect(isFunctionCallArgumentsDeltaEvent(item as any)).toBe(false);
+    expect(isFunctionCallArgumentsDeltaEvent(item as unknown as StreamEvents)).toBe(false);
   });
 
   it('isFunctionCallItem rejects a FunctionCallArgsDeltaEvent (delta, not item)', () => {

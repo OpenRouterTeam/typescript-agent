@@ -9,12 +9,9 @@ describe('Input normalization: turn-context -> conversation-state', () => {
       role: 'user' as const,
       content: 'second message',
     };
-    const result = appendToMessages(
-      existing as any,
-      [
-        newItem,
-      ] as any,
-    );
+    const result = appendToMessages(existing, [
+      newItem,
+    ]);
 
     expect(result.length).toBeGreaterThan(1);
     // First item is normalized from string

@@ -31,7 +31,7 @@ describe('ToolContextStore - basic operations', () => {
 
   it('setToolContext sets tool context and notifies listeners', () => {
     const store = new ToolContextStore();
-    const snapshots: any[] = [];
+    const snapshots: Array<Record<string, unknown>> = [];
     store.subscribe((s) => snapshots.push(s));
     store.setToolContext('tool1', {
       key: 'val',

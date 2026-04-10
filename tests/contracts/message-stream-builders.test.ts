@@ -6,7 +6,7 @@ import {
   buildResponsesMessageStream,
 } from '../../src/lib/stream-transformers.js';
 
-function makeStream(events: any[]): ReusableReadableStream<any> {
+function makeStream(events: StreamEvents[]): ReusableReadableStream<StreamEvents> {
   const source = new ReadableStream({
     start(controller) {
       for (const event of events) {
@@ -105,8 +105,8 @@ describe('Message stream builders - same input, structurally distinct outputs', 
 
     // Same text content
     const responsesText = responsesLast.content
-      .filter((c: any) => c.type === 'output_text')
-      .map((c: any) => c.text)
+      .filter((c: { type: string; text?: string }) => c.type === 'output_text')
+      .map((c: { type: string; text?: string }) => c.text)
       .join('');
     expect(responsesText).toBe('Hello world');
     expect(chatLast.content).toBe('Hello world');

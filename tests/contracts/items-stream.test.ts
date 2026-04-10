@@ -3,7 +3,9 @@ import { describe, expect, it } from 'vitest';
 import { ReusableReadableStream } from '../../src/lib/reusable-stream.js';
 import { buildItemsStream } from '../../src/lib/stream-transformers.js';
 
-function makeStream(events: any[]): ReusableReadableStream<any> {
+function makeStream(
+  events: Record<string, unknown>[],
+): ReusableReadableStream<Record<string, unknown>> {
   const source = new ReadableStream({
     start(controller) {
       for (const event of events) {
@@ -53,8 +55,16 @@ describe('buildItemsStream - yields distinct item types per event', () => {
     ];
     const stream = makeStream(events);
     const items = await collectAll(buildItemsStream(stream));
-    const lastMsg = items.filter((i: any) => i.type === 'message').pop()!;
-    expect((lastMsg as any).content[0].text).toBe('Hello world');
+    const lastMsg = items.filter((i) => i.type === 'message').pop()!;
+    expect(
+      (
+        lastMsg as {
+          content: Array<{
+            text: string;
+          }>;
+        }
+      ).content[0].text,
+    ).toBe('Hello world');
   });
 
   it('function_call items: accumulated arguments from function_call deltas', async () => {
@@ -87,8 +97,14 @@ describe('buildItemsStream - yields distinct item types per event', () => {
     ];
     const stream = makeStream(events);
     const items = await collectAll(buildItemsStream(stream));
-    const lastFn = items.filter((i: any) => i.type === 'function_call').pop()!;
-    expect((lastFn as any).arguments).toBe('{"q":"test"}');
+    const lastFn = items.filter((i) => i.type === 'function_call').pop()!;
+    expect(
+      (
+        lastFn as {
+          arguments: string;
+        }
+      ).arguments,
+    ).toBe('{"q":"test"}');
   });
 
   it('reasoning items: accumulated content from reasoning deltas', async () => {
@@ -119,8 +135,16 @@ describe('buildItemsStream - yields distinct item types per event', () => {
     ];
     const stream = makeStream(events);
     const items = await collectAll(buildItemsStream(stream));
-    const lastReasoning = items.filter((i: any) => i.type === 'reasoning').pop()!;
-    expect((lastReasoning as any).summary[0].text).toBe('thinking more');
+    const lastReasoning = items.filter((i) => i.type === 'reasoning').pop()!;
+    expect(
+      (
+        lastReasoning as {
+          summary: Array<{
+            text: string;
+          }>;
+        }
+      ).summary[0].text,
+    ).toBe('thinking more');
   });
 
   it('server tool items (web_search_call, file_search_call, image_generation_call): passthrough', async () => {
@@ -159,7 +183,7 @@ describe('buildItemsStream - yields distinct item types per event', () => {
     ];
     const stream = makeStream(events);
     const items = await collectAll(buildItemsStream(stream));
-    const types = items.map((i: any) => i.type);
+    const types = items.map((i) => i.type);
     expect(types).toContain('web_search_call');
     expect(types).toContain('file_search_call');
     expect(types).toContain('image_generation_call');
@@ -206,7 +230,13 @@ describe('buildItemsStream - yields distinct item types per event', () => {
     const stream = makeStream(events);
     const items = await collectAll(buildItemsStream(stream));
     const doneItem = items[items.length - 1]!;
-    expect((doneItem as any).status).toBe('completed');
+    expect(
+      (
+        doneItem as {
+          status: string;
+        }
+      ).status,
+    ).toBe('completed');
   });
 
   it('termination events (completed/failed/incomplete) -> stream stops', async () => {
@@ -240,8 +270,17 @@ describe('buildItemsStream - yields distinct item types per event', () => {
     const stream = makeStream(events);
     const items = await collectAll(buildItemsStream(stream));
     const allText = items
-      .filter((i: any) => i.type === 'message')
-      .map((i: any) => i.content?.[0]?.text ?? '');
+      .filter((i) => i.type === 'message')
+      .map(
+        (i) =>
+          (
+            i as {
+              content?: Array<{
+                text?: string;
+              }>;
+            }
+          ).content?.[0]?.text ?? '',
+      );
     expect(allText.join('')).not.toContain('SHOULD NOT APPEAR');
   });
 });

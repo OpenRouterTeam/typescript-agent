@@ -38,7 +38,7 @@ function makeResponse(text: string) {
 describe('Response extractors - same response, distinct shapes', () => {
   it('extractMessageFromResponse returns ChatAssistantMessage (role + content string)', () => {
     const response = makeResponse('Hello world');
-    const msg = extractMessageFromResponse(response as any);
+    const msg = extractMessageFromResponse(response);
     expect(msg.role).toBe('assistant');
     expect(typeof msg.content).toBe('string');
     expect(msg).not.toHaveProperty('id');
@@ -47,7 +47,7 @@ describe('Response extractors - same response, distinct shapes', () => {
 
   it('extractResponsesMessageFromResponse returns OutputMessage (id + type + content array)', () => {
     const response = makeResponse('Hello world');
-    const msg = extractResponsesMessageFromResponse(response as any);
+    const msg = extractResponsesMessageFromResponse(response);
     expect(msg.id).toBe('msg_1');
     expect(msg.type).toBe('message');
     expect(Array.isArray(msg.content)).toBe(true);
@@ -55,13 +55,13 @@ describe('Response extractors - same response, distinct shapes', () => {
 
   it('same response -> both extract same text but structurally different objects', () => {
     const response = makeResponse('Hello world');
-    const chatMsg = extractMessageFromResponse(response as any);
-    const responsesMsg = extractResponsesMessageFromResponse(response as any);
+    const chatMsg = extractMessageFromResponse(response);
+    const responsesMsg = extractResponsesMessageFromResponse(response);
 
     expect(chatMsg.content).toBe('Hello world');
     const responsesText = responsesMsg.content
-      .filter((c: any) => c.type === 'output_text')
-      .map((c: any) => c.text)
+      .filter((c: { type: string; text?: string }) => c.type === 'output_text')
+      .map((c: { type: string; text?: string }) => c.text)
       .join('');
     expect(responsesText).toBe('Hello world');
 
@@ -93,7 +93,7 @@ describe('Response extractors - same response, distinct shapes', () => {
       },
     };
 
-    expect(() => extractMessageFromResponse(response as any)).toThrow('No message found');
-    expect(() => extractResponsesMessageFromResponse(response as any)).toThrow('No message found');
+    expect(() => extractMessageFromResponse(response)).toThrow('No message found');
+    expect(() => extractResponsesMessageFromResponse(response)).toThrow('No message found');
   });
 });

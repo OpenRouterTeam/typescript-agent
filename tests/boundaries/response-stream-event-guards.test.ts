@@ -15,7 +15,7 @@ describe('ResponseStreamEvent guards - mutual exclusion', () => {
       toolCallId: 'c1',
       result: 42,
       timestamp: 1,
-    } as any;
+    };
     expect(isToolPreliminaryResultEvent(event)).toBe(false);
   });
 
@@ -25,7 +25,7 @@ describe('ResponseStreamEvent guards - mutual exclusion', () => {
       toolCallId: 'c1',
       result: 42,
       timestamp: 1,
-    } as any;
+    };
     expect(isToolResultEvent(event)).toBe(false);
   });
 
@@ -34,7 +34,7 @@ describe('ResponseStreamEvent guards - mutual exclusion', () => {
       type: 'turn.end',
       turnNumber: 1,
       timestamp: 1,
-    } as any;
+    };
     expect(isTurnStartEvent(event)).toBe(false);
   });
 
@@ -43,7 +43,7 @@ describe('ResponseStreamEvent guards - mutual exclusion', () => {
       type: 'turn.start',
       turnNumber: 1,
       timestamp: 1,
-    } as any;
+    };
     expect(isTurnEndEvent(event)).toBe(false);
   });
 
@@ -53,7 +53,7 @@ describe('ResponseStreamEvent guards - mutual exclusion', () => {
       toolCallId: 'c1',
       result: 42,
       timestamp: 1,
-    } as any;
+    };
     expect(isToolCallOutputEvent(event)).toBe(false);
   });
 });

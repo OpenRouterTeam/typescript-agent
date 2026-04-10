@@ -35,14 +35,14 @@ function makeResponse(text: string) {
 describe('Format compatibility: compat layers -> stream-transformers', () => {
   it('toChatMessage delegates to extractMessageFromResponse -> returns ChatAssistantMessage', () => {
     const response = makeResponse('Hello world');
-    const chatMsg = toChatMessage(response as any);
+    const chatMsg = toChatMessage(response);
     expect(chatMsg.role).toBe('assistant');
     expect(chatMsg.content).toBe('Hello world');
   });
 
   it('toClaudeMessage delegates to convertToClaudeMessage -> returns ClaudeMessage', () => {
     const response = makeResponse('Hello world');
-    const claudeMsg = toClaudeMessage(response as any);
+    const claudeMsg = toClaudeMessage(response);
     expect(claudeMsg.role).toBe('assistant');
     expect(claudeMsg.content).toBeDefined();
     expect(Array.isArray(claudeMsg.content)).toBe(true);

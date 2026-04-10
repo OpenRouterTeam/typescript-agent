@@ -46,13 +46,13 @@ describe('Approval partitioning dispatches via tool-level vs call-level checks',
       numberOfTurns: 1,
     };
     const partition = await partitionToolCalls(
-      toolCalls as any,
+      toolCalls,
       [
         approvalTool,
         safeTool,
       ],
       context,
-      callLevelCheck as any,
+      callLevelCheck,
     );
     // Call-level override: both should be auto-execute
     expect(partition.autoExecute).toHaveLength(2);
@@ -64,7 +64,7 @@ describe('Approval partitioning dispatches via tool-level vs call-level checks',
       numberOfTurns: 1,
     };
     const partition = await partitionToolCalls(
-      toolCalls as any,
+      toolCalls,
       [
         approvalTool,
         safeTool,

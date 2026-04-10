@@ -10,6 +10,7 @@ import {
   unsentResultsToAPIFormat,
   updateState,
 } from '../../src/lib/conversation-state.js';
+import { makeResponse } from '../test-constants.js';
 
 describe('conversation state - createInitialState', () => {
   it('creates state with generated id, empty messages, in_progress status', () => {
@@ -47,7 +48,7 @@ describe('conversation state - updateState', () => {
           role: 'user',
           content: 'hi',
         },
-      ] as any,
+      ],
     });
     expect(updated.id).toBe('s2');
     expect(updated.createdAt).toBe(state.createdAt);
@@ -66,7 +67,7 @@ describe('conversation state - appendToMessages', () => {
       {
         role: 'assistant',
         content: 'hi',
-      } as any,
+      },
     ]);
     expect(result).toHaveLength(2);
   });
@@ -76,7 +77,7 @@ describe('conversation state - appendToMessages', () => {
       {
         role: 'assistant',
         content: 'hi',
-      } as any,
+      },
     ]);
     expect(result).toHaveLength(2);
     expect(result[0]).toHaveProperty('role', 'user');
@@ -142,7 +143,7 @@ describe('conversation state - unsent results', () => {
 
 describe('conversation state - response extraction', () => {
   it('extractTextFromResponse extracts text from message output items', () => {
-    const response = {
+    const response = makeResponse({
       id: 'r1',
       output: [
         {
@@ -170,12 +171,12 @@ describe('conversation state - response extraction', () => {
       error: null,
       incomplete_details: null,
       created_at: 0,
-    } as any;
+    });
     expect(extractTextFromResponse(response)).toBe('Hello World');
   });
 
   it('extractTextFromResponse returns empty string for no output', () => {
-    const response = {
+    const response = makeResponse({
       id: 'r1',
       output: [],
       parallel_tool_calls: false,
@@ -184,7 +185,7 @@ describe('conversation state - response extraction', () => {
       error: null,
       incomplete_details: null,
       created_at: 0,
-    } as any;
+    });
     expect(extractTextFromResponse(response)).toBe('');
   });
 });

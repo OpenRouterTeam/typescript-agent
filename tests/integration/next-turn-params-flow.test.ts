@@ -36,14 +36,14 @@ describe('Next-turn params: tools -> computation -> request modification', () =>
     };
 
     const params = await executeNextTurnParamsFunctions(
-      toolCalls as any,
-      toolsWithNextTurnParams as any,
-      request as any,
+      toolCalls,
+      toolsWithNextTurnParams,
+      request,
     );
 
     expect(params).toHaveProperty('temperature', 0.5);
 
-    const modified = applyNextTurnParamsToRequest(request as any, params);
+    const modified = applyNextTurnParamsToRequest(request, params);
     expect(modified.temperature).toBe(0.5);
     expect(modified.model).toBe(TEST_MODEL);
   });
@@ -55,7 +55,7 @@ describe('Next-turn params: tools -> computation -> request modification', () =>
       input: 'hello',
     };
 
-    const ctx = buildNextTurnParamsContext(request as any);
+    const ctx = buildNextTurnParamsContext(request);
     expect(ctx.model).toBe(TEST_MODEL);
     expect(ctx.temperature).toBe(0.7);
     expect(ctx.input).toBe('hello');

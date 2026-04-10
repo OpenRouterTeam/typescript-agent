@@ -15,12 +15,9 @@ describe('Conversation state -> format conversion', () => {
       role: 'user' as const,
       content: 'second message',
     };
-    const result = appendToMessages(
-      existing as any,
-      [
-        newItem,
-      ] as any,
-    );
+    const result = appendToMessages(existing, [
+      newItem,
+    ]);
     expect(result).toHaveLength(2);
     expect(result[0]).toEqual({
       role: 'user',

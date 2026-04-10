@@ -49,7 +49,7 @@ describe('State machine: state -> approval -> resumption', () => {
       approvalTool,
       safeTool,
     ];
-    const partition = await partitionToolCalls(toolCalls as any, tools);
+    const partition = await partitionToolCalls(toolCalls, tools);
 
     expect(partition.requiresApproval).toHaveLength(1);
     expect(partition.autoExecute).toHaveLength(1);

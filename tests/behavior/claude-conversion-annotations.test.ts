@@ -51,11 +51,17 @@ describe('convertToClaudeMessage annotation handling', () => {
       },
     };
 
-    const claude = convertToClaudeMessage(response as any);
-    const textBlock = claude.content.find((b: any) => b.type === 'text') as any;
+    const claude = convertToClaudeMessage(response);
+    const textBlock = claude.content.find((b: { type: string }) => b.type === 'text') as
+      | {
+          type: string;
+          text: string;
+          citations?: unknown[];
+        }
+      | undefined;
     expect(textBlock).toBeDefined();
     // Should have citations
-    if (textBlock.citations) {
+    if (textBlock?.citations) {
       expect(textBlock.citations.length).toBeGreaterThan(0);
     }
   });

@@ -18,7 +18,7 @@ describe('Next-turn parameter adjustment pipeline', () => {
       }),
       execute: async (args) => `Results for: ${args.query}`,
       nextTurnParams: {
-        temperature: (input: any) => (input.query?.includes('creative') ? 0.9 : 0.1),
+        temperature: (input: { query?: string }) => (input.query?.includes('creative') ? 0.9 : 0.1),
       },
     });
 
@@ -29,7 +29,7 @@ describe('Next-turn parameter adjustment pipeline', () => {
     };
 
     // Step 1: Build context from request
-    const ctx = buildNextTurnParamsContext(request as any);
+    const ctx = buildNextTurnParamsContext(request);
     expect(ctx.model).toBe(TEST_MODEL);
     expect(ctx.temperature).toBe(0.5);
 
@@ -47,16 +47,12 @@ describe('Next-turn parameter adjustment pipeline', () => {
         },
       },
     ];
-    const params = await executeNextTurnParamsFunctions(
-      toolCalls as any,
-      tools as any,
-      request as any,
-    );
+    const params = await executeNextTurnParamsFunctions(toolCalls, tools, request);
 
     expect(params).toHaveProperty('temperature', 0.9);
 
     // Step 3: Apply to request
-    const modified = applyNextTurnParamsToRequest(request as any, params);
+    const modified = applyNextTurnParamsToRequest(request, params);
     expect(modified.temperature).toBe(0.9);
     expect(modified.model).toBe(TEST_MODEL);
     expect(modified.input).toBe('hello');

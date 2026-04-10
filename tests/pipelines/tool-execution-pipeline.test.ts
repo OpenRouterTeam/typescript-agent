@@ -132,7 +132,7 @@ describe('Full tool execution pipeline: definition -> dispatch -> validate -> ex
     expect(result.result).toBeNull();
 
     // Format error includes details
-    const errorFormatted = formatToolExecutionError(result.error!, toolCall as any);
+    const errorFormatted = formatToolExecutionError(result.error!, toolCall);
     expect(errorFormatted).toContain('strict');
   });
 });

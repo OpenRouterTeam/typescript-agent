@@ -58,7 +58,7 @@ describe('Approval -> execution -> state update pipeline', () => {
     ];
 
     // Step 1: Partition
-    const partition = await partitionToolCalls(toolCalls as any, tools);
+    const partition = await partitionToolCalls(toolCalls, tools);
     expect(partition.autoExecute).toHaveLength(1);
     expect(partition.requiresApproval).toHaveLength(1);
 

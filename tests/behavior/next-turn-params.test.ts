@@ -8,7 +8,7 @@ import {
 } from '../../src/lib/next-turn-params.js';
 import { tool } from '../../src/lib/tool.js';
 import type { ParsedToolCall, Tool } from '../../src/lib/tool-types.js';
-import { TEST_MODEL } from '../test-constants.js';
+import { makeRequest, TEST_MODEL } from '../test-constants.js';
 
 describe('next-turn params - buildNextTurnParamsContext', () => {
   it('extracts relevant fields from request', () => {
@@ -17,7 +17,7 @@ describe('next-turn params - buildNextTurnParamsContext', () => {
       input: 'hello',
       temperature: 0.7,
       maxOutputTokens: 1000,
-    } as any;
+    };
     const ctx = buildNextTurnParamsContext(request);
     expect(ctx.model).toBe(TEST_MODEL);
     expect(ctx.input).toBe('hello');
@@ -26,10 +26,10 @@ describe('next-turn params - buildNextTurnParamsContext', () => {
   });
 
   it('defaults missing fields to null/empty', () => {
-    const request = {
+    const request = makeRequest({
       model: undefined,
       input: undefined,
-    } as any;
+    });
     const ctx = buildNextTurnParamsContext(request);
     expect(ctx.model).toBe('');
     expect(ctx.temperature).toBeNull();
@@ -57,10 +57,10 @@ describe('next-turn params - executeNextTurnParamsFunctions', () => {
         query: 'test',
       },
     };
-    const request = {
+    const request = makeRequest({
       model: TEST_MODEL,
       input: 'hello',
-    } as any;
+    });
     const result = await executeNextTurnParamsFunctions(
       [
         tc,
@@ -91,7 +91,7 @@ describe('next-turn params - executeNextTurnParamsFunctions', () => {
       [
         t,
       ],
-      {} as any,
+      makeRequest({}),
     );
     expect(Object.keys(result)).toHaveLength(0);
   });
@@ -123,7 +123,7 @@ describe('next-turn params - executeNextTurnParamsFunctions', () => {
         t1,
         t2,
       ],
-      {} as any,
+      makeRequest({}),
     );
     expect(result.temperature).toBeUndefined();
   });
@@ -157,7 +157,7 @@ describe('next-turn params - executeNextTurnParamsFunctions', () => {
     };
     const request = {
       temperature: 0.5,
-    } as any;
+    };
     const result = await executeNextTurnParamsFunctions(
       [
         tc1,
@@ -175,11 +175,11 @@ describe('next-turn params - executeNextTurnParamsFunctions', () => {
 
 describe('next-turn params - applyNextTurnParamsToRequest', () => {
   it('merges computed params into request', () => {
-    const request = {
+    const request = makeRequest({
       model: TEST_MODEL,
       temperature: 0.7,
       input: 'test',
-    } as any;
+    });
     const computed = {
       temperature: 0.2 as number | null,
     };
@@ -189,9 +189,9 @@ describe('next-turn params - applyNextTurnParamsToRequest', () => {
   });
 
   it('converts null values to undefined for API compatibility', () => {
-    const request = {
+    const request = makeRequest({
       model: TEST_MODEL,
-    } as any;
+    });
     const computed = {
       temperature: null,
     };
@@ -200,10 +200,10 @@ describe('next-turn params - applyNextTurnParamsToRequest', () => {
   });
 
   it('returns new object without mutating original', () => {
-    const request = {
+    const request = makeRequest({
       model: TEST_MODEL,
       temperature: 0.7,
-    } as any;
+    });
     const result = applyNextTurnParamsToRequest(request, {
       temperature: 0.2,
     });
@@ -212,10 +212,10 @@ describe('next-turn params - applyNextTurnParamsToRequest', () => {
   });
 
   it('handles empty computed params', () => {
-    const request = {
+    const request = makeRequest({
       model: TEST_MODEL,
       temperature: 0.7,
-    } as any;
+    });
     const result = applyNextTurnParamsToRequest(request, {});
     expect(result.temperature).toBe(0.7);
   });

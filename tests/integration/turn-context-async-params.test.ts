@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { resolveAsyncFunctions } from '../../src/lib/async-params.js';
 import { buildTurnContext } from '../../src/lib/turn-context.js';
-import { TEST_MODEL, TEST_MODEL_ALT } from '../test-constants.js';
+import { makeCallModelInput, TEST_MODEL, TEST_MODEL_ALT } from '../test-constants.js';
 
 describe('buildTurnContext -> resolveAsyncFunctions', () => {
   it('parameter function receives TurnContext with correct numberOfTurns', async () => {
@@ -9,10 +9,10 @@ describe('buildTurnContext -> resolveAsyncFunctions', () => {
       numberOfTurns: 5,
     });
     const result = await resolveAsyncFunctions(
-      {
+      makeCallModelInput({
         model: TEST_MODEL,
-        temperature: (ctx: any) => ctx.numberOfTurns * 0.1,
-      } as any,
+        temperature: (ctx: { numberOfTurns: number }) => ctx.numberOfTurns * 0.1,
+      }),
       turnCtx,
     );
     expect(result.temperature).toBe(0.5);
@@ -28,12 +28,12 @@ describe('buildTurnContext -> resolveAsyncFunctions', () => {
     };
     const turnCtx = buildTurnContext({
       numberOfTurns: 1,
-      toolCall: toolCall as any,
+      toolCall: toolCall,
     });
     const result = await resolveAsyncFunctions(
-      {
-        model: (ctx: any) => (ctx.toolCall ? TEST_MODEL_ALT : TEST_MODEL),
-      } as any,
+      makeCallModelInput({
+        model: (ctx: { toolCall?: unknown }) => (ctx.toolCall ? TEST_MODEL_ALT : TEST_MODEL),
+      }),
       turnCtx,
     );
     expect(result.model).toBe(TEST_MODEL_ALT);

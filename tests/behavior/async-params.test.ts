@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { hasAsyncFunctions, resolveAsyncFunctions } from '../../src/lib/async-params.js';
 import type { TurnContext } from '../../src/lib/tool-types.js';
-import { TEST_MODEL } from '../test-constants.js';
+import { makeCallModelInput, TEST_MODEL } from '../test-constants.js';
 
 const turnCtx: TurnContext = {
   numberOfTurns: 2,
@@ -9,45 +9,45 @@ const turnCtx: TurnContext = {
 
 describe('async params - resolveAsyncFunctions', () => {
   it('passes through static values unchanged', async () => {
-    const input = {
+    const input = makeCallModelInput({
       model: TEST_MODEL,
       temperature: 0.7,
       input: 'hi',
-    } as any;
+    });
     const result = await resolveAsyncFunctions(input, turnCtx);
     expect(result.model).toBe(TEST_MODEL);
     expect(result.temperature).toBe(0.7);
   });
 
   it('resolves sync function fields with turnContext', async () => {
-    const input = {
+    const input = makeCallModelInput({
       model: TEST_MODEL,
       temperature: (ctx: TurnContext) => ctx.numberOfTurns * 0.1,
       input: 'test',
-    } as any;
+    });
     const result = await resolveAsyncFunctions(input, turnCtx);
     expect(result.temperature).toBeCloseTo(0.2);
   });
 
   it('resolves async function fields with turnContext', async () => {
-    const input = {
+    const input = makeCallModelInput({
       model: TEST_MODEL,
       temperature: async (ctx: TurnContext) => ctx.numberOfTurns * 0.15,
       input: 'test',
-    } as any;
+    });
     const result = await resolveAsyncFunctions(input, turnCtx);
     expect(result.temperature).toBeCloseTo(0.3);
   });
 
   it('strips client-only fields (stopWhen, state, requireApproval, context, etc.)', async () => {
-    const input = {
+    const input = makeCallModelInput({
       model: TEST_MODEL,
       input: 'test',
       stopWhen: () => true,
       state: {},
       requireApproval: () => false,
       context: {},
-    } as any;
+    });
     const result = await resolveAsyncFunctions(input, turnCtx);
     expect(result).not.toHaveProperty('stopWhen');
     expect(result).not.toHaveProperty('state');
@@ -56,13 +56,13 @@ describe('async params - resolveAsyncFunctions', () => {
   });
 
   it('wraps field resolution errors with field name', async () => {
-    const input = {
+    const input = makeCallModelInput({
       model: TEST_MODEL,
       temperature: () => {
         throw new Error('compute failed');
       },
       input: 'test',
-    } as any;
+    });
     await expect(resolveAsyncFunctions(input, turnCtx)).rejects.toThrow(/temperature/);
   });
 });

@@ -30,8 +30,8 @@ describe('responseHasToolCalls and extractToolCallsFromResponse produce consiste
       },
     };
 
-    const hasTools = responseHasToolCalls(responseWithTools as any);
-    const extracted = extractToolCallsFromResponse(responseWithTools as any);
+    const hasTools = responseHasToolCalls(responseWithTools);
+    const extracted = extractToolCallsFromResponse(responseWithTools);
 
     expect(hasTools).toBe(true);
     expect(extracted.length).toBeGreaterThan(0);
@@ -63,8 +63,8 @@ describe('responseHasToolCalls and extractToolCallsFromResponse produce consiste
       },
     };
 
-    const hasTools2 = responseHasToolCalls(responseNoTools as any);
-    const extracted2 = extractToolCallsFromResponse(responseNoTools as any);
+    const hasTools2 = responseHasToolCalls(responseNoTools);
+    const extracted2 = extractToolCallsFromResponse(responseNoTools);
 
     expect(hasTools2).toBe(false);
     expect(extracted2).toEqual([]);

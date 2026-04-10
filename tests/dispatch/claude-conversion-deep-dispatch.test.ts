@@ -56,8 +56,8 @@ describe('convertToClaudeMessage routes multi-item response via output item guar
       },
     };
 
-    const claude = convertToClaudeMessage(response as any);
-    const types = claude.content.map((b: any) => b.type);
+    const claude = convertToClaudeMessage(response);
+    const types = claude.content.map((b: { type: string }) => b.type);
 
     expect(types).toContain('text');
     expect(types).toContain('tool_use');

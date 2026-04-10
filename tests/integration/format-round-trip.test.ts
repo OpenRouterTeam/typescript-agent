@@ -1,3 +1,4 @@
+import type * as models from '@openrouter/sdk/models';
 import { describe, expect, it } from 'vitest';
 
 import { fromClaudeMessages, toClaudeMessage } from '../../src/lib/anthropic-compat.js';
@@ -47,19 +48,19 @@ describe('Bidirectional format conversion', () => {
 
     // Claude -> OR format
     const orFormat = fromClaudeMessages(claudeMessages);
-    const items = orFormat as any[];
+    const items = orFormat as models.OutputItems[];
 
     // Text blocks -> EasyInputMessage
-    const textItems = items.filter((i: any) => !i.type || i.role);
+    const textItems = items.filter((i) => !i.type || i.role);
     expect(textItems.length).toBeGreaterThan(0);
 
     // tool_use -> FunctionCallItem
-    const fnCalls = items.filter((i: any) => i.type === 'function_call');
+    const fnCalls = items.filter((i) => i.type === 'function_call');
     expect(fnCalls).toHaveLength(1);
     expect(fnCalls[0].name).toBe('search');
 
     // tool_result -> FunctionCallOutputItem
-    const fnOutputs = items.filter((i: any) => i.type === 'function_call_output');
+    const fnOutputs = items.filter((i) => i.type === 'function_call_output');
     expect(fnOutputs).toHaveLength(1);
     expect(fnOutputs[0].callId).toBe('tu_1');
 
@@ -90,7 +91,7 @@ describe('Bidirectional format conversion', () => {
         outputTokens: 50,
       },
     };
-    const claudeResponse = toClaudeMessage(mockResponse as any);
+    const claudeResponse = toClaudeMessage(mockResponse);
     expect(claudeResponse.role).toBe('assistant');
     expect(Array.isArray(claudeResponse.content)).toBe(true);
   });
@@ -114,26 +115,26 @@ describe('Bidirectional format conversion', () => {
         toolCallId: 'tc_1',
         content: 'Tool result',
       },
-    ] as any[];
+    ];
 
     // Chat -> OR format
     const orFormat = fromChatMessages(chatMessages);
-    const items = orFormat as any[];
+    const items = orFormat as models.OutputItems[];
 
     // System message
-    const systemItems = items.filter((i: any) => i.role === 'system');
+    const systemItems = items.filter((i) => i.role === 'system');
     expect(systemItems).toHaveLength(1);
 
     // User message
-    const userItems = items.filter((i: any) => i.role === 'user');
+    const userItems = items.filter((i) => i.role === 'user');
     expect(userItems).toHaveLength(1);
 
     // Assistant message
-    const assistantItems = items.filter((i: any) => i.role === 'assistant');
+    const assistantItems = items.filter((i) => i.role === 'assistant');
     expect(assistantItems).toHaveLength(1);
 
     // Tool message -> FunctionCallOutputItem
-    const toolOutputs = items.filter((i: any) => i.type === 'function_call_output');
+    const toolOutputs = items.filter((i) => i.type === 'function_call_output');
     expect(toolOutputs).toHaveLength(1);
 
     // Verify OR format -> Chat format works on a response
@@ -163,7 +164,7 @@ describe('Bidirectional format conversion', () => {
         outputTokens: 50,
       },
     };
-    const chatResponse = toChatMessage(mockResponse as any);
+    const chatResponse = toChatMessage(mockResponse);
     expect(chatResponse.role).toBe('assistant');
     expect(typeof chatResponse.content).toBe('string');
   });

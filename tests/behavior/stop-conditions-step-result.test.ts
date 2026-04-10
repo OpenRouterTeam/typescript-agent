@@ -6,48 +6,38 @@ import {
   maxTokensUsed,
   stepCountIs,
 } from '../../src/lib/stop-conditions.js';
-import type { StepResult } from '../../src/lib/tool-types.js';
-
-function makeStep(overrides: Partial<StepResult> = {}): StepResult {
-  return {
-    response: {} as any,
-    toolCalls: [],
-    finishReason: undefined,
-    usage: undefined,
-    ...overrides,
-  } as StepResult;
-}
+import { makeStep, makeTypedToolCalls, makeUsage } from '../test-constants.js';
 
 describe('Stop conditions + real StepResult shape', () => {
   it('stepCountIs works with StepResult[] containing real usage and toolCalls data', () => {
     const steps = [
       makeStep({
-        toolCalls: [
+        toolCalls: makeTypedToolCalls([
           {
             name: 'search',
             id: 'tc1',
             arguments: {},
           },
-        ] as any,
-        usage: {
+        ]),
+        usage: makeUsage({
           totalTokens: 100,
           inputTokens: 50,
           outputTokens: 50,
-        } as any,
+        }),
       }),
       makeStep({
-        toolCalls: [
+        toolCalls: makeTypedToolCalls([
           {
             name: 'write',
             id: 'tc2',
             arguments: {},
           },
-        ] as any,
-        usage: {
+        ]),
+        usage: makeUsage({
           totalTokens: 200,
           inputTokens: 100,
           outputTokens: 100,
-        } as any,
+        }),
       }),
     ];
     const condition = stepCountIs(2);
@@ -61,7 +51,7 @@ describe('Stop conditions + real StepResult shape', () => {
   it('hasToolCall finds tool name inside StepResult.toolCalls array', () => {
     const steps = [
       makeStep({
-        toolCalls: [
+        toolCalls: makeTypedToolCalls([
           {
             name: 'search',
             id: 'tc1',
@@ -72,7 +62,7 @@ describe('Stop conditions + real StepResult shape', () => {
             id: 'tc2',
             arguments: {},
           },
-        ] as any,
+        ]),
       }),
     ];
     expect(
@@ -95,18 +85,18 @@ describe('Stop conditions + real StepResult shape', () => {
   it('maxTokensUsed reads from StepResult.usage.totalTokens', () => {
     const steps = [
       makeStep({
-        usage: {
+        usage: makeUsage({
           totalTokens: 500,
           inputTokens: 250,
           outputTokens: 250,
-        } as any,
+        }),
       }),
       makeStep({
-        usage: {
+        usage: makeUsage({
           totalTokens: 600,
           inputTokens: 300,
           outputTokens: 300,
-        } as any,
+        }),
       }),
     ];
     expect(
@@ -124,18 +114,18 @@ describe('Stop conditions + real StepResult shape', () => {
   it('isStopConditionMet evaluates multiple conditions against same StepResult[]', async () => {
     const steps = [
       makeStep({
-        toolCalls: [
+        toolCalls: makeTypedToolCalls([
           {
             name: 'search',
             id: 'tc1',
             arguments: {},
           },
-        ] as any,
-        usage: {
+        ]),
+        usage: makeUsage({
           totalTokens: 100,
           inputTokens: 50,
           outputTokens: 50,
-        } as any,
+        }),
       }),
     ];
 

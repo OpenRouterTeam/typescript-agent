@@ -1,3 +1,4 @@
+import type * as models from '@openrouter/sdk/models';
 import { describe, expect, it } from 'vitest';
 
 import { fromClaudeMessages } from '../../src/lib/anthropic-compat.js';
@@ -15,7 +16,7 @@ describe('fromClaudeMessages - each block type maps distinctly', () => {
         ],
       },
     ]);
-    const items = result as any[];
+    const items = result as models.OutputItems[];
     expect(items).toHaveLength(1);
     expect(items[0]).toHaveProperty('role');
     expect(items[0]).toHaveProperty('content', 'Hello');
@@ -38,8 +39,8 @@ describe('fromClaudeMessages - each block type maps distinctly', () => {
         ],
       },
     ]);
-    const items = result as any[];
-    const toolItem = items.find((i: any) => i.type === 'function_call');
+    const items = result as models.OutputItems[];
+    const toolItem = items.find((i) => i.type === 'function_call');
     expect(toolItem).toBeDefined();
     expect(toolItem.name).toBe('search');
     expect(toolItem.callId).toBe('tu_1');
@@ -58,8 +59,8 @@ describe('fromClaudeMessages - each block type maps distinctly', () => {
         ],
       },
     ]);
-    const items = result as any[];
-    const outputItem = items.find((i: any) => i.type === 'function_call_output');
+    const items = result as models.OutputItems[];
+    const outputItem = items.find((i) => i.type === 'function_call_output');
     expect(outputItem).toBeDefined();
     expect(outputItem.callId).toBe('tu_1');
     expect(outputItem.output).toBe('Search result');
@@ -80,7 +81,7 @@ describe('fromClaudeMessages - each block type maps distinctly', () => {
         ],
       },
     ]);
-    const items = result as any[];
+    const items = result as models.OutputItems[];
     expect(items).toHaveLength(1);
     expect(items[0]).toHaveProperty('role');
     expect(items[0]).toHaveProperty('content');

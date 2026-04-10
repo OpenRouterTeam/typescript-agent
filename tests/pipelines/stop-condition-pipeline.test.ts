@@ -6,17 +6,7 @@ import {
   maxCost,
   stepCountIs,
 } from '../../src/lib/stop-conditions.js';
-import type { StepResult } from '../../src/lib/tool-types.js';
-
-function makeStep(overrides: Partial<StepResult> = {}): StepResult {
-  return {
-    response: {} as any,
-    toolCalls: [],
-    finishReason: undefined,
-    usage: undefined,
-    ...overrides,
-  } as StepResult;
-}
+import { makeStep, makeTypedToolCalls, makeUsage } from '../test-constants.js';
 
 describe('Stop condition pipeline: results -> steps -> conditions -> decision', () => {
   it('step count: 3 tool rounds -> StepResult[] length 3 -> stepCountIs(3) true -> isStopConditionMet true', async () => {
@@ -42,13 +32,13 @@ describe('Stop condition pipeline: results -> steps -> conditions -> decision', 
   it('tool call: round with "search" tool -> hasToolCall("search") true -> isStopConditionMet true', async () => {
     const steps = [
       makeStep({
-        toolCalls: [
+        toolCalls: makeTypedToolCalls([
           {
             name: 'search',
             id: 'tc1',
             arguments: {},
           },
-        ] as any,
+        ]),
       }),
     ];
     expect(
@@ -68,12 +58,12 @@ describe('Stop condition pipeline: results -> steps -> conditions -> decision', 
   it('cost: round with usage.cost = 0.30 -> maxCost(0.25) true -> stop', async () => {
     const steps = [
       makeStep({
-        usage: {
+        usage: makeUsage({
           totalTokens: 100,
           inputTokens: 50,
           outputTokens: 50,
           cost: 0.3,
-        } as any,
+        }),
       }),
     ];
     expect(
@@ -93,13 +83,13 @@ describe('Stop condition pipeline: results -> steps -> conditions -> decision', 
   it('combined OR: stepCountIs(10) false + hasToolCall("done") true -> isStopConditionMet true', async () => {
     const steps = [
       makeStep({
-        toolCalls: [
+        toolCalls: makeTypedToolCalls([
           {
             name: 'done',
             id: 'tc1',
             arguments: {},
           },
-        ] as any,
+        ]),
       }),
     ];
     // stepCountIs(10) is false (only 1 step)

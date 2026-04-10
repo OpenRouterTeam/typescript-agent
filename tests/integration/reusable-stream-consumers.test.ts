@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest';
 import { ReusableReadableStream } from '../../src/lib/reusable-stream.js';
 import { buildItemsStream, consumeStreamForCompletion } from '../../src/lib/stream-transformers.js';
 
-function makeStream(events: any[]): ReusableReadableStream<any> {
+function makeStream(events: StreamEvents[]): ReusableReadableStream<StreamEvents> {
   const source = new ReadableStream({
     start(controller) {
       for (const event of events) {

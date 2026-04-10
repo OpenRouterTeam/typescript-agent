@@ -34,13 +34,9 @@ describe('Next-turn params -> request modification -> API readiness', () => {
       temperature: 0.7,
       input: 'hello',
     };
-    const params = await executeNextTurnParamsFunctions(
-      toolCalls as any,
-      tools as any,
-      request as any,
-    );
+    const params = await executeNextTurnParamsFunctions(toolCalls, tools, request);
 
-    const modified = applyNextTurnParamsToRequest(request as any, params);
+    const modified = applyNextTurnParamsToRequest(request, params);
     expect(modified.temperature).toBe(0.3);
     expect(modified.model).toBe(TEST_MODEL);
     expect(modified.input).toBe('hello');

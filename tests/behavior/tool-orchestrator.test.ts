@@ -44,7 +44,7 @@ describe('tool orchestrator - toolResultsToMap', () => {
         preliminaryResults: [
           'p1',
           'p2',
-        ] as any,
+        ],
       }),
     ];
     const map = toolResultsToMap(results);

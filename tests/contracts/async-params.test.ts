@@ -1,19 +1,19 @@
 import { describe, expect, it } from 'vitest';
 
 import { resolveAsyncFunctions } from '../../src/lib/async-params.js';
-import { TEST_MODEL } from '../test-constants.js';
+import { makeCallModelInput, makeTurnContext, TEST_MODEL } from '../test-constants.js';
 
 describe('resolveAsyncFunctions - three field types handled distinctly', () => {
-  const turnCtx = {
+  const turnCtx = makeTurnContext({
     numberOfTurns: 2,
-  } as any;
+  });
 
   it('static values (model, temperature as literals) -> passed through unchanged', async () => {
     const result = await resolveAsyncFunctions(
-      {
+      makeCallModelInput({
         model: TEST_MODEL,
         temperature: 0.7,
-      } as any,
+      }),
       turnCtx,
     );
     expect(result.model).toBe(TEST_MODEL);
@@ -22,9 +22,9 @@ describe('resolveAsyncFunctions - three field types handled distinctly', () => {
 
   it('function values -> resolved by calling with context, result stored', async () => {
     const result = await resolveAsyncFunctions(
-      {
-        temperature: (ctx: any) => ctx.numberOfTurns * 0.1,
-      } as any,
+      makeCallModelInput({
+        temperature: (ctx: { numberOfTurns: number }) => ctx.numberOfTurns * 0.1,
+      }),
       turnCtx,
     );
     expect(result.temperature).toBe(0.2);
@@ -32,7 +32,7 @@ describe('resolveAsyncFunctions - three field types handled distinctly', () => {
 
   it('client-only fields (stopWhen, state, requireApproval, context, onTurnStart, onTurnEnd) -> stripped entirely', async () => {
     const result = await resolveAsyncFunctions(
-      {
+      makeCallModelInput({
         model: TEST_MODEL,
         stopWhen: () => true,
         state: {
@@ -44,7 +44,7 @@ describe('resolveAsyncFunctions - three field types handled distinctly', () => {
         },
         onTurnStart: () => {},
         onTurnEnd: () => {},
-      } as any,
+      }),
       turnCtx,
     );
     expect(result).not.toHaveProperty('stopWhen');
@@ -66,10 +66,10 @@ describe('resolveAsyncFunctions - three field types handled distinctly', () => {
       },
     ];
     const result = await resolveAsyncFunctions(
-      {
+      makeCallModelInput({
         model: TEST_MODEL,
         tools,
-      } as any,
+      }),
       turnCtx,
     );
     expect(result).toHaveProperty('tools');
@@ -78,11 +78,11 @@ describe('resolveAsyncFunctions - three field types handled distinctly', () => {
   it('function error -> wraps with field name context', async () => {
     await expect(
       resolveAsyncFunctions(
-        {
+        makeCallModelInput({
           temperature: () => {
             throw new Error('boom');
           },
-        } as any,
+        }),
         turnCtx,
       ),
     ).rejects.toThrow('Failed to resolve async function for field "temperature"');
@@ -90,12 +90,12 @@ describe('resolveAsyncFunctions - three field types handled distinctly', () => {
 
   it('mix of static + function + client-only in one call -> all handled correctly', async () => {
     const result = await resolveAsyncFunctions(
-      {
+      makeCallModelInput({
         model: TEST_MODEL,
-        temperature: (ctx: any) => ctx.numberOfTurns * 0.1,
+        temperature: (ctx: { numberOfTurns: number }) => ctx.numberOfTurns * 0.1,
         stopWhen: () => true,
         input: 'hello',
-      } as any,
+      }),
       turnCtx,
     );
     expect(result.model).toBe(TEST_MODEL);

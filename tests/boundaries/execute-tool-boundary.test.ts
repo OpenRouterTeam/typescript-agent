@@ -46,20 +46,20 @@ describe('executeRegularTool vs executeGeneratorTool - structural boundary', () 
   };
 
   it('executeRegularTool throws when given a generator tool', async () => {
-    await expect(executeRegularTool(generatorTool as any, toolCall, turnCtx)).rejects.toThrow();
+    await expect(executeRegularTool(generatorTool, toolCall, turnCtx)).rejects.toThrow();
   });
 
   it('executeGeneratorTool throws when given a regular tool', async () => {
-    await expect(executeGeneratorTool(regularTool as any, toolCall, turnCtx)).rejects.toThrow();
+    await expect(executeGeneratorTool(regularTool, toolCall, turnCtx)).rejects.toThrow();
   });
 
   it('executeRegularTool result has NO preliminaryResults', async () => {
-    const result = await executeRegularTool(regularTool as any, toolCall, turnCtx);
+    const result = await executeRegularTool(regularTool, toolCall, turnCtx);
     expect(result).not.toHaveProperty('preliminaryResults');
   });
 
   it('executeGeneratorTool result HAS preliminaryResults array', async () => {
-    const result = await executeGeneratorTool(generatorTool as any, toolCall, turnCtx);
+    const result = await executeGeneratorTool(generatorTool, toolCall, turnCtx);
     expect(result).toHaveProperty('preliminaryResults');
     expect(Array.isArray(result.preliminaryResults)).toBe(true);
   });

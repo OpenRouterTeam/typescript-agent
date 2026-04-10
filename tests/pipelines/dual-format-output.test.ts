@@ -11,7 +11,7 @@ import {
 } from '../../src/lib/stream-transformers.js';
 import { TEST_MODEL } from '../test-constants.js';
 
-function makeStream(events: any[]): ReusableReadableStream<any> {
+function makeStream(events: StreamEvents[]): ReusableReadableStream<StreamEvents> {
   const source = new ReadableStream({
     start(controller) {
       for (const event of events) {
@@ -69,24 +69,31 @@ describe('Dual-format output: same response -> structurally distinct formats', (
     };
 
     // Chat format
-    const chatMsg = extractMessageFromResponse(response as any);
+    const chatMsg = extractMessageFromResponse(response);
     expect(chatMsg.role).toBe('assistant');
     expect(typeof chatMsg.content).toBe('string');
 
     // Claude format
-    const claudeMsg = convertToClaudeMessage(response as any);
+    const claudeMsg = convertToClaudeMessage(response);
     expect(claudeMsg.role).toBe('assistant');
     expect(Array.isArray(claudeMsg.content)).toBe(true);
 
     // Tool calls
-    const toolCalls = extractToolCallsFromResponse(response as any);
+    const toolCalls = extractToolCallsFromResponse(response);
     expect(toolCalls).toHaveLength(1);
     expect(toolCalls[0]!.name).toBe('search');
 
     // All semantically equivalent, structurally different
     expect(chatMsg.content).toBe('Found results');
-    const claudeText = claudeMsg.content.find((b: any) => b.type === 'text');
-    expect((claudeText as any).text).toBe('Found results');
+    const claudeText = claudeMsg.content.find((b: { type: string }) => b.type === 'text');
+    expect(
+      (
+        claudeText as {
+          type: string;
+          text: string;
+        }
+      ).text,
+    ).toBe('Found results');
   });
 
   it('through streaming: same ReusableReadableStream -> three concurrent consumers all complete', async () => {

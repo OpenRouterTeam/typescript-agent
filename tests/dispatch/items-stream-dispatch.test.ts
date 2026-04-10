@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest';
 import { ReusableReadableStream } from '../../src/lib/reusable-stream.js';
 import { buildItemsStream } from '../../src/lib/stream-transformers.js';
 
-function makeStream(events: any[]): ReusableReadableStream<any> {
+function makeStream(events: StreamEvents[]): ReusableReadableStream<StreamEvents> {
   const source = new ReadableStream({
     start(controller) {
       for (const event of events) {
@@ -44,7 +44,7 @@ describe('buildItemsStream routes events via stream type guards', () => {
     const stream = makeStream(events);
     const items = await collectAll(buildItemsStream(stream));
     expect(items.length).toBeGreaterThan(0);
-    expect((items[0] as any).type).toBe('message');
+    expect(items[0].type).toBe('message');
   });
 
   it('skips unknown event types that do not match any guard', async () => {
@@ -71,6 +71,6 @@ describe('buildItemsStream routes events via stream type guards', () => {
     const stream = makeStream(events);
     const items = await collectAll(buildItemsStream(stream));
     // Only the message item should be yielded, unknown events are silently skipped
-    expect(items.every((i: any) => i.type === 'message')).toBe(true);
+    expect(items.every((i) => i.type === 'message')).toBe(true);
   });
 });

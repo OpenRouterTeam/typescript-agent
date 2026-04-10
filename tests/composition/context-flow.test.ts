@@ -22,7 +22,7 @@ describe('Context flow: turn context -> tool execute context -> tool function', 
     const turnCtx = buildTurnContext({
       numberOfTurns: 2,
     });
-    const contextFn = (ctx: any) => ({
+    const contextFn = (ctx: { numberOfTurns: number }) => ({
       apiKey: `key-for-turn-${ctx.numberOfTurns}`,
     });
 

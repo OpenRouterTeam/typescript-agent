@@ -40,14 +40,28 @@ describe('convertToClaudeMessage routes items via output item guards', () => {
       },
     };
 
-    const claude = convertToClaudeMessage(response as any);
-    const textBlock = claude.content.find((b: any) => b.type === 'text');
-    const toolBlock = claude.content.find((b: any) => b.type === 'tool_use');
+    const claude = convertToClaudeMessage(response);
+    const textBlock = claude.content.find((b: { type: string }) => b.type === 'text');
+    const toolBlock = claude.content.find((b: { type: string }) => b.type === 'tool_use');
 
     expect(textBlock).toBeDefined();
-    expect((textBlock as any).text).toBe('Hello');
+    expect(
+      (
+        textBlock as {
+          type: string;
+          text: string;
+        }
+      ).text,
+    ).toBe('Hello');
     expect(toolBlock).toBeDefined();
-    expect((toolBlock as any).name).toBe('search');
+    expect(
+      (
+        toolBlock as {
+          type: string;
+          name: string;
+        }
+      ).name,
+    ).toBe('search');
   });
 
   it('same response with reasoning + web_search_call: isReasoningOutputItem -> thinking, isWebSearchCallOutputItem -> server_tool_use', () => {
@@ -81,9 +95,11 @@ describe('convertToClaudeMessage routes items via output item guards', () => {
       },
     };
 
-    const claude = convertToClaudeMessage(response as any);
-    const thinkingBlock = claude.content.find((b: any) => b.type === 'thinking');
-    const serverToolBlock = claude.content.find((b: any) => b.type === 'server_tool_use');
+    const claude = convertToClaudeMessage(response);
+    const thinkingBlock = claude.content.find((b: { type: string }) => b.type === 'thinking');
+    const serverToolBlock = claude.content.find(
+      (b: { type: string }) => b.type === 'server_tool_use',
+    );
 
     expect(thinkingBlock).toBeDefined();
     expect(serverToolBlock).toBeDefined();

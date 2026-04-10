@@ -21,7 +21,7 @@ describe('stream event type guards - negative cases (reject wrong type)', () => 
     expect(
       isOutputTextDeltaEvent({
         type: 'response.reasoning_text.delta',
-      } as any),
+      } as unknown as StreamEvents),
     ).toBe(false);
   });
 
@@ -29,7 +29,7 @@ describe('stream event type guards - negative cases (reject wrong type)', () => 
     expect(
       isReasoningDeltaEvent({
         type: 'response.output_text.delta',
-      } as any),
+      } as unknown as StreamEvents),
     ).toBe(false);
   });
 
@@ -37,7 +37,7 @@ describe('stream event type guards - negative cases (reject wrong type)', () => 
     expect(
       isFunctionCallArgumentsDeltaEvent({
         type: 'response.output_text.delta',
-      } as any),
+      } as unknown as StreamEvents),
     ).toBe(false);
   });
 
@@ -45,7 +45,7 @@ describe('stream event type guards - negative cases (reject wrong type)', () => 
     expect(
       isOutputItemAddedEvent({
         type: 'response.output_item.done',
-      } as any),
+      } as unknown as StreamEvents),
     ).toBe(false);
   });
 
@@ -53,7 +53,7 @@ describe('stream event type guards - negative cases (reject wrong type)', () => 
     expect(
       isOutputItemDoneEvent({
         type: 'response.output_item.added',
-      } as any),
+      } as unknown as StreamEvents),
     ).toBe(false);
   });
 
@@ -61,7 +61,7 @@ describe('stream event type guards - negative cases (reject wrong type)', () => 
     expect(
       isResponseCompletedEvent({
         type: 'response.failed',
-      } as any),
+      } as unknown as StreamEvents),
     ).toBe(false);
   });
 
@@ -69,7 +69,7 @@ describe('stream event type guards - negative cases (reject wrong type)', () => 
     expect(
       isResponseFailedEvent({
         type: 'response.completed',
-      } as any),
+      } as unknown as StreamEvents),
     ).toBe(false);
   });
 
@@ -77,7 +77,7 @@ describe('stream event type guards - negative cases (reject wrong type)', () => 
     expect(
       isResponseIncompleteEvent({
         type: 'response.completed',
-      } as any),
+      } as unknown as StreamEvents),
     ).toBe(false);
   });
 
@@ -85,7 +85,7 @@ describe('stream event type guards - negative cases (reject wrong type)', () => 
     expect(
       isFunctionCallArgumentsDoneEvent({
         type: 'response.function_call_arguments.delta',
-      } as any),
+      } as unknown as StreamEvents),
     ).toBe(false);
   });
 });
