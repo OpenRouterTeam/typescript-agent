@@ -1,5 +1,16 @@
 # @openrouter/agent
 
+## 0.3.1
+
+### Patch Changes
+
+- [#22](https://github.com/OpenRouterTeam/typescript-agent/pull/22) [`ab5a75c`](https://github.com/OpenRouterTeam/typescript-agent/commit/ab5a75c43d75f33c0a12e4558c11fd98457d2a6c) Thanks [@mattapperson](https://github.com/mattapperson)! - Fix type exports and add pre-push hooks
+
+  - Add `NewDeveloperMessageItem` type export for manually added developer messages
+  - Fix `FieldOrAsyncFunction` type import path in async-params module
+  - Add `.npmignore` to exclude development files from published package
+  - Add husky pre-push hooks for lint and typecheck validation
+
 ## 0.3.0
 
 ### Minor Changes
