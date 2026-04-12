@@ -111,7 +111,7 @@
     "test:watch": "vitest --watch --project unit",
     "typecheck": "tsc --noEmit",
     "compile": "tsc",
-    "prepare": "npm run build"
+    "prepare": "husky"
   },
   "dependencies": {
     "@openrouter/sdk": "*",
@@ -123,6 +123,7 @@
     "@changesets/cli": "^2.30.0",
     "@types/node": "^22.13.12",
     "dotenv": "^16.4.7",
+    "husky": "^9.1.7",
     "typescript": "~5.8.3",
     "vitest": "^3.2.4"
   },
