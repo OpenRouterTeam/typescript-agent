@@ -31,6 +31,83 @@ export default defineConfig({
       {
         extends: true,
         test: {
+          name: 'behavior',
+          include: [
+            'tests/behavior/**/*.test.ts',
+          ],
+          testTimeout: 10000,
+          hookTimeout: 10000,
+        },
+      },
+      {
+        extends: true,
+        test: {
+          name: 'boundaries',
+          include: [
+            'tests/boundaries/**/*.test.ts',
+          ],
+          testTimeout: 10000,
+          hookTimeout: 10000,
+        },
+      },
+      {
+        extends: true,
+        test: {
+          name: 'composition',
+          include: [
+            'tests/composition/**/*.test.ts',
+          ],
+          testTimeout: 10000,
+          hookTimeout: 10000,
+        },
+      },
+      {
+        extends: true,
+        test: {
+          name: 'contracts',
+          include: [
+            'tests/contracts/**/*.test.ts',
+          ],
+          testTimeout: 10000,
+          hookTimeout: 10000,
+        },
+      },
+      {
+        extends: true,
+        test: {
+          name: 'integration',
+          include: [
+            'tests/integration/**/*.test.ts',
+          ],
+          testTimeout: 10000,
+          hookTimeout: 10000,
+        },
+      },
+      {
+        extends: true,
+        test: {
+          name: 'dispatch',
+          include: [
+            'tests/dispatch/**/*.test.ts',
+          ],
+          testTimeout: 10000,
+          hookTimeout: 10000,
+        },
+      },
+      {
+        extends: true,
+        test: {
+          name: 'pipelines',
+          include: [
+            'tests/pipelines/**/*.test.ts',
+          ],
+          testTimeout: 10000,
+          hookTimeout: 10000,
+        },
+      },
+      {
+        extends: true,
+        test: {
           name: 'e2e',
           include: [
             'tests/e2e/**/*.test.ts',
