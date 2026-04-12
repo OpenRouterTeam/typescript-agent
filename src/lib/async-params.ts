@@ -1,5 +1,6 @@
 import type * as models from '@openrouter/sdk/models';
 import type { OpenResponsesResult } from '@openrouter/sdk/models';
+import type { Item } from './item-types.js';
 import type { ContextInput } from './tool-context.js';
 import type {
   ParsedToolCall,
@@ -9,7 +10,6 @@ import type {
   ToolContextMapWithShared,
   TurnContext,
 } from './tool-types.js';
-import { Item } from './item-types.js';
 
 // Re-export Tool type for convenience
 export type { Tool } from './tool-types.js';

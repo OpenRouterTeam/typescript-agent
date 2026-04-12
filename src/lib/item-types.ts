@@ -51,7 +51,6 @@ export type NewDeveloperMessageItem = EasyInputMessage & {
   role: 'developer';
 };
 
-
 /** Reasoning output from the model */
 export type ReasoningItem = OutputReasoningItem;
 
