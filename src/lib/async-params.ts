@@ -9,6 +9,7 @@ import type {
   ToolContextMapWithShared,
   TurnContext,
 } from './tool-types.js';
+import { Item } from './item-types.js';
 
 // Re-export Tool type for convenience
 export type { Tool } from './tool-types.js';
@@ -52,10 +53,11 @@ type BaseCallModelInput<
   TTools extends readonly Tool[] = readonly Tool[],
   TShared extends Record<string, unknown> = Record<string, never>,
 > = {
-  [K in keyof Omit<models.ResponsesRequest, 'stream' | 'tools'>]?: FieldOrAsyncFunction<
+  [K in keyof Omit<models.ResponsesRequest, 'stream' | 'tools' | 'input'>]?: FieldOrAsyncFunction<
     models.ResponsesRequest[K]
   >;
 } & {
+  input: FieldOrAsyncFunction<Item[]> | string;
   tools?: TTools;
   stopWhen?: StopWhen<TTools>;
   /** Typed context data passed to tools via contextSchema. Includes optional `shared` key. */

@@ -46,6 +46,12 @@ export type DeveloperMessageItem = WithID<EasyInputMessage> & {
   role: 'developer';
 };
 
+/** A manually added developer message (has no id) */
+export type NewDeveloperMessageItem = EasyInputMessage & {
+  role: 'developer';
+};
+
+
 /** Reasoning output from the model */
 export type ReasoningItem = OutputReasoningItem;
 
@@ -89,6 +95,7 @@ export type Item =
   | UserMessageItem
   | SystemMessageItem
   | DeveloperMessageItem
+  | NewDeveloperMessageItem
   | NewUserMessageItem
   | CallFunctionToolItem
   | ReasoningItem
