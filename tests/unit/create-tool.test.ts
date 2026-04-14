@@ -234,4 +234,252 @@ describe('tool', () => {
       expect(manualTool.function).not.toHaveProperty('execute');
     });
   });
+
+  describe('tool - toModelOutput', () => {
+    it('should create a tool with toModelOutput function', () => {
+      const imageGenTool = tool({
+        name: 'image_gen',
+        inputSchema: z.object({
+          prompt: z.string(),
+        }),
+        outputSchema: z.object({
+          status: z.string(),
+          imageUrl: z.string(),
+        }),
+        execute: async (params) => {
+          return {
+            status: 'ok',
+            imageUrl: `https://example.com/${params.prompt}.png`,
+          };
+        },
+        toModelOutput: ({ output }) => ({
+          type: 'content',
+          value: [
+            {
+              type: 'input_text',
+              text: 'Image generated successfully.',
+            },
+            {
+              type: 'input_image',
+              detail: 'auto',
+              imageUrl: output.imageUrl,
+            },
+          ],
+        }),
+      });
+
+      expect(imageGenTool.type).toBe(ToolType.Function);
+      expect(imageGenTool.function.name).toBe('image_gen');
+      expect(imageGenTool.function.toModelOutput).toBeDefined();
+      expect(typeof imageGenTool.function.toModelOutput).toBe('function');
+    });
+
+    it('toModelOutput receives both output and input', async () => {
+      let receivedOutput: unknown;
+      let receivedInput: unknown;
+
+      const testTool = tool({
+        name: 'test_tool',
+        inputSchema: z.object({
+          prompt: z.string(),
+          style: z.string().optional(),
+        }),
+        execute: async (params) => {
+          return {
+            result: `Processed: ${params.prompt}`,
+          };
+        },
+        toModelOutput: ({ output, input }) => {
+          receivedOutput = output;
+          receivedInput = input;
+          return {
+            type: 'content',
+            value: [
+              {
+                type: 'input_text',
+                text: 'Done',
+              },
+            ],
+          };
+        },
+      });
+
+      // Execute the tool first
+      const output = await testTool.function.execute({
+        prompt: 'hello',
+        style: 'modern',
+      });
+
+      // Then call toModelOutput manually to test it receives correct params
+      const modelOutput = testTool.function.toModelOutput!({
+        output,
+        input: {
+          prompt: 'hello',
+          style: 'modern',
+        },
+      });
+
+      expect(receivedOutput).toEqual({
+        result: 'Processed: hello',
+      });
+      expect(receivedInput).toEqual({
+        prompt: 'hello',
+        style: 'modern',
+      });
+      expect(modelOutput).toEqual({
+        type: 'content',
+        value: [
+          {
+            type: 'input_text',
+            text: 'Done',
+          },
+        ],
+      });
+    });
+
+    it('should support async toModelOutput function', async () => {
+      const asyncTool = tool({
+        name: 'async_tool',
+        inputSchema: z.object({
+          data: z.string(),
+        }),
+        execute: async () => {
+          return {
+            processed: true,
+          };
+        },
+        toModelOutput: async ({ output }) => {
+          // Simulate async work (e.g., fetching additional data)
+          await Promise.resolve();
+          return {
+            type: 'content',
+            value: [
+              {
+                type: 'input_text',
+                text: `Processed: ${output.processed}`,
+              },
+            ],
+          };
+        },
+      });
+
+      const output = await asyncTool.function.execute({
+        data: 'test',
+      });
+      const modelOutput = await asyncTool.function.toModelOutput!({
+        output,
+        input: {
+          data: 'test',
+        },
+      });
+
+      expect(modelOutput).toEqual({
+        type: 'content',
+        value: [
+          {
+            type: 'input_text',
+            text: 'Processed: true',
+          },
+        ],
+      });
+    });
+
+    it('should support toModelOutput on tools without outputSchema', () => {
+      const noSchemaTool = tool({
+        name: 'no_schema_tool',
+        inputSchema: z.object({
+          input: z.string(),
+        }),
+        execute: (params) => {
+          return {
+            raw: params.input,
+          };
+        },
+        toModelOutput: ({ output }) => ({
+          type: 'content',
+          value: [
+            {
+              type: 'input_text',
+              text: `Output: ${output.raw}`,
+            },
+          ],
+        }),
+      });
+
+      expect(noSchemaTool.function.toModelOutput).toBeDefined();
+
+      const output = noSchemaTool.function.execute({
+        input: 'test',
+      });
+      const modelOutput = noSchemaTool.function.toModelOutput!({
+        output,
+        input: {
+          input: 'test',
+        },
+      });
+
+      expect(modelOutput).toEqual({
+        type: 'content',
+        value: [
+          {
+            type: 'input_text',
+            text: 'Output: test',
+          },
+        ],
+      });
+    });
+
+    it('should support toModelOutput on generator tools', () => {
+      const generatorTool = tool({
+        name: 'generator_tool',
+        inputSchema: z.object({
+          query: z.string(),
+        }),
+        eventSchema: z.object({
+          progress: z.number(),
+        }),
+        outputSchema: z.object({
+          result: z.string(),
+        }),
+        execute: async function* (_params) {
+          yield {
+            progress: 50,
+          };
+          yield {
+            result: 'done',
+          };
+        },
+        toModelOutput: ({ output }) => ({
+          type: 'content',
+          value: [
+            {
+              type: 'input_text',
+              text: `Final result: ${output.result}`,
+            },
+          ],
+        }),
+      });
+
+      expect(generatorTool.function.toModelOutput).toBeDefined();
+
+      const modelOutput = generatorTool.function.toModelOutput!({
+        output: {
+          result: 'completed',
+        },
+        input: {
+          query: 'test',
+        },
+      });
+
+      expect(modelOutput).toEqual({
+        type: 'content',
+        value: [
+          {
+            type: 'input_text',
+            text: 'Final result: completed',
+          },
+        ],
+      });
+    });
+  });
 });

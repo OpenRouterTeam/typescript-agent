@@ -841,15 +841,31 @@ export class ModelResult<
         value.preliminaryResultsForCall.length > 0 ? value.preliminaryResultsForCall : undefined,
       );
 
+      let outputForModel: string | models.FunctionCallOutputItemOutputUnion1[];
+
+      if (value.result.error) {
+        outputForModel = JSON.stringify({
+          error: value.result.error.message,
+        });
+      } else if (value.tool.function.toModelOutput) {
+        // toModelOutput exists - call it (may throw, which surfaces the error)
+        const modelOutputResult = await value.tool.function.toModelOutput({
+          output: value.result.result,
+          input: value.toolCall.arguments,
+        });
+        outputForModel =
+          modelOutputResult.type === 'content'
+            ? modelOutputResult.value
+            : JSON.stringify(value.result.result);
+      } else {
+        outputForModel = JSON.stringify(value.result.result);
+      }
+
       const executedOutput: models.FunctionCallOutputItem = {
         type: 'function_call_output' as const,
         id: `output_${value.toolCall.id}`,
         callId: value.toolCall.id,
-        output: value.result.error
-          ? JSON.stringify({
-              error: value.result.error.message,
-            })
-          : JSON.stringify(value.result.result),
+        output: outputForModel,
       };
       toolResults.push(executedOutput);
       this.turnBroadcaster?.push({
