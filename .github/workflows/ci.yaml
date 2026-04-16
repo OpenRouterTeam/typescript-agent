@@ -73,4 +73,9 @@ jobs:
       - name: E2E tests
         env:
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
-        run: pnpm run test:e2e
+        run: |
+          if [ -z "$OPENROUTER_API_KEY" ]; then
+            echo "::warning::OPENROUTER_API_KEY is not set; skipping e2e tests."
+            exit 0
+          fi
+          pnpm run test:e2e
