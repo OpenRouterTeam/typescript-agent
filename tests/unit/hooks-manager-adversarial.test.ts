@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import * as z4 from 'zod/v4';
 import { HooksManager } from '../../src/lib/hooks-manager.js';
 
@@ -6,7 +6,9 @@ describe('HooksManager (adversarial)', () => {
   describe('unsubscribe edge cases', () => {
     it('calling unsubscribe twice does not throw or corrupt state', () => {
       const manager = new HooksManager();
-      const unsub = manager.on('PostToolUse', { handler: vi.fn() });
+      const unsub = manager.on('PostToolUse', {
+        handler: vi.fn(),
+      });
 
       unsub();
       unsub(); // second call should be harmless
@@ -19,8 +21,12 @@ describe('HooksManager (adversarial)', () => {
       const h1 = vi.fn();
       const h2 = vi.fn();
 
-      const unsub1 = manager.on('PostToolUse', { handler: h1 });
-      manager.on('PostToolUse', { handler: h2 });
+      const unsub1 = manager.on('PostToolUse', {
+        handler: h1,
+      });
+      manager.on('PostToolUse', {
+        handler: h2,
+      });
 
       unsub1();
       expect(manager.hasHandlers('PostToolUse')).toBe(true);
@@ -33,7 +39,9 @@ describe('HooksManager (adversarial)', () => {
       const h1 = () => {};
       const h2 = () => {};
 
-      manager.on('PostToolUse', { handler: h1 });
+      manager.on('PostToolUse', {
+        handler: h1,
+      });
       const removed = manager.off('PostToolUse', h2);
 
       expect(removed).toBe(false);
@@ -54,7 +62,9 @@ describe('HooksManager (adversarial)', () => {
       manager.on('PostToolUse', {
         handler: () => {
           // Register a new handler mid-emit
-          manager.on('PostToolUse', { handler: lateHandler });
+          manager.on('PostToolUse', {
+            handler: lateHandler,
+          });
         },
       });
 
@@ -154,16 +164,13 @@ describe('HooksManager (adversarial)', () => {
     it('emit for an unregistered custom hook name returns clean result', async () => {
       const manager = new HooksManager();
       // Emitting a never-registered hook name
-      const result = await manager.emit(
-        'NonExistentHook' as 'PostToolUse',
-        {
-          toolName: 'X',
-          toolInput: {},
-          toolOutput: null,
-          durationMs: 0,
-          sessionId: 's',
-        },
-      );
+      const result = await manager.emit('NonExistentHook' as 'PostToolUse', {
+        toolName: 'X',
+        toolInput: {},
+        toolOutput: null,
+        durationMs: 0,
+        sessionId: 's',
+      });
 
       expect(result.results).toEqual([]);
     });
@@ -220,19 +227,35 @@ describe('HooksManager (adversarial)', () => {
       const second = vi.fn();
 
       manager.on('PreToolUse', {
-        handler: () => ({ block: 'dangerous tool' }),
+        handler: () => ({
+          block: 'dangerous tool',
+        }),
       });
-      manager.on('PreToolUse', { handler: second });
+      manager.on('PreToolUse', {
+        handler: second,
+      });
 
       const result = await manager.emit(
         'PreToolUse',
-        { toolName: 'rm', toolInput: { path: '/' }, sessionId: 's' },
-        { toolName: 'rm' },
+        {
+          toolName: 'rm',
+          toolInput: {
+            path: '/',
+          },
+          sessionId: 's',
+        },
+        {
+          toolName: 'rm',
+        },
       );
 
       expect(result.blocked).toBe(true);
       expect(second).not.toHaveBeenCalled();
-      expect(result.results).toEqual([{ block: 'dangerous tool' }]);
+      expect(result.results).toEqual([
+        {
+          block: 'dangerous tool',
+        },
+      ]);
     });
   });
 
@@ -247,7 +270,9 @@ describe('HooksManager (adversarial)', () => {
     it('drain after handlers have been cleared still resolves', async () => {
       const manager = new HooksManager();
       manager.on('PostToolUse', {
-        handler: () => ({ async: true as const }),
+        handler: () => ({
+          async: true as const,
+        }),
       });
 
       await manager.emit('PostToolUse', {
@@ -311,7 +336,10 @@ describe('HooksManager (adversarial)', () => {
         sessionId: 'ignored',
       });
 
-      expect(sessionIds).toEqual(['session-1', 'session-2']);
+      expect(sessionIds).toEqual([
+        'session-1',
+        'session-2',
+      ]);
     });
   });
 });

@@ -1,6 +1,6 @@
-import { describe, it, expect, vi } from 'vitest';
-import { resolveHooks } from '../../src/lib/hooks-resolve.js';
+import { describe, expect, it, vi } from 'vitest';
 import { HooksManager } from '../../src/lib/hooks-manager.js';
+import { resolveHooks } from '../../src/lib/hooks-resolve.js';
 import type { InlineHookConfig } from '../../src/lib/hooks-types.js';
 
 describe('resolveHooks (adversarial)', () => {
@@ -76,9 +76,7 @@ describe('resolveHooks (adversarial)', () => {
 
   describe('prototype pollution resistance', () => {
     it('__proto__ key in config does not pollute Object prototype', () => {
-      const config = JSON.parse(
-        '{"__proto__": [{"handler": null}], "PreToolUse": []}',
-      );
+      const config = JSON.parse('{"__proto__": [{"handler": null}], "PreToolUse": []}');
 
       // This should not crash and should not pollute Object.prototype
       const result = resolveHooks(config);
@@ -88,7 +86,11 @@ describe('resolveHooks (adversarial)', () => {
 
     it('constructor key in config does not crash', () => {
       const config = {
-        constructor: [{ handler: vi.fn() }],
+        constructor: [
+          {
+            handler: vi.fn(),
+          },
+        ],
       } as unknown as InlineHookConfig;
 
       const result = resolveHooks(config);
@@ -101,7 +103,9 @@ describe('resolveHooks (adversarial)', () => {
   describe('HooksManager passthrough', () => {
     it('returns the exact same instance, not a copy', () => {
       const manager = new HooksManager();
-      manager.on('PreToolUse', { handler: vi.fn() });
+      manager.on('PreToolUse', {
+        handler: vi.fn(),
+      });
 
       const result = resolveHooks(manager);
       expect(result).toBe(manager);
@@ -111,7 +115,11 @@ describe('resolveHooks (adversarial)', () => {
   describe('non-standard hook names in inline config', () => {
     it('registers handlers for arbitrary hook names (not just built-in)', () => {
       const config = {
-        CustomHook: [{ handler: vi.fn() }],
+        CustomHook: [
+          {
+            handler: vi.fn(),
+          },
+        ],
       } as unknown as InlineHookConfig;
 
       const result = resolveHooks(config);

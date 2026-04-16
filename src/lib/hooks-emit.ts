@@ -1,17 +1,12 @@
-import type {
-  AsyncOutput,
-  EmitResult,
-  HookContext,
-  HookEntry,
-} from './hooks-types.js';
+import { matchesTool } from './hooks-matchers.js';
+import type { AsyncOutput, EmitResult, HookContext, HookEntry } from './hooks-types.js';
 import {
   BLOCK_FIELDS,
   BLOCK_HOOKS,
   DEFAULT_ASYNC_TIMEOUT,
-  MUTATION_FIELD_MAP,
   isAsyncOutput,
+  MUTATION_FIELD_MAP,
 } from './hooks-types.js';
-import { matchesTool } from './hooks-matchers.js';
 
 export interface ExecuteChainOptions {
   readonly hookName: string;
@@ -37,7 +32,9 @@ export async function executeHandlerChain<P, R>(
 ): Promise<EmitResult<R, P>> {
   const results: R[] = [];
   const pending: Promise<void>[] = [];
-  let currentPayload = { ...initialPayload } as P;
+  let currentPayload = {
+    ...initialPayload,
+  } as P;
   let blocked = false;
 
   const blockField = BLOCK_FIELDS[options.hookName];
@@ -45,7 +42,9 @@ export async function executeHandlerChain<P, R>(
 
   for (let i = 0; i < entries.length; i++) {
     const entry = entries[i];
-    if (!entry) continue;
+    if (!entry) {
+      continue;
+    }
 
     // Matcher check for tool-scoped hooks
     if (
@@ -98,14 +97,16 @@ export async function executeHandlerChain<P, R>(
       if (options.throwOnHandlerError) {
         throw error;
       }
-      console.warn(
-        `[HooksManager] Handler ${i} for hook "${options.hookName}" threw:`,
-        error,
-      );
+      console.warn(`[HooksManager] Handler ${i} for hook "${options.hookName}" threw:`, error);
     }
   }
 
-  return { results, pending, finalPayload: currentPayload, blocked };
+  return {
+    results,
+    pending,
+    finalPayload: currentPayload,
+    blocked,
+  };
 }
 
 /**
@@ -121,7 +122,10 @@ function applyMutations<P, R>(payload: P, result: R): P {
     if (resultField in result) {
       const value = (result as Record<string, unknown>)[resultField];
       if (value !== undefined) {
-        mutated = { ...mutated, [payloadField]: value };
+        mutated = {
+          ...mutated,
+          [payloadField]: value,
+        };
       }
     }
   }

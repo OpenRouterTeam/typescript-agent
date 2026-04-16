@@ -1,22 +1,38 @@
-import { describe, it, expect } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import { isAsyncOutput } from '../../src/lib/hooks-types.js';
 
 describe('isAsyncOutput (adversarial)', () => {
   describe('truthy values that should NOT match', () => {
     it('{ async: "true" } (string) is not AsyncOutput', () => {
-      expect(isAsyncOutput({ async: 'true' })).toBe(false);
+      expect(
+        isAsyncOutput({
+          async: 'true',
+        }),
+      ).toBe(false);
     });
 
     it('{ async: 1 } (number) is not AsyncOutput', () => {
-      expect(isAsyncOutput({ async: 1 })).toBe(false);
+      expect(
+        isAsyncOutput({
+          async: 1,
+        }),
+      ).toBe(false);
     });
 
     it('{ async: {} } (object) is not AsyncOutput', () => {
-      expect(isAsyncOutput({ async: {} })).toBe(false);
+      expect(
+        isAsyncOutput({
+          async: {},
+        }),
+      ).toBe(false);
     });
 
     it('{ async: [] } (array) is not AsyncOutput', () => {
-      expect(isAsyncOutput({ async: [] })).toBe(false);
+      expect(
+        isAsyncOutput({
+          async: [],
+        }),
+      ).toBe(false);
     });
   });
 
@@ -48,19 +64,39 @@ describe('isAsyncOutput (adversarial)', () => {
 
   describe('valid AsyncOutput variations', () => {
     it('{ async: true } is AsyncOutput', () => {
-      expect(isAsyncOutput({ async: true })).toBe(true);
+      expect(
+        isAsyncOutput({
+          async: true,
+        }),
+      ).toBe(true);
     });
 
     it('{ async: true, asyncTimeout: 5000 } is AsyncOutput', () => {
-      expect(isAsyncOutput({ async: true, asyncTimeout: 5000 })).toBe(true);
+      expect(
+        isAsyncOutput({
+          async: true,
+          asyncTimeout: 5000,
+        }),
+      ).toBe(true);
     });
 
     it('{ async: true, extraField: "ignored" } is still AsyncOutput', () => {
-      expect(isAsyncOutput({ async: true, extraField: 'ignored' })).toBe(true);
+      expect(
+        isAsyncOutput({
+          async: true,
+          extraField: 'ignored',
+        }),
+      ).toBe(true);
     });
 
     it('frozen object { async: true } is AsyncOutput', () => {
-      expect(isAsyncOutput(Object.freeze({ async: true }))).toBe(true);
+      expect(
+        isAsyncOutput(
+          Object.freeze({
+            async: true,
+          }),
+        ),
+      ).toBe(true);
     });
   });
 
@@ -79,7 +115,9 @@ describe('isAsyncOutput (adversarial)', () => {
         {},
         {
           get(_target, prop) {
-            if (prop === 'async') return true;
+            if (prop === 'async') {
+              return true;
+            }
             return undefined;
           },
           has(_target, prop) {

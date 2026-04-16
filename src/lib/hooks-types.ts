@@ -58,6 +58,7 @@ export { DEFAULT_ASYNC_TIMEOUT };
 /**
  * A handler may return a sync result, an async signal, or void.
  */
+// biome-ignore lint/suspicious/noConfusingVoidType: void here allows handlers to have no return
 export type HookReturn<R> = R | AsyncOutput | void;
 
 /**
@@ -189,14 +190,42 @@ export interface UserPromptSubmitResult {
 //#region Built-in Hook Registry (type-level)
 
 export interface BuiltInHookDefinitions {
-  PreToolUse: { payload: PreToolUsePayload; result: PreToolUseResult };
-  PostToolUse: { payload: PostToolUsePayload; result: void };
-  PostToolUseFailure: { payload: PostToolUseFailurePayload; result: void };
-  UserPromptSubmit: { payload: UserPromptSubmitPayload; result: UserPromptSubmitResult };
-  Stop: { payload: StopPayload; result: StopResult };
-  PermissionRequest: { payload: PermissionRequestPayload; result: PermissionRequestResult };
-  SessionStart: { payload: SessionStartPayload; result: void };
-  SessionEnd: { payload: SessionEndPayload; result: void };
+  PreToolUse: {
+    payload: PreToolUsePayload;
+    result: PreToolUseResult;
+  };
+  PostToolUse: {
+    payload: PostToolUsePayload;
+    // biome-ignore lint/suspicious/noConfusingVoidType: void signals no meaningful result
+    result: void;
+  };
+  PostToolUseFailure: {
+    payload: PostToolUseFailurePayload;
+    // biome-ignore lint/suspicious/noConfusingVoidType: void signals no meaningful result
+    result: void;
+  };
+  UserPromptSubmit: {
+    payload: UserPromptSubmitPayload;
+    result: UserPromptSubmitResult;
+  };
+  Stop: {
+    payload: StopPayload;
+    result: StopResult;
+  };
+  PermissionRequest: {
+    payload: PermissionRequestPayload;
+    result: PermissionRequestResult;
+  };
+  SessionStart: {
+    payload: SessionStartPayload;
+    // biome-ignore lint/suspicious/noConfusingVoidType: void signals no meaningful result
+    result: void;
+  };
+  SessionEnd: {
+    payload: SessionEndPayload;
+    // biome-ignore lint/suspicious/noConfusingVoidType: void signals no meaningful result
+    result: void;
+  };
 }
 
 //#endregion
@@ -226,7 +255,11 @@ export function isAsyncOutput(value: unknown): value is AsyncOutput {
     typeof value === 'object' &&
     value !== null &&
     'async' in value &&
-    (value as { async: unknown }).async === true
+    (
+      value as {
+        async: unknown;
+      }
+    ).async === true
   );
 }
 
@@ -242,7 +275,10 @@ export const MUTATION_FIELD_MAP: Record<string, string> = {
 /**
  * Hook names that support short-circuit blocking.
  */
-export const BLOCK_HOOKS = new Set<string>(['PreToolUse', 'UserPromptSubmit']);
+export const BLOCK_HOOKS = new Set<string>([
+  'PreToolUse',
+  'UserPromptSubmit',
+]);
 
 /**
  * Result fields that trigger short-circuit.

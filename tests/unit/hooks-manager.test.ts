@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import * as z4 from 'zod/v4';
 import { HooksManager } from '../../src/lib/hooks-manager.js';
 
@@ -10,20 +10,25 @@ describe('HooksManager', () => {
     });
 
     it('throws on custom hook name collision with built-in', () => {
-      expect(() =>
-        new HooksManager({
-          PreToolUse: {
-            payload: z4.object({ custom: z4.string() }),
-            result: z4.void(),
-          },
-        }),
+      expect(
+        () =>
+          new HooksManager({
+            PreToolUse: {
+              payload: z4.object({
+                custom: z4.string(),
+              }),
+              result: z4.void(),
+            },
+          }),
       ).toThrow('collides with a built-in hook');
     });
 
     it('accepts custom hooks with unique names', () => {
       const manager = new HooksManager({
         MyCustomHook: {
-          payload: z4.object({ data: z4.string() }),
+          payload: z4.object({
+            data: z4.string(),
+          }),
           result: z4.void(),
         },
       });
@@ -36,7 +41,9 @@ describe('HooksManager', () => {
       const manager = new HooksManager();
       const handler = vi.fn();
 
-      const unsub = manager.on('PostToolUse', { handler });
+      const unsub = manager.on('PostToolUse', {
+        handler,
+      });
       expect(manager.hasHandlers('PostToolUse')).toBe(true);
 
       unsub();
@@ -47,7 +54,9 @@ describe('HooksManager', () => {
       const manager = new HooksManager();
       const handler = vi.fn();
 
-      manager.on('PostToolUse', { handler });
+      manager.on('PostToolUse', {
+        handler,
+      });
       expect(manager.hasHandlers('PostToolUse')).toBe(true);
 
       const removed = manager.off('PostToolUse', handler);
@@ -63,9 +72,15 @@ describe('HooksManager', () => {
 
     it('removes all handlers for a specific hook', () => {
       const manager = new HooksManager();
-      manager.on('PostToolUse', { handler: vi.fn() });
-      manager.on('PostToolUse', { handler: vi.fn() });
-      manager.on('PreToolUse', { handler: vi.fn() });
+      manager.on('PostToolUse', {
+        handler: vi.fn(),
+      });
+      manager.on('PostToolUse', {
+        handler: vi.fn(),
+      });
+      manager.on('PreToolUse', {
+        handler: vi.fn(),
+      });
 
       manager.removeAll('PostToolUse');
       expect(manager.hasHandlers('PostToolUse')).toBe(false);
@@ -74,8 +89,12 @@ describe('HooksManager', () => {
 
     it('removes all handlers for all hooks', () => {
       const manager = new HooksManager();
-      manager.on('PostToolUse', { handler: vi.fn() });
-      manager.on('PreToolUse', { handler: vi.fn() });
+      manager.on('PostToolUse', {
+        handler: vi.fn(),
+      });
+      manager.on('PreToolUse', {
+        handler: vi.fn(),
+      });
 
       manager.removeAll();
       expect(manager.hasHandlers('PostToolUse')).toBe(false);
@@ -88,7 +107,9 @@ describe('HooksManager', () => {
       const manager = new HooksManager();
       const handler = vi.fn();
 
-      manager.on('PostToolUse', { handler });
+      manager.on('PostToolUse', {
+        handler,
+      });
       await manager.emit('PostToolUse', {
         toolName: 'Bash',
         toolInput: {},
@@ -99,8 +120,12 @@ describe('HooksManager', () => {
 
       expect(handler).toHaveBeenCalledOnce();
       expect(handler).toHaveBeenCalledWith(
-        expect.objectContaining({ toolName: 'Bash' }),
-        expect.objectContaining({ hookName: 'PostToolUse' }),
+        expect.objectContaining({
+          toolName: 'Bash',
+        }),
+        expect.objectContaining({
+          hookName: 'PostToolUse',
+        }),
       );
     });
 
@@ -123,13 +148,25 @@ describe('HooksManager', () => {
       const bashHandler = vi.fn();
       const readHandler = vi.fn();
 
-      manager.on('PreToolUse', { matcher: 'Bash', handler: bashHandler });
-      manager.on('PreToolUse', { matcher: 'ReadFile', handler: readHandler });
+      manager.on('PreToolUse', {
+        matcher: 'Bash',
+        handler: bashHandler,
+      });
+      manager.on('PreToolUse', {
+        matcher: 'ReadFile',
+        handler: readHandler,
+      });
 
       await manager.emit(
         'PreToolUse',
-        { toolName: 'Bash', toolInput: {}, sessionId: 'test' },
-        { toolName: 'Bash' },
+        {
+          toolName: 'Bash',
+          toolInput: {},
+          sessionId: 'test',
+        },
+        {
+          toolName: 'Bash',
+        },
       );
 
       expect(bashHandler).toHaveBeenCalledOnce();
@@ -139,18 +176,26 @@ describe('HooksManager', () => {
     it('supports custom hooks', async () => {
       const manager = new HooksManager({
         AgentThinking: {
-          payload: z4.object({ thought: z4.string() }),
+          payload: z4.object({
+            thought: z4.string(),
+          }),
           result: z4.void(),
         },
       });
 
       const handler = vi.fn();
-      manager.on('AgentThinking', { handler });
+      manager.on('AgentThinking', {
+        handler,
+      });
 
-      await manager.emit('AgentThinking', { thought: 'hmm' });
+      await manager.emit('AgentThinking', {
+        thought: 'hmm',
+      });
 
       expect(handler).toHaveBeenCalledWith(
-        expect.objectContaining({ thought: 'hmm' }),
+        expect.objectContaining({
+          thought: 'hmm',
+        }),
         expect.any(Object),
       );
     });
@@ -167,7 +212,9 @@ describe('HooksManager', () => {
       manager.on('PostToolUse', {
         handler: () => {
           // Return async output signal
-          return { async: true as const };
+          return {
+            async: true as const,
+          };
         },
       });
 

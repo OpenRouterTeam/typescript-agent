@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { executeHandlerChain } from '../../src/lib/hooks-emit.js';
 import type { HookContext, HookEntry } from '../../src/lib/hooks-types.js';
 
@@ -13,23 +13,35 @@ function makeContext(hookName = 'TestHook'): HookContext {
 describe('executeHandlerChain (adversarial)', () => {
   describe('empty and degenerate inputs', () => {
     it('returns clean result for empty entries array', async () => {
-      const result = await executeHandlerChain([], { v: 1 }, makeContext(), {
-        hookName: 'Test',
-        throwOnHandlerError: false,
-      });
+      const result = await executeHandlerChain(
+        [],
+        {
+          v: 1,
+        },
+        makeContext(),
+        {
+          hookName: 'Test',
+          throwOnHandlerError: false,
+        },
+      );
 
       expect(result.results).toEqual([]);
       expect(result.pending).toEqual([]);
       expect(result.blocked).toBe(false);
-      expect(result.finalPayload).toEqual({ v: 1 });
+      expect(result.finalPayload).toEqual({
+        v: 1,
+      });
     });
 
     it('skips sparse array holes (undefined entries)', async () => {
-      // eslint-disable-next-line no-sparse-arrays
-      const entries = [, , { handler: vi.fn() }] as unknown as HookEntry<
-        unknown,
-        void
-      >[];
+      // biome-ignore lint/suspicious/noSparseArray: intentional sparse array to test hole handling
+      const entries = [
+        ,
+        ,
+        {
+          handler: vi.fn(),
+        },
+      ] as unknown as HookEntry<unknown, void>[];
 
       await executeHandlerChain(entries, {}, makeContext(), {
         hookName: 'Test',
@@ -42,8 +54,18 @@ describe('executeHandlerChain (adversarial)', () => {
 
   describe('handler return value edge cases', () => {
     it('treats null return as void (no result collected)', async () => {
-      const entries: HookEntry<unknown, { v: number }>[] = [
-        { handler: () => null as unknown as { v: number } },
+      const entries: HookEntry<
+        unknown,
+        {
+          v: number;
+        }
+      >[] = [
+        {
+          handler: () =>
+            null as unknown as {
+              v: number;
+            },
+        },
       ];
 
       const result = await executeHandlerChain(entries, {}, makeContext(), {
@@ -55,24 +77,56 @@ describe('executeHandlerChain (adversarial)', () => {
     });
 
     it('collects non-object primitive results without mutation crash', async () => {
-      const entries: HookEntry<{ toolInput: Record<string, unknown> }, number>[] =
-        [{ handler: () => 42 }, { handler: () => 99 }];
+      const entries: HookEntry<
+        {
+          toolInput: Record<string, unknown>;
+        },
+        number
+      >[] = [
+        {
+          handler: () => 42,
+        },
+        {
+          handler: () => 99,
+        },
+      ];
 
       const result = await executeHandlerChain(
         entries,
-        { toolInput: { a: 1 } },
+        {
+          toolInput: {
+            a: 1,
+          },
+        },
         makeContext(),
-        { hookName: 'PreToolUse', throwOnHandlerError: false },
+        {
+          hookName: 'PreToolUse',
+          throwOnHandlerError: false,
+        },
       );
 
       // applyMutations should be a no-op for primitives
-      expect(result.results).toEqual([42, 99]);
-      expect(result.finalPayload.toolInput).toEqual({ a: 1 });
+      expect(result.results).toEqual([
+        42,
+        99,
+      ]);
+      expect(result.finalPayload.toolInput).toEqual({
+        a: 1,
+      });
     });
 
     it('does not trigger block on non-blocking hooks even if result has block field', async () => {
-      const entries: HookEntry<unknown, { block: boolean }>[] = [
-        { handler: () => ({ block: true }) },
+      const entries: HookEntry<
+        unknown,
+        {
+          block: boolean;
+        }
+      >[] = [
+        {
+          handler: () => ({
+            block: true,
+          }),
+        },
       ];
 
       const result = await executeHandlerChain(entries, {}, makeContext(), {
@@ -81,21 +135,45 @@ describe('executeHandlerChain (adversarial)', () => {
       });
 
       expect(result.blocked).toBe(false);
-      expect(result.results).toEqual([{ block: true }]);
+      expect(result.results).toEqual([
+        {
+          block: true,
+        },
+      ]);
     });
 
     it('block: false does not short-circuit PreToolUse', async () => {
-      const second = vi.fn(() => ({ block: false }));
+      const second = vi.fn(() => ({
+        block: false,
+      }));
       const entries: HookEntry<
-        { toolInput: Record<string, unknown> },
-        { block: boolean }
-      >[] = [{ handler: () => ({ block: false }) }, { handler: second }];
+        {
+          toolInput: Record<string, unknown>;
+        },
+        {
+          block: boolean;
+        }
+      >[] = [
+        {
+          handler: () => ({
+            block: false,
+          }),
+        },
+        {
+          handler: second,
+        },
+      ];
 
       const result = await executeHandlerChain(
         entries,
-        { toolInput: {} },
+        {
+          toolInput: {},
+        },
         makeContext(),
-        { hookName: 'PreToolUse', throwOnHandlerError: false },
+        {
+          hookName: 'PreToolUse',
+          throwOnHandlerError: false,
+        },
       );
 
       expect(result.blocked).toBe(false);
@@ -105,18 +183,33 @@ describe('executeHandlerChain (adversarial)', () => {
     it('block: 0 (falsy number) does not short-circuit', async () => {
       const second = vi.fn();
       const entries: HookEntry<
-        { toolInput: Record<string, unknown> },
-        { block: number }
+        {
+          toolInput: Record<string, unknown>;
+        },
+        {
+          block: number;
+        }
       >[] = [
-        { handler: () => ({ block: 0 }) },
-        { handler: second },
+        {
+          handler: () => ({
+            block: 0,
+          }),
+        },
+        {
+          handler: second,
+        },
       ];
 
       const result = await executeHandlerChain(
         entries,
-        { toolInput: {} },
+        {
+          toolInput: {},
+        },
         makeContext(),
-        { hookName: 'PreToolUse', throwOnHandlerError: false },
+        {
+          hookName: 'PreToolUse',
+          throwOnHandlerError: false,
+        },
       );
 
       // 0 is neither `true` nor a string, so should not block
@@ -127,15 +220,33 @@ describe('executeHandlerChain (adversarial)', () => {
     it('block: "" (empty string) triggers short-circuit since typeof is string', async () => {
       const second = vi.fn();
       const entries: HookEntry<
-        { toolInput: Record<string, unknown> },
-        { block: string }
-      >[] = [{ handler: () => ({ block: '' }) }, { handler: second }];
+        {
+          toolInput: Record<string, unknown>;
+        },
+        {
+          block: string;
+        }
+      >[] = [
+        {
+          handler: () => ({
+            block: '',
+          }),
+        },
+        {
+          handler: second,
+        },
+      ];
 
       const result = await executeHandlerChain(
         entries,
-        { toolInput: {} },
+        {
+          toolInput: {},
+        },
         makeContext(),
-        { hookName: 'PreToolUse', throwOnHandlerError: false },
+        {
+          hookName: 'PreToolUse',
+          throwOnHandlerError: false,
+        },
       );
 
       // isBlockTriggered checks typeof value === 'string', so empty string IS a string
@@ -147,26 +258,53 @@ describe('executeHandlerChain (adversarial)', () => {
   describe('mutation piping edge cases', () => {
     it('mutatedInput: undefined does not overwrite existing toolInput', async () => {
       const entries: HookEntry<
-        { toolInput: Record<string, unknown> },
-        { mutatedInput: undefined }
-      >[] = [{ handler: () => ({ mutatedInput: undefined }) }];
+        {
+          toolInput: Record<string, unknown>;
+        },
+        {
+          mutatedInput: undefined;
+        }
+      >[] = [
+        {
+          handler: () => ({
+            mutatedInput: undefined,
+          }),
+        },
+      ];
 
       const result = await executeHandlerChain(
         entries,
-        { toolInput: { original: true } },
+        {
+          toolInput: {
+            original: true,
+          },
+        },
         makeContext(),
-        { hookName: 'PreToolUse', throwOnHandlerError: false },
+        {
+          hookName: 'PreToolUse',
+          throwOnHandlerError: false,
+        },
       );
 
-      expect(result.finalPayload.toolInput).toEqual({ original: true });
+      expect(result.finalPayload.toolInput).toEqual({
+        original: true,
+      });
     });
 
     it('mutatedPrompt pipes correctly through UserPromptSubmit', async () => {
       const entries: HookEntry<
-        { prompt: string },
-        { mutatedPrompt: string }
+        {
+          prompt: string;
+        },
+        {
+          mutatedPrompt: string;
+        }
       >[] = [
-        { handler: () => ({ mutatedPrompt: 'rewritten-1' }) },
+        {
+          handler: () => ({
+            mutatedPrompt: 'rewritten-1',
+          }),
+        },
         {
           handler: (p) => ({
             mutatedPrompt: `${p.prompt}+appended`,
@@ -176,9 +314,14 @@ describe('executeHandlerChain (adversarial)', () => {
 
       const result = await executeHandlerChain(
         entries,
-        { prompt: 'original' },
+        {
+          prompt: 'original',
+        },
         makeContext(),
-        { hookName: 'UserPromptSubmit', throwOnHandlerError: false },
+        {
+          hookName: 'UserPromptSubmit',
+          throwOnHandlerError: false,
+        },
       );
 
       // First handler rewrites prompt to 'rewritten-1', second sees 'rewritten-1' as p.prompt
@@ -187,13 +330,17 @@ describe('executeHandlerChain (adversarial)', () => {
 
     it('result with __proto__ key does not cause prototype pollution', async () => {
       const entries: HookEntry<
-        { toolInput: Record<string, unknown> },
+        {
+          toolInput: Record<string, unknown>;
+        },
         Record<string, unknown>
       >[] = [
         {
           handler: () => {
             const obj = Object.create(null);
-            obj['__proto__'] = { polluted: true };
+            obj['__proto__'] = {
+              polluted: true,
+            };
             return obj;
           },
         },
@@ -201,13 +348,18 @@ describe('executeHandlerChain (adversarial)', () => {
 
       const result = await executeHandlerChain(
         entries,
-        { toolInput: {} },
+        {
+          toolInput: {},
+        },
         makeContext(),
-        { hookName: 'PreToolUse', throwOnHandlerError: false },
+        {
+          hookName: 'PreToolUse',
+          throwOnHandlerError: false,
+        },
       );
 
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      expect((({} as Record<string, unknown>)['polluted'] as unknown)).toBeUndefined();
+      expect(({} as Record<string, unknown>)['polluted'] as unknown).toBeUndefined();
       expect(result.results.length).toBe(1);
     });
   });
@@ -260,8 +412,13 @@ describe('executeHandlerChain (adversarial)', () => {
   describe('async output edge cases', () => {
     it('{ async: true } with block field is treated as async, not block', async () => {
       const entries: HookEntry<
-        { toolInput: Record<string, unknown> },
-        { async: true; block: true }
+        {
+          toolInput: Record<string, unknown>;
+        },
+        {
+          async: true;
+          block: true;
+        }
       >[] = [
         {
           handler: () => ({
@@ -273,9 +430,14 @@ describe('executeHandlerChain (adversarial)', () => {
 
       const result = await executeHandlerChain(
         entries,
-        { toolInput: {} },
+        {
+          toolInput: {},
+        },
         makeContext(),
-        { hookName: 'PreToolUse', throwOnHandlerError: false },
+        {
+          hookName: 'PreToolUse',
+          throwOnHandlerError: false,
+        },
       );
 
       // isAsyncOutput check comes before block check, so this should be async
@@ -285,8 +447,17 @@ describe('executeHandlerChain (adversarial)', () => {
     });
 
     it('{ async: "true" } (string) is NOT treated as async', async () => {
-      const entries: HookEntry<unknown, { async: string }>[] = [
-        { handler: () => ({ async: 'true' }) },
+      const entries: HookEntry<
+        unknown,
+        {
+          async: string;
+        }
+      >[] = [
+        {
+          handler: () => ({
+            async: 'true',
+          }),
+        },
       ];
 
       const result = await executeHandlerChain(entries, {}, makeContext(), {
@@ -296,7 +467,11 @@ describe('executeHandlerChain (adversarial)', () => {
 
       // isAsyncOutput requires async === true (boolean), not "true" (string)
       expect(result.pending.length).toBe(0);
-      expect(result.results).toEqual([{ async: 'true' }]);
+      expect(result.results).toEqual([
+        {
+          async: 'true',
+        },
+      ]);
     });
   });
 
@@ -306,8 +481,12 @@ describe('executeHandlerChain (adversarial)', () => {
       const secondHandler = vi.fn();
 
       const entries: HookEntry<unknown, void>[] = [
-        { handler: () => Promise.reject(new Error('async boom')) },
-        { handler: secondHandler },
+        {
+          handler: () => Promise.reject(new Error('async boom')),
+        },
+        {
+          handler: secondHandler,
+        },
       ];
 
       await executeHandlerChain(entries, {}, makeContext(), {
@@ -362,7 +541,11 @@ describe('executeHandlerChain (adversarial)', () => {
     it('matcher is checked before filter — mismatched matcher skips filter call', async () => {
       const filterFn = vi.fn(() => true);
       const entries: HookEntry<unknown, void>[] = [
-        { matcher: 'Bash', filter: filterFn, handler: vi.fn() },
+        {
+          matcher: 'Bash',
+          filter: filterFn,
+          handler: vi.fn(),
+        },
       ];
 
       await executeHandlerChain(entries, {}, makeContext(), {
@@ -377,7 +560,10 @@ describe('executeHandlerChain (adversarial)', () => {
     it('matcher without toolName in options does NOT skip (matcher ignored)', async () => {
       const handler = vi.fn();
       const entries: HookEntry<unknown, void>[] = [
-        { matcher: 'Bash', handler },
+        {
+          matcher: 'Bash',
+          handler,
+        },
       ];
 
       await executeHandlerChain(entries, {}, makeContext(), {
@@ -394,16 +580,30 @@ describe('executeHandlerChain (adversarial)', () => {
 
   describe('large chain stress', () => {
     it('handles 1000 handlers without stack overflow', async () => {
-      const entries: HookEntry<{ count: number }, void>[] = Array.from(
-        { length: 1000 },
-        () => ({ handler: vi.fn() }),
+      const entries: HookEntry<
+        {
+          count: number;
+        },
+        void
+      >[] = Array.from(
+        {
+          length: 1000,
+        },
+        () => ({
+          handler: vi.fn(),
+        }),
       );
 
       const result = await executeHandlerChain(
         entries,
-        { count: 0 },
+        {
+          count: 0,
+        },
         makeContext(),
-        { hookName: 'Test', throwOnHandlerError: false },
+        {
+          hookName: 'Test',
+          throwOnHandlerError: false,
+        },
       );
 
       expect(result.results).toEqual([]);

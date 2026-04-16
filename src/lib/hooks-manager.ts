@@ -1,4 +1,6 @@
 import type { infer as zodInfer } from 'zod/v4/core';
+import { executeHandlerChain } from './hooks-emit.js';
+import { BUILT_IN_HOOK_NAMES } from './hooks-schemas.js';
 import type {
   BuiltInHookDefinitions,
   EmitResult,
@@ -9,8 +11,6 @@ import type {
   HooksManagerOptions,
   ToolMatcher,
 } from './hooks-types.js';
-import { BUILT_IN_HOOK_NAMES } from './hooks-schemas.js';
-import { executeHandlerChain } from './hooks-emit.js';
 
 //#region Types
 
@@ -87,7 +87,9 @@ export class HooksManager<Custom extends HookRegistry = Record<string, never>> {
 
     return () => {
       const current = this.entries.get(hookName);
-      if (!current) return;
+      if (!current) {
+        return;
+      }
       const idx = current.indexOf(entry);
       if (idx !== -1) {
         current.splice(idx, 1);
@@ -104,10 +106,14 @@ export class HooksManager<Custom extends HookRegistry = Record<string, never>> {
     handler: HookHandler<PayloadOf<AllHooks<Custom>, K>, ResultOf<AllHooks<Custom>, K>>,
   ): boolean {
     const list = this.entries.get(hookName);
-    if (!list) return false;
+    if (!list) {
+      return false;
+    }
 
     const idx = list.findIndex((e) => e.handler === handler);
-    if (idx === -1) return false;
+    if (idx === -1) {
+      return false;
+    }
 
     list.splice(idx, 1);
     return true;
@@ -130,7 +136,9 @@ export class HooksManager<Custom extends HookRegistry = Record<string, never>> {
   async emit<K extends keyof AllHooks<Custom> & string>(
     hookName: K,
     payload: PayloadOf<AllHooks<Custom>, K>,
-    emitContext?: { toolName?: string },
+    emitContext?: {
+      toolName?: string;
+    },
   ): Promise<EmitResult<ResultOf<AllHooks<Custom>, K>, PayloadOf<AllHooks<Custom>, K>>> {
     const list = this.entries.get(hookName) ?? [];
 
@@ -141,7 +149,9 @@ export class HooksManager<Custom extends HookRegistry = Record<string, never>> {
     };
 
     const result = await executeHandlerChain(
-      list as ReadonlyArray<HookEntry<PayloadOf<AllHooks<Custom>, K>, ResultOf<AllHooks<Custom>, K>>>,
+      list as ReadonlyArray<
+        HookEntry<PayloadOf<AllHooks<Custom>, K>, ResultOf<AllHooks<Custom>, K>>
+      >,
       payload,
       context,
       {

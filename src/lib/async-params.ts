@@ -1,5 +1,6 @@
 import type * as models from '@openrouter/sdk/models';
 import type { OpenResponsesResult } from '@openrouter/sdk/models';
+import type { Item } from './item-types.js';
 import type { ContextInput } from './tool-context.js';
 import type { InlineHookConfig } from './hooks-types.js';
 import type { HooksManager } from './hooks-manager.js';
@@ -54,10 +55,11 @@ type BaseCallModelInput<
   TTools extends readonly Tool[] = readonly Tool[],
   TShared extends Record<string, unknown> = Record<string, never>,
 > = {
-  [K in keyof Omit<models.ResponsesRequest, 'stream' | 'tools'>]?: FieldOrAsyncFunction<
+  [K in keyof Omit<models.ResponsesRequest, 'stream' | 'tools' | 'input'>]?: FieldOrAsyncFunction<
     models.ResponsesRequest[K]
   >;
 } & {
+  input: FieldOrAsyncFunction<Item[]> | string;
   tools?: TTools;
   stopWhen?: StopWhen<TTools>;
   /** Typed context data passed to tools via contextSchema. Includes optional `shared` key. */

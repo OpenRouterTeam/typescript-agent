@@ -1,5 +1,5 @@
-import type { HookEntry, InlineHookConfig } from './hooks-types.js';
 import { HooksManager } from './hooks-manager.js';
+import type { HookEntry, InlineHookConfig } from './hooks-types.js';
 
 /**
  * Normalize a hooks option into a HooksManager instance.
@@ -22,7 +22,9 @@ export function resolveHooks(
   // Inline config -> HooksManager
   const manager = new HooksManager();
   for (const [hookName, entries] of Object.entries(hooks)) {
-    if (!entries || !Array.isArray(entries)) continue;
+    if (!entries || !Array.isArray(entries)) {
+      continue;
+    }
     for (const entry of entries) {
       manager.registerEntry(hookName, entry as HookEntry<unknown, unknown>);
     }

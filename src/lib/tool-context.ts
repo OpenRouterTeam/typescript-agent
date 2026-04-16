@@ -1,7 +1,6 @@
+import * as z4 from 'zod/v4';
 import type { $ZodObject, $ZodShape } from 'zod/v4/core';
 import type { ToolExecuteContext, TurnContext } from './tool-types.js';
-
-import * as z4 from 'zod/v4';
 import { SHARED_CONTEXT_KEY } from './tool-types.js';
 
 //#region Types

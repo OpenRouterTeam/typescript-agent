@@ -1,11 +1,10 @@
+import { OpenRouter, ToolType } from '@openrouter/sdk';
 import type { ClaudeMessageParam } from '@openrouter/sdk/models/claude-message';
 import type { OpenResponsesFunctionCallOutput } from '@openrouter/sdk/models/openresponsesfunctioncalloutput';
+import type { OpenResponsesNonStreamingResponse } from '@openrouter/sdk/models/openresponsesnonstreamingresponse';
+import type { OpenResponsesStreamEvent } from '@openrouter/sdk/models/openresponsesstreamevent';
+import type { OutputFunctionCallItem } from '@openrouter/sdk/models/outputfunctioncallitem';
 import type { ResponsesOutputMessage } from '@openrouter/sdk/models/responsesoutputmessage';
-import type { ChatStreamEvent, ResponseStreamEvent } from '../../src/lib/tool-types.js';
-
-import { OpenRouter, ToolType } from '@openrouter/sdk';
-import { OpenResponsesNonStreamingResponse } from '@openrouter/sdk/models/openresponsesnonstreamingresponse';
-import { OpenResponsesStreamEvent } from '@openrouter/sdk/models/openresponsesstreamevent';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { z } from 'zod/v4';
 import { fromClaudeMessages } from '../../src/lib/anthropic-compat.js';
@@ -16,6 +15,7 @@ import {
   isResponseCompletedEvent,
   isResponseIncompleteEvent,
 } from '../../src/lib/stream-type-guards.js';
+import type { ChatStreamEvent, ResponseStreamEvent } from '../../src/lib/tool-types.js';
 import { isToolPreliminaryResultEvent } from '../../src/lib/tool-types.js';
 
 /**
@@ -25,25 +25,26 @@ function transformToChatStreamEvent(event: ResponseStreamEvent): ChatStreamEvent
   if (isToolPreliminaryResultEvent(event)) {
     // Pass through tool preliminary results as-is
     return event;
-  } else if (isOutputTextDeltaEvent(event)) {
+  }
+  if (isOutputTextDeltaEvent(event)) {
     // Transform text deltas to content.delta
     return {
       type: 'content.delta',
       delta: event.delta,
     };
-  } else if (isResponseCompletedEvent(event) || isResponseIncompleteEvent(event)) {
+  }
+  if (isResponseCompletedEvent(event) || isResponseIncompleteEvent(event)) {
     // Transform completion events to message.complete
     return {
       type: 'message.complete',
       response: event.response,
     };
-  } else {
-    // Pass-through all other events with original event wrapped
-    return {
-      type: event.type,
-      event,
-    };
   }
+  // Pass-through all other events with original event wrapped
+  return {
+    type: event.type,
+    event,
+  };
 }
 
 describe('callModel E2E Tests', () => {
@@ -153,7 +154,7 @@ describe('callModel E2E Tests', () => {
                 condition: z.string(),
               }),
               // Don't auto-execute so we can test getToolCalls()
-              execute: false,
+              // No execute function — manual tool
             },
           },
         ],
@@ -768,6 +769,131 @@ describe('callModel E2E Tests', () => {
         }
       }
     }, 15000);
+
+    it('should yield function_call items for manual tools after auto-execute rounds', async () => {
+      const response = client.callModel({
+        model: 'anthropic/claude-sonnet-4.5',
+        instructions:
+          'You have two tools. First call get_weather to get the weather, then call submit_report with a summary. Always call both tools.',
+        input: fromChatMessages([
+          {
+            role: 'user',
+            content: "What's the weather in Tokyo? Get the weather and then submit a report.",
+          },
+        ]),
+        toolChoice: 'required',
+        stopWhen: stepCountIs(2),
+        tools: [
+          {
+            type: ToolType.Function,
+            function: {
+              name: 'get_weather',
+              description: 'Get weather for a location. Always call this first.',
+              inputSchema: z.object({
+                location: z.string().describe('City name'),
+              }),
+              outputSchema: z.object({
+                temperature: z.number(),
+                condition: z.string(),
+              }),
+              execute: async (params) => ({
+                temperature: 22,
+                condition: 'Sunny in ' + params.location,
+              }),
+            },
+          },
+          {
+            type: ToolType.Function,
+            function: {
+              name: 'submit_report',
+              description: 'Submit a weather report summary. Call this after get_weather.',
+              inputSchema: z.object({
+                summary: z.string().describe('Weather summary'),
+              }),
+              outputSchema: z.object({
+                success: z.boolean(),
+              }),
+              // No execute function — manual tool
+            },
+          },
+        ],
+      });
+
+      const items: (
+        | ResponsesOutputMessage
+        | OpenResponsesFunctionCallOutput
+        | OutputFunctionCallItem
+      )[] = [];
+
+      for await (const item of response.getNewMessagesStream()) {
+        items.push(item);
+      }
+
+      const functionCallItems = items.filter((i) => i.type === 'function_call');
+      const functionCallOutputItems = items.filter((i) => i.type === 'function_call_output');
+
+      // Auto-executed tool should produce function_call_output
+      expect(functionCallOutputItems.length).toBeGreaterThan(0);
+
+      // Manual tool (submit_report) should appear as a function_call item
+      // This is the bug fix: previously these were silently dropped
+      const manualToolCall = functionCallItems.find(
+        (i) => 'name' in i && i.name === 'submit_report',
+      );
+      expect(manualToolCall).toBeDefined();
+      expect(manualToolCall!.type).toBe('function_call');
+      expect(manualToolCall!).toHaveProperty('arguments');
+    }, 60000);
+
+    it('should yield function_call items when only manual tools are present (no auto-execute)', async () => {
+      const response = client.callModel({
+        model: 'anthropic/claude-sonnet-4.5',
+        instructions: 'You must call the submit_report tool with a brief weather summary.',
+        input: fromChatMessages([
+          {
+            role: 'user',
+            content: 'Submit a weather report for Tokyo saying it is sunny and 22 degrees.',
+          },
+        ]),
+        toolChoice: 'required',
+        tools: [
+          {
+            type: ToolType.Function,
+            function: {
+              name: 'submit_report',
+              description: 'Submit a weather report summary.',
+              inputSchema: z.object({
+                summary: z.string().describe('Weather summary'),
+              }),
+              outputSchema: z.object({
+                success: z.boolean(),
+              }),
+              // No execute function — manual tool
+            },
+          },
+        ],
+      });
+
+      const items: (
+        | ResponsesOutputMessage
+        | OpenResponsesFunctionCallOutput
+        | OutputFunctionCallItem
+      )[] = [];
+
+      for await (const item of response.getNewMessagesStream()) {
+        items.push(item);
+      }
+
+      const functionCallItems = items.filter((i) => i.type === 'function_call');
+
+      // Manual tool (submit_report) should appear as a function_call item
+      const manualToolCall = functionCallItems.find(
+        (i) => 'name' in i && i.name === 'submit_report',
+      );
+      expect(manualToolCall).toBeDefined();
+      expect(manualToolCall!.type).toBe('function_call');
+      expect(manualToolCall!).toHaveProperty('arguments');
+    }, 60000);
   });
 
   describe('response.reasoningStream - Streaming reasoning deltas', () => {
@@ -1233,6 +1359,7 @@ describe('callModel E2E Tests', () => {
 
       // Get full text and stream concurrently
       const textPromise = response.getText();
+      // biome-ignore lint: IIFE used in test for async consumption
       const streamPromise = (async () => {
         const deltas: string[] = [];
         for await (const delta of response.getTextStream()) {
@@ -1267,6 +1394,7 @@ describe('callModel E2E Tests', () => {
       });
 
       // Start two concurrent stream consumers
+      // biome-ignore lint: IIFE used in test for async consumption
       const textStreamPromise = (async () => {
         const deltas: string[] = [];
         for await (const delta of response.getTextStream()) {
@@ -1275,6 +1403,7 @@ describe('callModel E2E Tests', () => {
         return deltas;
       })();
 
+      // biome-ignore lint: IIFE used in test for async consumption
       const newMessagesStreamPromise = (async () => {
         const messages: (ResponsesOutputMessage | OpenResponsesFunctionCallOutput)[] = [];
         for await (const message of response.getNewMessagesStream()) {

@@ -92,7 +92,8 @@ export type ToolContextMapWithShared<
   TShared extends Record<string, unknown> = Record<string, never>,
 > = ToolContextMap<T> &
   (TShared extends Record<string, never>
-    ? {}
+    ? // biome-ignore lint/complexity/noBannedTypes: empty object is intentional for conditional type
+      {}
     : {
         shared: TShared;
       });
@@ -151,6 +152,46 @@ export type ToolApprovalCheck<TInput> = (
 ) => boolean | Promise<boolean>;
 
 /**
+ * Content item types for tool output to model.
+ * These match the Responses API format for multimodal tool outputs.
+ */
+export type ToolOutputContentItem =
+  | {
+      type: 'input_text';
+      text: string;
+    }
+  | {
+      type: 'input_image';
+      detail: 'auto' | 'low' | 'high';
+      imageUrl: string;
+    }
+  | {
+      type: 'input_file';
+      fileId: string;
+      filename?: string;
+    };
+
+/**
+ * Result of toModelOutput function.
+ * The 'content' type passes value array directly as tool output.
+ */
+export type ToModelOutputResult = {
+  type: 'content';
+  value: ToolOutputContentItem[];
+};
+
+/**
+ * Function to convert tool execution output to model-facing output.
+ * Receives the execute result and input arguments for full context.
+ * @template TInput - The tool's input type
+ * @template TOutput - The tool's output type
+ */
+export type ToModelOutputFunction<TInput, TOutput> = (params: {
+  output: TOutput;
+  input: TInput;
+}) => ToModelOutputResult | Promise<ToModelOutputResult>;
+
+/**
  * Base tool function interface with inputSchema
  * @template TInput - Zod schema for tool input
  */
@@ -184,6 +225,8 @@ export interface ToolFunctionWithExecute<
     params: zodInfer<TInput>,
     context?: ToolExecuteContext<TName, TContext>,
   ) => Promise<zodInfer<TOutput>> | zodInfer<TOutput>;
+  /** Convert tool execution output to model-facing output */
+  toModelOutput?: ToModelOutputFunction<zodInfer<TInput>, zodInfer<TOutput>>;
 }
 
 /**
@@ -220,7 +263,9 @@ export interface ToolFunctionWithGenerator<
   execute: (
     params: zodInfer<TInput>,
     context?: ToolExecuteContext<TName, TContext>,
-  ) => AsyncGenerator<zodInfer<TEvent> | zodInfer<TOutput>, zodInfer<TOutput> | void>;
+  ) => AsyncGenerator<zodInfer<TEvent> | zodInfer<TOutput>, zodInfer<TOutput> | undefined>;
+  /** Convert tool execution output to model-facing output */
+  toModelOutput?: ToModelOutputFunction<zodInfer<TInput>, zodInfer<TOutput>>;
 }
 
 /**

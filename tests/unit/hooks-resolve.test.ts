@@ -1,6 +1,6 @@
-import { describe, it, expect, vi } from 'vitest';
-import { resolveHooks } from '../../src/lib/hooks-resolve.js';
+import { describe, expect, it, vi } from 'vitest';
 import { HooksManager } from '../../src/lib/hooks-manager.js';
+import { resolveHooks } from '../../src/lib/hooks-resolve.js';
 import type { InlineHookConfig } from '../../src/lib/hooks-types.js';
 
 describe('resolveHooks', () => {
@@ -31,8 +31,12 @@ describe('resolveHooks', () => {
   it('registers multiple entries for a single hook', () => {
     const config: InlineHookConfig = {
       PostToolUse: [
-        { handler: vi.fn() },
-        { handler: vi.fn() },
+        {
+          handler: vi.fn(),
+        },
+        {
+          handler: vi.fn(),
+        },
       ],
     };
 
@@ -43,9 +47,21 @@ describe('resolveHooks', () => {
 
   it('registers entries for multiple hooks', () => {
     const config: InlineHookConfig = {
-      PreToolUse: [{ handler: vi.fn() }],
-      PostToolUse: [{ handler: vi.fn() }],
-      Stop: [{ handler: vi.fn() }],
+      PreToolUse: [
+        {
+          handler: vi.fn(),
+        },
+      ],
+      PostToolUse: [
+        {
+          handler: vi.fn(),
+        },
+      ],
+      Stop: [
+        {
+          handler: vi.fn(),
+        },
+      ],
     };
 
     const result = resolveHooks(config);

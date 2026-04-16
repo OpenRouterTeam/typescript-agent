@@ -1,16 +1,15 @@
 import type { $ZodObject, $ZodShape, $ZodType, infer as zodInfer } from 'zod/v4/core';
-
-import {
-  type ManualTool,
-  type NextTurnParamsFunctions,
-  SHARED_CONTEXT_KEY,
-  type Tool,
-  type ToolApprovalCheck,
-  type ToolExecuteContext,
-  ToolType,
-  type ToolWithExecute,
-  type ToolWithGenerator,
+import type {
+  ManualTool,
+  NextTurnParamsFunctions,
+  ToModelOutputFunction,
+  Tool,
+  ToolApprovalCheck,
+  ToolExecuteContext,
+  ToolWithExecute,
+  ToolWithGenerator,
 } from './tool-types.js';
+import { SHARED_CONTEXT_KEY, ToolType } from './tool-types.js';
 
 //#region Config Types
 
@@ -36,6 +35,8 @@ type RegularToolConfigWithOutput<
     params: zodInfer<TInput>,
     context?: ToolExecuteContext<TName, TContext>,
   ) => Promise<zodInfer<TOutput>> | zodInfer<TOutput>;
+  /** Convert tool execution output to model-facing output */
+  toModelOutput?: ToModelOutputFunction<zodInfer<TInput>, zodInfer<TOutput>>;
 };
 
 /**
@@ -60,6 +61,8 @@ type RegularToolConfigWithoutOutput<
     params: zodInfer<TInput>,
     context?: ToolExecuteContext<TName, TContext>,
   ) => Promise<TReturn> | TReturn;
+  /** Convert tool execution output to model-facing output */
+  toModelOutput?: ToModelOutputFunction<zodInfer<TInput>, TReturn>;
 };
 
 /**
@@ -85,6 +88,8 @@ type GeneratorToolConfig<
     params: zodInfer<TInput>,
     context?: ToolExecuteContext<TName, TContext>,
   ) => AsyncGenerator<zodInfer<TEvent> | zodInfer<TOutput>>;
+  /** Convert tool execution output to model-facing output */
+  toModelOutput?: ToModelOutputFunction<zodInfer<TInput>, zodInfer<TOutput>>;
 };
 
 /**
@@ -124,6 +129,8 @@ type ToolConfigWithSharedContext<TShared extends Record<string, unknown>> = {
         context?: ToolExecuteContext<string, Record<string, unknown>, TShared>,
       ) => AsyncGenerator<unknown>)
     | false;
+  /** Convert tool execution output to model-facing output */
+  toModelOutput?: ToModelOutputFunction<Record<string, unknown>, unknown>;
 };
 
 //#endregion
@@ -287,6 +294,10 @@ export function tool(
       fn.requireApproval = config.requireApproval;
     }
 
+    if ('toModelOutput' in config && config.toModelOutput !== undefined) {
+      fn.toModelOutput = config.toModelOutput;
+    }
+
     return {
       type: ToolType.Function,
       function: fn,
@@ -313,6 +324,10 @@ export function tool(
     ...(config.requireApproval !== undefined && {
       requireApproval: config.requireApproval,
     }),
+    ...('toModelOutput' in config &&
+      config.toModelOutput !== undefined && {
+        toModelOutput: config.toModelOutput,
+      }),
   };
 
   return {

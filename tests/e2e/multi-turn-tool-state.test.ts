@@ -2,21 +2,18 @@ import type {
   OpenResponsesInputUnion,
   OpenResponsesInputUnion1,
 } from '@openrouter/sdk/models/openresponsesinputunion';
-import type { ModelResult } from '../../src/lib/model-result.js';
-import type { Tool } from '../../src/lib/tool-types.js';
-
 import * as dotenv from 'dotenv';
 import { beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { z } from 'zod/v4';
-import {
-  type BeforeRequestContext,
-  type BeforeRequestHook,
-  OpenRouter,
-  type StreamableOutputItem,
-  stepCountIs,
-  type TurnContext,
-  tool,
+import type {
+  BeforeRequestContext,
+  BeforeRequestHook,
+  StreamableOutputItem,
+  TurnContext,
 } from '../../src/index.js';
+import { OpenRouter, stepCountIs, tool } from '../../src/index.js';
+import type { ModelResult } from '../../src/lib/model-result.js';
+import type { Tool } from '../../src/lib/tool-types.js';
 
 dotenv.config();
 
@@ -468,7 +465,7 @@ describe('Multi-Turn Tool State E2E Tests', () => {
       const functionCallKeys = [
         ...allItemsMap.keys(),
       ].filter((k) => k.startsWith('function_call:'));
-      const functionCallOutputKeys = [
+      const _functionCallOutputKeys = [
         ...allItemsMap.keys(),
       ].filter((k) => k.startsWith('function_call_output:'));
 
@@ -801,7 +798,7 @@ describe('Multi-Turn Tool State E2E Tests', () => {
         stopWhen: stepCountIs(10),
       });
 
-      const text = await consumeAndTrackItems(result, allItemsMap);
+      const _text = await consumeAndTrackItems(result, allItemsMap);
 
       // Verify input function was called
       expect(turnHistory.length).toBeGreaterThan(0);

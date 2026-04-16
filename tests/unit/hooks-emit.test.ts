@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { executeHandlerChain } from '../../src/lib/hooks-emit.js';
 import type { HookContext, HookEntry } from '../../src/lib/hooks-types.js';
 
@@ -13,31 +13,73 @@ function makeContext(hookName = 'TestHook'): HookContext {
 describe('executeHandlerChain', () => {
   it('executes handlers in registration order', async () => {
     const order: number[] = [];
-    const entries: HookEntry<{ value: number }, void>[] = [
-      { handler: () => { order.push(1); } },
-      { handler: () => { order.push(2); } },
-      { handler: () => { order.push(3); } },
-    ];
-
-    await executeHandlerChain(entries, { value: 0 }, makeContext(), {
-      hookName: 'Test',
-      throwOnHandlerError: false,
-    });
-
-    expect(order).toEqual([1, 2, 3]);
-  });
-
-  it('skips handlers when matcher does not match', async () => {
-    const called = vi.fn();
-    const entries: HookEntry<{ toolName: string }, void>[] = [
-      { matcher: 'Bash', handler: called },
+    const entries: HookEntry<
+      {
+        value: number;
+      },
+      void
+    >[] = [
+      {
+        handler: () => {
+          order.push(1);
+        },
+      },
+      {
+        handler: () => {
+          order.push(2);
+        },
+      },
+      {
+        handler: () => {
+          order.push(3);
+        },
+      },
     ];
 
     await executeHandlerChain(
       entries,
-      { toolName: 'ReadFile' },
+      {
+        value: 0,
+      },
       makeContext(),
-      { hookName: 'Test', throwOnHandlerError: false, toolName: 'ReadFile' },
+      {
+        hookName: 'Test',
+        throwOnHandlerError: false,
+      },
+    );
+
+    expect(order).toEqual([
+      1,
+      2,
+      3,
+    ]);
+  });
+
+  it('skips handlers when matcher does not match', async () => {
+    const called = vi.fn();
+    const entries: HookEntry<
+      {
+        toolName: string;
+      },
+      void
+    >[] = [
+      {
+        matcher: 'Bash',
+        handler: called,
+      },
+    ];
+
+    await executeHandlerChain(
+      entries,
+      {
+        toolName: 'ReadFile',
+      },
+      makeContext(),
+      {
+        hookName: 'Test',
+        throwOnHandlerError: false,
+        toolName: 'ReadFile',
+      },
     );
 
     expect(called).not.toHaveBeenCalled();
@@ -45,15 +87,29 @@ describe('executeHandlerChain', () => {
 
   it('invokes handler when matcher matches', async () => {
     const called = vi.fn();
-    const entries: HookEntry<{ toolName: string }, void>[] = [
-      { matcher: 'Bash', handler: called },
+    const entries: HookEntry<
+      {
+        toolName: string;
+      },
+      void
+    >[] = [
+      {
+        matcher: 'Bash',
+        handler: called,
+      },
     ];
 
     await executeHandlerChain(
       entries,
-      { toolName: 'Bash' },
+      {
+        toolName: 'Bash',
+      },
       makeContext(),
-      { hookName: 'Test', throwOnHandlerError: false, toolName: 'Bash' },
+      {
+        hookName: 'Test',
+        throwOnHandlerError: false,
+        toolName: 'Bash',
+      },
     );
 
     expect(called).toHaveBeenCalledOnce();
@@ -61,54 +117,115 @@ describe('executeHandlerChain', () => {
 
   it('skips handlers when filter returns false', async () => {
     const called = vi.fn();
-    const entries: HookEntry<{ value: number }, void>[] = [
-      { filter: (p) => p.value > 5, handler: called },
+    const entries: HookEntry<
+      {
+        value: number;
+      },
+      void
+    >[] = [
+      {
+        filter: (p) => p.value > 5,
+        handler: called,
+      },
     ];
 
-    await executeHandlerChain(entries, { value: 3 }, makeContext(), {
-      hookName: 'Test',
-      throwOnHandlerError: false,
-    });
+    await executeHandlerChain(
+      entries,
+      {
+        value: 3,
+      },
+      makeContext(),
+      {
+        hookName: 'Test',
+        throwOnHandlerError: false,
+      },
+    );
 
     expect(called).not.toHaveBeenCalled();
   });
 
   it('collects sync results', async () => {
-    const entries: HookEntry<{ v: number }, { doubled: number }>[] = [
-      { handler: (p) => ({ doubled: p.v * 2 }) },
-      { handler: (p) => ({ doubled: p.v * 3 }) },
-    ];
-
-    const result = await executeHandlerChain(entries, { v: 5 }, makeContext(), {
-      hookName: 'Test',
-      throwOnHandlerError: false,
-    });
-
-    expect(result.results).toEqual([{ doubled: 10 }, { doubled: 15 }]);
-  });
-
-  it('applies mutation piping for mutatedInput', async () => {
     const entries: HookEntry<
-      { toolInput: Record<string, unknown> },
-      { mutatedInput: Record<string, unknown> }
+      {
+        v: number;
+      },
+      {
+        doubled: number;
+      }
     >[] = [
       {
-        handler: ({ toolInput }) => ({
-          mutatedInput: { ...toolInput, added: true },
+        handler: (p) => ({
+          doubled: p.v * 2,
         }),
       },
       {
-        handler: ({ toolInput }) => ({
-          mutatedInput: { ...toolInput, second: true },
+        handler: (p) => ({
+          doubled: p.v * 3,
         }),
       },
     ];
 
     const result = await executeHandlerChain(
       entries,
-      { toolInput: { original: true } },
+      {
+        v: 5,
+      },
       makeContext(),
-      { hookName: 'PreToolUse', throwOnHandlerError: false },
+      {
+        hookName: 'Test',
+        throwOnHandlerError: false,
+      },
+    );
+
+    expect(result.results).toEqual([
+      {
+        doubled: 10,
+      },
+      {
+        doubled: 15,
+      },
+    ]);
+  });
+
+  it('applies mutation piping for mutatedInput', async () => {
+    const entries: HookEntry<
+      {
+        toolInput: Record<string, unknown>;
+      },
+      {
+        mutatedInput: Record<string, unknown>;
+      }
+    >[] = [
+      {
+        handler: ({ toolInput }) => ({
+          mutatedInput: {
+            ...toolInput,
+            added: true,
+          },
+        }),
+      },
+      {
+        handler: ({ toolInput }) => ({
+          mutatedInput: {
+            ...toolInput,
+            second: true,
+          },
+        }),
+      },
+    ];
+
+    const result = await executeHandlerChain(
+      entries,
+      {
+        toolInput: {
+          original: true,
+        },
+      },
+      makeContext(),
+      {
+        hookName: 'PreToolUse',
+        throwOnHandlerError: false,
+      },
     );
 
     expect(result.finalPayload.toolInput).toEqual({
@@ -121,18 +238,33 @@ describe('executeHandlerChain', () => {
   it('short-circuits on block for PreToolUse', async () => {
     const secondHandler = vi.fn();
     const entries: HookEntry<
-      { toolInput: Record<string, unknown> },
-      { block?: boolean | string }
+      {
+        toolInput: Record<string, unknown>;
+      },
+      {
+        block?: boolean | string;
+      }
     >[] = [
-      { handler: () => ({ block: 'dangerous' }) },
-      { handler: secondHandler },
+      {
+        handler: () => ({
+          block: 'dangerous',
+        }),
+      },
+      {
+        handler: secondHandler,
+      },
     ];
 
     const result = await executeHandlerChain(
       entries,
-      { toolInput: {} },
+      {
+        toolInput: {},
+      },
       makeContext(),
-      { hookName: 'PreToolUse', throwOnHandlerError: false },
+      {
+        hookName: 'PreToolUse',
+        throwOnHandlerError: false,
+      },
     );
 
     expect(result.blocked).toBe(true);
@@ -142,18 +274,33 @@ describe('executeHandlerChain', () => {
   it('short-circuits on reject for UserPromptSubmit', async () => {
     const secondHandler = vi.fn();
     const entries: HookEntry<
-      { prompt: string },
-      { reject?: boolean | string }
+      {
+        prompt: string;
+      },
+      {
+        reject?: boolean | string;
+      }
     >[] = [
-      { handler: () => ({ reject: 'not allowed' }) },
-      { handler: secondHandler },
+      {
+        handler: () => ({
+          reject: 'not allowed',
+        }),
+      },
+      {
+        handler: secondHandler,
+      },
     ];
 
     const result = await executeHandlerChain(
       entries,
-      { prompt: 'test' },
+      {
+        prompt: 'test',
+      },
       makeContext(),
-      { hookName: 'UserPromptSubmit', throwOnHandlerError: false },
+      {
+        hookName: 'UserPromptSubmit',
+        throwOnHandlerError: false,
+      },
     );
 
     expect(result.blocked).toBe(true);
@@ -162,7 +309,11 @@ describe('executeHandlerChain', () => {
 
   it('handles async output by tracking pending promises', async () => {
     const entries: HookEntry<unknown, void>[] = [
-      { handler: () => ({ async: true as const }) },
+      {
+        handler: () => ({
+          async: true as const,
+        }),
+      },
     ];
 
     const result = await executeHandlerChain(entries, {}, makeContext(), {
@@ -184,7 +335,9 @@ describe('executeHandlerChain', () => {
           throw new Error('boom');
         },
       },
-      { handler: secondHandler },
+      {
+        handler: secondHandler,
+      },
     ];
 
     await executeHandlerChain(entries, {}, makeContext(), {
