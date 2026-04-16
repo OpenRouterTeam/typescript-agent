@@ -145,6 +145,7 @@ export class ReusableReadableStream<T> {
     this.pumpStarted = true;
     this.sourceReader = this.sourceStream.getReader();
 
+    // biome-ignore lint: IIFE used for fire-and-forget stream pump
     void (async () => {
       try {
         while (true) {

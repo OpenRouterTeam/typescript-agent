@@ -2,10 +2,10 @@ import type { OpenRouterCore } from '@openrouter/sdk/core';
 import type { RequestOptions } from '@openrouter/sdk/lib/sdks';
 import type { $ZodObject, $ZodShape, infer as zodInfer } from 'zod/v4/core';
 import type { CallModelInput } from '../lib/async-params.js';
-import type { Tool } from '../lib/tool-types.js';
-
-import { type GetResponseOptions, ModelResult } from '../lib/model-result.js';
+import type { GetResponseOptions } from '../lib/model-result.js';
+import { ModelResult } from '../lib/model-result.js';
 import { convertToolsToAPIFormat } from '../lib/tool-executor.js';
+import type { Tool } from '../lib/tool-types.js';
 
 // Re-export CallModelInput for convenience
 export type { CallModelInput } from '../lib/async-params.js';

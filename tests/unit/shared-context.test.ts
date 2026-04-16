@@ -1,8 +1,7 @@
-import type { TurnContext } from '../../src/lib/tool-types.js';
-
 import { describe, expect, it } from 'vitest';
 import * as z4 from 'zod/v4';
 import { buildToolExecuteContext, ToolContextStore } from '../../src/lib/tool-context.js';
+import type { TurnContext } from '../../src/lib/tool-types.js';
 import { SHARED_CONTEXT_KEY } from '../../src/lib/tool-types.js';
 
 //#region Shared context via buildToolExecuteContext

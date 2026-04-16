@@ -15,7 +15,9 @@ import { normalizeInputToArray } from './turn-context.js';
 function isValidUnsentToolResult<TTools extends readonly Tool[]>(
   obj: unknown,
 ): obj is UnsentToolResult<TTools> {
-  if (typeof obj !== 'object' || obj === null) return false;
+  if (typeof obj !== 'object' || obj === null) {
+    return false;
+  }
   return (
     'callId' in obj &&
     typeof obj.callId === 'string' &&
@@ -31,7 +33,9 @@ function isValidUnsentToolResult<TTools extends readonly Tool[]>(
 function isValidParsedToolCall<TTools extends readonly Tool[]>(
   obj: unknown,
 ): obj is ParsedToolCall<TTools[number]> {
-  if (typeof obj !== 'object' || obj === null) return false;
+  if (typeof obj !== 'object' || obj === null) {
+    return false;
+  }
   return (
     'id' in obj &&
     typeof obj.id === 'string' &&
@@ -122,7 +126,9 @@ export async function toolRequiresApproval<TTools extends readonly Tool[]>(
 
   // Fall back to tool-level setting
   const tool = tools.find((t) => t.function.name === toolCall.name);
-  if (!tool) return false;
+  if (!tool) {
+    return false;
+  }
 
   const requireApproval = tool.function.requireApproval;
 
@@ -211,21 +217,59 @@ export function createRejectedResult<TTools extends readonly Tool[] = readonly T
 }
 
 /**
- * Convert unsent tool results to API format for sending to the model
+ * Check if a value is a valid content array (array of input_text, input_image, or input_file blocks).
+ * These can be passed directly as tool output without JSON.stringify.
+ */
+function isContentArray(value: unknown): value is models.FunctionCallOutputItemOutputUnion1[] {
+  if (!Array.isArray(value)) {
+    return false;
+  }
+  if (value.length === 0) {
+    return false;
+  }
+  return value.every(
+    (item) =>
+      typeof item === 'object' &&
+      item !== null &&
+      'type' in item &&
+      (item.type === 'input_text' || item.type === 'input_image' || item.type === 'input_file'),
+  );
+}
+
+/**
+ * Convert unsent tool results to API format for sending to the model.
+ *
+ * Supports two output formats:
+ * 1. Content arrays (input_text, input_image, input_file blocks) - passed through directly
+ * 2. All other values - JSON stringified
+ *
+ * Content arrays are useful for tools that produce rich outputs like images,
+ * avoiding the need to serialize large binary data as JSON strings.
  */
 export function unsentResultsToAPIFormat(
   results: UnsentToolResult[],
 ): models.FunctionCallOutputItem[] {
-  return results.map((r) => ({
-    type: 'function_call_output' as const,
-    id: `output_${r.callId}`,
-    callId: r.callId,
-    output: r.error
-      ? JSON.stringify({
-          error: r.error,
-        })
-      : JSON.stringify(r.output),
-  }));
+  return results.map((r) => {
+    let output: string | models.FunctionCallOutputItemOutputUnion1[];
+
+    if (r.error) {
+      output = JSON.stringify({
+        error: r.error,
+      });
+    } else if (isContentArray(r.output)) {
+      // Pass through content arrays directly (images, text blocks, files)
+      output = r.output;
+    } else {
+      output = JSON.stringify(r.output);
+    }
+
+    return {
+      type: 'function_call_output' as const,
+      id: `output_${r.callId}`,
+      callId: r.callId,
+      output,
+    };
+  });
 }
 
 /**

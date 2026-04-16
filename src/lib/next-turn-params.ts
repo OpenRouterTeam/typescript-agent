@@ -91,6 +91,7 @@ export async function executeNextTurnParamsFunctions(
 /**
  * Process nextTurnParams for a single tool call with full type safety
  */
+// biome-ignore lint: parameters are distinct concerns, not a single options object
 async function processNextTurnParamsForCall(
   nextParams: Record<string, unknown>,
   params: Record<string, unknown>,
@@ -112,7 +113,7 @@ async function processNextTurnParamsForCall(
       if (process.env['NODE_ENV'] !== 'production') {
         console.warn(
           `Invalid nextTurnParams key "${paramKey}" in tool "${toolName}". ` +
-            `Valid keys: input, model, models, temperature, maxOutputTokens, topP, topK, instructions`,
+            'Valid keys: input, model, models, temperature, maxOutputTokens, topP, topK, instructions',
         );
       }
       continue;

@@ -1,4 +1,8 @@
 import type * as models from '@openrouter/sdk/models';
+import {
+  EasyInputMessageRoleAssistant,
+  EasyInputMessageRoleUser,
+} from '@openrouter/sdk/models/easyinputmessage';
 import type {
   ClaudeImageBlockParam,
   ClaudeMessageParam,
@@ -6,11 +10,6 @@ import type {
   ClaudeToolResultBlockParam,
   ClaudeToolUseBlockParam,
 } from '../api-shape-helpers/claude-message.js';
-
-import {
-  EasyInputMessageRoleAssistant,
-  EasyInputMessageRoleUser,
-} from '@openrouter/sdk/models/easyinputmessage';
 import { convertToClaudeMessage } from './stream-transformers.js';
 
 /**

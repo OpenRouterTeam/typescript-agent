@@ -378,7 +378,7 @@ describe('Tool Type Compatibility with plain zod imports', () => {
           any: z.any(),
           unknown: z.unknown(),
         }),
-        execute: async (params) => ({
+        execute: async (_params) => ({
           received: true,
         }),
       });

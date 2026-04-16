@@ -8,6 +8,7 @@ import {
   generateConversationId,
   partitionToolCalls,
   toolRequiresApproval,
+  unsentResultsToAPIFormat,
   updateState,
 } from '../../src/lib/conversation-state.js';
 import { tool } from '../../src/lib/tool.js';
@@ -575,6 +576,126 @@ describe('Conversation State Utilities', () => {
       ]);
 
       expect(result).toHaveLength(2);
+    });
+  });
+
+  describe('unsentResultsToAPIFormat', () => {
+    it('should stringify regular object outputs', () => {
+      const results = [
+        createUnsentResult('call-1', 'test_tool', {
+          data: 'test',
+        }),
+      ];
+
+      const formatted = unsentResultsToAPIFormat(results);
+
+      expect(formatted).toHaveLength(1);
+      expect(formatted[0]?.type).toBe('function_call_output');
+      expect(formatted[0]?.callId).toBe('call-1');
+      expect(formatted[0]?.output).toBe('{"data":"test"}');
+    });
+
+    it('should stringify error outputs', () => {
+      const result = createRejectedResult('call-1', 'test_tool', 'Something went wrong');
+      const formatted = unsentResultsToAPIFormat([result]);
+
+      expect(formatted[0]?.output).toBe('{"error":"Something went wrong"}');
+    });
+
+    it('should pass through content arrays with input_text blocks', () => {
+      const contentArray = [
+        {
+          type: 'input_text' as const,
+          text: 'Hello world',
+        },
+      ];
+      const results = [createUnsentResult('call-1', 'test_tool', contentArray)];
+
+      const formatted = unsentResultsToAPIFormat(results);
+
+      expect(formatted[0]?.output).toEqual(contentArray);
+      expect(typeof formatted[0]?.output).not.toBe('string');
+    });
+
+    it('should pass through content arrays with input_image blocks', () => {
+      const contentArray = [
+        {
+          type: 'input_image' as const,
+          detail: 'auto' as const,
+          imageUrl: 'data:image/png;base64,abc123',
+        },
+      ];
+      const results = [createUnsentResult('call-1', 'image_gen', contentArray)];
+
+      const formatted = unsentResultsToAPIFormat(results);
+
+      expect(formatted[0]?.output).toEqual(contentArray);
+      expect(typeof formatted[0]?.output).not.toBe('string');
+    });
+
+    it('should pass through mixed content arrays', () => {
+      const contentArray = [
+        {
+          type: 'input_text' as const,
+          text: 'Generated image:',
+        },
+        {
+          type: 'input_image' as const,
+          detail: 'auto' as const,
+          imageUrl: 'data:image/png;base64,abc123',
+        },
+      ];
+      const results = [createUnsentResult('call-1', 'image_gen', contentArray)];
+
+      const formatted = unsentResultsToAPIFormat(results);
+
+      expect(formatted[0]?.output).toEqual(contentArray);
+    });
+
+    it('should stringify arrays that are not content arrays', () => {
+      const regularArray = [
+        'item1',
+        'item2',
+      ];
+      const results = [createUnsentResult('call-1', 'test_tool', regularArray)];
+
+      const formatted = unsentResultsToAPIFormat(results);
+
+      expect(formatted[0]?.output).toBe('["item1","item2"]');
+    });
+
+    it('should stringify empty arrays', () => {
+      const results = [createUnsentResult('call-1', 'test_tool', [])];
+
+      const formatted = unsentResultsToAPIFormat(results);
+
+      expect(formatted[0]?.output).toBe('[]');
+    });
+
+    it('should stringify arrays with invalid content block types', () => {
+      const invalidArray = [
+        {
+          type: 'unknown_type',
+          data: 'test',
+        },
+      ];
+      const results = [createUnsentResult('call-1', 'test_tool', invalidArray)];
+
+      const formatted = unsentResultsToAPIFormat(results);
+
+      expect(formatted[0]?.output).toBe('[{"type":"unknown_type","data":"test"}]');
+    });
+
+    it('should generate correct IDs', () => {
+      const results = [
+        createUnsentResult('abc-123', 'tool1', 'result1'),
+        createUnsentResult('def-456', 'tool2', 'result2'),
+      ];
+
+      const formatted = unsentResultsToAPIFormat(results);
+
+      expect(formatted[0]?.id).toBe('output_abc-123');
+      expect(formatted[1]?.id).toBe('output_def-456');
     });
   });
 
