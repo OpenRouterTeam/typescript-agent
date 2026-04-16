@@ -16,6 +16,7 @@ import {
   unsentResultsToAPIFormat,
   updateState,
 } from './conversation-state.js';
+import type { HooksManager } from './hooks-manager.js';
 import {
   applyNextTurnParamsToRequest,
   executeNextTurnParamsFunctions,
@@ -68,7 +69,6 @@ import type {
   UnsentToolResult,
 } from './tool-types.js';
 import { hasExecuteFunction, isToolCallOutputEvent } from './tool-types.js';
-import type { HooksManager } from './hooks-manager.js';
 
 /**
  * Default maximum number of tool execution steps if no stopWhen is specified.
@@ -770,19 +770,26 @@ export class ModelResult<
       // Emit PreToolUse hook -- can block or mutate input
       let effectiveToolCall = toolCall;
       if (this.hooksManager) {
-        const preResult = await this.hooksManager.emit('PreToolUse', {
-          toolName: toolCall.name,
-          toolInput: (toolCall.arguments ?? {}) as Record<string, unknown>,
-          sessionId: this.currentState?.id ?? '',
-        }, { toolName: toolCall.name });
+        const preResult = await this.hooksManager.emit(
+          'PreToolUse',
+          {
+            toolName: toolCall.name,
+            toolInput: (toolCall.arguments ?? {}) as Record<string, unknown>,
+            sessionId: this.currentState?.id ?? '',
+          },
+          {
+            toolName: toolCall.name,
+          },
+        );
 
         if (preResult.blocked) {
           const blockResult = preResult.results.find(
             (r) => r && typeof r === 'object' && 'block' in r && r.block,
           );
-          const reason = blockResult && typeof blockResult.block === 'string'
-            ? blockResult.block
-            : 'Blocked by PreToolUse hook';
+          const reason =
+            blockResult && typeof blockResult.block === 'string'
+              ? blockResult.block
+              : 'Blocked by PreToolUse hook';
           return {
             type: 'hook_blocked' as const,
             toolCall,
@@ -790,7 +797,9 @@ export class ModelResult<
               type: 'function_call_output' as const,
               id: `output_${toolCall.id}`,
               callId: toolCall.id,
-              output: JSON.stringify({ error: reason }),
+              output: JSON.stringify({
+                error: reason,
+              }),
             },
           };
         }
@@ -798,7 +807,10 @@ export class ModelResult<
         // Apply mutated input if present
         const finalInput = preResult.finalPayload.toolInput;
         if (finalInput !== toolCall.arguments) {
-          effectiveToolCall = { ...toolCall, arguments: finalInput };
+          effectiveToolCall = {
+            ...toolCall,
+            arguments: finalInput,
+          };
         }
       }
 
@@ -816,20 +828,32 @@ export class ModelResult<
       // Emit PostToolUse or PostToolUseFailure
       if (this.hooksManager) {
         if (result.error) {
-          await this.hooksManager.emit('PostToolUseFailure', {
-            toolName: effectiveToolCall.name,
-            toolInput: (effectiveToolCall.arguments ?? {}) as Record<string, unknown>,
-            error: result.error,
-            sessionId: this.currentState?.id ?? '',
-          }, { toolName: effectiveToolCall.name });
+          await this.hooksManager.emit(
+            'PostToolUseFailure',
+            {
+              toolName: effectiveToolCall.name,
+              toolInput: (effectiveToolCall.arguments ?? {}) as Record<string, unknown>,
+              error: result.error,
+              sessionId: this.currentState?.id ?? '',
+            },
+            {
+              toolName: effectiveToolCall.name,
+            },
+          );
         } else {
-          await this.hooksManager.emit('PostToolUse', {
-            toolName: effectiveToolCall.name,
-            toolInput: (effectiveToolCall.arguments ?? {}) as Record<string, unknown>,
-            toolOutput: result.result,
-            durationMs,
-            sessionId: this.currentState?.id ?? '',
-          }, { toolName: effectiveToolCall.name });
+          await this.hooksManager.emit(
+            'PostToolUse',
+            {
+              toolName: effectiveToolCall.name,
+              toolInput: (effectiveToolCall.arguments ?? {}) as Record<string, unknown>,
+              toolOutput: result.result,
+              durationMs,
+              sessionId: this.currentState?.id ?? '',
+            },
+            {
+              toolName: effectiveToolCall.name,
+            },
+          );
         }
       }
 
@@ -858,12 +882,18 @@ export class ModelResult<
 
         // Emit PostToolUseFailure for rejected promises
         if (this.hooksManager) {
-          await this.hooksManager.emit('PostToolUseFailure', {
-            toolName: originalToolCall.name,
-            toolInput: (originalToolCall.arguments ?? {}) as Record<string, unknown>,
-            error: settled.reason,
-            sessionId: this.currentState?.id ?? '',
-          }, { toolName: originalToolCall.name });
+          await this.hooksManager.emit(
+            'PostToolUseFailure',
+            {
+              toolName: originalToolCall.name,
+              toolInput: (originalToolCall.arguments ?? {}) as Record<string, unknown>,
+              error: settled.reason,
+              sessionId: this.currentState?.id ?? '',
+            },
+            {
+              toolName: originalToolCall.name,
+            },
+          );
         }
 
         this.broadcastToolResult(originalToolCall.id, {
@@ -1279,13 +1309,17 @@ export class ModelResult<
           const rejectResult = submitResult.results.find(
             (r) => r && typeof r === 'object' && 'reject' in r && r.reject,
           );
-          const reason = rejectResult && typeof rejectResult.reject === 'string'
-            ? rejectResult.reject
-            : 'Prompt rejected by hook';
+          const reason =
+            rejectResult && typeof rejectResult.reject === 'string'
+              ? rejectResult.reject
+              : 'Prompt rejected by hook';
           throw new Error(reason);
         }
         if (submitResult.finalPayload.prompt !== baseRequest.input) {
-          baseRequest = { ...baseRequest, input: submitResult.finalPayload.prompt };
+          baseRequest = {
+            ...baseRequest,
+            input: submitResult.finalPayload.prompt,
+          };
         }
       }
 
@@ -1567,7 +1601,12 @@ export class ModelResult<
               sessionId: this.currentState?.id ?? '',
             });
             const lastResult = stopResult.results.at(-1);
-            if (lastResult && typeof lastResult === 'object' && 'forceResume' in lastResult && lastResult.forceResume) {
+            if (
+              lastResult &&
+              typeof lastResult === 'object' &&
+              'forceResume' in lastResult &&
+              lastResult.forceResume
+            ) {
               // Don't break -- continue the loop
               continue;
             }

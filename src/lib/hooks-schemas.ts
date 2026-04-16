@@ -25,14 +25,22 @@ export const PostToolUseFailurePayloadSchema = z4.object({
 });
 
 export const StopPayloadSchema = z4.object({
-  reason: z4.enum(['end_turn', 'max_tokens', 'stop_sequence']),
+  reason: z4.enum([
+    'end_turn',
+    'max_tokens',
+    'stop_sequence',
+  ]),
   sessionId: z4.string(),
 });
 
 export const PermissionRequestPayloadSchema = z4.object({
   toolName: z4.string(),
   toolInput: z4.record(z4.string(), z4.unknown()),
-  riskLevel: z4.enum(['low', 'medium', 'high']),
+  riskLevel: z4.enum([
+    'low',
+    'medium',
+    'high',
+  ]),
   sessionId: z4.string(),
 });
 
@@ -48,7 +56,12 @@ export const SessionStartPayloadSchema = z4.object({
 
 export const SessionEndPayloadSchema = z4.object({
   sessionId: z4.string(),
-  reason: z4.enum(['user', 'error', 'max_turns', 'complete']),
+  reason: z4.enum([
+    'user',
+    'error',
+    'max_turns',
+    'complete',
+  ]),
 });
 
 //#endregion
@@ -57,7 +70,12 @@ export const SessionEndPayloadSchema = z4.object({
 
 export const PreToolUseResultSchema = z4.object({
   mutatedInput: z4.record(z4.string(), z4.unknown()).optional(),
-  block: z4.union([z4.boolean(), z4.string()]).optional(),
+  block: z4
+    .union([
+      z4.boolean(),
+      z4.string(),
+    ])
+    .optional(),
 });
 
 export const StopResultSchema = z4.object({
@@ -66,13 +84,22 @@ export const StopResultSchema = z4.object({
 });
 
 export const PermissionRequestResultSchema = z4.object({
-  decision: z4.enum(['allow', 'deny', 'ask_user']),
+  decision: z4.enum([
+    'allow',
+    'deny',
+    'ask_user',
+  ]),
   reason: z4.string().optional(),
 });
 
 export const UserPromptSubmitResultSchema = z4.object({
   mutatedPrompt: z4.string().optional(),
-  reject: z4.union([z4.boolean(), z4.string()]).optional(),
+  reject: z4
+    .union([
+      z4.boolean(),
+      z4.string(),
+    ])
+    .optional(),
 });
 
 const VoidResultSchema = z4.void();
@@ -82,14 +109,38 @@ const VoidResultSchema = z4.void();
 //#region Built-in Hook Registry
 
 export const BUILT_IN_HOOKS: Record<string, HookDefinition> = {
-  PreToolUse: { payload: PreToolUsePayloadSchema, result: PreToolUseResultSchema },
-  PostToolUse: { payload: PostToolUsePayloadSchema, result: VoidResultSchema },
-  PostToolUseFailure: { payload: PostToolUseFailurePayloadSchema, result: VoidResultSchema },
-  UserPromptSubmit: { payload: UserPromptSubmitPayloadSchema, result: UserPromptSubmitResultSchema },
-  Stop: { payload: StopPayloadSchema, result: StopResultSchema },
-  PermissionRequest: { payload: PermissionRequestPayloadSchema, result: PermissionRequestResultSchema },
-  SessionStart: { payload: SessionStartPayloadSchema, result: VoidResultSchema },
-  SessionEnd: { payload: SessionEndPayloadSchema, result: VoidResultSchema },
+  PreToolUse: {
+    payload: PreToolUsePayloadSchema,
+    result: PreToolUseResultSchema,
+  },
+  PostToolUse: {
+    payload: PostToolUsePayloadSchema,
+    result: VoidResultSchema,
+  },
+  PostToolUseFailure: {
+    payload: PostToolUseFailurePayloadSchema,
+    result: VoidResultSchema,
+  },
+  UserPromptSubmit: {
+    payload: UserPromptSubmitPayloadSchema,
+    result: UserPromptSubmitResultSchema,
+  },
+  Stop: {
+    payload: StopPayloadSchema,
+    result: StopResultSchema,
+  },
+  PermissionRequest: {
+    payload: PermissionRequestPayloadSchema,
+    result: PermissionRequestResultSchema,
+  },
+  SessionStart: {
+    payload: SessionStartPayloadSchema,
+    result: VoidResultSchema,
+  },
+  SessionEnd: {
+    payload: SessionEndPayloadSchema,
+    result: VoidResultSchema,
+  },
 };
 
 export const BUILT_IN_HOOK_NAMES = new Set(Object.keys(BUILT_IN_HOOKS));

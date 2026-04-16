@@ -8,10 +8,7 @@ import type { ToolMatcher } from './hooks-types.js';
  * - `RegExp` -> `.test(toolName)`
  * - `function` -> arbitrary predicate
  */
-export function matchesTool(
-  matcher: ToolMatcher | undefined,
-  toolName: string,
-): boolean {
+export function matchesTool(matcher: ToolMatcher | undefined, toolName: string): boolean {
   if (matcher === undefined) {
     return true;
   }

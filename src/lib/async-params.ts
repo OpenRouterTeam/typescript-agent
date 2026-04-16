@@ -1,9 +1,9 @@
 import type * as models from '@openrouter/sdk/models';
 import type { OpenResponsesResult } from '@openrouter/sdk/models';
+import type { HooksManager } from './hooks-manager.js';
+import type { InlineHookConfig } from './hooks-types.js';
 import type { Item } from './item-types.js';
 import type { ContextInput } from './tool-context.js';
-import type { InlineHookConfig } from './hooks-types.js';
-import type { HooksManager } from './hooks-manager.js';
 import type {
   ParsedToolCall,
   StateAccessor,
