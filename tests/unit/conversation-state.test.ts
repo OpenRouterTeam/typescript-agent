@@ -597,7 +597,9 @@ describe('Conversation State Utilities', () => {
 
     it('should stringify error outputs', () => {
       const result = createRejectedResult('call-1', 'test_tool', 'Something went wrong');
-      const formatted = unsentResultsToAPIFormat([result]);
+      const formatted = unsentResultsToAPIFormat([
+        result,
+      ]);
 
       expect(formatted[0]?.output).toBe('{"error":"Something went wrong"}');
     });
@@ -609,7 +611,9 @@ describe('Conversation State Utilities', () => {
           text: 'Hello world',
         },
       ];
-      const results = [createUnsentResult('call-1', 'test_tool', contentArray)];
+      const results = [
+        createUnsentResult('call-1', 'test_tool', contentArray),
+      ];
 
       const formatted = unsentResultsToAPIFormat(results);
 
@@ -625,7 +629,9 @@ describe('Conversation State Utilities', () => {
           imageUrl: 'data:image/png;base64,abc123',
         },
       ];
-      const results = [createUnsentResult('call-1', 'image_gen', contentArray)];
+      const results = [
+        createUnsentResult('call-1', 'image_gen', contentArray),
+      ];
 
       const formatted = unsentResultsToAPIFormat(results);
 
@@ -645,7 +651,9 @@ describe('Conversation State Utilities', () => {
           imageUrl: 'data:image/png;base64,abc123',
         },
       ];
-      const results = [createUnsentResult('call-1', 'image_gen', contentArray)];
+      const results = [
+        createUnsentResult('call-1', 'image_gen', contentArray),
+      ];
 
       const formatted = unsentResultsToAPIFormat(results);
 
@@ -657,7 +665,9 @@ describe('Conversation State Utilities', () => {
         'item1',
         'item2',
       ];
-      const results = [createUnsentResult('call-1', 'test_tool', regularArray)];
+      const results = [
+        createUnsentResult('call-1', 'test_tool', regularArray),
+      ];
 
       const formatted = unsentResultsToAPIFormat(results);
 
@@ -665,7 +675,9 @@ describe('Conversation State Utilities', () => {
     });
 
     it('should stringify empty arrays', () => {
-      const results = [createUnsentResult('call-1', 'test_tool', [])];
+      const results = [
+        createUnsentResult('call-1', 'test_tool', []),
+      ];
 
       const formatted = unsentResultsToAPIFormat(results);
 
@@ -679,7 +691,9 @@ describe('Conversation State Utilities', () => {
           data: 'test',
         },
       ];
-      const results = [createUnsentResult('call-1', 'test_tool', invalidArray)];
+      const results = [
+        createUnsentResult('call-1', 'test_tool', invalidArray),
+      ];
 
       const formatted = unsentResultsToAPIFormat(results);
 
