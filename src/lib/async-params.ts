@@ -1,5 +1,7 @@
 import type * as models from '@openrouter/sdk/models';
 import type { OpenResponsesResult } from '@openrouter/sdk/models';
+import type { HooksManager } from './hooks-manager.js';
+import type { InlineHookConfig } from './hooks-types.js';
 import type { Item } from './item-types.js';
 import type { ContextInput } from './tool-context.js';
 import type {
@@ -80,6 +82,8 @@ type BaseCallModelInput<
    * Receives the turn context and the completed response for that turn
    */
   onTurnEnd?: (context: TurnContext, response: OpenResponsesResult) => void | Promise<void>;
+  /** Hook system for lifecycle events. Accepts inline config or a HooksManager instance. */
+  hooks?: InlineHookConfig | HooksManager;
 };
 
 /**
@@ -180,6 +184,7 @@ export async function resolveAsyncFunctions<TTools extends readonly Tool[] = rea
     'sharedContextSchema', // Client-side schema for shared context validation
     'onTurnStart', // Client-side turn start callback
     'onTurnEnd', // Client-side turn end callback
+    'hooks', // Client-side hook system
   ]);
 
   // Iterate over all keys in the input

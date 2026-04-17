@@ -16,6 +16,7 @@ import {
   unsentResultsToAPIFormat,
   updateState,
 } from './conversation-state.js';
+import type { HooksManager } from './hooks-manager.js';
 import {
   applyNextTurnParamsToRequest,
   executeNextTurnParamsFunctions,
@@ -129,6 +130,8 @@ export interface GetResponseOptions<
   onTurnStart?: (context: TurnContext) => void | Promise<void>;
   /** Callback invoked at the end of each tool execution turn */
   onTurnEnd?: (context: TurnContext, response: models.OpenResponsesResult) => void | Promise<void>;
+  /** Hook system for lifecycle events */
+  hooks?: HooksManager;
 }
 
 /**
@@ -206,8 +209,12 @@ export class ModelResult<
   // Context store for typed tool context (persists across turns)
   private contextStore: ToolContextStore | null = null;
 
+  // Hook system
+  private readonly hooksManager: HooksManager | undefined;
+
   constructor(options: GetResponseOptions<TTools, TShared>) {
     this.options = options;
+    this.hooksManager = options.hooks;
 
     // Runtime validation: approval decisions require state
     const hasApprovalDecisions =
@@ -760,18 +767,99 @@ export class ModelResult<
           }
         : undefined;
 
+      // Emit PreToolUse hook -- can block or mutate input
+      let effectiveToolCall = toolCall;
+      if (this.hooksManager) {
+        const preResult = await this.hooksManager.emit(
+          'PreToolUse',
+          {
+            toolName: toolCall.name,
+            toolInput: (toolCall.arguments ?? {}) as Record<string, unknown>,
+            sessionId: this.currentState?.id ?? '',
+          },
+          {
+            toolName: toolCall.name,
+          },
+        );
+
+        if (preResult.blocked) {
+          const blockResult = preResult.results.find(
+            (r) => r && typeof r === 'object' && 'block' in r && r.block,
+          );
+          const reason =
+            blockResult && typeof blockResult.block === 'string'
+              ? blockResult.block
+              : 'Blocked by PreToolUse hook';
+          return {
+            type: 'hook_blocked' as const,
+            toolCall,
+            output: {
+              type: 'function_call_output' as const,
+              id: `output_${toolCall.id}`,
+              callId: toolCall.id,
+              output: JSON.stringify({
+                error: reason,
+              }),
+            },
+          };
+        }
+
+        // Apply mutated input if present
+        const finalInput = preResult.finalPayload.toolInput;
+        if (finalInput !== toolCall.arguments) {
+          effectiveToolCall = {
+            ...toolCall,
+            arguments: finalInput,
+          };
+        }
+      }
+
+      const startTime = Date.now();
       const result = await executeTool(
         tool,
-        toolCall,
+        effectiveToolCall,
         turnContext,
         onPreliminaryResult,
         this.contextStore ?? undefined,
         this.options.sharedContextSchema,
       );
+      const durationMs = Date.now() - startTime;
+
+      // Emit PostToolUse or PostToolUseFailure
+      if (this.hooksManager) {
+        if (result.error) {
+          await this.hooksManager.emit(
+            'PostToolUseFailure',
+            {
+              toolName: effectiveToolCall.name,
+              toolInput: (effectiveToolCall.arguments ?? {}) as Record<string, unknown>,
+              error: result.error,
+              sessionId: this.currentState?.id ?? '',
+            },
+            {
+              toolName: effectiveToolCall.name,
+            },
+          );
+        } else {
+          await this.hooksManager.emit(
+            'PostToolUse',
+            {
+              toolName: effectiveToolCall.name,
+              toolInput: (effectiveToolCall.arguments ?? {}) as Record<string, unknown>,
+              toolOutput: result.result,
+              durationMs,
+              sessionId: this.currentState?.id ?? '',
+            },
+            {
+              toolName: effectiveToolCall.name,
+            },
+          );
+        }
+      }
 
       return {
         type: 'execution' as const,
-        toolCall,
+        toolCall: effectiveToolCall,
         tool,
         result,
         preliminaryResultsForCall,
@@ -791,6 +879,22 @@ export class ModelResult<
       if (settled.status === 'rejected') {
         const errorMessage =
           settled.reason instanceof Error ? settled.reason.message : String(settled.reason);
+
+        // Emit PostToolUseFailure for rejected promises
+        if (this.hooksManager) {
+          await this.hooksManager.emit(
+            'PostToolUseFailure',
+            {
+              toolName: originalToolCall.name,
+              toolInput: (originalToolCall.arguments ?? {}) as Record<string, unknown>,
+              error: settled.reason,
+              sessionId: this.currentState?.id ?? '',
+            },
+            {
+              toolName: originalToolCall.name,
+            },
+          );
+        }
 
         this.broadcastToolResult(originalToolCall.id, {
           error: errorMessage,
@@ -818,7 +922,7 @@ export class ModelResult<
         continue;
       }
 
-      if (value.type === 'parse_error') {
+      if (value.type === 'parse_error' || value.type === 'hook_blocked') {
         toolResults.push(value.output);
         this.turnBroadcaster?.push({
           type: 'tool.call_output' as const,
@@ -1185,6 +1289,40 @@ export class ModelResult<
         }
       }
 
+      // Emit SessionStart hook
+      if (this.hooksManager) {
+        const sessionId = this.currentState?.id ?? '';
+        this.hooksManager.setSessionId(sessionId);
+        await this.hooksManager.emit('SessionStart', {
+          sessionId,
+          config: undefined,
+        });
+      }
+
+      // Emit UserPromptSubmit hook (can mutate prompt or reject)
+      if (this.hooksManager && typeof baseRequest.input === 'string') {
+        const submitResult = await this.hooksManager.emit('UserPromptSubmit', {
+          prompt: baseRequest.input,
+          sessionId: this.currentState?.id ?? '',
+        });
+        if (submitResult.blocked) {
+          const rejectResult = submitResult.results.find(
+            (r) => r && typeof r === 'object' && 'reject' in r && r.reject,
+          );
+          const reason =
+            rejectResult && typeof rejectResult.reject === 'string'
+              ? rejectResult.reject
+              : 'Prompt rejected by hook';
+          throw new Error(reason);
+        }
+        if (submitResult.finalPayload.prompt !== baseRequest.input) {
+          baseRequest = {
+            ...baseRequest,
+            input: submitResult.finalPayload.prompt,
+          };
+        }
+      }
+
       // Store resolved request with stream mode
       this.resolvedRequest = {
         ...baseRequest,
@@ -1456,6 +1594,23 @@ export class ModelResult<
 
         // Check stop conditions
         if (await this.shouldStopExecution()) {
+          // Emit Stop hook -- can force resume or inject prompt
+          if (this.hooksManager) {
+            const stopResult = await this.hooksManager.emit('Stop', {
+              reason: 'end_turn' as const,
+              sessionId: this.currentState?.id ?? '',
+            });
+            const lastResult = stopResult.results.at(-1);
+            if (
+              lastResult &&
+              typeof lastResult === 'object' &&
+              'forceResume' in lastResult &&
+              lastResult.forceResume
+            ) {
+              // Don't break -- continue the loop
+              continue;
+            }
+          }
           break;
         }
 
@@ -1515,6 +1670,15 @@ export class ModelResult<
       this.validateFinalResponse(currentResponse);
       this.finalResponse = currentResponse;
       await this.markStateComplete();
+
+      // Emit SessionEnd hook and drain async handlers
+      if (this.hooksManager) {
+        await this.hooksManager.emit('SessionEnd', {
+          sessionId: this.currentState?.id ?? '',
+          reason: 'complete' as const,
+        });
+        await this.hooksManager.drain();
+      }
     })();
 
     return this.toolExecutionPromise;
