@@ -34,6 +34,10 @@ export type HookRegistry = Record<string, HookDefinition>;
 
 /**
  * Context provided to every hook handler invocation.
+ *
+ * - `signal` is aborted if the manager's `abortInflight()` is called while the
+ *   emit is still running. Handlers that kick off background work via
+ *   {@link AsyncOutput} should observe the signal for cancellation.
  */
 export interface HookContext {
   readonly signal: AbortSignal;
@@ -43,10 +47,21 @@ export interface HookContext {
 
 /**
  * Returned by a handler to signal fire-and-forget mode.
- * The agent proceeds immediately without waiting for completion.
+ *
+ * The chain proceeds immediately without waiting for completion. Any background
+ * work the handler has kicked off should be attached as `work` so the manager
+ * can track it for `drain()` and enforce the `asyncTimeout`.
+ *
+ * The handler is expected to construct and return this object synchronously (or
+ * resolve to it quickly). The `work` promise is the detached work to track.
  */
 export interface AsyncOutput {
   readonly async: true;
+  /**
+   * Background work the manager should track for `drain()` and time out after
+   * `asyncTimeout` ms. Omit if there is no work to track.
+   */
+  readonly work?: Promise<unknown>;
   /** Milliseconds before the async handler is aborted. Default: 30000 */
   readonly asyncTimeout?: number;
 }
@@ -103,8 +118,9 @@ export interface EmitResult<R, P> {
 
 export interface HooksManagerOptions {
   /**
-   * If true, a throwing handler stops the chain and propagates the error.
-   * If false (default), the error is logged as a warning and execution continues.
+   * If true, a throwing handler or a schema-validation failure stops the chain
+   * and propagates the error. If false (default), the error is logged as a
+   * warning and execution continues.
    */
   readonly throwOnHandlerError?: boolean;
 }
@@ -264,12 +280,20 @@ export function isAsyncOutput(value: unknown): value is AsyncOutput {
 }
 
 /**
- * Mutation field mapping for payload piping.
- * Maps result field names to the payload field they replace.
+ * Mutation field mapping for payload piping, per hook name.
+ *
+ * The outer key is the hook name; the inner map is from result field name to
+ * the payload field it replaces. Only hooks listed here support mutation
+ * piping. Custom hooks opt in by supplying their own entry on the manager
+ * (currently only the built-in mapping is honored).
  */
-export const MUTATION_FIELD_MAP: Record<string, string> = {
-  mutatedInput: 'toolInput',
-  mutatedPrompt: 'prompt',
+export const MUTATION_FIELD_MAP: Record<string, Record<string, string>> = {
+  PreToolUse: {
+    mutatedInput: 'toolInput',
+  },
+  UserPromptSubmit: {
+    mutatedPrompt: 'prompt',
+  },
 };
 
 /**

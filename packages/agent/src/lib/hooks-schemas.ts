@@ -145,4 +145,17 @@ export const BUILT_IN_HOOKS: Record<string, HookDefinition> = {
 
 export const BUILT_IN_HOOK_NAMES = new Set(Object.keys(BUILT_IN_HOOKS));
 
+/**
+ * Set of built-in hook names whose result schema is `z4.void()`. These hooks
+ * have no meaningful result object, so the emit pipeline skips result
+ * validation for them (allowing handlers to return arbitrary values that are
+ * then collected as opaque results without complaint).
+ */
+export const VOID_RESULT_HOOKS = new Set<string>([
+  'PostToolUse',
+  'PostToolUseFailure',
+  'SessionStart',
+  'SessionEnd',
+]);
+
 //#endregion

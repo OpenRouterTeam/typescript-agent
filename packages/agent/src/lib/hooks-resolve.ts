@@ -1,4 +1,4 @@
-import { HooksManager } from './hooks-manager.js';
+import { getInternalRegistrar, HooksManager } from './hooks-manager.js';
 import type { HookEntry, InlineHookConfig } from './hooks-types.js';
 
 /**
@@ -19,14 +19,17 @@ export function resolveHooks(
     return hooks;
   }
 
-  // Inline config -> HooksManager
+  // Inline config -> HooksManager. We register through the internal registrar
+  // so we don't have to constrain `resolveHooks` to the typed `on()` surface
+  // and so user code can't reach this path.
   const manager = new HooksManager();
+  const register = getInternalRegistrar(manager);
   for (const [hookName, entries] of Object.entries(hooks)) {
     if (!entries || !Array.isArray(entries)) {
       continue;
     }
     for (const entry of entries) {
-      manager.registerEntry(hookName, entry as HookEntry<unknown, unknown>);
+      register(hookName, entry as HookEntry<unknown, unknown>);
     }
   }
   return manager;

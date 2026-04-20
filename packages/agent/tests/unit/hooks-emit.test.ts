@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import * as z4 from 'zod/v4';
 import { executeHandlerChain } from '../../src/lib/hooks-emit.js';
 import type { HookContext, HookEntry } from '../../src/lib/hooks-types.js';
 
@@ -307,11 +308,17 @@ describe('executeHandlerChain', () => {
     expect(secondHandler).not.toHaveBeenCalled();
   });
 
-  it('handles async output by tracking pending promises', async () => {
+  it('handles async output by tracking pending promises when work is supplied', async () => {
+    let resolveWork: (() => void) | undefined;
+    const work = new Promise<void>((resolve) => {
+      resolveWork = resolve;
+    });
+
     const entries: HookEntry<unknown, void>[] = [
       {
         handler: () => ({
           async: true as const,
+          work,
         }),
       },
     ];
@@ -323,6 +330,10 @@ describe('executeHandlerChain', () => {
 
     expect(result.pending.length).toBe(1);
     expect(result.results.length).toBe(0);
+
+    // Let the detached work settle so the tracked promise resolves.
+    resolveWork?.();
+    await Promise.allSettled(result.pending);
   });
 
   it('logs and continues on handler error in default mode', async () => {
@@ -365,5 +376,158 @@ describe('executeHandlerChain', () => {
         throwOnHandlerError: true,
       }),
     ).rejects.toThrow('boom');
+  });
+
+  describe('per-hook mutation piping', () => {
+    it('does not pipe mutatedInput for UserPromptSubmit (wrong hook)', async () => {
+      const entries: HookEntry<
+        {
+          prompt: string;
+          toolInput?: Record<string, unknown>;
+        },
+        {
+          mutatedInput: Record<string, unknown>;
+        }
+      >[] = [
+        {
+          handler: () => ({
+            mutatedInput: {
+              forbidden: true,
+            },
+          }),
+        },
+      ];
+
+      const result = await executeHandlerChain(
+        entries,
+        {
+          prompt: 'hello',
+          toolInput: {
+            original: true,
+          },
+        },
+        makeContext(),
+        {
+          hookName: 'UserPromptSubmit',
+          throwOnHandlerError: false,
+        },
+      );
+
+      // UserPromptSubmit only pipes mutatedPrompt; mutatedInput must be ignored.
+      expect(result.finalPayload.toolInput).toEqual({
+        original: true,
+      });
+    });
+
+    it('does not pipe mutatedInput or mutatedPrompt for custom hooks', async () => {
+      const entries: HookEntry<
+        {
+          toolInput: Record<string, unknown>;
+          prompt: string;
+        },
+        {
+          mutatedInput: Record<string, unknown>;
+          mutatedPrompt: string;
+        }
+      >[] = [
+        {
+          handler: () => ({
+            mutatedInput: {
+              injected: true,
+            },
+            mutatedPrompt: 'hijacked',
+          }),
+        },
+      ];
+
+      const result = await executeHandlerChain(
+        entries,
+        {
+          toolInput: {
+            original: true,
+          },
+          prompt: 'original',
+        },
+        makeContext(),
+        {
+          hookName: 'MyCustomHook',
+          throwOnHandlerError: false,
+        },
+      );
+
+      // Custom hooks get no piping unless explicitly opted in.
+      expect(result.finalPayload.toolInput).toEqual({
+        original: true,
+      });
+      expect(result.finalPayload.prompt).toBe('original');
+    });
+  });
+
+  describe('result schema validation (chain-level)', () => {
+    it('drops an invalid result in default mode and continues', async () => {
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const resultSchema = z4.object({
+        ok: z4.boolean(),
+      });
+
+      const entries: HookEntry<
+        unknown,
+        {
+          ok: unknown;
+        }
+      >[] = [
+        {
+          handler: () => ({
+            ok: 'not-a-boolean',
+          }),
+        },
+        {
+          handler: () => ({
+            ok: true,
+          }),
+        },
+      ];
+
+      const result = await executeHandlerChain(entries, {}, makeContext(), {
+        hookName: 'Test',
+        throwOnHandlerError: false,
+        resultSchema,
+      });
+
+      expect(result.results).toEqual([
+        {
+          ok: true,
+        },
+      ]);
+      expect(warnSpy).toHaveBeenCalled();
+      warnSpy.mockRestore();
+    });
+
+    it('throws on invalid result in strict mode', async () => {
+      const resultSchema = z4.object({
+        ok: z4.boolean(),
+      });
+
+      const entries: HookEntry<
+        unknown,
+        {
+          ok: unknown;
+        }
+      >[] = [
+        {
+          handler: () => ({
+            ok: 'nope',
+          }),
+        },
+      ];
+
+      await expect(
+        executeHandlerChain(entries, {}, makeContext(), {
+          hookName: 'Test',
+          throwOnHandlerError: true,
+          resultSchema,
+        }),
+      ).rejects.toThrow('invalid result');
+    });
   });
 });

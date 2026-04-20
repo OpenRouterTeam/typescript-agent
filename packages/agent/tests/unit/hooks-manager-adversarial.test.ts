@@ -272,6 +272,7 @@ describe('HooksManager (adversarial)', () => {
       manager.on('PostToolUse', {
         handler: () => ({
           async: true as const,
+          work: Promise.resolve(),
         }),
       });
 
@@ -304,6 +305,17 @@ describe('HooksManager (adversarial)', () => {
       });
 
       expect(manager.hasHandlers('SessionStart')).toBe(false);
+    });
+  });
+
+  describe('internal registrar is not publicly reachable', () => {
+    it('HooksManager has no public registerEntry method', () => {
+      const manager = new HooksManager();
+      // `registerEntry` used to be a public method on the class. It has been
+      // removed in favour of a module-private registrar reached only via
+      // `getInternalRegistrar`. Neither the instance nor its prototype chain
+      // should expose a `registerEntry` symbol.
+      expect('registerEntry' in manager).toBe(false);
     });
   });
 

@@ -217,7 +217,7 @@ describe('executeHandlerChain (adversarial)', () => {
       expect(second).toHaveBeenCalled();
     });
 
-    it('block: "" (empty string) triggers short-circuit since typeof is string', async () => {
+    it('block: "" (empty string) does NOT short-circuit (fails closed without a reason)', async () => {
       const second = vi.fn();
       const entries: HookEntry<
         {
@@ -249,9 +249,12 @@ describe('executeHandlerChain (adversarial)', () => {
         },
       );
 
-      // isBlockTriggered checks typeof value === 'string', so empty string IS a string
-      expect(result.blocked).toBe(true);
-      expect(second).not.toHaveBeenCalled();
+      // An empty string is not a usable block reason; model-result.ts searches
+      // for the first truthy `block` field to surface a reason and would fall
+      // through, so emit must also treat this as "no block triggered" for the
+      // two sides to stay consistent.
+      expect(result.blocked).toBe(false);
+      expect(second).toHaveBeenCalled();
     });
   });
 
@@ -418,12 +421,14 @@ describe('executeHandlerChain (adversarial)', () => {
         {
           async: true;
           block: true;
+          work: Promise<void>;
         }
       >[] = [
         {
           handler: () => ({
             async: true as const,
             block: true,
+            work: Promise.resolve(),
           }),
         },
       ];
@@ -443,6 +448,30 @@ describe('executeHandlerChain (adversarial)', () => {
       // isAsyncOutput check comes before block check, so this should be async
       expect(result.pending.length).toBe(1);
       expect(result.blocked).toBe(false);
+      expect(result.results).toEqual([]);
+    });
+
+    it('{ async: true } without `work` does not push a pending promise', async () => {
+      const entries: HookEntry<
+        unknown,
+        {
+          async: true;
+        }
+      >[] = [
+        {
+          handler: () => ({
+            async: true as const,
+          }),
+        },
+      ];
+
+      const result = await executeHandlerChain(entries, {}, makeContext(), {
+        hookName: 'Test',
+        throwOnHandlerError: false,
+      });
+
+      // No `work` => nothing to track; pending stays empty.
+      expect(result.pending.length).toBe(0);
       expect(result.results).toEqual([]);
     });
 
@@ -557,7 +586,7 @@ describe('executeHandlerChain (adversarial)', () => {
       expect(filterFn).not.toHaveBeenCalled();
     });
 
-    it('matcher without toolName in options does NOT skip (matcher ignored)', async () => {
+    it('matcher without toolName in options skips the handler (fails closed)', async () => {
       const handler = vi.fn();
       const entries: HookEntry<unknown, void>[] = [
         {
@@ -572,9 +601,10 @@ describe('executeHandlerChain (adversarial)', () => {
         // no toolName
       });
 
-      // Code: matcher !== undefined && toolName !== undefined -> skip
-      // Since toolName is undefined, matcher check is skipped entirely
-      expect(handler).toHaveBeenCalled();
+      // A handler with a matcher has declared it cares about tool identity.
+      // If the caller cannot supply a toolName, we cannot prove the matcher
+      // applies, so we skip the handler rather than invoking it globally.
+      expect(handler).not.toHaveBeenCalled();
     });
   });
 

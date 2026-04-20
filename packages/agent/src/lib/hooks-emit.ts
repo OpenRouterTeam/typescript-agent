@@ -1,3 +1,5 @@
+import type { $ZodType } from 'zod/v4/core';
+import { safeParse } from 'zod/v4/core';
 import { matchesTool } from './hooks-matchers.js';
 import type { AsyncOutput, EmitResult, HookContext, HookEntry } from './hooks-types.js';
 import {
@@ -12,17 +14,30 @@ export interface ExecuteChainOptions {
   readonly hookName: string;
   readonly throwOnHandlerError: boolean;
   readonly toolName?: string | undefined;
+  /**
+   * Optional Zod schema to validate each handler's result BEFORE the chain
+   * applies mutation piping or short-circuit logic. Validation errors are
+   * handled the same way as handler throws: either re-thrown (strict mode) or
+   * logged as a warning (default).
+   *
+   * Void-typed hooks typically pass `undefined` here; results in that case are
+   * not validated.
+   */
+  readonly resultSchema?: $ZodType | undefined;
 }
 
 /**
  * Execute a chain of hook handlers sequentially.
  *
  * Supports:
- * - ToolMatcher and filter-based skipping
- * - Sync results collected into `results`
- * - Async fire-and-forget via `{ async: true }` return
- * - Mutation piping (mutatedInput -> toolInput, mutatedPrompt -> prompt)
- * - Short-circuit on block/reject fields
+ * - ToolMatcher and filter-based skipping (matcher fails closed: a handler with
+ *   a matcher and no `options.toolName` is skipped)
+ * - Sync results validated against `options.resultSchema` and collected into `results`
+ * - Async fire-and-forget via a returned {@link AsyncOutput} -- the handler's
+ *   `work` promise is pushed to `pending` without being awaited; the manager is
+ *   responsible for draining/timing out that work
+ * - Per-hook mutation piping (driven by {@link MUTATION_FIELD_MAP})
+ * - Short-circuit on block/reject fields (non-empty string or `true`)
  */
 export async function executeHandlerChain<P, R>(
   entries: ReadonlyArray<HookEntry<P, R>>,
@@ -39,6 +54,7 @@ export async function executeHandlerChain<P, R>(
 
   const blockField = BLOCK_FIELDS[options.hookName];
   const canBlock = BLOCK_HOOKS.has(options.hookName);
+  const mutationMap = MUTATION_FIELD_MAP[options.hookName];
 
   for (let i = 0; i < entries.length; i++) {
     const entry = entries[i];
@@ -46,13 +62,16 @@ export async function executeHandlerChain<P, R>(
       continue;
     }
 
-    // Matcher check for tool-scoped hooks
-    if (
-      entry.matcher !== undefined &&
-      options.toolName !== undefined &&
-      !matchesTool(entry.matcher, options.toolName)
-    ) {
-      continue;
+    // Matcher check for tool-scoped hooks. Matchers fail closed: if a matcher
+    // is registered and no toolName is available for this emit, we skip the
+    // handler rather than invoking it globally.
+    if (entry.matcher !== undefined) {
+      if (options.toolName === undefined) {
+        continue;
+      }
+      if (!matchesTool(entry.matcher, options.toolName)) {
+        continue;
+      }
     }
 
     // Filter check
@@ -63,30 +82,47 @@ export async function executeHandlerChain<P, R>(
     try {
       const returnValue = await entry.handler(currentPayload, context);
 
-      // Async fire-and-forget
+      // Async fire-and-forget: the handler has returned a signal describing
+      // detached work. Track the (optional) work promise for drain/timeout.
       if (isAsyncOutput(returnValue)) {
-        const asyncOutput = returnValue as AsyncOutput;
-        const timeout = asyncOutput.asyncTimeout ?? DEFAULT_ASYNC_TIMEOUT;
-        const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), timeout);
-
-        const asyncPromise = Promise.resolve().then(() => {
-          clearTimeout(timeoutId);
-        });
-        pending.push(asyncPromise);
+        const asyncOutput: AsyncOutput = returnValue;
+        const trackedWork = trackAsyncWork(asyncOutput);
+        if (trackedWork !== undefined) {
+          pending.push(trackedWork);
+        }
         continue;
       }
 
-      // Void / undefined -- side-effect only, continue
+      // Void / undefined / null -- side-effect only, continue
       if (returnValue === undefined || returnValue === null) {
         continue;
       }
 
+      // Validate the result against the schema if one is supplied. A failure
+      // here is treated like any other handler error: propagated in strict
+      // mode, logged otherwise.
+      if (options.resultSchema) {
+        const validation = safeParse(options.resultSchema, returnValue);
+        if (!validation.success) {
+          const err = new Error(
+            `[HooksManager] Handler ${i} for hook "${options.hookName}" returned an invalid result: ${validation.error.message}`,
+          );
+          if (options.throwOnHandlerError) {
+            throw err;
+          }
+          console.warn(err.message);
+          continue;
+        }
+      }
+
+      // Non-schema-void results pass through unchanged; we narrow via R.
       const result = returnValue as R;
       results.push(result);
 
-      // Apply mutation piping
-      currentPayload = applyMutations(currentPayload, result);
+      // Apply mutation piping -- only hooks listed in MUTATION_FIELD_MAP participate.
+      if (mutationMap) {
+        currentPayload = applyMutations(currentPayload, result, mutationMap);
+      }
 
       // Short-circuit on block
       if (canBlock && blockField && isBlockTriggered(result, blockField)) {
@@ -110,15 +146,43 @@ export async function executeHandlerChain<P, R>(
 }
 
 /**
+ * Given an {@link AsyncOutput} signal, return a Promise<void> that resolves
+ * when the handler's detached `work` settles OR the timeout fires -- whichever
+ * is first. Returns `undefined` if there is no work to track.
+ */
+function trackAsyncWork(output: AsyncOutput): Promise<void> | undefined {
+  if (output.work === undefined) {
+    return undefined;
+  }
+  const timeout = output.asyncTimeout ?? DEFAULT_ASYNC_TIMEOUT;
+
+  return new Promise<void>((resolve) => {
+    let settled = false;
+    const finish = () => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      clearTimeout(timeoutId);
+      resolve();
+    };
+
+    const timeoutId = setTimeout(finish, timeout);
+
+    output.work?.then(finish, finish);
+  });
+}
+
+/**
  * Apply mutation fields from a result onto the current payload.
  */
-function applyMutations<P, R>(payload: P, result: R): P {
+function applyMutations<P, R>(payload: P, result: R, mutationMap: Record<string, string>): P {
   if (typeof result !== 'object' || result === null) {
     return payload;
   }
 
   let mutated = payload;
-  for (const [resultField, payloadField] of Object.entries(MUTATION_FIELD_MAP)) {
+  for (const [resultField, payloadField] of Object.entries(mutationMap)) {
     if (resultField in result) {
       const value = (result as Record<string, unknown>)[resultField];
       if (value !== undefined) {
@@ -134,11 +198,19 @@ function applyMutations<P, R>(payload: P, result: R): P {
 
 /**
  * Check if a result triggers a short-circuit block.
+ *
+ * A block fires when the field is `=== true` or a non-empty string. Empty
+ * strings are treated as "no block reason supplied" -- they do NOT trigger a
+ * short-circuit, which keeps emit consistent with callers that look up the
+ * first block reason with a truthy check.
  */
 function isBlockTriggered<R>(result: R, blockField: string): boolean {
   if (typeof result !== 'object' || result === null) {
     return false;
   }
   const value = (result as Record<string, unknown>)[blockField];
-  return value === true || typeof value === 'string';
+  if (value === true) {
+    return true;
+  }
+  return typeof value === 'string' && value.length > 0;
 }
