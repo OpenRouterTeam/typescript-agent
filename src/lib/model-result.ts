@@ -40,11 +40,13 @@ import {
 import {
   hasTypeProperty,
   isFunctionCallItem,
+  isFunctionCallOutputItem,
   isOutputTextDeltaEvent,
   isReasoningDeltaEvent,
   isResponseCompletedEvent,
   isResponseFailedEvent,
   isResponseIncompleteEvent,
+  isServerToolResultItem,
 } from './stream-type-guards.js';
 import type { ContextInput } from './tool-context.js';
 import { resolveContext, ToolContextStore } from './tool-context.js';
@@ -56,24 +58,38 @@ import type {
   InferToolOutputsUnion,
   ParsedToolCall,
   ResponseStreamEvent,
+  ServerToolResultItem,
   StateAccessor,
   StopWhen,
   Tool,
   ToolCallOutputEvent,
   ToolContextMapWithShared,
+  ToolResultItem,
   ToolStreamEvent,
   TurnContext,
   TurnEndEvent,
   TurnStartEvent,
   UnsentToolResult,
 } from './tool-types.js';
-import { hasExecuteFunction, isToolCallOutputEvent } from './tool-types.js';
+import {
+  hasExecuteFunction,
+  isClientTool,
+  isServerTool,
+  isToolCallOutputEvent,
+} from './tool-types.js';
 
 /**
  * Default maximum number of tool execution steps if no stopWhen is specified.
  * This prevents infinite loops in tool execution.
  */
 const DEFAULT_MAX_STEPS = 5;
+
+/**
+ * Typeguard for plain-object records (non-null, non-array).
+ */
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
 
 /**
  * Type guard for stream event with toReadableStream method
@@ -178,7 +194,14 @@ export class ModelResult<
     round: number;
     toolCalls: ParsedToolCall<Tool>[];
     response: models.OpenResponsesResult;
-    toolResults: Array<models.FunctionCallOutputItem>;
+    /**
+     * All tool outputs from this round — both client function outputs we send
+     * back AND server-tool output items emitted by OpenRouter (web_search_call,
+     * image_generation_call, file_search_call, openrouter:datetime, generic
+     * OutputServerToolItem, etc.). Type derived from the SDK's OutputItems
+     * union so new server-tool variants appear automatically.
+     */
+    toolResults: Array<ToolResultItem>;
   }> = [];
   // Track resolved request after async function resolution
   private resolvedRequest: models.ResponsesRequest | null = null;
@@ -546,17 +569,26 @@ export class ModelResult<
           stopWhen,
         ];
 
+    const isFunctionCallOutput = (tr: ToolResultItem): tr is models.FunctionCallOutputItem =>
+      tr.type === 'function_call_output';
+    const isServerToolResult = (tr: ToolResultItem): tr is ServerToolResultItem =>
+      tr.type !== 'function_call_output';
+
     return isStopConditionMet({
       stopConditions,
       steps: this.allToolExecutionRounds.map((round) => ({
         stepType: 'continue' as const,
         text: extractTextFromResponse(round.response),
         toolCalls: round.toolCalls,
-        toolResults: round.toolResults.map((tr) => ({
+        // `toolResults` is client-tool-centric; server-tool output items are
+        // surfaced on `serverToolResults` so stop conditions can react to
+        // either class of result.
+        toolResults: round.toolResults.filter(isFunctionCallOutput).map((tr) => ({
           toolCallId: tr.callId,
           toolName: round.toolCalls.find((tc) => tc.id === tr.callId)?.name ?? '',
           result: typeof tr.output === 'string' ? JSON.parse(tr.output) : tr.output,
         })),
+        serverToolResults: round.toolResults.filter(isServerToolResult),
         response: round.response,
         usage: round.response.usage,
         finishReason: undefined,
@@ -573,13 +605,15 @@ export class ModelResult<
    */
   private hasExecutableToolCalls(toolCalls: ParsedToolCall<Tool>[]): boolean {
     return toolCalls.some((toolCall) => {
-      const tool = this.options.tools?.find((t) => t.function.name === toolCall.name);
+      const tool = this.options.tools?.find(
+        (t) => isClientTool(t) && t.function.name === toolCall.name,
+      );
       return tool && hasExecuteFunction(tool);
     });
   }
 
   private isManualToolCall(item: models.OutputFunctionCallItem): boolean {
-    const tool = this.options.tools?.find((t) => t.function.name === item.name);
+    const tool = this.options.tools?.find((t) => isClientTool(t) && t.function.name === item.name);
     return !!tool && !hasExecuteFunction(tool);
   }
 
@@ -595,7 +629,7 @@ export class ModelResult<
     turnContext: TurnContext,
   ): Promise<UnsentToolResult<TTools>[]> {
     const toolCallPromises = toolCalls.map(async (tc) => {
-      const tool = this.options.tools?.find((t) => t.function.name === tc.name);
+      const tool = this.options.tools?.find((t) => isClientTool(t) && t.function.name === tc.name);
       if (!tool || !hasExecuteFunction(tool)) {
         return null;
       }
@@ -717,7 +751,9 @@ export class ModelResult<
     turnContext: TurnContext,
   ): Promise<models.FunctionCallOutputItem[]> {
     const toolCallPromises = toolCalls.map(async (toolCall) => {
-      const tool = this.options.tools?.find((t) => t.function.name === toolCall.name);
+      const tool = this.options.tools?.find(
+        (t) => isClientTool(t) && t.function.name === toolCall.name,
+      );
       if (!tool || !hasExecuteFunction(tool)) {
         return null;
       }
@@ -848,10 +884,22 @@ export class ModelResult<
           error: value.result.error.message,
         });
       } else if (value.tool.function.toModelOutput) {
-        // toModelOutput exists - call it (may throw, which surfaces the error)
+        // toModelOutput exists - call it (may throw, which surfaces the error).
+        // Arguments have already been validated upstream by the tool's Zod
+        // inputSchema (which must be a ZodObject), so the runtime shape is
+        // always a record here. The `Tool` union widening loses the specific
+        // InferToolInput type, so we re-narrow defensively — a non-record
+        // value here signals a real upstream bug we want surfaced, not a
+        // case to paper over with `{}`.
+        const rawArgs: unknown = value.toolCall.arguments;
+        if (!isRecord(rawArgs)) {
+          throw new Error(
+            `toolCall.arguments for "${value.toolCall.name}" must be an object after Zod validation, got ${rawArgs === null ? 'null' : Array.isArray(rawArgs) ? 'array' : typeof rawArgs}`,
+          );
+        }
         const modelOutputResult = await value.tool.function.toModelOutput({
           output: value.result.result,
-          input: value.toolCall.arguments,
+          input: rawArgs,
         });
         outputForModel =
           modelOutputResult.type === 'content'
@@ -1248,7 +1296,9 @@ export class ModelResult<
         continue;
       }
 
-      const tool = this.options.tools?.find((t) => t.function.name === toolCall.name);
+      const tool = this.options.tools?.find(
+        (t) => isClientTool(t) && t.function.name === toolCall.name,
+      );
       if (!tool || !hasExecuteFunction(tool)) {
         // Can't execute, create error result
         unsentResults.push(
@@ -1487,12 +1537,38 @@ export class ModelResult<
         // Execute tools
         const toolResults = await this.executeToolRound(currentToolCalls, turnContext);
 
+        // Server-tool output items are already-executed results in the
+        // response; collect them so toolResults presents a unified list.
+        const serverToolItems: ToolResultItem[] = [];
+        for (const item of currentResponse.output) {
+          if (!hasTypeProperty(item)) {
+            continue;
+          }
+          if (
+            item.type === 'message' ||
+            item.type === 'reasoning' ||
+            item.type === 'function_call'
+          ) {
+            continue;
+          }
+          // Everything else is a server-tool output item (web_search_call,
+          // image_generation_call, file_search_call, or generic
+          // OutputServerToolItem covering openrouter:datetime and any new
+          // SDK server tool types).
+          if (isServerToolResultItem(item)) {
+            serverToolItems.push(item);
+          }
+        }
+
         // Track execution round
         this.allToolExecutionRounds.push({
           round: currentRound,
           toolCalls: currentToolCalls,
           response: currentResponse,
-          toolResults,
+          toolResults: [
+            ...toolResults,
+            ...serverToolItems,
+          ],
         });
 
         // Save tool results to state
@@ -1642,7 +1718,35 @@ export class ModelResult<
    * - image_generation_call: Image generation operations
    * - function_call_output: Results from executed tools
    */
-  getItemsStream(): AsyncIterableIterator<StreamableOutputItem> {
+  getItemsStream(): AsyncIterableIterator<StreamableOutputItem<TTools>> {
+    // Build the allowed-item-type scope from the tools actually passed to
+    // callModel, mirroring the compile-time rules that produce
+    // StreamableOutputItem<TTools>. A runtime predicate then drops items
+    // whose type isn't reachable in the narrowed union. The predicate's
+    // claim (`item is StreamableOutputItem<TTools>`) is sound because:
+    //   - `allowed` is constructed from the same tools that produced TTools
+    //   - `OutputServerToolItem.type` is `string` (open), so any non-client
+    //     item type is structurally assignable to it, covering generic /
+    //     unmapped server-tool outputs.
+    const scope = this.computeItemStreamScope();
+
+    const isInScope = (item: StreamableOutputItem): item is StreamableOutputItem<TTools> => {
+      if (scope.acceptAll) {
+        return true;
+      }
+      if (scope.allowed.has(item.type)) {
+        return true;
+      }
+      if (
+        scope.acceptGenericServerItem &&
+        item.type !== 'function_call' &&
+        item.type !== 'function_call_output'
+      ) {
+        return true;
+      }
+      return false;
+    };
+
     return async function* (this: ModelResult<TTools>) {
       await this.initStream();
 
@@ -1653,7 +1757,11 @@ export class ModelResult<
       // No tools — stream single turn directly (no broadcaster needed)
       if (!this.options.tools?.length) {
         if (this.reusableStream) {
-          yield* buildItemsStream(this.reusableStream);
+          for await (const item of buildItemsStream(this.reusableStream)) {
+            if (isInScope(item)) {
+              yield item;
+            }
+          }
         }
         return;
       }
@@ -1667,7 +1775,9 @@ export class ModelResult<
       for await (const event of consumer) {
         // Tool call outputs → yield directly as function_call_output items
         if (isToolCallOutputEvent(event)) {
-          yield event.output;
+          if (isInScope(event.output)) {
+            yield event.output;
+          }
           continue;
         }
 
@@ -1684,7 +1794,7 @@ export class ModelResult<
           const handler = itemsStreamHandlers[event.type];
           if (handler) {
             const result = handler(event as models.StreamEvents, itemsInProgress);
-            if (result) {
+            if (result && isInScope(result)) {
               yield result;
             }
           }
@@ -1693,6 +1803,103 @@ export class ModelResult<
 
       await executionPromise;
     }.call(this);
+  }
+
+  /**
+   * Compute the runtime allow-list of item types that `getItemsStream()`
+   * may yield, derived from the tools actually passed to callModel. The
+   * three return modes correspond to the compile-time narrowing:
+   *
+   * - `acceptAll: true` — no tools or fully-unconstrained TTools; the
+   *   yielded union is the widest `StreamableOutputItem`.
+   * - Specific `allowed` set — client tools contribute
+   *   `function_call` / `function_call_output`; mapped server tools
+   *   contribute their SDK output item type literal
+   *   (`web_search_call`, `file_search_call`, `image_generation_call`).
+   * - `acceptGenericServerItem: true` — at least one server tool has a
+   *   type the agent SDK does not have a dedicated output mapping for
+   *   (e.g. `openrouter:datetime`, `mcp`, new SDK additions). Any
+   *   non-client item type is accepted because these items pass through
+   *   as `OutputServerToolItem`, whose `type` field is an open `string`.
+   */
+  private computeItemStreamScope(): {
+    acceptAll: boolean;
+    allowed: ReadonlySet<string>;
+    acceptGenericServerItem: boolean;
+  } {
+    const tools = this.options.tools ?? [];
+    if (tools.length === 0) {
+      // No tools passed: runtime only emits message/reasoning, but the
+      // widest StreamableOutputItem<readonly Tool[]> includes every item
+      // type. Accept all so the default unconstrained case matches its
+      // compile-time union.
+      return {
+        acceptAll: true,
+        allowed: new Set(),
+        acceptGenericServerItem: false,
+      };
+    }
+    const allowed = new Set<string>([
+      'message',
+      'reasoning',
+    ]);
+    let acceptGenericServerItem = false;
+    for (const tool of tools) {
+      if (isClientTool(tool)) {
+        allowed.add('function_call');
+        allowed.add('function_call_output');
+        continue;
+      }
+      if (!isServerTool(tool)) {
+        continue;
+      }
+      const requestType = tool.config.type;
+      switch (requestType) {
+        case 'web_search':
+        case 'web_search_2025_08_26':
+        case 'web_search_preview':
+        case 'web_search_preview_2025_03_11':
+          allowed.add('web_search_call');
+          break;
+        case 'openrouter:web_search':
+          // Defensive: OpenRouter's web_search variant may emit either the
+          // standard OutputWebSearchCallItem (type='web_search_call') OR be
+          // wrapped in OutputServerToolItem with type='openrouter:web_search'.
+          // Accept both literals so the runtime filter doesn't silently drop
+          // valid items. Do NOT set acceptGenericServerItem — we know the
+          // tool type and want the filter narrow.
+          allowed.add('web_search_call');
+          allowed.add('openrouter:web_search');
+          break;
+        case 'file_search':
+          allowed.add('file_search_call');
+          break;
+        case 'image_generation':
+          allowed.add('image_generation_call');
+          break;
+        case 'openrouter:datetime':
+          // Known server tool whose SDK output item uses the same literal
+          // as the request type. Mirrors `KnownServerToolOutputs` in
+          // stream-transformers.ts so the runtime filter stays as narrow
+          // as the compile-time union (no acceptGenericServerItem widening).
+          allowed.add('openrouter:datetime');
+          break;
+        default:
+          // Unknown / generic server tool — at runtime its output items
+          // pass through as the request-type literal or as the SDK's
+          // OutputServerToolItem wrapper. Accept the literal plus the
+          // generic fallback. See `StreamableOutputItem` narrowing in
+          // stream-transformers.ts for the matching type-level rules.
+          allowed.add(requestType);
+          acceptGenericServerItem = true;
+          break;
+      }
+    }
+    return {
+      acceptAll: false,
+      allowed,
+      acceptGenericServerItem,
+    };
   }
 
   /**
@@ -1736,9 +1943,12 @@ export class ModelResult<
             yield item;
           }
         }
-        // Then yield the function_call_output results
+        // Then yield the function_call_output results (client tools only;
+        // server-tool output items are surfaced through getItemsStream).
         for (const toolResult of round.toolResults) {
-          yield toolResult;
+          if (isFunctionCallOutputItem(toolResult)) {
+            yield toolResult;
+          }
         }
       }
 

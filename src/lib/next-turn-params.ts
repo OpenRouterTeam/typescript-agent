@@ -1,5 +1,6 @@
 import type * as models from '@openrouter/sdk/models';
 import type { NextTurnParamsContext, ParsedToolCall, Tool } from './tool-types.js';
+import { isClientTool } from './tool-types.js';
 
 /**
  * Type guard to check if a value is a Record<string, unknown>
@@ -54,7 +55,8 @@ export async function executeNextTurnParamsFunctions(
   };
 
   for (const tool of tools) {
-    if (!tool.function.nextTurnParams) {
+    // Server tools have no client-side nextTurnParams hooks
+    if (!isClientTool(tool) || !tool.function.nextTurnParams) {
       continue;
     }
 

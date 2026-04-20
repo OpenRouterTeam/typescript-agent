@@ -1,16 +1,23 @@
+import type * as models from '@openrouter/sdk/models';
 import * as z4 from 'zod/v4';
 import type { $ZodObject, $ZodShape, $ZodType } from 'zod/v4/core';
 import type { ToolContextStore } from './tool-context.js';
 import { buildToolExecuteContext } from './tool-context.js';
 import type {
   APITool,
+  ClientTool,
   ParsedToolCall,
   Tool,
   ToolExecuteContext,
   ToolExecutionResult,
   TurnContext,
 } from './tool-types.js';
-import { hasExecuteFunction, isGeneratorTool, isRegularExecuteTool } from './tool-types.js';
+import {
+  hasExecuteFunction,
+  isGeneratorTool,
+  isRegularExecuteTool,
+  isServerTool,
+} from './tool-types.js';
 
 // Re-export ZodError for convenience
 export const ZodError = z4.ZodError;
@@ -92,17 +99,27 @@ export function convertZodToJsonSchema(zodSchema: $ZodType): Record<string, unkn
 }
 
 /**
- * Convert tools to OpenRouter API format
- * Accepts readonly arrays for better type compatibility
+ * Convert tools to OpenRouter API format. Server tools pass their SDK-shaped
+ * config through untouched; client tools are packaged into the function-call
+ * shape. Return type widens to the SDK's full request-tool union so any new
+ * server-tool variant added upstream flows through automatically.
  */
-export function convertToolsToAPIFormat(tools: readonly Tool[]): APITool[] {
-  return tools.map((tool) => ({
-    type: 'function' as const,
-    name: tool.function.name,
-    description: tool.function.description || null,
-    strict: null,
-    parameters: convertZodToJsonSchema(tool.function.inputSchema),
-  }));
+export function convertToolsToAPIFormat(
+  tools: readonly Tool[],
+): Array<models.ResponsesRequestToolUnion> {
+  return tools.map((tool) => {
+    if (isServerTool(tool)) {
+      return tool.config;
+    }
+    const apiTool: APITool = {
+      type: 'function' as const,
+      name: tool.function.name,
+      description: tool.function.description || null,
+      strict: null,
+      parameters: convertZodToJsonSchema(tool.function.inputSchema),
+    };
+    return apiTool;
+  });
 }
 
 /**
@@ -156,7 +173,7 @@ export function parseToolCallArguments(argumentsString: string): unknown {
  */
 // biome-ignore lint: parameters match the internal API shape
 function buildExecuteCtx(
-  tool: Tool,
+  tool: ClientTool,
   turnContext: TurnContext,
   contextStore?: ToolContextStore,
   sharedSchema?: $ZodObject<$ZodShape>,
@@ -336,10 +353,13 @@ export async function executeTool(
 }
 
 /**
- * Find a tool by name in the tools array
+ * Find a client tool by name in the tools array. Server tools have no
+ * client-side name to match against and are skipped.
  */
-export function findToolByName(tools: Tool[], name: string): Tool | undefined {
-  return tools.find((tool) => tool.function.name === name);
+export function findToolByName(tools: Tool[], name: string): ClientTool | undefined {
+  return tools.find(
+    (tool): tool is ClientTool => !isServerTool(tool) && tool.function.name === name,
+  );
 }
 
 /**

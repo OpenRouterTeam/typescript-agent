@@ -26,10 +26,11 @@ import {
   isResponseCompletedEvent,
   isResponseFailedEvent,
   isResponseIncompleteEvent,
+  isServerToolResultItem,
   isURLCitationAnnotation,
   isWebSearchCallOutputItem,
 } from './stream-type-guards.js';
-import type { ParsedToolCall, Tool } from './tool-types.js';
+import type { ClientTool, ParsedToolCall, ServerTool, Tool } from './tool-types.js';
 
 /**
  * Extract text deltas from responses stream events
@@ -189,18 +190,147 @@ export async function* buildResponsesMessageStream(
 }
 
 /**
- * Output item types that can be streamed from a response.
- * This is the union of all item types that appear in response output,
- * plus function_call_output for tool results.
+ * Narrowed SDK output item for a given response-side `type` literal.
+ * Picks the single `OutputItems` branch whose discriminant matches `T`.
  */
-export type StreamableOutputItem =
+type OutputItemByType<T extends string> = Extract<
+  models.OutputItems,
+  {
+    type: T;
+  }
+>;
+
+/**
+ * Every server-tool output shape that is NOT a `*_call` output item.
+ * (These are emitted for OpenRouter-specific server tools like
+ * `openrouter:datetime`, `openrouter:web_search`, `openrouter:mcp`,
+ * etc.) Used as the fallback output shape for server tools without a
+ * dedicated mapping entry below.
+ */
+type OpenRouterServerToolOutput = Exclude<
+  models.OutputItems,
+  | {
+      type: 'message';
+    }
+  | {
+      type: 'reasoning';
+    }
+  | {
+      type: 'function_call';
+    }
+  | {
+      type: 'web_search_call';
+    }
+  | {
+      type: 'file_search_call';
+    }
+  | {
+      type: 'image_generation_call';
+    }
+>;
+
+/**
+ * Maps server-tool request `type` literals to the SDK output item shape
+ * emitted by that tool. Entries resolve to the specific narrowed item
+ * from `OutputItems`. Unmapped server-tool types fall back to the union
+ * of all non-call server-tool output shapes (`OpenRouterServerToolOutput`),
+ * so new SDK server tools type-check with zero changes here.
+ */
+type KnownServerToolOutputs = {
+  web_search_preview: OutputItemByType<'web_search_call'>;
+  web_search_preview_2025_03_11: OutputItemByType<'web_search_call'>;
+  web_search: OutputItemByType<'web_search_call'>;
+  web_search_2025_08_26: OutputItemByType<'web_search_call'>;
+  // OpenRouter's web_search variant may emit either the standard
+  // `web_search_call` output OR the provider-specific `openrouter:web_search`
+  // output. Union both so consumers type-guard on `type` before accessing
+  // variant-specific fields.
+  'openrouter:web_search':
+    | OutputItemByType<'web_search_call'>
+    | OutputItemByType<'openrouter:web_search'>;
+  file_search: OutputItemByType<'file_search_call'>;
+  image_generation: OutputItemByType<'image_generation_call'>;
+  'openrouter:datetime': OutputItemByType<'openrouter:datetime'>;
+  // code_interpreter | computer_use_preview | mcp | shell | apply_patch |
+  //   local_shell | custom | any new SDK server-tool type → fall through
+  //   to OpenRouterServerToolOutput via InferServerToolOutput default.
+};
+
+/**
+ * Infer the output item shape for a given ServerTool. Known request types
+ * map via KnownServerToolOutputs; anything else falls back to the
+ * provider-side server-tool output union (`OpenRouterServerToolOutput`)
+ * so the SDK's forward-compat variants flow through automatically.
+ */
+type InferServerToolOutput<S> =
+  S extends ServerTool<infer K>
+    ? K extends keyof KnownServerToolOutputs
+      ? KnownServerToolOutputs[K]
+      : OpenRouterServerToolOutput
+    : never;
+
+/**
+ * Union of output item shapes produced by the server tools present in
+ * `TTools`. For the default unconstrained `readonly Tool[]`, this widens
+ * to every mapped output plus the generic fallback. Unused otherwise.
+ */
+type InferServerToolOutputsUnion<TTools extends readonly Tool[]> = InferServerToolOutput<
+  Extract<TTools[number], ServerTool>
+>;
+
+/**
+ * True iff the tools array contains at least one client tool. Written as
+ * `true extends (distributed-check)` so distribution over a union yields
+ * `true` when any member matches (not `boolean`).
+ */
+type HasClientTool<TTools extends readonly Tool[]> = true extends (
+  TTools[number] extends ClientTool
+    ? true
+    : never
+)
+  ? true
+  : false;
+
+/**
+ * Widest possible streamable output — every item type the API can emit
+ * plus `function_call_output` that we construct for client tool results.
+ * Used as the default when `StreamableOutputItem` is referenced without
+ * a specific TTools.
+ */
+type WidestStreamableOutputItem =
   | models.OutputMessage // type: "message"
-  | models.OutputFunctionCallItem // type: "function_call"
   | models.OutputReasoningItem // type: "reasoning"
+  | models.OutputFunctionCallItem // type: "function_call"
+  | models.FunctionCallOutputItem // type: "function_call_output"
   | models.OutputWebSearchCallItem // type: "web_search_call"
   | models.OutputFileSearchCallItem // type: "file_search_call"
   | models.OutputImageGenerationCallItem // type: "image_generation_call"
-  | models.FunctionCallOutputItem; // type: "function_call_output" (tool results)
+  | OpenRouterServerToolOutput; // every server-tool output the SDK exposes
+// plus its forward-compat `Unknown<"type">` catch-all
+
+/**
+ * Narrowed streamable output union derived from the specific TTools passed.
+ * `function_call` / `function_call_output` only appear if the array
+ * contains client tools; server-tool output shapes are narrowed via
+ * `KnownServerToolOutputs` with fallback to `OpenRouterServerToolOutput`.
+ */
+type NarrowStreamableOutputItem<TTools extends readonly Tool[]> =
+  | models.OutputMessage
+  | models.OutputReasoningItem
+  | (HasClientTool<TTools> extends true
+      ? models.OutputFunctionCallItem | models.FunctionCallOutputItem
+      : never)
+  | InferServerToolOutputsUnion<TTools>;
+
+/**
+ * Output item types that can be streamed from a response. Parameterized
+ * on `TTools` so the yielded union reflects exactly which item types can
+ * appear given the tools passed. Call sites without a specific TTools
+ * receive the widest possible union (backward-compatible with the
+ * original pre-server-tools export).
+ */
+export type StreamableOutputItem<TTools extends readonly Tool[] = readonly Tool[]> =
+  readonly Tool[] extends TTools ? WidestStreamableOutputItem : NarrowStreamableOutputItem<TTools>;
 
 //#region ItemsStream Types and Handlers
 
@@ -289,15 +419,10 @@ function handleOutputItemAdded(
     };
   }
 
-  if (isWebSearchCallOutputItem(item)) {
-    return item;
-  }
-
-  if (isFileSearchCallOutputItem(item)) {
-    return item;
-  }
-
-  if (isImageGenerationCallOutputItem(item)) {
+  // Catch-all for any other server-tool output item (web_search_call,
+  // file_search_call, image_generation_call, openrouter:datetime, generic
+  // OutputServerToolItem, or any new SDK server-tool output type).
+  if (isServerToolResultItem(item)) {
     return item;
   }
 
@@ -423,15 +548,9 @@ function handleOutputItemDone(
     return item;
   }
 
-  if (isWebSearchCallOutputItem(item)) {
-    return item;
-  }
-
-  if (isFileSearchCallOutputItem(item)) {
-    return item;
-  }
-
-  if (isImageGenerationCallOutputItem(item)) {
+  // Catch-all for any other server-tool output item (web_search_call,
+  // file_search_call, image_generation_call, or any other server-tool type).
+  if (isServerToolResultItem(item)) {
     return item;
   }
 
