@@ -1877,6 +1877,13 @@ export class ModelResult<
         case 'image_generation':
           allowed.add('image_generation_call');
           break;
+        case 'openrouter:datetime':
+          // Known server tool whose SDK output item uses the same literal
+          // as the request type. Mirrors `KnownServerToolOutputs` in
+          // stream-transformers.ts so the runtime filter stays as narrow
+          // as the compile-time union (no acceptGenericServerItem widening).
+          allowed.add('openrouter:datetime');
+          break;
         default:
           // Unknown / generic server tool — at runtime its output items
           // pass through as the request-type literal or as the SDK's
