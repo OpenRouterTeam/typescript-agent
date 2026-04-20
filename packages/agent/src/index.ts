@@ -46,12 +46,14 @@ export type {
   OutputFunctionCallItem,
   OutputImageGenerationCallItem,
   OutputInputImage,
+  OutputItems,
   OutputMessage,
   OutputReasoningItem,
   OutputWebSearchCallItem,
   // Response output content
   ResponseOutputText,
   ResponsesRequest,
+  ResponsesRequestToolUnion,
   StreamEvents,
   Usage,
 } from '@openrouter/sdk/models';
@@ -124,7 +126,7 @@ export {
   hasUnsupportedContent,
 } from './lib/stream-transformers.js';
 // Tool creation helpers
-export { tool } from './lib/tool.js';
+export { serverTool, tool } from './lib/tool.js';
 export type { ContextInput } from './lib/tool-context.js';
 // Tool context helpers
 export { buildToolExecuteContext, ToolContextStore } from './lib/tool-context.js';
@@ -132,6 +134,7 @@ export { buildToolExecuteContext, ToolContextStore } from './lib/tool-context.js
 export { ToolEventBroadcaster } from './lib/tool-event-broadcaster.js';
 export type {
   ChatStreamEvent,
+  ClientTool,
   ConversationState,
   ConversationStatus,
   HasApprovalTools,
@@ -147,6 +150,10 @@ export type {
   PartialResponse,
   ResponseStreamEvent,
   ResponseStreamEvent as EnhancedResponseStreamEvent,
+  ServerTool,
+  ServerToolConfig,
+  ServerToolResultItem,
+  ServerToolType,
   StateAccessor,
   StepResult,
   StopCondition,
@@ -162,6 +169,7 @@ export type {
   ToolOutputContentItem,
   ToolPreliminaryResultEvent,
   ToolResultEvent,
+  ToolResultItem,
   ToolStreamEvent,
   ToolWithExecute,
   ToolWithGenerator,
@@ -176,8 +184,10 @@ export type {
 export {
   hasApprovalRequiredTools,
   hasExecuteFunction,
+  isClientTool,
   isGeneratorTool,
   isRegularExecuteTool,
+  isServerTool,
   isToolCallOutputEvent,
   isToolPreliminaryResultEvent,
   isToolResultEvent,
