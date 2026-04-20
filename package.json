@@ -1,6 +1,6 @@
 {
   "name": "@openrouter/agent",
-  "version": "0.3.3",
+  "version": "0.4.0",
   "author": "OpenRouter",
   "description": "Agent toolkit for building AI applications with OpenRouter — tool orchestration, streaming, multi-turn conversations, and format compatibility.",
   "keywords": [
