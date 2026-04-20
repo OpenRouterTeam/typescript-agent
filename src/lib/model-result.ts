@@ -58,6 +58,7 @@ import type {
   InferToolOutputsUnion,
   ParsedToolCall,
   ResponseStreamEvent,
+  ServerToolResultItem,
   StateAccessor,
   StopWhen,
   Tool,
@@ -570,6 +571,8 @@ export class ModelResult<
 
     const isFunctionCallOutput = (tr: ToolResultItem): tr is models.FunctionCallOutputItem =>
       tr.type === 'function_call_output';
+    const isServerToolResult = (tr: ToolResultItem): tr is ServerToolResultItem =>
+      tr.type !== 'function_call_output';
 
     return isStopConditionMet({
       stopConditions,
@@ -577,12 +580,15 @@ export class ModelResult<
         stepType: 'continue' as const,
         text: extractTextFromResponse(round.response),
         toolCalls: round.toolCalls,
-        // stopWhen step model is client-tool-centric; skip server tool items.
+        // `toolResults` is client-tool-centric; server-tool output items are
+        // surfaced on `serverToolResults` so stop conditions can react to
+        // either class of result.
         toolResults: round.toolResults.filter(isFunctionCallOutput).map((tr) => ({
           toolCallId: tr.callId,
           toolName: round.toolCalls.find((tc) => tc.id === tr.callId)?.name ?? '',
           result: typeof tr.output === 'string' ? JSON.parse(tr.output) : tr.output,
         })),
+        serverToolResults: round.toolResults.filter(isServerToolResult),
         response: round.response,
         usage: round.response.usage,
         finishReason: undefined,
@@ -1853,8 +1859,17 @@ export class ModelResult<
         case 'web_search_2025_08_26':
         case 'web_search_preview':
         case 'web_search_preview_2025_03_11':
-        case 'openrouter:web_search':
           allowed.add('web_search_call');
+          break;
+        case 'openrouter:web_search':
+          // Defensive: OpenRouter's web_search variant may emit either the
+          // standard OutputWebSearchCallItem (type='web_search_call') OR be
+          // wrapped in OutputServerToolItem with type='openrouter:web_search'.
+          // Accept both literals so the runtime filter doesn't silently drop
+          // valid items. Do NOT set acceptGenericServerItem — we know the
+          // tool type and want the filter narrow.
+          allowed.add('web_search_call');
+          allowed.add('openrouter:web_search');
           break;
         case 'file_search':
           allowed.add('file_search_call');

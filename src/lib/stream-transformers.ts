@@ -190,36 +190,83 @@ export async function* buildResponsesMessageStream(
 }
 
 /**
+ * Narrowed SDK output item for a given response-side `type` literal.
+ * Picks the single `OutputItems` branch whose discriminant matches `T`.
+ */
+type OutputItemByType<T extends string> = Extract<
+  models.OutputItems,
+  {
+    type: T;
+  }
+>;
+
+/**
+ * Every server-tool output shape that is NOT a `*_call` output item.
+ * (These are emitted for OpenRouter-specific server tools like
+ * `openrouter:datetime`, `openrouter:web_search`, `openrouter:mcp`,
+ * etc.) Used as the fallback output shape for server tools without a
+ * dedicated mapping entry below.
+ */
+type OpenRouterServerToolOutput = Exclude<
+  models.OutputItems,
+  | {
+      type: 'message';
+    }
+  | {
+      type: 'reasoning';
+    }
+  | {
+      type: 'function_call';
+    }
+  | {
+      type: 'web_search_call';
+    }
+  | {
+      type: 'file_search_call';
+    }
+  | {
+      type: 'image_generation_call';
+    }
+>;
+
+/**
  * Maps server-tool request `type` literals to the SDK output item shape
- * emitted by that tool. Unmapped server-tool types fall back to the
- * generic `OutputServerToolItem`, so new SDK server tools type-check
- * (as the generic wrapper) with zero changes here.
+ * emitted by that tool. Entries resolve to the specific narrowed item
+ * from `OutputItems`. Unmapped server-tool types fall back to the union
+ * of all non-call server-tool output shapes (`OpenRouterServerToolOutput`),
+ * so new SDK server tools type-check with zero changes here.
  */
 type KnownServerToolOutputs = {
-  web_search_preview: models.OutputWebSearchCallItem;
-  web_search_preview_2025_03_11: models.OutputWebSearchCallItem;
-  web_search: models.OutputWebSearchCallItem;
-  web_search_2025_08_26: models.OutputWebSearchCallItem;
-  'openrouter:web_search': models.OutputWebSearchCallItem;
-  file_search: models.OutputFileSearchCallItem;
-  image_generation: models.OutputImageGenerationCallItem;
-  'openrouter:datetime': models.OutputServerToolItem;
+  web_search_preview: OutputItemByType<'web_search_call'>;
+  web_search_preview_2025_03_11: OutputItemByType<'web_search_call'>;
+  web_search: OutputItemByType<'web_search_call'>;
+  web_search_2025_08_26: OutputItemByType<'web_search_call'>;
+  // OpenRouter's web_search variant may emit either the standard
+  // `web_search_call` output OR the provider-specific `openrouter:web_search`
+  // output. Union both so consumers type-guard on `type` before accessing
+  // variant-specific fields.
+  'openrouter:web_search':
+    | OutputItemByType<'web_search_call'>
+    | OutputItemByType<'openrouter:web_search'>;
+  file_search: OutputItemByType<'file_search_call'>;
+  image_generation: OutputItemByType<'image_generation_call'>;
+  'openrouter:datetime': OutputItemByType<'openrouter:datetime'>;
   // code_interpreter | computer_use_preview | mcp | shell | apply_patch |
   //   local_shell | custom | any new SDK server-tool type → fall through
-  //   to OutputServerToolItem via InferServerToolOutput default.
+  //   to OpenRouterServerToolOutput via InferServerToolOutput default.
 };
 
 /**
  * Infer the output item shape for a given ServerTool. Known request types
- * map via KnownServerToolOutputs; anything else falls back to the generic
- * OutputServerToolItem (the SDK's catch-all wrapper for server tools it
- * hasn't carved out a dedicated output variant for).
+ * map via KnownServerToolOutputs; anything else falls back to the
+ * provider-side server-tool output union (`OpenRouterServerToolOutput`)
+ * so the SDK's forward-compat variants flow through automatically.
  */
 type InferServerToolOutput<S> =
   S extends ServerTool<infer K>
     ? K extends keyof KnownServerToolOutputs
       ? KnownServerToolOutputs[K]
-      : models.OutputServerToolItem
+      : OpenRouterServerToolOutput
     : never;
 
 /**
@@ -258,13 +305,14 @@ type WidestStreamableOutputItem =
   | models.OutputWebSearchCallItem // type: "web_search_call"
   | models.OutputFileSearchCallItem // type: "file_search_call"
   | models.OutputImageGenerationCallItem // type: "image_generation_call"
-  | models.OutputServerToolItem; // catch-all for new/generic server-tool items
+  | OpenRouterServerToolOutput; // every server-tool output the SDK exposes
+// plus its forward-compat `Unknown<"type">` catch-all
 
 /**
  * Narrowed streamable output union derived from the specific TTools passed.
  * `function_call` / `function_call_output` only appear if the array
  * contains client tools; server-tool output shapes are narrowed via
- * `KnownServerToolOutputs` with fallback to `OutputServerToolItem`.
+ * `KnownServerToolOutputs` with fallback to `OpenRouterServerToolOutput`.
  */
 type NarrowStreamableOutputItem<TTools extends readonly Tool[]> =
   | models.OutputMessage
@@ -371,20 +419,9 @@ function handleOutputItemAdded(
     };
   }
 
-  if (isWebSearchCallOutputItem(item)) {
-    return item;
-  }
-
-  if (isFileSearchCallOutputItem(item)) {
-    return item;
-  }
-
-  if (isImageGenerationCallOutputItem(item)) {
-    return item;
-  }
-
-  // Catch-all for any other server-tool output item (openrouter:datetime,
-  // generic OutputServerToolItem, or any new SDK server-tool output type).
+  // Catch-all for any other server-tool output item (web_search_call,
+  // file_search_call, image_generation_call, openrouter:datetime, generic
+  // OutputServerToolItem, or any new SDK server-tool output type).
   if (isServerToolResultItem(item)) {
     return item;
   }
@@ -511,19 +548,8 @@ function handleOutputItemDone(
     return item;
   }
 
-  if (isWebSearchCallOutputItem(item)) {
-    return item;
-  }
-
-  if (isFileSearchCallOutputItem(item)) {
-    return item;
-  }
-
-  if (isImageGenerationCallOutputItem(item)) {
-    return item;
-  }
-
-  // Catch-all for any other server-tool output item.
+  // Catch-all for any other server-tool output item (web_search_call,
+  // file_search_call, image_generation_call, or any other server-tool type).
   if (isServerToolResultItem(item)) {
     return item;
   }

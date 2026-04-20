@@ -386,18 +386,26 @@ export interface ServerTool<T extends ServerToolType = ServerToolType> extends S
 export type Tool = ClientTool | ServerToolBase;
 
 /**
- * Server-tool output items that appear in `response.output`. The specific
- * SDK types are listed so TypeScript can narrow on the `type` discriminator,
- * and `OutputServerToolItem` is the catch-all the SDK uses for any server
- * tool it hasn't carved out a specific type for — including new server
- * tools added upstream (e.g. `openrouter:datetime`). New additions flow
- * through the catch-all with zero changes here.
+ * Server-tool output items that appear in `response.output`. Derived from
+ * the SDK's `OutputItems` union by removing the client-owned variants
+ * (message, reasoning, function_call). Every remaining branch — including
+ * server-tool-specific shapes like `OutputDatetimeItem`,
+ * `OutputWebSearchServerToolItem`, `OutputMcpServerToolItem`, and the
+ * SDK's forward-compat `Unknown<"type">` catch-all — flows through
+ * automatically when the SDK adds new server-tool variants.
  */
-export type ServerToolResultItem =
-  | models.OutputWebSearchCallItem
-  | models.OutputFileSearchCallItem
-  | models.OutputImageGenerationCallItem
-  | models.OutputServerToolItem;
+export type ServerToolResultItem = Exclude<
+  models.OutputItems,
+  | {
+      type: 'message';
+    }
+  | {
+      type: 'reasoning';
+    }
+  | {
+      type: 'function_call';
+    }
+>;
 
 /**
  * Unified tool-result item: either a client function output we construct
@@ -602,7 +610,29 @@ export interface StepResult<TTools extends readonly Tool[] = readonly Tool[]> {
   readonly stepType: 'initial' | 'continue';
   readonly text: string;
   readonly toolCalls: TypedToolCallUnion<TTools>[];
+  /**
+   * Client function tool results ONLY. Server-tool results
+   * (web_search_call, image_generation_call, file_search_call,
+   * openrouter:datetime, and other server-side tool output items) are NOT
+   * included here — see {@link StepResult.serverToolResults} for those.
+   */
   readonly toolResults: ToolExecutionResultUnion<TTools>[];
+  /**
+   * Server-side tool result items emitted by OpenRouter as part of the
+   * model response (e.g. `web_search_call`, `image_generation_call`,
+   * `file_search_call`, `openrouter:datetime`, and any other server-tool
+   * output variant in the SDK's `OutputItems` union).
+   *
+   * These results are produced by the provider rather than executed by
+   * the client, so they do not flow through the client `toolResults`
+   * array. Stop conditions that want to react to server-tool invocations
+   * (for example, stopping after the model performs a web search) should
+   * inspect this field.
+   *
+   * Optional for back-compat: earlier releases of this type did not
+   * populate server-tool results in step history.
+   */
+  readonly serverToolResults?: ServerToolResultItem[];
   readonly response: models.OpenResponsesResult;
   readonly usage?: models.Usage | null | undefined;
   readonly finishReason?: string | undefined;

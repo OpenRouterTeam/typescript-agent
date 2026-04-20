@@ -49,7 +49,6 @@ export type {
   OutputItems,
   OutputMessage,
   OutputReasoningItem,
-  OutputServerToolItem,
   OutputWebSearchCallItem,
   // Response output content
   ResponseOutputText,
