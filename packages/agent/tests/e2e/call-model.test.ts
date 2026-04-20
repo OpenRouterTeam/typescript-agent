@@ -1,4 +1,3 @@
-import { OpenRouter, ToolType } from '@openrouter/sdk';
 import type { ClaudeMessageParam } from '@openrouter/sdk/models/claude-message';
 import type { OpenResponsesFunctionCallOutput } from '@openrouter/sdk/models/openresponsesfunctioncalloutput';
 import type { OpenResponsesNonStreamingResponse } from '@openrouter/sdk/models/openresponsesnonstreamingresponse';
@@ -7,6 +6,7 @@ import type { OutputFunctionCallItem } from '@openrouter/sdk/models/outputfuncti
 import type { ResponsesOutputMessage } from '@openrouter/sdk/models/responsesoutputmessage';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { z } from 'zod/v4';
+import { OpenRouter, ToolType } from '../../src/index.js';
 import { fromClaudeMessages } from '../../src/lib/anthropic-compat.js';
 import { fromChatMessages, toChatMessage } from '../../src/lib/chat-compat.js';
 import { stepCountIs } from '../../src/lib/stop-conditions.js';
@@ -726,7 +726,7 @@ describe('callModel E2E Tests', () => {
           expect(lastMessageIndex).toBeGreaterThan(lastFnOutputIndex);
         }
       }
-    }, 6000);
+    }, 20000);
 
     it('should return messages with all required fields and correct types', async () => {
       const response = client.callModel({
