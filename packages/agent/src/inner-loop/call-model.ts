@@ -96,6 +96,7 @@ export function callModel<
   // Destructure state management options along with tools and stopWhen
   const {
     tools,
+    activeTools,
     stopWhen,
     state,
     requireApproval,
@@ -116,8 +117,14 @@ export function callModel<
     ...apiRequest
   } = request;
 
+  // Narrow tools to the active subset (if provided) before API conversion and
+  // before they are registered for execution, so the model cannot call filtered
+  // tools and the executor does not carry orphaned definitions.
+  const activeSet = activeTools ? new Set(activeTools) : undefined;
+  const filteredTools = activeSet ? tools?.filter((t) => activeSet.has(t.function.name)) : tools;
+
   // Convert tools to API format - no cast needed now that convertToolsToAPIFormat accepts readonly
-  const apiTools = tools ? convertToolsToAPIFormat(tools) : undefined;
+  const apiTools = filteredTools ? convertToolsToAPIFormat(filteredTools) : undefined;
 
   // Append the single universal `task` tool when any long-running tool is
   // registered (and check-ins aren't disabled): ONE static wire definition
@@ -158,7 +165,7 @@ export function callModel<
     client,
     request: finalRequest,
     options: callModelOptions,
-    tools,
+    tools: filteredTools,
     stopWhen,
     state,
     requireApproval,
