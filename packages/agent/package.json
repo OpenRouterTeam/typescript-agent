@@ -1,6 +1,6 @@
 {
   "name": "@openrouter/agent",
-  "version": "0.3.2",
+  "version": "0.3.3",
   "author": "OpenRouter",
   "description": "Agent toolkit for building AI applications with OpenRouter — tool orchestration, streaming, multi-turn conversations, and format compatibility.",
   "keywords": [
@@ -116,7 +116,7 @@
     "compile": "tsc"
   },
   "dependencies": {
-    "@openrouter/sdk": "*",
+    "@openrouter/sdk": "^0.12.12",
     "zod": "^4.0.0"
   }
 }

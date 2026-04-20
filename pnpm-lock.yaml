@@ -39,8 +39,8 @@ importers:
   packages/agent:
     dependencies:
       '@openrouter/sdk':
-        specifier: '*'
-        version: 0.11.2
+        specifier: ^0.12.12
+        version: 0.12.12
       zod:
         specifier: ^4.0.0
         version: 4.3.6
@@ -351,8 +351,8 @@ packages:
     resolution: {integrity: sha512-oGB+UxlgWcgQkgwo8GcEGwemoTFt3FIO9ababBmaGwXIoBKZ+GTy0pP185beGg7Llih/NSHSV2XAs1lnznocSg==}
     engines: {node: '>= 8'}
 
-  '@openrouter/sdk@0.11.2':
-    resolution: {integrity: sha512-uu8zu7vd4hA2l4vUD1UiZuefxqaH2/ixFcUG8GIO9+qcEJkWX4AYAil7SpGmZOTgy8STLFTEk4M4MmyUW0YMLg==}
+  '@openrouter/sdk@0.12.12':
+    resolution: {integrity: sha512-/4FUsYEW82sff6/QtuY7NrIe2SLya/jv8HCk4VCYFXpHvr18P2osOn4iTwTqkqu4SJdrFtj9VTRKoBIg61u9dQ==}
 
   '@rollup/rollup-android-arm-eabi@4.60.1':
     resolution: {integrity: sha512-d6FinEBLdIiK+1uACUttJKfgZREXrF0Qc2SmLII7W2AD8FfiZ9Wjd+rD/iRuf5s5dWrr1GgwXCvPqOuDquOowA==}
@@ -1407,7 +1407,7 @@ snapshots:
       '@nodelib/fs.scandir': 2.1.5
       fastq: 1.20.1
 
-  '@openrouter/sdk@0.11.2':
+  '@openrouter/sdk@0.12.12':
     dependencies:
       zod: 4.3.6
 
