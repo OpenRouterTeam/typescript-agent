@@ -2,3 +2,7 @@ esm/
 node_modules/
 .eslintcache
 .worktrees/
+.turbo/
+.env
+.env.*
+!.env.example

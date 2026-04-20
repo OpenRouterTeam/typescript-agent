@@ -1,6 +1,20 @@
 // SDK type re-exports — every SDK type used in this package's public API
 // so consumers don't need to depend on @openrouter/sdk directly.
 
+// Hooks — interception points for requests and responses
+export { SDKHooks } from '@openrouter/sdk/hooks/hooks';
+export type {
+  AfterErrorContext,
+  AfterErrorHook,
+  AfterSuccessContext,
+  AfterSuccessHook,
+  BeforeCreateRequestContext,
+  BeforeCreateRequestHook,
+  BeforeRequestContext,
+  BeforeRequestHook,
+  HookContext as SDKHookContext,
+  SDKInitHook,
+} from '@openrouter/sdk/hooks/types';
 export type { RequestOptions } from '@openrouter/sdk/lib/sdks';
 
 export type {
@@ -32,12 +46,14 @@ export type {
   OutputFunctionCallItem,
   OutputImageGenerationCallItem,
   OutputInputImage,
+  OutputItems,
   OutputMessage,
   OutputReasoningItem,
   OutputWebSearchCallItem,
   // Response output content
   ResponseOutputText,
   ResponsesRequest,
+  ResponsesRequestToolUnion,
   StreamEvents,
   Usage,
 } from '@openrouter/sdk/models';
@@ -157,7 +173,7 @@ export {
   hasUnsupportedContent,
 } from './lib/stream-transformers.js';
 // Tool creation helpers
-export { tool } from './lib/tool.js';
+export { serverTool, tool } from './lib/tool.js';
 export type { ContextInput } from './lib/tool-context.js';
 // Tool context helpers
 export { buildToolExecuteContext, ToolContextStore } from './lib/tool-context.js';
@@ -165,6 +181,7 @@ export { buildToolExecuteContext, ToolContextStore } from './lib/tool-context.js
 export { ToolEventBroadcaster } from './lib/tool-event-broadcaster.js';
 export type {
   ChatStreamEvent,
+  ClientTool,
   ConversationState,
   ConversationStatus,
   HasApprovalTools,
@@ -180,6 +197,10 @@ export type {
   PartialResponse,
   ResponseStreamEvent,
   ResponseStreamEvent as EnhancedResponseStreamEvent,
+  ServerTool,
+  ServerToolConfig,
+  ServerToolResultItem,
+  ServerToolType,
   StateAccessor,
   StepResult,
   StopCondition,
@@ -195,6 +216,7 @@ export type {
   ToolOutputContentItem,
   ToolPreliminaryResultEvent,
   ToolResultEvent,
+  ToolResultItem,
   ToolStreamEvent,
   ToolWithExecute,
   ToolWithGenerator,
@@ -209,8 +231,10 @@ export type {
 export {
   hasApprovalRequiredTools,
   hasExecuteFunction,
+  isClientTool,
   isGeneratorTool,
   isRegularExecuteTool,
+  isServerTool,
   isToolCallOutputEvent,
   isToolPreliminaryResultEvent,
   isToolResultEvent,
@@ -221,5 +245,5 @@ export {
 } from './lib/tool-types.js';
 // Turn context helpers
 export { buildTurnContext, normalizeInputToArray } from './lib/turn-context.js';
-export type { SDKOptions } from './openrouter.js';
+export type { Hook, OpenRouterOptions, SDKOptions } from './openrouter.js';
 export { OpenRouter } from './openrouter.js';

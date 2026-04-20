@@ -6,6 +6,7 @@ import type {
   TurnContext,
   UnsentToolResult,
 } from './tool-types.js';
+import { isClientTool } from './tool-types.js';
 
 import { normalizeInputToArray } from './turn-context.js';
 
@@ -124,21 +125,44 @@ export async function toolRequiresApproval<TTools extends readonly Tool[]>(
     return callLevelCheck(toolCall, context);
   }
 
-  // Fall back to tool-level setting
-  const tool = tools.find((t) => t.function.name === toolCall.name);
+  // Fall back to tool-level setting (server tools never require approval)
+  const tool = tools.find(
+    (
+      t,
+    ): t is Exclude<
+      Tool,
+      {
+        _brand: 'server-tool';
+      }
+    > => isClientTool(t) && t.function.name === toolCall.name,
+  );
   if (!tool) {
     return false;
   }
 
   const requireApproval = tool.function.requireApproval;
 
-  // If it's a function, call it with the tool's arguments and context
+  // If it's a function, call it with the tool's arguments and context.
+  // Arguments have already been parsed and validated against the tool's
+  // Zod inputSchema (a ZodObject), so the runtime shape is always a
+  // record here. A non-record value signals a real upstream bug — surface
+  // it rather than substituting an empty object.
   if (typeof requireApproval === 'function') {
-    return requireApproval(toolCall.arguments, context);
+    const rawArgs: unknown = toolCall.arguments;
+    if (!isRecord(rawArgs)) {
+      throw new Error(
+        `toolCall.arguments for "${toolCall.name}" must be an object after Zod validation, got ${rawArgs === null ? 'null' : Array.isArray(rawArgs) ? 'array' : typeof rawArgs}`,
+      );
+    }
+    return requireApproval(rawArgs, context);
   }
 
   // Otherwise treat as boolean
   return requireApproval ?? false;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
 /**

@@ -1,0 +1,6 @@
+packages:
+  - "packages/*"
+
+onlyBuiltDependencies:
+  - "@openrouter/sdk"
+  - esbuild
