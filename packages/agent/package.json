@@ -1,0 +1,122 @@
+{
+  "name": "@openrouter/agent",
+  "version": "0.4.0",
+  "author": "OpenRouter",
+  "description": "Agent toolkit for building AI applications with OpenRouter — tool orchestration, streaming, multi-turn conversations, and format compatibility.",
+  "keywords": [
+    "openrouter",
+    "agent",
+    "typescript",
+    "ai",
+    "tools",
+    "streaming",
+    "llm"
+  ],
+  "license": "Apache-2.0",
+  "type": "module",
+  "main": "./esm/index.js",
+  "exports": {
+    ".": {
+      "types": "./esm/index.d.ts",
+      "default": "./esm/index.js"
+    },
+    "./call-model": {
+      "types": "./esm/inner-loop/call-model.d.ts",
+      "default": "./esm/inner-loop/call-model.js"
+    },
+    "./tool-types": {
+      "types": "./esm/lib/tool-types.d.ts",
+      "default": "./esm/lib/tool-types.js"
+    },
+    "./model-result": {
+      "types": "./esm/lib/model-result.d.ts",
+      "default": "./esm/lib/model-result.js"
+    },
+    "./async-params": {
+      "types": "./esm/lib/async-params.d.ts",
+      "default": "./esm/lib/async-params.js"
+    },
+    "./stop-conditions": {
+      "types": "./esm/lib/stop-conditions.d.ts",
+      "default": "./esm/lib/stop-conditions.js"
+    },
+    "./tool": {
+      "types": "./esm/lib/tool.d.ts",
+      "default": "./esm/lib/tool.js"
+    },
+    "./anthropic-compat": {
+      "types": "./esm/lib/anthropic-compat.d.ts",
+      "default": "./esm/lib/anthropic-compat.js"
+    },
+    "./chat-compat": {
+      "types": "./esm/lib/chat-compat.d.ts",
+      "default": "./esm/lib/chat-compat.js"
+    },
+    "./claude-constants": {
+      "types": "./esm/lib/claude-constants.d.ts",
+      "default": "./esm/lib/claude-constants.js"
+    },
+    "./claude-type-guards": {
+      "types": "./esm/lib/claude-type-guards.d.ts",
+      "default": "./esm/lib/claude-type-guards.js"
+    },
+    "./conversation-state": {
+      "types": "./esm/lib/conversation-state.d.ts",
+      "default": "./esm/lib/conversation-state.js"
+    },
+    "./next-turn-params": {
+      "types": "./esm/lib/next-turn-params.d.ts",
+      "default": "./esm/lib/next-turn-params.js"
+    },
+    "./stream-transformers": {
+      "types": "./esm/lib/stream-transformers.d.ts",
+      "default": "./esm/lib/stream-transformers.js"
+    },
+    "./tool-context": {
+      "types": "./esm/lib/tool-context.d.ts",
+      "default": "./esm/lib/tool-context.js"
+    },
+    "./tool-event-broadcaster": {
+      "types": "./esm/lib/tool-event-broadcaster.d.ts",
+      "default": "./esm/lib/tool-event-broadcaster.js"
+    },
+    "./turn-context": {
+      "types": "./esm/lib/turn-context.d.ts",
+      "default": "./esm/lib/turn-context.js"
+    },
+    "./openrouter": {
+      "types": "./esm/openrouter.d.ts",
+      "default": "./esm/openrouter.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "sideEffects": false,
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/OpenRouterTeam/typescript-agent.git",
+    "directory": "packages/agent"
+  },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
+  "files": [
+    "esm",
+    "package.json",
+    "README.md"
+  ],
+  "scripts": {
+    "lint": "biome check src tests",
+    "lint:fix": "biome check --write src tests",
+    "build": "tsc",
+    "test": "vitest --run --project unit",
+    "test:e2e": "vitest --run --project e2e",
+    "test:watch": "vitest --watch --project unit",
+    "typecheck": "tsc --noEmit",
+    "compile": "tsc"
+  },
+  "dependencies": {
+    "@openrouter/sdk": "^0.12.12",
+    "zod": "^4.0.0"
+  }
+}

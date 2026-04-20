@@ -10,9 +10,11 @@ on:
         description: >
           Release mode:
           - "version" — Creates a "Version Packages" PR that bumps versions and
-            updates CHANGELOG.md based on pending changesets. Run this first.
-          - "publish" — Publishes the package to npm with provenance. Only run
-            this AFTER the Version Packages PR has been merged to main.
+            updates each package's CHANGELOG.md based on pending changesets. Run
+            this first.
+          - "publish" — Publishes every package whose on-disk version differs
+            from npm, with provenance. Only run this AFTER the Version Packages
+            PR has been merged to main.
           NOTE: @openrouter/agent releases must be coordinated with @openrouter/sdk
           because callModel changes are typically coupled with SDK type changes.
         required: true
@@ -23,8 +25,8 @@ on:
         default: version
       dry-run:
         description: >
-          Dry run: If enabled, simulates the release without making any changes.
-          Useful for verifying what would happen before committing to a release.
+          Dry run: If enabled, simulates the publish without making any changes.
+          Useful for verifying what would publish before committing to a release.
         required: false
         type: boolean
         default: false
@@ -33,6 +35,9 @@ permissions:
   contents: write # For creating releases and the Version Packages PR
   pull-requests: write # For creating/updating the Version Packages PR
   id-token: write # For npm provenance signing
+
+env:
+  TURBO_TELEMETRY_DISABLED: '1'
 
 jobs:
   release:
@@ -55,39 +60,33 @@ jobs:
 
       - run: pnpm run test
 
-      - name: Check for pending changesets
-        if: github.event_name == 'push'
-        id: changesets
-        run: |
-          if ls .changeset/*.md 1>/dev/null 2>&1; then
-            echo "pending=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "pending=false" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Create Version Packages PR
+      - name: Version PR or Publish (changesets)
         if: >
-          (github.event_name == 'push' && steps.changesets.outputs.pending == 'true') ||
+          github.event_name == 'push' ||
           (github.event_name == 'workflow_dispatch' && inputs.mode == 'version')
         uses: changesets/action@v1
         with:
-          title: "chore: version packages"
-          commit: "chore: version packages"
-          publish: pnpm publish --no-git-checks --provenance --access public
+          title: 'chore: version packages'
+          commit: 'chore: version packages'
+          version: pnpm exec changeset version
+          publish: pnpm exec changeset publish --no-git-checks
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
-      - name: Publish to npm
-        if: >
-          (github.event_name == 'push' && steps.changesets.outputs.pending == 'false') ||
-          (github.event_name == 'workflow_dispatch' && inputs.mode == 'publish' && !inputs.dry-run)
-        run: pnpm publish --no-git-checks --provenance --access public
+      - name: Publish (workflow_dispatch, live)
+        if: github.event_name == 'workflow_dispatch' && inputs.mode == 'publish' && !inputs.dry-run
+        run: pnpm exec changeset publish --no-git-checks
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
-      - name: Publish to npm (dry run)
+      # `changeset publish` has no native --dry-run. Fall back to pnpm's
+      # recursive dry-run, which simulates publishing every workspace package
+      # rather than only the ones changesets would pick. Output set may be
+      # wider than the live publish — but nothing is actually published, so
+      # this is only a diagnostic preview.
+      - name: Publish (workflow_dispatch, dry-run)
         if: github.event_name == 'workflow_dispatch' && inputs.mode == 'publish' && inputs.dry-run
-        run: pnpm publish --no-git-checks --provenance --access public --dry-run
+        run: pnpm -r publish --dry-run --access public --provenance --no-git-checks
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
