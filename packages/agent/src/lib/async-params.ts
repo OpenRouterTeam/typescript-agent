@@ -62,6 +62,13 @@ type BaseCallModelInput<
 } & {
   input: FieldOrAsyncFunction<Item[]> | string;
   tools?: TTools;
+  /**
+   * Optional filter restricting which tools are exposed to the model for this
+   * call. Tool names not in this list are removed before the request is sent
+   * and are also not callable by the model. Pairs with
+   * `@openrouter/agent-tool-set`'s `.inferTools()` output.
+   */
+  activeTools?: readonly string[];
   stopWhen?: StopWhen<TTools>;
   /** Typed context data passed to tools via contextSchema. Includes optional `shared` key. */
   context?: ContextInput<ToolContextMapWithShared<TTools, TShared>>;
@@ -309,6 +316,7 @@ export async function resolveAsyncFunctions<TTools extends readonly Tool[] = rea
     'toolTimeoutMs', // Client-side per-tool deadline default
     'toolConcurrency', // Client-side tool concurrency limits
     'asyncTools', // Client-side async tool (background/deferred) behavior
+    'activeTools', // Applied client-side to filter tools before conversion
   ]);
 
   // Iterate over all keys in the input
