@@ -2,7 +2,7 @@ import { config } from 'dotenv';
 import { defineConfig } from 'vitest/config';
 
 config({
-  path: new URL('.env', import.meta.url),
+  path: new URL('../../.env', import.meta.url),
 });
 
 export default defineConfig({

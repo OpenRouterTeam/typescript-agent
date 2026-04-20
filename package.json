@@ -1,121 +1,18 @@
 {
-  "name": "@openrouter/agent",
-  "version": "0.3.2",
-  "author": "OpenRouter",
-  "description": "Agent toolkit for building AI applications with OpenRouter — tool orchestration, streaming, multi-turn conversations, and format compatibility.",
-  "keywords": [
-    "openrouter",
-    "agent",
-    "typescript",
-    "ai",
-    "tools",
-    "streaming",
-    "llm"
-  ],
-  "license": "Apache-2.0",
+  "name": "typescript-agent-monorepo",
+  "private": true,
+  "version": "0.0.0",
   "packageManager": "pnpm@10.22.0",
-  "type": "module",
-  "main": "./esm/index.js",
-  "exports": {
-    ".": {
-      "types": "./esm/index.d.ts",
-      "default": "./esm/index.js"
-    },
-    "./call-model": {
-      "types": "./esm/inner-loop/call-model.d.ts",
-      "default": "./esm/inner-loop/call-model.js"
-    },
-    "./tool-types": {
-      "types": "./esm/lib/tool-types.d.ts",
-      "default": "./esm/lib/tool-types.js"
-    },
-    "./model-result": {
-      "types": "./esm/lib/model-result.d.ts",
-      "default": "./esm/lib/model-result.js"
-    },
-    "./async-params": {
-      "types": "./esm/lib/async-params.d.ts",
-      "default": "./esm/lib/async-params.js"
-    },
-    "./stop-conditions": {
-      "types": "./esm/lib/stop-conditions.d.ts",
-      "default": "./esm/lib/stop-conditions.js"
-    },
-    "./tool": {
-      "types": "./esm/lib/tool.d.ts",
-      "default": "./esm/lib/tool.js"
-    },
-    "./anthropic-compat": {
-      "types": "./esm/lib/anthropic-compat.d.ts",
-      "default": "./esm/lib/anthropic-compat.js"
-    },
-    "./chat-compat": {
-      "types": "./esm/lib/chat-compat.d.ts",
-      "default": "./esm/lib/chat-compat.js"
-    },
-    "./claude-constants": {
-      "types": "./esm/lib/claude-constants.d.ts",
-      "default": "./esm/lib/claude-constants.js"
-    },
-    "./claude-type-guards": {
-      "types": "./esm/lib/claude-type-guards.d.ts",
-      "default": "./esm/lib/claude-type-guards.js"
-    },
-    "./conversation-state": {
-      "types": "./esm/lib/conversation-state.d.ts",
-      "default": "./esm/lib/conversation-state.js"
-    },
-    "./next-turn-params": {
-      "types": "./esm/lib/next-turn-params.d.ts",
-      "default": "./esm/lib/next-turn-params.js"
-    },
-    "./stream-transformers": {
-      "types": "./esm/lib/stream-transformers.d.ts",
-      "default": "./esm/lib/stream-transformers.js"
-    },
-    "./tool-context": {
-      "types": "./esm/lib/tool-context.d.ts",
-      "default": "./esm/lib/tool-context.js"
-    },
-    "./tool-event-broadcaster": {
-      "types": "./esm/lib/tool-event-broadcaster.d.ts",
-      "default": "./esm/lib/tool-event-broadcaster.js"
-    },
-    "./turn-context": {
-      "types": "./esm/lib/turn-context.d.ts",
-      "default": "./esm/lib/turn-context.js"
-    },
-    "./openrouter": {
-      "types": "./esm/openrouter.d.ts",
-      "default": "./esm/openrouter.js"
-    },
-    "./package.json": "./package.json"
-  },
-  "sideEffects": false,
-  "repository": {
-    "type": "git",
-    "url": "https://github.com/OpenRouterTeam/typescript-agent.git"
-  },
-  "files": [
-    "esm",
-    "package.json",
-    "README.md",
-    "LICENSE"
-  ],
   "scripts": {
-    "lint": "biome check src tests",
-    "lint:fix": "biome check --write src tests",
-    "build": "tsc",
-    "test": "vitest --run --project unit",
-    "test:e2e": "vitest --run --project e2e",
-    "test:watch": "vitest --watch --project unit",
-    "typecheck": "tsc --noEmit",
-    "compile": "tsc",
+    "build": "turbo run build",
+    "test": "turbo run test",
+    "test:e2e": "turbo run test:e2e",
+    "test:watch": "turbo run test:watch",
+    "lint": "turbo run lint",
+    "lint:fix": "biome check --write packages/*/src packages/*/tests",
+    "typecheck": "turbo run typecheck",
+    "changeset": "changeset",
     "prepare": "husky"
-  },
-  "dependencies": {
-    "@openrouter/sdk": "*",
-    "zod": "^4.0.0"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.4.10",
@@ -124,13 +21,8 @@
     "@types/node": "^22.13.12",
     "dotenv": "^16.4.7",
     "husky": "^9.1.7",
+    "turbo": "2.9.6",
     "typescript": "~5.8.3",
     "vitest": "^3.2.4"
-  },
-  "pnpm": {
-    "onlyBuiltDependencies": [
-      "@openrouter/sdk",
-      "esbuild"
-    ]
   }
 }

@@ -2,13 +2,7 @@
 ./tests
 ./vitest.config.ts
 ./tsconfig.json
-.github
-.changeset
 .env
 .env.*
 .gitignore
 .npmignore
-.prettierignore
-.prettierrc
-.prettierignore
-.grit/
