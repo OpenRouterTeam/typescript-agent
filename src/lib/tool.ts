@@ -2,6 +2,9 @@ import type { $ZodObject, $ZodShape, $ZodType, infer as zodInfer } from 'zod/v4/
 import type {
   ManualTool,
   NextTurnParamsFunctions,
+  ServerTool,
+  ServerToolConfig,
+  ServerToolType,
   ToModelOutputFunction,
   Tool,
   ToolApprovalCheck,
@@ -333,6 +336,44 @@ export function tool(
   return {
     type: ToolType.Function,
     function: functionObj,
+  };
+}
+
+//#endregion
+
+//#region serverTool() Factory
+
+/**
+ * Creates an OpenRouter server-executed tool. OpenRouter runs the tool (web
+ * search, datetime, image generation, etc.) and returns the output item in
+ * the response — no client-side execute function is needed.
+ *
+ * The config shape is derived directly from the SDK's request-tool union
+ * (`models.ResponsesRequestToolUnion`) via `Exclude` + `Extract`, so new
+ * server-tool variants added upstream become valid here with zero changes
+ * in this SDK. Provide the `type` literal and the remaining fields narrow
+ * to match the chosen tool.
+ *
+ * @example
+ * ```typescript
+ * const tools = [
+ *   serverTool({ type: 'web_search_2025_08_26', engine: 'exa', maxResults: 10 }),
+ *   serverTool({ type: 'openrouter:datetime', parameters: { timezone: 'UTC' } }),
+ *   serverTool({ type: 'image_generation', size: '1024x1024', quality: 'high' }),
+ * ];
+ * ```
+ */
+export function serverTool<T extends ServerToolType>(
+  config: Extract<
+    ServerToolConfig,
+    {
+      type: T;
+    }
+  >,
+): ServerTool<T> {
+  return {
+    _brand: 'server-tool',
+    config,
   };
 }
 

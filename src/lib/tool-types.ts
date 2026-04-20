@@ -315,12 +315,96 @@ export type ManualTool<
 };
 
 /**
- * Union type of all enhanced tool types
+ * Union type of all client-executed tool shapes (function, generator, manual).
+ * These run in the user's process via the agent SDK's tool execution loop.
  */
-export type Tool =
+export type ClientTool =
   | ToolWithExecute<$ZodObject<$ZodShape>, $ZodType<unknown>>
   | ToolWithGenerator<$ZodObject<$ZodShape>, $ZodType<unknown>, $ZodType<unknown>>
   | ManualTool<$ZodObject<$ZodShape>, $ZodType<unknown>>;
+
+/**
+ * Config payload for an OpenRouter server-executed tool. Derived directly
+ * from the SDK's request-tool union so new server tools flow through with
+ * zero agent-SDK changes. Excludes the client `function` branch — only
+ * server-side variants remain.
+ */
+export type ServerToolConfig = Exclude<
+  models.ResponsesRequestToolUnion,
+  {
+    type: 'function';
+  }
+>;
+
+/**
+ * The discriminator literals for every server tool known to the SDK
+ * (e.g. `"web_search_2025_08_26"`, `"openrouter:datetime"`, `"image_generation"`).
+ */
+export type ServerToolType = ServerToolConfig['type'];
+
+/**
+ * Structural base type for every server tool. Interface extension (not a
+ * distributive conditional) is used so the narrow-T subtype assigns cleanly
+ * into the wide-T supertype via nominal inheritance — TypeScript treats
+ * `ServerTool<'web_search_2025_08_26'>` as a subtype of `ServerToolBase`
+ * without needing to reason about variance through `Extract<..., {type: T}>`.
+ *
+ * `Tool` uses `ServerToolBase` as its union member (rather than a generic
+ * `ServerTool` parameterized on a union) so specific `ServerTool<T>` values
+ * assign into `Tool[]` directly.
+ */
+export interface ServerToolBase {
+  readonly _brand: 'server-tool';
+  readonly config: ServerToolConfig;
+}
+
+/**
+ * A server-executed tool. OpenRouter runs the tool and returns an output
+ * item in the response — no execute function lives on the client. When
+ * the type parameter `T` is a specific literal, `config` narrows to the
+ * SDK shape for that tool. Because this interface `extends ServerToolBase`,
+ * any `ServerTool<T>` value is nominally assignable to `ServerToolBase`
+ * (and hence to `Tool`) regardless of `T`.
+ *
+ * @template T The specific server-tool type literal (narrows `config`).
+ */
+export interface ServerTool<T extends ServerToolType = ServerToolType> extends ServerToolBase {
+  readonly config: Extract<
+    ServerToolConfig,
+    {
+      type: T;
+    }
+  >;
+}
+
+/**
+ * Union of every tool kind accepted by `callModel({ tools: [...] })`:
+ * client function/generator/manual tools, or OpenRouter server tools.
+ * The server branch is the structural base; specific `ServerTool<T>`
+ * values flow in via interface extension.
+ */
+export type Tool = ClientTool | ServerToolBase;
+
+/**
+ * Server-tool output items that appear in `response.output`. The specific
+ * SDK types are listed so TypeScript can narrow on the `type` discriminator,
+ * and `OutputServerToolItem` is the catch-all the SDK uses for any server
+ * tool it hasn't carved out a specific type for — including new server
+ * tools added upstream (e.g. `openrouter:datetime`). New additions flow
+ * through the catch-all with zero changes here.
+ */
+export type ServerToolResultItem =
+  | models.OutputWebSearchCallItem
+  | models.OutputFileSearchCallItem
+  | models.OutputImageGenerationCallItem
+  | models.OutputServerToolItem;
+
+/**
+ * Unified tool-result item: either a client function output we construct
+ * and send back, or a server-tool output item from OpenRouter. Populated
+ * on `ModelResult.allToolExecutionRounds[].toolResults`.
+ */
+export type ToolResultItem = models.FunctionCallOutputItem | ServerToolResultItem;
 
 /**
  * Extracts the input type from a tool definition
@@ -408,9 +492,36 @@ export type InferToolEventsUnion<T extends readonly Tool[]> = {
 }[number];
 
 /**
+ * Type guard: discriminates server-executed tools from client tools.
+ *
+ * Relies on the `_brand` discriminator that `ServerToolBase` declares and
+ * `ClientTool` lacks. `'_brand' in tool` narrows the union to the server
+ * branch structurally, so `tool._brand` is reachable without a cast.
+ */
+export function isServerTool(tool: Tool): tool is ServerTool {
+  if (typeof tool !== 'object' || tool === null) {
+    return false;
+  }
+  if (!('_brand' in tool)) {
+    return false;
+  }
+  return tool._brand === 'server-tool';
+}
+
+/**
+ * Type guard: true if the tool is a client-executed tool (function, generator, or manual).
+ */
+export function isClientTool(tool: Tool): tool is ClientTool {
+  return !isServerTool(tool);
+}
+
+/**
  * Type guard to check if a tool has an execute function
  */
 export function hasExecuteFunction(tool: Tool): tool is ToolWithExecute | ToolWithGenerator {
+  if (isServerTool(tool)) {
+    return false;
+  }
   return 'execute' in tool.function && typeof tool.function.execute === 'function';
 }
 
@@ -418,6 +529,9 @@ export function hasExecuteFunction(tool: Tool): tool is ToolWithExecute | ToolWi
  * Type guard to check if a tool uses a generator (has eventSchema)
  */
 export function isGeneratorTool(tool: Tool): tool is ToolWithGenerator {
+  if (isServerTool(tool)) {
+    return false;
+  }
   return 'eventSchema' in tool.function;
 }
 
@@ -432,6 +546,9 @@ export function isRegularExecuteTool(tool: Tool): tool is ToolWithExecute {
  * Type guard to check if a tool is a manual tool (no execute function)
  */
 export function isManualTool(tool: Tool): tool is ManualTool {
+  if (isServerTool(tool)) {
+    return false;
+  }
   return !('execute' in tool.function);
 }
 
@@ -695,8 +812,21 @@ export type ChatStreamEvent<TEvent = unknown> =
 export interface UnsentToolResult<TTools extends readonly Tool[] = readonly Tool[]> {
   /** The ID of the tool call this result is for */
   callId: string;
-  /** The name of the tool that was executed */
-  name: TTools[number]['function']['name'];
+  /** The name of the tool that was executed (client tools only) */
+  name: Extract<
+    TTools[number],
+    {
+      function: {
+        name: string;
+      };
+    }
+  > extends {
+    function: {
+      name: infer N;
+    };
+  }
+    ? N
+    : string;
   /** The output of the tool execution */
   output: unknown;
   /** Error message if the tool call was rejected or failed */
@@ -799,6 +929,9 @@ export type HasApprovalTools<TTools extends readonly Tool[]> = TTools extends re
  * Type guard to check if a tool has approval configured at runtime
  */
 export function toolHasApprovalConfigured(tool: Tool): boolean {
+  if (isServerTool(tool)) {
+    return false;
+  }
   const requireApproval = tool.function.requireApproval;
   return requireApproval === true || typeof requireApproval === 'function';
 }

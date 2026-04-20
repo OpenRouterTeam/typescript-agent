@@ -98,6 +98,40 @@ export function isImageGenerationCallOutputItem(
   );
 }
 
+/**
+ * Type guard for client function-call output items — the input-side items
+ * we construct and send back to the API after executing a client tool.
+ */
+export function isFunctionCallOutputItem(item: unknown): item is models.FunctionCallOutputItem {
+  if (typeof item !== 'object' || item === null || !('type' in item)) {
+    return false;
+  }
+  return item.type === 'function_call_output';
+}
+
+/**
+ * Type guard: narrows a response output item to the server-tool result
+ * branches of the SDK's `OutputItems` union (web_search_call,
+ * file_search_call, image_generation_call, or the generic
+ * `OutputServerToolItem` that covers openrouter:datetime and any new
+ * server-tool type added upstream without a dedicated SDK variant).
+ *
+ * Input is typed as `models.OutputItems` so the deny-list is sound: the
+ * SDK union is finite, and excluding message/reasoning/function_call
+ * leaves exactly the server-tool variants. Callers holding `unknown`
+ * should use `hasTypeProperty` first to reach an `OutputItems`-shaped
+ * value before invoking this guard.
+ */
+export function isServerToolResultItem(
+  item: models.OutputItems,
+): item is
+  | models.OutputWebSearchCallItem
+  | models.OutputFileSearchCallItem
+  | models.OutputImageGenerationCallItem
+  | models.OutputServerToolItem {
+  return item.type !== 'message' && item.type !== 'reasoning' && item.type !== 'function_call';
+}
+
 // Content part type guards
 
 export function isOutputTextPart(part: unknown): part is models.ResponseOutputText {

@@ -26,10 +26,11 @@ import {
   isResponseCompletedEvent,
   isResponseFailedEvent,
   isResponseIncompleteEvent,
+  isServerToolResultItem,
   isURLCitationAnnotation,
   isWebSearchCallOutputItem,
 } from './stream-type-guards.js';
-import type { ParsedToolCall, Tool } from './tool-types.js';
+import type { ClientTool, ParsedToolCall, ServerTool, Tool } from './tool-types.js';
 
 /**
  * Extract text deltas from responses stream events
@@ -189,18 +190,99 @@ export async function* buildResponsesMessageStream(
 }
 
 /**
- * Output item types that can be streamed from a response.
- * This is the union of all item types that appear in response output,
- * plus function_call_output for tool results.
+ * Maps server-tool request `type` literals to the SDK output item shape
+ * emitted by that tool. Unmapped server-tool types fall back to the
+ * generic `OutputServerToolItem`, so new SDK server tools type-check
+ * (as the generic wrapper) with zero changes here.
  */
-export type StreamableOutputItem =
+type KnownServerToolOutputs = {
+  web_search_preview: models.OutputWebSearchCallItem;
+  web_search_preview_2025_03_11: models.OutputWebSearchCallItem;
+  web_search: models.OutputWebSearchCallItem;
+  web_search_2025_08_26: models.OutputWebSearchCallItem;
+  'openrouter:web_search': models.OutputWebSearchCallItem;
+  file_search: models.OutputFileSearchCallItem;
+  image_generation: models.OutputImageGenerationCallItem;
+  'openrouter:datetime': models.OutputServerToolItem;
+  // code_interpreter | computer_use_preview | mcp | shell | apply_patch |
+  //   local_shell | custom | any new SDK server-tool type → fall through
+  //   to OutputServerToolItem via InferServerToolOutput default.
+};
+
+/**
+ * Infer the output item shape for a given ServerTool. Known request types
+ * map via KnownServerToolOutputs; anything else falls back to the generic
+ * OutputServerToolItem (the SDK's catch-all wrapper for server tools it
+ * hasn't carved out a dedicated output variant for).
+ */
+type InferServerToolOutput<S> =
+  S extends ServerTool<infer K>
+    ? K extends keyof KnownServerToolOutputs
+      ? KnownServerToolOutputs[K]
+      : models.OutputServerToolItem
+    : never;
+
+/**
+ * Union of output item shapes produced by the server tools present in
+ * `TTools`. For the default unconstrained `readonly Tool[]`, this widens
+ * to every mapped output plus the generic fallback. Unused otherwise.
+ */
+type InferServerToolOutputsUnion<TTools extends readonly Tool[]> = InferServerToolOutput<
+  Extract<TTools[number], ServerTool>
+>;
+
+/**
+ * True iff the tools array contains at least one client tool. Written as
+ * `true extends (distributed-check)` so distribution over a union yields
+ * `true` when any member matches (not `boolean`).
+ */
+type HasClientTool<TTools extends readonly Tool[]> = true extends (
+  TTools[number] extends ClientTool
+    ? true
+    : never
+)
+  ? true
+  : false;
+
+/**
+ * Widest possible streamable output — every item type the API can emit
+ * plus `function_call_output` that we construct for client tool results.
+ * Used as the default when `StreamableOutputItem` is referenced without
+ * a specific TTools.
+ */
+type WidestStreamableOutputItem =
   | models.OutputMessage // type: "message"
-  | models.OutputFunctionCallItem // type: "function_call"
   | models.OutputReasoningItem // type: "reasoning"
+  | models.OutputFunctionCallItem // type: "function_call"
+  | models.FunctionCallOutputItem // type: "function_call_output"
   | models.OutputWebSearchCallItem // type: "web_search_call"
   | models.OutputFileSearchCallItem // type: "file_search_call"
   | models.OutputImageGenerationCallItem // type: "image_generation_call"
-  | models.FunctionCallOutputItem; // type: "function_call_output" (tool results)
+  | models.OutputServerToolItem; // catch-all for new/generic server-tool items
+
+/**
+ * Narrowed streamable output union derived from the specific TTools passed.
+ * `function_call` / `function_call_output` only appear if the array
+ * contains client tools; server-tool output shapes are narrowed via
+ * `KnownServerToolOutputs` with fallback to `OutputServerToolItem`.
+ */
+type NarrowStreamableOutputItem<TTools extends readonly Tool[]> =
+  | models.OutputMessage
+  | models.OutputReasoningItem
+  | (HasClientTool<TTools> extends true
+      ? models.OutputFunctionCallItem | models.FunctionCallOutputItem
+      : never)
+  | InferServerToolOutputsUnion<TTools>;
+
+/**
+ * Output item types that can be streamed from a response. Parameterized
+ * on `TTools` so the yielded union reflects exactly which item types can
+ * appear given the tools passed. Call sites without a specific TTools
+ * receive the widest possible union (backward-compatible with the
+ * original pre-server-tools export).
+ */
+export type StreamableOutputItem<TTools extends readonly Tool[] = readonly Tool[]> =
+  readonly Tool[] extends TTools ? WidestStreamableOutputItem : NarrowStreamableOutputItem<TTools>;
 
 //#region ItemsStream Types and Handlers
 
@@ -298,6 +380,12 @@ function handleOutputItemAdded(
   }
 
   if (isImageGenerationCallOutputItem(item)) {
+    return item;
+  }
+
+  // Catch-all for any other server-tool output item (openrouter:datetime,
+  // generic OutputServerToolItem, or any new SDK server-tool output type).
+  if (isServerToolResultItem(item)) {
     return item;
   }
 
@@ -432,6 +520,11 @@ function handleOutputItemDone(
   }
 
   if (isImageGenerationCallOutputItem(item)) {
+    return item;
+  }
+
+  // Catch-all for any other server-tool output item.
+  if (isServerToolResultItem(item)) {
     return item;
   }
 
