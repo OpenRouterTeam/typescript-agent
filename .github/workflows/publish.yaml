@@ -60,16 +60,6 @@ jobs:
 
       - run: pnpm run test
 
-      - name: Check for pending changesets
-        if: github.event_name == 'push'
-        id: changesets
-        run: |
-          if ls .changeset/*.md 1>/dev/null 2>&1; then
-            echo "pending=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "pending=false" >> "$GITHUB_OUTPUT"
-          fi
-
       - name: Version PR or Publish (changesets)
         if: >
           github.event_name == 'push' ||
