@@ -1,0 +1,55 @@
+{
+  "name": "@openrouter/agent-tool-set",
+  "version": "0.1.0",
+  "author": "OpenRouter",
+  "description": "Declarative activation/deactivation for @openrouter/agent tools. Port of ai-tool-set (MIT © zirkelc) adapted for callModel + tool().",
+  "keywords": [
+    "openrouter",
+    "agent",
+    "tools",
+    "toolset",
+    "typescript",
+    "ai"
+  ],
+  "license": "Apache-2.0",
+  "type": "module",
+  "main": "./esm/index.js",
+  "exports": {
+    ".": {
+      "types": "./esm/index.d.ts",
+      "default": "./esm/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "sideEffects": false,
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/OpenRouterTeam/typescript-agent.git",
+    "directory": "packages/agent-tool-set"
+  },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
+  "files": [
+    "esm",
+    "package.json",
+    "README.md"
+  ],
+  "scripts": {
+    "lint": "biome check src tests",
+    "lint:fix": "biome check --write src tests",
+    "build": "tsc",
+    "test": "vitest --run --project unit",
+    "test:e2e": "vitest --run --project e2e",
+    "test:watch": "vitest --watch --project unit",
+    "typecheck": "tsc --noEmit",
+    "compile": "tsc"
+  },
+  "dependencies": {
+    "@openrouter/agent": "workspace:*"
+  },
+  "peerDependencies": {
+    "zod": "^4.0.0"
+  }
+}
