@@ -2,8 +2,8 @@ import type { $ZodObject, $ZodShape, $ZodType, infer as zodInfer } from 'zod/v4/
 import type {
   ManualTool,
   NextTurnParamsFunctions,
-  ServerTool,
   ServerToolConfig,
+  ServerToolNarrow,
   ServerToolType,
   ToModelOutputFunction,
   Tool,
@@ -370,7 +370,7 @@ export function serverTool<T extends ServerToolType>(
       type: T;
     }
   >,
-): ServerTool<T> {
+): ServerToolNarrow<T> {
   return {
     _brand: 'server-tool',
     config,

@@ -30,7 +30,13 @@ import {
   isURLCitationAnnotation,
   isWebSearchCallOutputItem,
 } from './stream-type-guards.js';
-import type { ClientTool, ParsedToolCall, ServerTool, Tool } from './tool-types.js';
+import type {
+  ClientTool,
+  ParsedToolCall,
+  ServerToolBase,
+  ServerToolNarrow,
+  Tool,
+} from './tool-types.js';
 
 /**
  * Extract text deltas from responses stream events
@@ -263,7 +269,7 @@ type KnownServerToolOutputs = {
  * so the SDK's forward-compat variants flow through automatically.
  */
 type InferServerToolOutput<S> =
-  S extends ServerTool<infer K>
+  S extends ServerToolNarrow<infer K>
     ? K extends keyof KnownServerToolOutputs
       ? KnownServerToolOutputs[K]
       : OpenRouterServerToolOutput
@@ -275,7 +281,7 @@ type InferServerToolOutput<S> =
  * to every mapped output plus the generic fallback. Unused otherwise.
  */
 type InferServerToolOutputsUnion<TTools extends readonly Tool[]> = InferServerToolOutput<
-  Extract<TTools[number], ServerTool>
+  Extract<TTools[number], ServerToolBase>
 >;
 
 /**
