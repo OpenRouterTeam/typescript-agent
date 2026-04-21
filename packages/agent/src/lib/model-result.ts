@@ -16,6 +16,7 @@ import {
   unsentResultsToAPIFormat,
   updateState,
 } from './conversation-state.js';
+import type { HooksManager } from './hooks-manager.js';
 import {
   applyNextTurnParamsToRequest,
   executeNextTurnParamsFunctions,
@@ -113,6 +114,110 @@ function isEventStream(value: unknown): value is EventStream<models.StreamEvents
   return typeof maybeStream.toReadableStream === 'function';
 }
 
+/**
+ * Type guard for an input message with a user role and a string `content`.
+ * These are the messages we can safely surface to UserPromptSubmit hooks.
+ */
+function isUserStringMessage(value: unknown): value is {
+  role: 'user';
+  content: string;
+} {
+  if (typeof value !== 'object' || value === null) {
+    return false;
+  }
+  const obj = value as {
+    role?: unknown;
+    content?: unknown;
+  };
+  return obj.role === 'user' && typeof obj.content === 'string';
+}
+
+/**
+ * Find the index of the last user-role, string-content message in an input
+ * array. Returns -1 when no such message exists.
+ */
+function findLatestUserStringIndex(arr: readonly unknown[]): number {
+  for (let i = arr.length - 1; i >= 0; i--) {
+    if (isUserStringMessage(arr[i])) {
+      return i;
+    }
+  }
+  return -1;
+}
+
+/**
+ * Extract a user-facing prompt string from an input (string or message array),
+ * and return an applier that writes a mutated prompt back into the same shape.
+ *
+ * For structured inputs we look at the LAST user message with a string
+ * content — this is the most common shape emitted by the SDK's own helpers
+ * (`normalizeInputToArray`) and matches what a handler would reasonably
+ * expect to mutate.
+ *
+ * Returns `{ prompt: undefined }` when no usable prompt can be extracted; the
+ * caller should skip the hook in that case.
+ */
+function extractPromptAndApplier(input: models.InputsUnion): {
+  prompt: string | undefined;
+  applyMutated: (mutated: string, original: models.InputsUnion | undefined) => models.InputsUnion;
+} {
+  if (typeof input === 'string') {
+    return {
+      prompt: input,
+      applyMutated: (mutated) => mutated,
+    };
+  }
+
+  if (Array.isArray(input)) {
+    const targetIndex = findLatestUserStringIndex(input);
+
+    if (targetIndex === -1) {
+      return {
+        prompt: undefined,
+        applyMutated: (_mutated, original) => original ?? input,
+      };
+    }
+
+    const target = input[targetIndex];
+    if (!isUserStringMessage(target)) {
+      return {
+        prompt: undefined,
+        applyMutated: (_mutated, original) => original ?? input,
+      };
+    }
+
+    return {
+      prompt: target.content,
+      applyMutated: (mutated, original) => {
+        // Re-derive the target index from the effective base array so an
+        // arbitrary `original` shape lands the mutation in the correct slot
+        // rather than the closed-over index from the initial extraction.
+        const base = Array.isArray(original) ? original : input;
+        const idx = findLatestUserStringIndex(base);
+        if (idx === -1) {
+          return base;
+        }
+        const out = [
+          ...base,
+        ];
+        const existing = out[idx];
+        if (isUserStringMessage(existing)) {
+          out[idx] = {
+            ...existing,
+            content: mutated,
+          };
+        }
+        return out;
+      },
+    };
+  }
+
+  return {
+    prompt: undefined,
+    applyMutated: (_mutated, original) => original ?? input,
+  };
+}
+
 export interface GetResponseOptions<
   TTools extends readonly Tool[],
   TShared extends Record<string, unknown> = Record<string, never>,
@@ -145,6 +250,8 @@ export interface GetResponseOptions<
   onTurnStart?: (context: TurnContext) => void | Promise<void>;
   /** Callback invoked at the end of each tool execution turn */
   onTurnEnd?: (context: TurnContext, response: models.OpenResponsesResult) => void | Promise<void>;
+  /** Hook system for lifecycle events */
+  hooks?: HooksManager;
 }
 
 /**
@@ -229,8 +336,17 @@ export class ModelResult<
   // Context store for typed tool context (persists across turns)
   private contextStore: ToolContextStore | null = null;
 
+  // Hook system
+  private readonly hooksManager: HooksManager | undefined;
+  // Tracks whether SessionStart has already been emitted, so SessionEnd can be
+  // guarded to fire only when a matching SessionStart actually succeeded.
+  // Without this, an exception in initStream before SessionStart would lead to
+  // a dangling SessionEnd (breaking audit-log / resource-pair contracts).
+  private sessionStartEmitted = false;
+
   constructor(options: GetResponseOptions<TTools, TShared>) {
     this.options = options;
+    this.hooksManager = options.hooks;
 
     // Runtime validation: approval decisions require state
     const hasApprovalDecisions =
@@ -553,6 +669,60 @@ export class ModelResult<
   }
 
   /**
+   * Inject a user-role message into the conversation state and into the
+   * accumulated request input, so the next turn picks it up. Used by the
+   * Stop hook's `appendPrompt` to nudge the model without forcing a resume.
+   *
+   * This advances observable state (messages/input change) so the next
+   * iteration of the execution loop is not a no-op.
+   */
+  private async injectAppendPromptMessage(prompt: string): Promise<void> {
+    const injectedMessage: models.BaseInputsUnion = {
+      role: 'user',
+      content: prompt,
+    } as models.BaseInputsUnion;
+
+    if (this.currentState) {
+      // Mutate the in-memory state directly so loop progress is observable
+      // even when no StateAccessor is configured (forceResume needs state to
+      // change to avoid looping). Persist when an accessor is available.
+      const nextMessages = appendToMessages(this.currentState.messages, [
+        injectedMessage,
+      ]);
+      this.currentState = updateState(this.currentState, {
+        messages: nextMessages,
+      });
+      if (this.stateAccessor) {
+        await this.saveStateSafely();
+      }
+    }
+
+    if (this.resolvedRequest) {
+      const currentInput = this.resolvedRequest.input;
+      const nextInput: models.InputsUnion = Array.isArray(currentInput)
+        ? [
+            ...currentInput,
+            injectedMessage,
+          ]
+        : currentInput
+          ? [
+              {
+                role: 'user',
+                content: currentInput,
+              } as models.BaseInputsUnion,
+              injectedMessage,
+            ]
+          : [
+              injectedMessage,
+            ];
+      this.resolvedRequest = {
+        ...this.resolvedRequest,
+        input: nextInput,
+      };
+    }
+  }
+
+  /**
    * Check if stop conditions are met.
    * Returns true if execution should stop.
    *
@@ -618,6 +788,316 @@ export class ModelResult<
   }
 
   /**
+   * Shared helper: execute a single tool and emit the full Pre/Post lifecycle
+   * hooks around it.
+   *
+   * Every code path that ultimately calls `executeTool()` for a user-visible
+   * tool call funnels through here so that PreToolUse/PostToolUse/
+   * PostToolUseFailure fire consistently — regardless of whether the tool was
+   * auto-executed, required approval, or was approved later.
+   *
+   * Return shape:
+   * - `parse_error`: `toolCall.arguments` was a raw JSON string the model
+   *   failed to produce valid JSON for. The caller should use the prebuilt
+   *   FunctionCallOutputItem and not execute the tool. No hooks fire.
+   * - `hook_blocked`: PreToolUse returned `block` (boolean true or a reason
+   *   string). The caller should synthesize a denied result without invoking
+   *   the tool. The FunctionCallOutputItem is prebuilt for convenience.
+   * - `execution`: The tool ran. `result` is the ToolExecutionResult.
+   *   `effectiveToolCall` reflects any `mutatedInput` piped by PreToolUse.
+   */
+  private async runToolWithHooks(
+    tool: Tool,
+    toolCall: ParsedToolCall<Tool>,
+    turnContext: TurnContext,
+    onPreliminaryResult?: (toolCallId: string, result: unknown) => void,
+  ): Promise<
+    | {
+        type: 'parse_error';
+        toolCall: ParsedToolCall<Tool>;
+        errorMessage: string;
+        output: models.FunctionCallOutputItem;
+      }
+    | {
+        type: 'hook_blocked';
+        toolCall: ParsedToolCall<Tool>;
+        reason: string;
+        output: models.FunctionCallOutputItem;
+      }
+    | {
+        type: 'execution';
+        effectiveToolCall: ParsedToolCall<Tool>;
+        result: Awaited<ReturnType<typeof executeTool>>;
+      }
+  > {
+    // Reject raw-string arguments before any hook fires. When the model
+    // produces invalid JSON, the parser leaves `toolCall.arguments` as the
+    // raw string; handing that to PreToolUse would either fail payload
+    // validation (silent no-op in non-strict mode) or deliver a malformed
+    // `toolInput` to handlers. Fail closed here so every execution path
+    // (auto-approve, manual approval, approved-on-resume) gets a consistent
+    // synthetic error without running the tool or firing hooks.
+    const rawArgs: unknown = toolCall.arguments;
+    if (typeof rawArgs === 'string') {
+      const errorMessage =
+        `Failed to parse tool call arguments for "${toolCall.name}": The model provided invalid JSON. ` +
+        `Raw arguments received: "${rawArgs}". ` +
+        'Please provide valid JSON arguments for this tool call.';
+      return {
+        type: 'parse_error',
+        toolCall,
+        errorMessage,
+        output: {
+          type: 'function_call_output' as const,
+          id: `output_${toolCall.id}`,
+          callId: toolCall.id,
+          output: JSON.stringify({
+            error: errorMessage,
+          }),
+        },
+      };
+    }
+
+    let effectiveToolCall = toolCall;
+
+    // Emit PreToolUse hook -- can block or mutate input.
+    if (this.hooksManager) {
+      // Sentinel so downstream can tell "handler returned a replacement" apart
+      // from "handler didn't touch toolInput": a `??` fallback to `{}` when
+      // `toolCall.arguments` is null/undefined would otherwise defeat a
+      // reference-equality check against the original arguments, producing
+      // `{}` for tools that legitimately distinguish "no args" from "empty
+      // args". `mutationApplied` is the authoritative signal.
+      const originalToolInput = (toolCall.arguments ?? {}) as Record<string, unknown>;
+      const preResult = await this.hooksManager.emit(
+        'PreToolUse',
+        {
+          toolName: toolCall.name,
+          toolInput: originalToolInput,
+          sessionId: this.currentState?.id ?? '',
+        },
+        {
+          toolName: toolCall.name,
+        },
+      );
+
+      if (preResult.blocked) {
+        const blockResult = preResult.results.find(
+          (r) => r && typeof r === 'object' && 'block' in r && r.block,
+        );
+        const reason =
+          blockResult && typeof blockResult.block === 'string'
+            ? blockResult.block
+            : 'Blocked by PreToolUse hook';
+        return {
+          type: 'hook_blocked',
+          toolCall,
+          reason,
+          output: {
+            type: 'function_call_output' as const,
+            id: `output_${toolCall.id}`,
+            callId: toolCall.id,
+            output: JSON.stringify({
+              error: reason,
+            }),
+          },
+        };
+      }
+
+      // Apply mutated input when a handler actually piped a replacement.
+      // `mutationApplied` is derived from an explicit `mutatedInput` result
+      // in the handler chain; see executeHandlerChain / applyMutations.
+      const finalInput = preResult.finalPayload.toolInput;
+      const mutationApplied = finalInput !== originalToolInput;
+      if (mutationApplied) {
+        effectiveToolCall = {
+          ...toolCall,
+          arguments: finalInput,
+        };
+      }
+    }
+
+    // performance.now() gives monotonic, sub-ms precision and is immune to
+    // system clock jumps, unlike Date.now().
+    const startTime = performance.now();
+    const result = await executeTool(
+      tool,
+      effectiveToolCall,
+      turnContext,
+      onPreliminaryResult,
+      this.contextStore ?? undefined,
+      this.options.sharedContextSchema,
+    );
+    const durationMs = performance.now() - startTime;
+
+    // Emit PostToolUse or PostToolUseFailure.
+    if (this.hooksManager) {
+      if (result.error) {
+        await this.hooksManager.emit(
+          'PostToolUseFailure',
+          {
+            toolName: effectiveToolCall.name,
+            toolInput: (effectiveToolCall.arguments ?? {}) as Record<string, unknown>,
+            error: result.error,
+            sessionId: this.currentState?.id ?? '',
+          },
+          {
+            toolName: effectiveToolCall.name,
+          },
+        );
+      } else {
+        await this.hooksManager.emit(
+          'PostToolUse',
+          {
+            toolName: effectiveToolCall.name,
+            toolInput: (effectiveToolCall.arguments ?? {}) as Record<string, unknown>,
+            toolOutput: result.result,
+            durationMs,
+            sessionId: this.currentState?.id ?? '',
+          },
+          {
+            toolName: effectiveToolCall.name,
+          },
+        );
+      }
+    }
+
+    return {
+      type: 'execution',
+      effectiveToolCall,
+      result,
+    };
+  }
+
+  /**
+   * Emit the PermissionRequest hook before the SDK blocks for user approval.
+   *
+   * Returns the hook's collective decision:
+   * - `allow`: the tool should proceed as if auto-approved (skip approval gate)
+   * - `deny`: the tool should NOT run; caller should produce a denied result
+   * - `ask_user`: fall through to the existing approval flow (the default)
+   *
+   * Last-wins when multiple handlers return conflicting decisions.
+   */
+  private async emitPermissionRequest(toolCall: ParsedToolCall<Tool>): Promise<{
+    decision: 'allow' | 'deny' | 'ask_user';
+    reason?: string;
+  }> {
+    if (!this.hooksManager) {
+      return {
+        decision: 'ask_user',
+      };
+    }
+
+    // Derive risk level from the tool's requireApproval shape: function => 'high'
+    // (caller actively decides), blanket true => 'medium', otherwise 'low'.
+    const tool = this.options.tools?.find(
+      (t) => isClientTool(t) && t.function.name === toolCall.name,
+    );
+    const requireApproval = tool && isClientTool(tool) ? tool.function.requireApproval : undefined;
+    const riskLevel: 'low' | 'medium' | 'high' =
+      typeof requireApproval === 'function' ? 'high' : requireApproval === true ? 'medium' : 'low';
+
+    const emit = await this.hooksManager.emit(
+      'PermissionRequest',
+      {
+        toolName: toolCall.name,
+        toolInput: (toolCall.arguments ?? {}) as Record<string, unknown>,
+        riskLevel,
+        sessionId: this.currentState?.id ?? '',
+      },
+      {
+        toolName: toolCall.name,
+      },
+    );
+
+    // Last-wins: if multiple handlers disagree, the most recently registered
+    // handler dictates the outcome. This is documented and intentional —
+    // callers that want stricter semantics should register a single final
+    // handler (or use `throwOnHandlerError` to surface conflicts in tests).
+    const last = emit.results.at(-1);
+    if (
+      last &&
+      typeof last === 'object' &&
+      'decision' in last &&
+      (last.decision === 'allow' || last.decision === 'deny' || last.decision === 'ask_user')
+    ) {
+      const out: {
+        decision: 'allow' | 'deny' | 'ask_user';
+        reason?: string;
+      } = {
+        decision: last.decision,
+      };
+      if ('reason' in last && typeof last.reason === 'string') {
+        out.reason = last.reason;
+      }
+      return out;
+    }
+    return {
+      decision: 'ask_user',
+    };
+  }
+
+  /**
+   * Run the UserPromptSubmit hook, supporting both string and structured
+   * inputs. If a handler returns a mutated prompt, the returned object
+   * applies the mutation back to the original input shape (string in =
+   * string out, message array in = message array out with the latest user
+   * text replaced).
+   *
+   * Throws if any handler rejects the prompt.
+   *
+   * Returns `undefined` when the hook does nothing, or when no usable prompt
+   * could be extracted from a structured input (handler is skipped and a
+   * one-time `console.warn` in dev builds explains why).
+   */
+  private async maybeRunUserPromptSubmit(currentInput: models.InputsUnion | undefined): Promise<
+    | {
+        applyTo: (original: models.InputsUnion | undefined) => models.InputsUnion;
+      }
+    | undefined
+  > {
+    if (!this.hooksManager || currentInput === undefined) {
+      return undefined;
+    }
+
+    const { prompt, applyMutated } = extractPromptAndApplier(currentInput);
+    if (prompt === undefined) {
+      if (process.env['NODE_ENV'] !== 'production') {
+        console.warn(
+          '[UserPromptSubmit] Could not extract a user prompt from structured input; skipping hook.',
+        );
+      }
+      return undefined;
+    }
+
+    const emit = await this.hooksManager.emit('UserPromptSubmit', {
+      prompt,
+      sessionId: this.currentState?.id ?? '',
+    });
+
+    if (emit.blocked) {
+      const rejectResult = emit.results.find(
+        (r) => r && typeof r === 'object' && 'reject' in r && r.reject,
+      );
+      const reason =
+        rejectResult && typeof rejectResult.reject === 'string'
+          ? rejectResult.reject
+          : 'Prompt rejected by hook';
+      throw new Error(reason);
+    }
+
+    const mutated = emit.finalPayload.prompt;
+    if (mutated === prompt) {
+      return undefined;
+    }
+
+    return {
+      applyTo: (original: models.InputsUnion | undefined) => applyMutated(mutated, original),
+    };
+  }
+
+  /**
    * Execute tools that can auto-execute (don't require approval) in parallel.
    *
    * @param toolCalls - The tool calls to execute
@@ -634,14 +1114,27 @@ export class ModelResult<
         return null;
       }
 
-      const result = await executeTool(
+      // Route through runToolWithHooks so PreToolUse/PostToolUse fire even on
+      // the auto-approve path. `runToolWithHooks` also fails closed on raw
+      // JSON-parse failures so hooks never see a malformed payload.
+      const hookOutcome = await this.runToolWithHooks(
         tool,
         tc as ParsedToolCall<Tool>,
         turnContext,
-        undefined,
-        this.contextStore ?? undefined,
-        this.options.sharedContextSchema,
       );
+
+      if (hookOutcome.type === 'parse_error') {
+        this.broadcastToolResult(tc.id, {
+          error: hookOutcome.errorMessage,
+        } as InferToolOutputsUnion<TTools>);
+        return createRejectedResult(tc.id, String(tc.name), hookOutcome.errorMessage);
+      }
+
+      if (hookOutcome.type === 'hook_blocked') {
+        return createRejectedResult(tc.id, String(tc.name), hookOutcome.reason);
+      }
+
+      const result = hookOutcome.result;
 
       if (result.error) {
         return createRejectedResult(tc.id, String(tc.name), result.error.message);
@@ -700,37 +1193,87 @@ export class ModelResult<
       // context is handled via contextStore, not on TurnContext
     };
 
-    const { requiresApproval: needsApproval, autoExecute } = await partitionToolCalls(
-      toolCalls as ParsedToolCall<TTools[number]>[],
-      this.options.tools,
-      turnContext,
-      this.requireApprovalFn ?? undefined,
-    );
+    const { requiresApproval: needsApproval, autoExecute: autoExecuteInitial } =
+      await partitionToolCalls(
+        toolCalls as ParsedToolCall<TTools[number]>[],
+        this.options.tools,
+        turnContext,
+        this.requireApprovalFn ?? undefined,
+      );
 
-    if (needsApproval.length === 0) {
-      return false;
+    // Seed the auto-execute list with anything that didn't need approval. The
+    // PermissionRequest hook may promote more calls into this bucket (allow)
+    // or synthesize pre-denied results (deny) below.
+    const autoExecute: ParsedToolCall<TTools[number]>[] = [
+      ...autoExecuteInitial,
+    ];
+    const preDeniedResults: UnsentToolResult<TTools>[] = [];
+    const stillPending: ParsedToolCall<TTools[number]>[] = [];
+
+    // Run the PermissionRequest hook for each tool that needs approval.
+    // This lets hooks short-circuit the approval flow in either direction.
+    if (this.hooksManager && needsApproval.length > 0) {
+      for (const tc of needsApproval) {
+        const { decision, reason } = await this.emitPermissionRequest(tc as ParsedToolCall<Tool>);
+        if (decision === 'allow') {
+          autoExecute.push(tc);
+        } else if (decision === 'deny') {
+          preDeniedResults.push(
+            createRejectedResult(
+              tc.id,
+              String(tc.name),
+              reason ?? 'Denied by PermissionRequest hook',
+            ) as UnsentToolResult<TTools>,
+          );
+        } else {
+          stillPending.push(tc);
+        }
+      }
+    } else {
+      stillPending.push(...needsApproval);
     }
 
-    // Validate: approval requires state accessor
-    if (!this.stateAccessor) {
-      const toolNames = needsApproval.map((tc) => tc.name).join(', ');
+    // Validate: approval requires state accessor when any tool needs a gate
+    // or is being pre-denied by the hook.
+    if (!this.stateAccessor && (stillPending.length > 0 || preDeniedResults.length > 0)) {
+      const toolNames = stillPending.map((tc) => tc.name).join(', ');
       throw new Error(
-        `Tool(s) require approval but no state accessor is configured: ${toolNames}. ` +
+        `Tool(s) require approval but no state accessor is configured: ${toolNames || '(hook-denied tools)'}. ` +
           'Provide a StateAccessor via the "state" parameter to enable approval workflows.',
       );
     }
 
-    // Execute auto-approve tools
+    // Execute auto-approve tools (includes any promoted by hook "allow").
     const unsentResults = await this.executeAutoApproveTools(autoExecute, turnContext);
 
-    // Save state with pending approvals
+    // Combine pre-denied results (from hook "deny") with executed results.
+    const combinedResults: UnsentToolResult<TTools>[] = [
+      ...unsentResults,
+      ...preDeniedResults,
+    ];
+
+    if (stillPending.length === 0) {
+      // Nothing needs human approval. Persist the results we already have so
+      // the caller's normal flow can pick them up on the next turn without
+      // re-executing the tools. This path can be reached even when no tool
+      // originally required approval (the hook said "allow" on everything)
+      // or when the hook denied everything.
+      if (this.stateAccessor && combinedResults.length > 0) {
+        await this.saveStateSafely({
+          unsentToolResults: combinedResults,
+        });
+      }
+      return false;
+    }
+
+    // Save state with pending approvals (only reached when stillPending > 0).
     const stateUpdates: Partial<Omit<ConversationState<TTools>, 'id' | 'createdAt' | 'updatedAt'>> =
       {
-        pendingToolCalls: needsApproval,
+        pendingToolCalls: stillPending,
         status: 'awaiting_approval',
       };
-    if (unsentResults.length > 0) {
-      stateUpdates.unsentToolResults = unsentResults;
+    if (combinedResults.length > 0) {
+      stateUpdates.unsentToolResults = combinedResults;
     }
     await this.saveStateSafely(stateUpdates);
 
@@ -758,33 +1301,6 @@ export class ModelResult<
         return null;
       }
 
-      // Check if arguments failed to parse (remained as string instead of object)
-      const args: unknown = toolCall.arguments;
-      if (typeof args === 'string') {
-        const rawArgs = args;
-        const errorMessage =
-          `Failed to parse tool call arguments for "${toolCall.name}": The model provided invalid JSON. ` +
-          `Raw arguments received: "${rawArgs}". ` +
-          'Please provide valid JSON arguments for this tool call.';
-
-        this.broadcastToolResult(toolCall.id, {
-          error: errorMessage,
-        } as InferToolOutputsUnion<TTools>);
-
-        return {
-          type: 'parse_error' as const,
-          toolCall,
-          output: {
-            type: 'function_call_output' as const,
-            id: `output_${toolCall.id}`,
-            callId: toolCall.id,
-            output: JSON.stringify({
-              error: errorMessage,
-            }),
-          },
-        };
-      }
-
       const preliminaryResultsForCall: InferToolEventsUnion<TTools>[] = [];
 
       const hasBroadcaster = this.toolEventBroadcaster || this.turnBroadcaster;
@@ -796,20 +1312,31 @@ export class ModelResult<
           }
         : undefined;
 
-      const result = await executeTool(
+      // Run the tool through the full Pre/Post lifecycle hooks. The helper
+      // fails closed on a JSON-parse failure in toolCall.arguments so hooks
+      // never see a malformed payload; the caller below handles that case
+      // via the shared `parse_error` / `hook_blocked` branch.
+      const executed = await this.runToolWithHooks(
         tool,
         toolCall,
         turnContext,
         onPreliminaryResult,
-        this.contextStore ?? undefined,
-        this.options.sharedContextSchema,
       );
+      if (executed.type === 'parse_error') {
+        this.broadcastToolResult(toolCall.id, {
+          error: executed.errorMessage,
+        } as InferToolOutputsUnion<TTools>);
+        return executed;
+      }
+      if (executed.type === 'hook_blocked') {
+        return executed;
+      }
 
       return {
         type: 'execution' as const,
-        toolCall,
+        toolCall: executed.effectiveToolCall,
         tool,
-        result,
+        result: executed.result,
         preliminaryResultsForCall,
       };
     });
@@ -828,6 +1355,7 @@ export class ModelResult<
         const errorMessage =
           settled.reason instanceof Error ? settled.reason.message : String(settled.reason);
 
+        // `runToolWithHooks` is the single point of emission for PostToolUseFailure.
         this.broadcastToolResult(originalToolCall.id, {
           error: errorMessage,
         } as InferToolOutputsUnion<TTools>);
@@ -854,7 +1382,7 @@ export class ModelResult<
         continue;
       }
 
-      if (value.type === 'parse_error') {
+      if (value.type === 'parse_error' || value.type === 'hook_blocked') {
         toolResults.push(value.output);
         this.turnBroadcaster?.push({
           type: 'tool.call_output' as const,
@@ -1204,6 +1732,48 @@ export class ModelResult<
       // Resolve any async functions first
       let baseRequest = await this.resolveRequestForContext(initialContext);
 
+      // Emit SessionStart hook. The `config` payload carries a stable, small
+      // summary of session-level options so handlers can make routing/auditing
+      // decisions without the SDK having to promise more than it can deliver.
+      // If future session config becomes available, extend this object rather
+      // than introducing a new payload field.
+      if (this.hooksManager) {
+        const sessionId = this.currentState?.id ?? '';
+        this.hooksManager.setSessionId(sessionId);
+        await this.hooksManager.emit('SessionStart', {
+          sessionId,
+          config: {
+            hasTools: !!this.options.tools?.length,
+            hasApproval:
+              !!this.requireApprovalFn ||
+              !!(this.options.tools ?? []).some(
+                (t) =>
+                  isClientTool(t) &&
+                  (t.function.requireApproval === true ||
+                    typeof t.function.requireApproval === 'function'),
+              ),
+            hasState: !!this.stateAccessor,
+          },
+        });
+        this.sessionStartEmitted = true;
+      }
+
+      // Emit UserPromptSubmit hook BEFORE the stateful input-wrapping block so
+      // the handler sees the original user-supplied prompt string (and can
+      // reject or mutate it before any messages are appended). For structured
+      // (non-string) inputs we extract the latest user-role text content so
+      // handlers still get a chance to intercept; if nothing suitable is
+      // found we skip silently and document the limitation in the log below.
+      if (this.hooksManager) {
+        const promptResult = await this.maybeRunUserPromptSubmit(baseRequest.input);
+        if (promptResult) {
+          baseRequest = {
+            ...baseRequest,
+            input: promptResult.applyTo(baseRequest.input),
+          };
+        }
+      }
+
       // If we have state with existing messages, use those as input
       if (
         this.currentState?.messages &&
@@ -1289,7 +1859,8 @@ export class ModelResult<
       // context is handled via contextStore, not on TurnContext
     };
 
-    // Process approvals - execute the approved tools
+    // Process approvals - execute the approved tools. Route through
+    // runToolWithHooks so PreToolUse/PostToolUse fire even on this path.
     for (const callId of this.approvedToolCalls) {
       const toolCall = pendingCalls.find((tc) => tc.id === callId);
       if (!toolCall) {
@@ -1307,15 +1878,28 @@ export class ModelResult<
         continue;
       }
 
-      const result = await executeTool(
+      const hookOutcome = await this.runToolWithHooks(
         tool,
         toolCall as ParsedToolCall<Tool>,
         turnContext,
-        undefined,
-        this.contextStore ?? undefined,
-        this.options.sharedContextSchema,
       );
 
+      if (hookOutcome.type === 'parse_error') {
+        this.broadcastToolResult(callId, {
+          error: hookOutcome.errorMessage,
+        } as InferToolOutputsUnion<TTools>);
+        unsentResults.push(
+          createRejectedResult(callId, String(toolCall.name), hookOutcome.errorMessage),
+        );
+        continue;
+      }
+
+      if (hookOutcome.type === 'hook_blocked') {
+        unsentResults.push(createRejectedResult(callId, String(toolCall.name), hookOutcome.reason));
+        continue;
+      }
+
+      const result = hookOutcome.result;
       if (result.error) {
         unsentResults.push(
           createRejectedResult(callId, String(toolCall.name), result.error.message),
@@ -1457,140 +2041,238 @@ export class ModelResult<
 
     // biome-ignore lint: IIFE used for lazy initialization pattern
     this.toolExecutionPromise = (async () => {
-      await this.initStream();
+      // SessionEnd/drain must fire on every exit path (success, early return,
+      // approval pause, interruption, and exceptions), so wrap the body in
+      // try/catch/finally and track the session-end reason as we go.
+      // Approval pauses keep reason='complete' because the run hasn't failed —
+      // it's simply paused awaiting user decisions.
+      let sessionEndReason: 'user' | 'error' | 'max_turns' | 'complete' = 'complete';
+      try {
+        await this.initStream();
 
-      // If resuming from approval and still pending, don't continue
-      if (this.isResumingFromApproval && this.currentState?.status === 'awaiting_approval') {
-        return;
-      }
-
-      // Get initial response
-      let currentResponse = await this.getInitialResponse();
-
-      // Save initial response to state
-      await this.saveResponseToState(currentResponse);
-
-      // Check if tools should be executed
-      const hasToolCalls = currentResponse.output.some(
-        (item) => hasTypeProperty(item) && item.type === 'function_call',
-      );
-
-      if (!this.options.tools?.length || !hasToolCalls) {
-        this.finalResponse = currentResponse;
-        await this.markStateComplete();
-        return;
-      }
-
-      // Extract and check tool calls
-      const toolCalls = extractToolCallsFromResponse(currentResponse);
-
-      // Check for approval requirements
-      if (await this.handleApprovalCheck(toolCalls, 0, currentResponse)) {
-        return; // Paused for approval
-      }
-
-      if (!this.hasExecutableToolCalls(toolCalls)) {
-        this.finalResponse = currentResponse;
-        await this.markStateComplete();
-        return;
-      }
-
-      // Main execution loop
-      let currentRound = 0;
-
-      while (true) {
-        // Check for external interruption
-        if (await this.checkForInterruption(currentResponse)) {
+        // If resuming from approval and still pending, don't continue
+        if (this.isResumingFromApproval && this.currentState?.status === 'awaiting_approval') {
           return;
         }
 
-        // Check stop conditions
-        if (await this.shouldStopExecution()) {
-          break;
-        }
+        // Get initial response
+        let currentResponse = await this.getInitialResponse();
 
-        const currentToolCalls = extractToolCallsFromResponse(currentResponse);
-        if (currentToolCalls.length === 0) {
-          break;
-        }
-
-        // Check for approval requirements
-        if (await this.handleApprovalCheck(currentToolCalls, currentRound + 1, currentResponse)) {
-          return;
-        }
-
-        if (!this.hasExecutableToolCalls(currentToolCalls)) {
-          break;
-        }
-
-        // Build turn context
-        const turnNumber = currentRound + 1;
-        const turnContext: TurnContext = {
-          numberOfTurns: turnNumber,
-        };
-
-        await this.options.onTurnStart?.(turnContext);
-
-        // Resolve async functions for this turn
-        await this.resolveAsyncFunctionsForTurn(turnContext);
-
-        // Execute tools
-        const toolResults = await this.executeToolRound(currentToolCalls, turnContext);
-
-        // Server-tool output items are already-executed results in the
-        // response; collect them so toolResults presents a unified list.
-        const serverToolItems: ToolResultItem[] = [];
-        for (const item of currentResponse.output) {
-          if (!hasTypeProperty(item)) {
-            continue;
-          }
-          if (
-            item.type === 'message' ||
-            item.type === 'reasoning' ||
-            item.type === 'function_call'
-          ) {
-            continue;
-          }
-          // Everything else is a server-tool output item (web_search_call,
-          // image_generation_call, file_search_call, or generic
-          // OutputServerToolItem covering openrouter:datetime and any new
-          // SDK server tool types).
-          if (isServerToolResultItem(item)) {
-            serverToolItems.push(item);
-          }
-        }
-
-        // Track execution round
-        this.allToolExecutionRounds.push({
-          round: currentRound,
-          toolCalls: currentToolCalls,
-          response: currentResponse,
-          toolResults: [
-            ...toolResults,
-            ...serverToolItems,
-          ],
-        });
-
-        // Save tool results to state
-        await this.saveToolResultsToState(toolResults);
-
-        // Apply nextTurnParams
-        await this.applyNextTurnParams(currentToolCalls);
-
-        currentResponse = await this.makeFollowupRequest(currentResponse, toolResults, turnNumber);
-
-        await this.options.onTurnEnd?.(turnContext, currentResponse);
-
-        // Save new response to state
+        // Save initial response to state
         await this.saveResponseToState(currentResponse);
 
-        currentRound++;
-      }
+        // Check if tools should be executed
+        const hasToolCalls = currentResponse.output.some(
+          (item) => hasTypeProperty(item) && item.type === 'function_call',
+        );
 
-      // Validate and finalize
-      this.validateFinalResponse(currentResponse);
-      this.finalResponse = currentResponse;
-      await this.markStateComplete();
+        if (!this.options.tools?.length || !hasToolCalls) {
+          this.finalResponse = currentResponse;
+          await this.markStateComplete();
+          return;
+        }
+
+        // Extract and check tool calls
+        const toolCalls = extractToolCallsFromResponse(currentResponse);
+
+        // Check for approval requirements
+        if (await this.handleApprovalCheck(toolCalls, 0, currentResponse)) {
+          return; // Paused for approval
+        }
+
+        if (!this.hasExecutableToolCalls(toolCalls)) {
+          this.finalResponse = currentResponse;
+          await this.markStateComplete();
+          return;
+        }
+
+        // Main execution loop
+        let currentRound = 0;
+        // Cap consecutive forceResume overrides so a misbehaving Stop hook
+        // cannot spin the loop forever. We pick 3 as a conservative upper bound
+        // -- it's enough to let a hook gather a couple of follow-up actions but
+        // small enough that a buggy handler fails fast with a visible warning.
+        const MAX_FORCE_RESUME_OVERRIDES = 3;
+        let forceResumeCount = 0;
+
+        while (true) {
+          // Check for external interruption
+          if (await this.checkForInterruption(currentResponse)) {
+            sessionEndReason = 'user';
+            return;
+          }
+
+          // Check stop conditions
+          if (await this.shouldStopExecution()) {
+            // Emit Stop hook -- can force resume or inject prompt.
+            // shouldStopExecution() is driven by stopWhen conditions (default
+            // stepCountIs), so 'max_turns' is the semantically accurate reason.
+            if (this.hooksManager) {
+              const stopResult = await this.hooksManager.emit('Stop', {
+                reason: 'max_turns' as const,
+                sessionId: this.currentState?.id ?? '',
+              });
+
+              // Honor forceResume if ANY handler returns it, not just the last.
+              const shouldForceResume = stopResult.results.some(
+                (r) => r && typeof r === 'object' && 'forceResume' in r && r.forceResume === true,
+              );
+
+              // Collect every appendPrompt the handlers supplied (concatenated
+              // with newlines). appendPrompt is honored independently of
+              // forceResume so a handler can nudge the next turn without
+              // forcing a resume.
+              const appendParts: string[] = [];
+              for (const r of stopResult.results) {
+                if (
+                  r &&
+                  typeof r === 'object' &&
+                  'appendPrompt' in r &&
+                  typeof r.appendPrompt === 'string' &&
+                  r.appendPrompt.length > 0
+                ) {
+                  appendParts.push(r.appendPrompt);
+                }
+              }
+              const appendPrompt = appendParts.join('\n');
+
+              if (appendPrompt) {
+                await this.injectAppendPromptMessage(appendPrompt);
+              }
+
+              if (shouldForceResume) {
+                if (forceResumeCount >= MAX_FORCE_RESUME_OVERRIDES) {
+                  // Don't let the hook loop the engine forever. Log and stop.
+                  console.warn(
+                    `[Stop hook] forceResume honored ${MAX_FORCE_RESUME_OVERRIDES} times without new progress; stopping to prevent an infinite loop.`,
+                  );
+                  sessionEndReason = 'max_turns';
+                  break;
+                }
+                forceResumeCount++;
+                // Continue the loop. If appendPrompt was supplied we already
+                // injected it, which advances state so the stop condition may
+                // no longer fire on the next iteration.
+                continue;
+              }
+            }
+            // Stop condition fired and the hook (if any) did not force resume
+            // -- this is a max_turns-style exit, not a natural completion.
+            sessionEndReason = 'max_turns';
+            break;
+          }
+
+          const currentToolCalls = extractToolCallsFromResponse(currentResponse);
+          if (currentToolCalls.length === 0) {
+            break;
+          }
+
+          // Check for approval requirements
+          if (await this.handleApprovalCheck(currentToolCalls, currentRound + 1, currentResponse)) {
+            return;
+          }
+
+          if (!this.hasExecutableToolCalls(currentToolCalls)) {
+            break;
+          }
+
+          // Build turn context
+          const turnNumber = currentRound + 1;
+          const turnContext: TurnContext = {
+            numberOfTurns: turnNumber,
+          };
+
+          await this.options.onTurnStart?.(turnContext);
+
+          // Resolve async functions for this turn
+          await this.resolveAsyncFunctionsForTurn(turnContext);
+
+          // Execute tools
+          const toolResults = await this.executeToolRound(currentToolCalls, turnContext);
+
+          // A tool round with observable progress resets the consecutive
+          // forceResume counter so a legitimate override earlier in the run
+          // does not count against a later, independent one.
+          if (toolResults.length > 0) {
+            forceResumeCount = 0;
+          }
+
+          // Server-tool output items are already-executed results in the
+          // response; collect them so toolResults presents a unified list.
+          const serverToolItems: ToolResultItem[] = [];
+          for (const item of currentResponse.output) {
+            if (!hasTypeProperty(item)) {
+              continue;
+            }
+            if (
+              item.type === 'message' ||
+              item.type === 'reasoning' ||
+              item.type === 'function_call'
+            ) {
+              continue;
+            }
+            // Everything else is a server-tool output item (web_search_call,
+            // image_generation_call, file_search_call, or generic
+            // OutputServerToolItem covering openrouter:datetime and any new
+            // SDK server tool types).
+            if (isServerToolResultItem(item)) {
+              serverToolItems.push(item);
+            }
+          }
+
+          // Track execution round
+          this.allToolExecutionRounds.push({
+            round: currentRound,
+            toolCalls: currentToolCalls,
+            response: currentResponse,
+            toolResults: [
+              ...toolResults,
+              ...serverToolItems,
+            ],
+          });
+
+          // Save tool results to state
+          await this.saveToolResultsToState(toolResults);
+
+          // Apply nextTurnParams
+          await this.applyNextTurnParams(currentToolCalls);
+
+          currentResponse = await this.makeFollowupRequest(
+            currentResponse,
+            toolResults,
+            turnNumber,
+          );
+          // A fresh response replaces the prior one -- that's new progress,
+          // so reset consecutive forceResume counting.
+          forceResumeCount = 0;
+
+          await this.options.onTurnEnd?.(turnContext, currentResponse);
+
+          // Save new response to state
+          await this.saveResponseToState(currentResponse);
+
+          currentRound++;
+        }
+
+        // Validate and finalize
+        this.validateFinalResponse(currentResponse);
+        this.finalResponse = currentResponse;
+        await this.markStateComplete();
+      } catch (error) {
+        sessionEndReason = 'error';
+        throw error;
+      } finally {
+        // Only emit SessionEnd if SessionStart actually succeeded. Otherwise
+        // initStream threw before emit, and a dangling SessionEnd would break
+        // handlers that pair Start/End (audit logs, acquired resources).
+        if (this.hooksManager && this.sessionStartEmitted) {
+          await this.hooksManager.emit('SessionEnd', {
+            sessionId: this.currentState?.id ?? '',
+            reason: sessionEndReason,
+          });
+          await this.hooksManager.drain();
+        }
+      }
     })();
 
     return this.toolExecutionPromise;

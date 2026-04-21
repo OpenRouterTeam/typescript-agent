@@ -102,6 +102,53 @@ export {
   toolRequiresApproval,
   updateState,
 } from './lib/conversation-state.js';
+export { HooksManager } from './lib/hooks-manager.js';
+// Hooks system
+export { matchesTool } from './lib/hooks-matchers.js';
+export { resolveHooks } from './lib/hooks-resolve.js';
+export {
+  BUILT_IN_HOOK_NAMES,
+  BUILT_IN_HOOKS,
+  PermissionRequestPayloadSchema,
+  PermissionRequestResultSchema,
+  PostToolUseFailurePayloadSchema,
+  PostToolUsePayloadSchema,
+  PreToolUsePayloadSchema,
+  PreToolUseResultSchema,
+  SessionEndPayloadSchema,
+  SessionStartPayloadSchema,
+  StopPayloadSchema,
+  StopResultSchema,
+  UserPromptSubmitPayloadSchema,
+  UserPromptSubmitResultSchema,
+} from './lib/hooks-schemas.js';
+export type {
+  AsyncOutput,
+  BuiltInHookDefinitions,
+  EmitResult,
+  HookDefinition,
+  HookEntry,
+  HookHandler,
+  HookRegistry,
+  HookReturn,
+  HooksManagerOptions,
+  InlineHookConfig,
+  LifecycleHookContext,
+  PermissionRequestPayload,
+  PermissionRequestResult,
+  PostToolUseFailurePayload,
+  PostToolUsePayload,
+  PreToolUsePayload,
+  PreToolUseResult,
+  SessionEndPayload,
+  SessionStartPayload,
+  StopPayload,
+  StopResult,
+  ToolMatcher,
+  UserPromptSubmitPayload,
+  UserPromptSubmitResult,
+} from './lib/hooks-types.js';
+export { HookName } from './lib/hooks-types.js';
 export type { GetResponseOptions } from './lib/model-result.js';
 export { ModelResult } from './lib/model-result.js';
 // Next turn params helpers
