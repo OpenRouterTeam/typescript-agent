@@ -343,15 +343,13 @@ export type ServerToolConfig = Exclude<
 export type ServerToolType = ServerToolConfig['type'];
 
 /**
- * Structural base type for every server tool. Interface extension (not a
- * distributive conditional) is used so the narrow-T subtype assigns cleanly
- * into the wide-T supertype via nominal inheritance — TypeScript treats
- * `ServerTool<'web_search_2025_08_26'>` as a subtype of `ServerToolBase`
- * without needing to reason about variance through `Extract<..., {type: T}>`.
+ * Structural base type for every server tool. Non-generic so that `Tool`'s
+ * union member doesn't carry a type parameter — this sidesteps the variance
+ * issue where `ServerTool<'openrouter:datetime'>` would fail to assign into
+ * `ServerTool<ServerToolType>` through `Extract<..., {type: T}>`.
  *
- * `Tool` uses `ServerToolBase` as its union member (rather than a generic
- * `ServerTool` parameterized on a union) so specific `ServerTool<T>` values
- * assign into `Tool[]` directly.
+ * `ServerTool` (bare, via its `never` default) collapses to this type, so
+ * `Array<ClientTool | ServerTool>` accepts any narrow variant.
  */
 export interface ServerToolBase {
   readonly _brand: 'server-tool';
@@ -359,29 +357,38 @@ export interface ServerToolBase {
 }
 
 /**
- * A server-executed tool. OpenRouter runs the tool and returns an output
- * item in the response — no execute function lives on the client. When
- * the type parameter `T` is a specific literal, `config` narrows to the
- * SDK shape for that tool. Because this interface `extends ServerToolBase`,
- * any `ServerTool<T>` value is nominally assignable to `ServerToolBase`
- * (and hence to `Tool`) regardless of `T`.
+ * A server-executed tool. Without a type argument, it is the structural base
+ * (equivalent to `ServerToolBase`) — use it as-is in mixed arrays like
+ * `Array<ClientTool | ServerTool>`. With a `type` literal argument, it
+ * narrows `config` to that specific SDK variant — returned by
+ * `serverTool<T>()` and useful when the concrete config shape matters.
+ *
+ * The `[T] extends [never]` default branch keeps bare `ServerTool` equal to
+ * `ServerToolBase`, so specific narrow variants assign into the bare form
+ * via the intersection being a subtype of `ServerToolBase`.
  *
  * @template T The specific server-tool type literal (narrows `config`).
  */
-export interface ServerTool<T extends ServerToolType = ServerToolType> extends ServerToolBase {
-  readonly config: Extract<
-    ServerToolConfig,
-    {
-      type: T;
-    }
-  >;
-}
+export type ServerTool<T extends ServerToolType = never> = [
+  T,
+] extends [
+  never,
+]
+  ? ServerToolBase
+  : ServerToolBase & {
+      readonly config: Extract<
+        ServerToolConfig,
+        {
+          type: T;
+        }
+      >;
+    };
 
 /**
  * Union of every tool kind accepted by `callModel({ tools: [...] })`:
  * client function/generator/manual tools, or OpenRouter server tools.
  * The server branch is the structural base; specific `ServerTool<T>`
- * values flow in via interface extension.
+ * values flow in via the intersection being a subtype of `ServerToolBase`.
  */
 export type Tool = ClientTool | ServerToolBase;
 
