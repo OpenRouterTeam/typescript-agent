@@ -21,12 +21,7 @@ import { z } from 'zod/v4';
 import type { CallModelInput } from '../../src/lib/async-params.js';
 import { fromChatMessages } from '../../src/lib/chat-compat.js';
 import { serverTool, tool } from '../../src/lib/tool.js';
-import type {
-  ClientTool,
-  ServerTool,
-  ServerToolBase,
-  Tool,
-} from '../../src/lib/tool-types.js';
+import type { ClientTool, ServerTool, ServerToolBase, Tool } from '../../src/lib/tool-types.js';
 
 // --- Issue 1: mixed arrays assign without `as any` --------------------------
 

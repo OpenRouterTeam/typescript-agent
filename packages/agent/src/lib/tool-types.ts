@@ -369,7 +369,11 @@ export interface ServerToolBase {
  *
  * @template T The specific server-tool type literal (narrows `config`).
  */
-export type ServerTool<T extends ServerToolType = never> = [T] extends [never]
+export type ServerTool<T extends ServerToolType = never> = [
+  T,
+] extends [
+  never,
+]
   ? ServerToolBase
   : ServerToolBase & {
       readonly config: Extract<
