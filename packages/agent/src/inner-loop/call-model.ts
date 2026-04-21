@@ -6,6 +6,7 @@ import type { GetResponseOptions } from '../lib/model-result.js';
 import { ModelResult } from '../lib/model-result.js';
 import { convertToolsToAPIFormat } from '../lib/tool-executor.js';
 import type { Tool } from '../lib/tool-types.js';
+import { isServerTool } from '../lib/tool-types.js';
 
 // Re-export CallModelInput for convenience
 export type { CallModelInput } from '../lib/async-params.js';
@@ -82,6 +83,7 @@ export function callModel<
   // Destructure state management options along with tools and stopWhen
   const {
     tools,
+    activeTools,
     stopWhen,
     state,
     requireApproval,
@@ -94,8 +96,16 @@ export function callModel<
     ...apiRequest
   } = request;
 
+  // Narrow tools to the active subset (if provided) before API conversion and
+  // before they are registered for execution, so the model cannot call filtered
+  // tools and the executor does not carry orphaned definitions.
+  const activeSet = activeTools ? new Set(activeTools) : undefined;
+  const filteredTools = activeSet
+    ? tools?.filter((t) => isServerTool(t) || activeSet.has(t.function.name))
+    : tools;
+
   // Convert tools to API format - no cast needed now that convertToolsToAPIFormat accepts readonly
-  const apiTools = tools ? convertToolsToAPIFormat(tools) : undefined;
+  const apiTools = filteredTools ? convertToolsToAPIFormat(filteredTools) : undefined;
 
   // Build the request with converted tools
   // Note: async functions are resolved later in ModelResult.executeToolsIfNeeded()
@@ -123,7 +133,7 @@ export function callModel<
     client,
     request: finalRequest,
     options: callModelOptions,
-    tools,
+    tools: filteredTools,
     ...(stopWhen !== undefined && {
       stopWhen,
     }),
