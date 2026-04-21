@@ -1,6 +1,6 @@
 import type { ConversationState } from '@openrouter/agent';
-import { tool } from '@openrouter/agent';
-import { describe, expect, it, vi } from 'vitest';
+import { serverTool, tool } from '@openrouter/agent';
+import { describe, expect, expectTypeOf, it, vi } from 'vitest';
 import { z } from 'zod/v4';
 import { createToolSet } from '../../src/tool-set.js';
 
@@ -366,5 +366,143 @@ describe('inferTools input shapes', () => {
         foo: 'bar',
       },
     });
+  });
+});
+
+describe('server tools', () => {
+  const webSearch = serverTool({
+    type: 'web_search_2025_08_26',
+  });
+  const datetime = serverTool({
+    type: 'openrouter:datetime',
+  });
+
+  it('preserves server tools in .tools in construction order', () => {
+    const ts = createToolSet({
+      tools: [
+        a,
+        webSearch,
+        b,
+        datetime,
+      ] as const,
+    });
+    expect(ts.tools).toEqual([
+      a,
+      webSearch,
+      b,
+      datetime,
+    ]);
+  });
+
+  it('includes server tools in inferTools output as always-active', () => {
+    const ts = createToolSet({
+      tools: [
+        a,
+        webSearch,
+        b,
+      ] as const,
+    }).deactivate('a');
+    const { tools, activeTools } = ts.inferTools();
+    expect(tools).toEqual([
+      webSearch,
+      b,
+    ]);
+    // server tools have no `function.name` and are never present in activeTools
+    expect(activeTools).toEqual([
+      'b',
+    ]);
+  });
+
+  it('keeps server tools even when all client tools are deactivated', () => {
+    const ts = createToolSet({
+      tools: [
+        a,
+        webSearch,
+        b,
+      ] as const,
+    })
+      .deactivate('a')
+      .deactivate('b');
+    const { tools, activeTools } = ts.inferTools();
+    expect(tools).toEqual([
+      webSearch,
+    ]);
+    expect(activeTools).toEqual([]);
+  });
+
+  it('rejects activate/deactivate attempts on server tools (they have no name)', () => {
+    const ts = createToolSet({
+      tools: [
+        a,
+        webSearch,
+      ] as const,
+    });
+    expect(() => ts.activate('web_search_2025_08_26')).toThrow(/Unknown tool/);
+  });
+});
+
+describe('TShared generic', () => {
+  type AppContext = {
+    isAuthenticated: boolean;
+    userId: string;
+  };
+
+  it('types predicate context when TShared is supplied to createToolSet', () => {
+    const allTools = [
+      a,
+    ] as const;
+    const ts = createToolSet<typeof allTools, AppContext>({
+      tools: allTools,
+    }).activateWhen('a', ({ context }) => {
+      // Inside the predicate, context is typed as AppContext | undefined.
+      if (!context) {
+        return false;
+      }
+      expectTypeOf(context).toEqualTypeOf<AppContext>();
+      return context.isAuthenticated;
+    });
+
+    expect(
+      ts.inferTools({
+        context: {
+          isAuthenticated: true,
+          userId: 'u1',
+        },
+      }).activeTools,
+    ).toEqual([
+      'a',
+    ]);
+    expect(
+      ts.inferTools({
+        context: {
+          isAuthenticated: false,
+          userId: 'u1',
+        },
+      }).activeTools,
+    ).toEqual([]);
+  });
+
+  it('defaults to Record<string, unknown> when TShared is omitted', () => {
+    const ts = createToolSet({
+      tools: [
+        a,
+      ] as const,
+    }).activateWhen('a', ({ context }) => {
+      // Context defaults to Record<string, unknown> | undefined; values are `unknown`.
+      if (!context) {
+        return false;
+      }
+      expectTypeOf(context).toEqualTypeOf<Record<string, unknown>>();
+      return context['enabled'] === true;
+    });
+    expect(
+      ts.inferTools({
+        context: {
+          enabled: true,
+        },
+      }).activeTools,
+    ).toEqual([
+      'a',
+    ]);
   });
 });

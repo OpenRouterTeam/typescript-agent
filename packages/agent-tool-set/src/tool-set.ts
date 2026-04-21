@@ -1,4 +1,4 @@
-import type { Tool } from '@openrouter/agent';
+import type { ClientTool, Tool } from '@openrouter/agent';
 import { isServerTool } from '@openrouter/agent';
 import type { ActivationInput, ActivationPredicate } from './types.js';
 
@@ -30,8 +30,8 @@ function isPredicateMap<TShared extends Record<string, unknown>>(
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-function buildToolsMap(tools: readonly Tool[]): Map<string, Tool> {
-  const map = new Map<string, Tool>();
+function indexClientTools(tools: readonly Tool[]): Map<string, ClientTool> {
+  const map = new Map<string, ClientTool>();
   for (const t of tools) {
     if (isServerTool(t)) {
       continue;
@@ -49,16 +49,21 @@ export class ToolSet<
   TTools extends readonly Tool[] = readonly Tool[],
   TShared extends Record<string, unknown> = Record<string, unknown>,
 > {
-  readonly #tools: Map<string, Tool>;
+  /** All tools in construction order — both client and server. */
+  readonly #orderedTools: readonly Tool[];
+  /** Name → client tool lookup for activation tracking. Server tools are excluded because they have no `function.name`. */
+  readonly #clientToolsByName: Map<string, ClientTool>;
   readonly #activation: Map<string, Entry<TShared>>;
   readonly #mutable: boolean;
 
   private constructor(
-    tools: Map<string, Tool>,
+    orderedTools: readonly Tool[],
+    clientToolsByName: Map<string, ClientTool>,
     activation: Map<string, Entry<TShared>>,
     mutable: boolean,
   ) {
-    this.#tools = tools;
+    this.#orderedTools = orderedTools;
+    this.#clientToolsByName = clientToolsByName;
     this.#activation = activation;
     this.#mutable = mutable;
   }
@@ -68,16 +73,21 @@ export class ToolSet<
     T extends readonly Tool[],
     S extends Record<string, unknown> = Record<string, unknown>,
   >(opts: { tools: T; mutable?: boolean }): ToolSet<T, S> {
-    return new ToolSet<T, S>(buildToolsMap(opts.tools), new Map(), opts.mutable ?? false);
+    return new ToolSet<T, S>(
+      opts.tools,
+      indexClientTools(opts.tools),
+      new Map(),
+      opts.mutable ?? false,
+    );
   }
 
   /** All tools in construction order, regardless of activation state. */
   get tools(): readonly Tool[] {
-    return Array.from(this.#tools.values());
+    return this.#orderedTools;
   }
 
   #assertKnown(name: string): void {
-    if (!this.#tools.has(name)) {
+    if (!this.#clientToolsByName.has(name)) {
       throw new Error(`Unknown tool: "${name}"`);
     }
   }
@@ -91,7 +101,12 @@ export class ToolSet<
     }
     const nextActivation = new Map(this.#activation);
     mutate(nextActivation);
-    return new ToolSet<TTools, TShared>(this.#tools, nextActivation, false);
+    return new ToolSet<TTools, TShared>(
+      this.#orderedTools,
+      this.#clientToolsByName,
+      nextActivation,
+      false,
+    );
   }
 
   activate(names: string | readonly string[]): ToolSet<TTools, TShared> {
@@ -196,7 +211,9 @@ export class ToolSet<
 
   /**
    * Resolve activation against an input and return the filtered active tools
-   * plus the parallel list of active names, both in construction order.
+   * plus the parallel list of active client-tool names, both in construction
+   * order. Server tools have no name to filter by and are always included in
+   * `tools` (but never appear in `activeTools`).
    */
   inferTools(input?: ActivationInput<TShared>): {
     tools: Tool[];
@@ -205,7 +222,12 @@ export class ToolSet<
     const resolved: ActivationInput<TShared> = input ?? {};
     const tools: Tool[] = [];
     const activeTools: string[] = [];
-    for (const [name, t] of this.#tools) {
+    for (const t of this.#orderedTools) {
+      if (isServerTool(t)) {
+        tools.push(t);
+        continue;
+      }
+      const name = t.function.name;
       if (this.#resolveActive(name, resolved)) {
         tools.push(t);
         activeTools.push(name);
@@ -233,18 +255,19 @@ export class ToolSet<
 
   clone(opts?: { mutable?: boolean }): ToolSet<TTools, TShared> {
     return new ToolSet<TTools, TShared>(
-      this.#tools,
+      this.#orderedTools,
+      this.#clientToolsByName,
       new Map(this.#activation),
       opts?.mutable ?? this.#mutable,
     );
   }
 }
 
-export function createToolSet<T extends readonly Tool[]>(opts: {
-  tools: T;
-  mutable?: boolean;
-}): ToolSet<T> {
-  return ToolSet.create<T>({
+export function createToolSet<
+  T extends readonly Tool[],
+  TShared extends Record<string, unknown> = Record<string, unknown>,
+>(opts: { tools: T; mutable?: boolean }): ToolSet<T, TShared> {
+  return ToolSet.create<T, TShared>({
     tools: opts.tools,
     ...(opts.mutable !== undefined && {
       mutable: opts.mutable,
