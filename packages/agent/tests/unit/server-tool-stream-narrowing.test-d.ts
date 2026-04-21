@@ -13,7 +13,7 @@ import { expectTypeOf } from 'vitest';
 import { z } from 'zod/v4';
 import type { StreamableOutputItem } from '../../src/lib/stream-transformers.js';
 import { serverTool, tool } from '../../src/lib/tool.js';
-import type { ServerToolNarrow, ServerToolType, Tool } from '../../src/lib/tool-types.js';
+import type { ServerTool, ServerToolType, Tool } from '../../src/lib/tool-types.js';
 
 // --- Default (unconstrained TTools): widest possible union ------------------
 
@@ -37,7 +37,7 @@ expectTypeOf<models.OutputWebSearchCallItem>().toExtend<AnyTools>();
 
 type DatetimeOnly = StreamableOutputItem<
   readonly [
-    ServerToolNarrow<'openrouter:datetime'>,
+    ServerTool<'openrouter:datetime'>,
   ]
 >;
 expectTypeOf<models.OutputMessage>().toExtend<DatetimeOnly>();
@@ -81,7 +81,7 @@ expectTypeOf<models.OutputImageGenerationCallItem>().not.toExtend<Mixed>();
 
 type FutureToolOnly = StreamableOutputItem<
   readonly [
-    ServerToolNarrow<ServerToolType>,
+    ServerTool<ServerToolType>,
   ]
 >;
 // The widest `ServerToolType` includes every known literal; the inferred

@@ -153,7 +153,6 @@ export type {
   ServerTool,
   ServerToolBase,
   ServerToolConfig,
-  ServerToolNarrow,
   ServerToolResultItem,
   ServerToolType,
   StateAccessor,

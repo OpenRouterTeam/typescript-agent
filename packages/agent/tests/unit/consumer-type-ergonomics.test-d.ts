@@ -4,9 +4,10 @@
  *
  * 1. Mixing `tool()` + `serverTool()` results in a single array typed as
  *    `Array<ClientTool | ServerTool>` must assign to `callModel`'s `tools`
- *    parameter without a cast. The factory return type is narrow
- *    (`ServerToolNarrow<T>`) and must flow through interface extension up
- *    to the `ServerToolBase`-based `ServerTool` alias.
+ *    parameter without a cast. `serverTool<T>()` returns the narrow
+ *    `ServerTool<T>` (a `ServerToolBase` intersection), which must flow
+ *    into the bare `ServerTool` — bare `ServerTool` collapses to
+ *    `ServerToolBase` via its `never` default.
  *
  * 2. `fromChatMessages()` returns the SDK's `InputsUnion`, which must be
  *    directly assignable to `callModel`'s `request.input` without a cast.
@@ -24,17 +25,16 @@ import type {
   ClientTool,
   ServerTool,
   ServerToolBase,
-  ServerToolNarrow,
   Tool,
 } from '../../src/lib/tool-types.js';
 
 // --- Issue 1: mixed arrays assign without `as any` --------------------------
 
-// Specific narrow factory return types must flow to the public `ServerTool`
-// alias via interface extension.
-expectTypeOf<ServerToolNarrow<'openrouter:datetime'>>().toExtend<ServerTool>();
-expectTypeOf<ServerToolNarrow<'openrouter:datetime'>>().toExtend<ServerToolBase>();
-expectTypeOf<ServerToolNarrow<'openrouter:datetime'>>().toExtend<Tool>();
+// Specific narrow factory return types must flow to the bare `ServerTool`
+// form (which collapses to `ServerToolBase`) via intersection subtyping.
+expectTypeOf<ServerTool<'openrouter:datetime'>>().toExtend<ServerTool>();
+expectTypeOf<ServerTool<'openrouter:datetime'>>().toExtend<ServerToolBase>();
+expectTypeOf<ServerTool<'openrouter:datetime'>>().toExtend<Tool>();
 
 // ServerTool (bare, no generic) is the structural base — it should accept
 // any narrow variant assigned to it.
