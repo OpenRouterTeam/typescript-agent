@@ -16,6 +16,10 @@ export function matchesTool(matcher: ToolMatcher | undefined, toolName: string):
     return matcher === toolName;
   }
   if (matcher instanceof RegExp) {
+    // RegExps with the /g or /y flag advance `lastIndex` on every `.test()`,
+    // so successive emits with the same tool name alternate true/false.
+    // Reset so the matcher behaves statelessly regardless of flag.
+    matcher.lastIndex = 0;
     return matcher.test(toolName);
   }
   return matcher(toolName);

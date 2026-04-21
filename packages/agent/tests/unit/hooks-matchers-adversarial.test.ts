@@ -17,18 +17,20 @@ describe('matchesTool (adversarial)', () => {
   });
 
   describe('RegExp stateful behavior', () => {
-    it('RegExp with global flag has stateful .test() — may produce inconsistent results', () => {
+    it('RegExp with global flag is made idempotent by resetting lastIndex', () => {
       const globalRegex = /Bash/g;
 
-      // First call — matches
-      const first = matchesTool(globalRegex, 'Bash');
-      // Second call — global regex has lastIndex set, may NOT match
-      const second = matchesTool(globalRegex, 'Bash');
+      // matchesTool resets lastIndex before each .test(), so /g and /y flags
+      // no longer cause alternating true/false across successive emits.
+      expect(matchesTool(globalRegex, 'Bash')).toBe(true);
+      expect(matchesTool(globalRegex, 'Bash')).toBe(true);
+      expect(matchesTool(globalRegex, 'Bash')).toBe(true);
+    });
 
-      // This documents that global flag is dangerous with matchesTool
-      // First call returns true, second returns false due to lastIndex
-      expect(first).toBe(true);
-      expect(second).toBe(false);
+    it('RegExp with sticky flag is idempotent', () => {
+      const stickyRegex = /Bash/y;
+      expect(matchesTool(stickyRegex, 'Bash')).toBe(true);
+      expect(matchesTool(stickyRegex, 'Bash')).toBe(true);
     });
 
     it('RegExp without global flag is idempotent', () => {

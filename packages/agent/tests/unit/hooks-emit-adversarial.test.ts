@@ -413,7 +413,10 @@ describe('executeHandlerChain (adversarial)', () => {
   });
 
   describe('async output edge cases', () => {
-    it('{ async: true } with block field is treated as async, not block', async () => {
+    it('{ async: true, block: true, work: ... } is treated as a block result, not async', async () => {
+      // isAsyncOutput requires `async: true` AND no foreign keys. A `block`
+      // field is foreign to AsyncOutput, so the value is treated as a result
+      // (so the block/reject/mutation piping isn't silently discarded).
       const entries: HookEntry<
         {
           toolInput: Record<string, unknown>;
@@ -445,10 +448,9 @@ describe('executeHandlerChain (adversarial)', () => {
         },
       );
 
-      // isAsyncOutput check comes before block check, so this should be async
-      expect(result.pending.length).toBe(1);
-      expect(result.blocked).toBe(false);
-      expect(result.results).toEqual([]);
+      expect(result.pending.length).toBe(0);
+      expect(result.blocked).toBe(true);
+      expect(result.results).toHaveLength(1);
     });
 
     it('{ async: true } without `work` does not push a pending promise', async () => {

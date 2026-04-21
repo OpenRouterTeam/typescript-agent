@@ -93,10 +93,13 @@ describe('resolveHooks (adversarial)', () => {
         ],
       } as unknown as InlineHookConfig;
 
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
       const result = resolveHooks(config);
       expect(result).toBeInstanceOf(HooksManager);
-      // 'constructor' is treated as a hook name — it gets registered
-      expect(result!.hasHandlers('constructor')).toBe(true);
+      // 'constructor' is not a built-in hook name — it is warned and skipped.
+      expect(result!.hasHandlers('constructor')).toBe(false);
+      expect(warn).toHaveBeenCalled();
+      warn.mockRestore();
     });
   });
 
@@ -113,7 +116,7 @@ describe('resolveHooks (adversarial)', () => {
   });
 
   describe('non-standard hook names in inline config', () => {
-    it('registers handlers for arbitrary hook names (not just built-in)', () => {
+    it('warns and skips non-built-in hook names (custom hooks require HooksManager)', () => {
       const config = {
         CustomHook: [
           {
@@ -122,9 +125,12 @@ describe('resolveHooks (adversarial)', () => {
         ],
       } as unknown as InlineHookConfig;
 
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
       const result = resolveHooks(config);
       expect(result).toBeInstanceOf(HooksManager);
-      expect(result!.hasHandlers('CustomHook')).toBe(true);
+      expect(result!.hasHandlers('CustomHook')).toBe(false);
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('CustomHook'));
+      warn.mockRestore();
     });
   });
 });

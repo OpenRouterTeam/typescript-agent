@@ -88,6 +88,7 @@ type InternalModelResult = {
   finalResponse: OpenResponsesResult | null;
   initPromise: Promise<void> | null;
   toolExecutionPromise: Promise<void> | null;
+  sessionStartEmitted: boolean;
   runToolWithHooks: (
     tool: Tool,
     toolCall: ParsedToolCall<Tool>,
@@ -734,8 +735,10 @@ describe('ModelResult hooks integration', () => {
       const ent = internal(m);
       ent.currentState = await stateAccessor.load();
       ent.stateAccessor = stateAccessor;
-      // Skip initStream: it tries to make a real API call.
+      // Skip initStream: it tries to make a real API call. Mark SessionStart
+      // as emitted so SessionEnd is allowed to fire in the finally block.
       ent.initPromise = Promise.resolve();
+      ent.sessionStartEmitted = true;
       // Prime a response carrying a tool call that requires approval so the
       // execution loop takes the "pause for approval" branch.
       ent.finalResponse = {
@@ -781,6 +784,7 @@ describe('ModelResult hooks integration', () => {
         updatedAt: 0,
       } as ConversationState<readonly Tool[]>;
       ent.initPromise = Promise.resolve();
+      ent.sessionStartEmitted = true;
       // No finalResponse or reusableStream => getInitialResponse throws,
       // which should still trigger SessionEnd with reason='error'.
       ent.finalResponse = null;

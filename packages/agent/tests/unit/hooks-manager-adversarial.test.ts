@@ -76,13 +76,12 @@ describe('HooksManager (adversarial)', () => {
         sessionId: 'test',
       });
 
-      // The late handler was added to the array during iteration.
-      // Since entries is a mutable array and we iterate by index,
-      // the late handler MAY be called (pushed to end of array, i < entries.length).
-      // This test documents the actual behavior.
-      // The handler pushes to the list which the for-loop iterates over,
-      // so it WILL be called since entries.length grows.
-      expect(lateHandler).toHaveBeenCalledOnce();
+      // emit() snapshots the entries list before iterating the chain, so
+      // handlers registered mid-emit are invisible to the in-flight chain and
+      // will only fire on subsequent emits. This protects against the
+      // symmetric removal case as well (off()/unsubscribe mid-chain can no
+      // longer shift indices and skip the next handler).
+      expect(lateHandler).not.toHaveBeenCalled();
     });
 
     it('handler that calls emit recursively does not deadlock', async () => {

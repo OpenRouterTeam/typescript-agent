@@ -338,6 +338,11 @@ export class ModelResult<
 
   // Hook system
   private readonly hooksManager: HooksManager | undefined;
+  // Tracks whether SessionStart has already been emitted, so SessionEnd can be
+  // guarded to fire only when a matching SessionStart actually succeeded.
+  // Without this, an exception in initStream before SessionStart would lead to
+  // a dangling SessionEnd (breaking audit-log / resource-pair contracts).
+  private sessionStartEmitted = false;
 
   constructor(options: GetResponseOptions<TTools, TShared>) {
     this.options = options;
@@ -1713,6 +1718,7 @@ export class ModelResult<
             hasState: !!this.stateAccessor,
           },
         });
+        this.sessionStartEmitted = true;
       }
 
       // Emit UserPromptSubmit hook BEFORE the stateful input-wrapping block so
@@ -2209,7 +2215,10 @@ export class ModelResult<
         sessionEndReason = 'error';
         throw error;
       } finally {
-        if (this.hooksManager) {
+        // Only emit SessionEnd if SessionStart actually succeeded. Otherwise
+        // initStream threw before emit, and a dangling SessionEnd would break
+        // handlers that pair Start/End (audit logs, acquired resources).
+        if (this.hooksManager && this.sessionStartEmitted) {
           await this.hooksManager.emit('SessionEnd', {
             sessionId: this.currentState?.id ?? '',
             reason: sessionEndReason,

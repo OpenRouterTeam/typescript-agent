@@ -156,7 +156,11 @@ export class HooksManager<Custom extends HookRegistry = Record<string, never>> {
       toolName?: string;
     },
   ): Promise<EmitResult<ResultOf<AllHooks<Custom>, K>, PayloadOf<AllHooks<Custom>, K>>> {
-    const list = this.entries.get(hookName) ?? [];
+    // Snapshot the entries list so mutations (on()/off()/unsubscribe) triggered
+    // by a handler during the chain can't shift indices mid-iteration and
+    // silently skip the next handler, or splice in new handlers that were
+    // registered after this emit began.
+    const list = (this.entries.get(hookName) ?? []).slice();
 
     const definition = this._definitionFor(hookName);
     if (definition) {

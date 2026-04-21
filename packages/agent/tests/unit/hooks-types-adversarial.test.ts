@@ -80,13 +80,29 @@ describe('isAsyncOutput (adversarial)', () => {
       ).toBe(true);
     });
 
-    it('{ async: true, extraField: "ignored" } is still AsyncOutput', () => {
+    it('{ async: true, extraField: "..." } is NOT AsyncOutput', () => {
+      // A foreign key means the handler likely returned a result object that
+      // happens to carry `async` — treating it as fire-and-forget would
+      // silently drop the result (and any mutation piping).
       expect(
         isAsyncOutput({
           async: true,
           extraField: 'ignored',
         }),
-      ).toBe(true);
+      ).toBe(false);
+    });
+
+    it('{ async: true, mutatedInput: {...} } is NOT AsyncOutput', () => {
+      // Common footgun: a PreToolUse handler that builds a result and adds
+      // `async: true` must not have its mutation dropped.
+      expect(
+        isAsyncOutput({
+          async: true,
+          mutatedInput: {
+            cwd: '/tmp',
+          },
+        }),
+      ).toBe(false);
     });
 
     it('frozen object { async: true } is AsyncOutput', () => {
@@ -101,11 +117,17 @@ describe('isAsyncOutput (adversarial)', () => {
   });
 
   describe('array with async property', () => {
-    it('array with async property set is treated as AsyncOutput', () => {
-      const arr: unknown[] = [];
+    it('array with async property set is NOT AsyncOutput', () => {
+      // Arrays surface their numeric indices through Object.keys once
+      // anything is pushed; even when empty, any extra named property alongside
+      // `async` breaks the sole-key requirement. The spread-cloning logic in
+      // executeHandlerChain already refuses to spread arrays, so arrays are
+      // never valid AsyncOutput carriers.
+      const arr: unknown[] = [
+        'item',
+      ];
       (arr as unknown as Record<string, unknown>)['async'] = true;
-      // Arrays are objects and have 'async' in arr, so this should match
-      expect(isAsyncOutput(arr)).toBe(true);
+      expect(isAsyncOutput(arr)).toBe(false);
     });
   });
 

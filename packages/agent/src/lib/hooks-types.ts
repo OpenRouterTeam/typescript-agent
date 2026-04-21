@@ -264,19 +264,39 @@ export type InlineHookConfig = {
 //#region Helper Types
 
 /**
+ * Keys recognized on an {@link AsyncOutput} signal. Used by {@link isAsyncOutput}
+ * to distinguish a true fire-and-forget marker from a result object that
+ * happens to carry an `async` field.
+ */
+const ASYNC_OUTPUT_KEYS = new Set<string>([
+  'async',
+  'work',
+  'asyncTimeout',
+]);
+
+/**
  * Checks if a value is an AsyncOutput signal.
+ *
+ * Requires `async === true` AND no foreign keys. A handler that accidentally
+ * returns `{ async: true, mutatedInput: {...} }` is treated as a result (so
+ * the mutation is not silently discarded), not as fire-and-forget.
  */
 export function isAsyncOutput(value: unknown): value is AsyncOutput {
-  return (
-    typeof value === 'object' &&
-    value !== null &&
-    'async' in value &&
-    (
-      value as {
-        async: unknown;
-      }
-    ).async === true
-  );
+  if (typeof value !== 'object' || value === null || !('async' in value)) {
+    return false;
+  }
+  const candidate = value as {
+    async: unknown;
+  };
+  if (candidate.async !== true) {
+    return false;
+  }
+  for (const key of Object.keys(value)) {
+    if (!ASYNC_OUTPUT_KEYS.has(key)) {
+      return false;
+    }
+  }
+  return true;
 }
 
 /**

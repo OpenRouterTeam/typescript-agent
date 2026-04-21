@@ -120,7 +120,10 @@ export async function executeHandlerChain<P, R>(
 
       // Validate the result against the schema if one is supplied. A failure
       // here is treated like any other handler error: propagated in strict
-      // mode, logged otherwise.
+      // mode, logged otherwise. On success, use the parsed output (which may
+      // differ from the input for schemas with .transform() / .default() /
+      // .catch() / .coerce) so downstream callers see transformed values.
+      let result: R;
       if (options.resultSchema) {
         const validation = safeParse(options.resultSchema, returnValue);
         if (!validation.success) {
@@ -133,10 +136,10 @@ export async function executeHandlerChain<P, R>(
           console.warn(err.message);
           continue;
         }
+        result = validation.data as R;
+      } else {
+        result = returnValue as R;
       }
-
-      // Non-schema-void results pass through unchanged; we narrow via R.
-      const result = returnValue as R;
       results.push(result);
 
       // Apply mutation piping -- only hooks listed in MUTATION_FIELD_MAP participate.
