@@ -1,7 +1,7 @@
 import type { $ZodType } from 'zod/v4/core';
 import { safeParse } from 'zod/v4/core';
 import { matchesTool } from './hooks-matchers.js';
-import type { AsyncOutput, EmitResult, HookContext, HookEntry } from './hooks-types.js';
+import type { AsyncOutput, EmitResult, HookEntry, LifecycleHookContext } from './hooks-types.js';
 import {
   BLOCK_FIELDS,
   BLOCK_HOOKS,
@@ -27,6 +27,18 @@ export interface ExecuteChainOptions {
 }
 
 /**
+ * Returns true for non-null, non-array plain objects -- values where
+ * object-spread cloning is safe. Custom hooks can register payload schemas
+ * like `z.number()`, `z.string()`, or `z.array(...)`; spreading a primitive
+ * silently produces `{}` and spreading an array reindexes it into an object,
+ * which would hand handlers a mangled value. This mirrors the invariant that
+ * `applyMutations` relies on when deciding whether mutation piping can run.
+ */
+function isPlainMutableObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+/**
  * Execute a chain of hook handlers sequentially.
  *
  * Supports:
@@ -42,14 +54,22 @@ export interface ExecuteChainOptions {
 export async function executeHandlerChain<P, R>(
   entries: ReadonlyArray<HookEntry<P, R>>,
   initialPayload: P,
-  context: HookContext,
+  context: LifecycleHookContext,
   options: ExecuteChainOptions,
 ): Promise<EmitResult<R, P>> {
   const results: R[] = [];
   const pending: Promise<void>[] = [];
-  let currentPayload = {
-    ...initialPayload,
-  } as P;
+  // Only clone when the payload is a plain mutable object. Spreading a
+  // primitive (e.g. a custom hook's `z.number()` payload) would silently
+  // produce `{}`; spreading an array reindexes it into an object. For those
+  // cases we pass the value through untouched so handlers see the original
+  // typed-`P` value. For plain objects we still clone so the chain can apply
+  // mutation piping without mutating the caller's payload in place.
+  let currentPayload: P = isPlainMutableObject(initialPayload)
+    ? ({
+        ...initialPayload,
+      } as P)
+    : initialPayload;
   let blocked = false;
 
   const blockField = BLOCK_FIELDS[options.hookName];
@@ -86,7 +106,7 @@ export async function executeHandlerChain<P, R>(
       // detached work. Track the (optional) work promise for drain/timeout.
       if (isAsyncOutput(returnValue)) {
         const asyncOutput: AsyncOutput = returnValue;
-        const trackedWork = trackAsyncWork(asyncOutput);
+        const trackedWork = trackAsyncWork(asyncOutput, options.hookName);
         if (trackedWork !== undefined) {
           pending.push(trackedWork);
         }
@@ -149,8 +169,12 @@ export async function executeHandlerChain<P, R>(
  * Given an {@link AsyncOutput} signal, return a Promise<void> that resolves
  * when the handler's detached `work` settles OR the timeout fires -- whichever
  * is first. Returns `undefined` if there is no work to track.
+ *
+ * Rejections of the detached `work` promise are logged as warnings. Note:
+ * `throwOnHandlerError` governs synchronous handler failures only -- detached
+ * fire-and-forget work never re-throws here, it just surfaces via the warning.
  */
-function trackAsyncWork(output: AsyncOutput): Promise<void> | undefined {
+function trackAsyncWork(output: AsyncOutput, hookName: string): Promise<void> | undefined {
   if (output.work === undefined) {
     return undefined;
   }
@@ -169,7 +193,10 @@ function trackAsyncWork(output: AsyncOutput): Promise<void> | undefined {
 
     const timeoutId = setTimeout(finish, timeout);
 
-    output.work?.then(finish, finish);
+    output.work?.then(finish, (error: unknown) => {
+      console.warn(`[HooksManager] Async work for hook "${hookName}" rejected:`, error);
+      finish();
+    });
   });
 }
 

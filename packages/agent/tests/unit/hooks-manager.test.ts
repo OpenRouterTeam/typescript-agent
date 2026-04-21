@@ -262,10 +262,57 @@ describe('HooksManager', () => {
         toolInput: {},
         toolOutput: 'ok',
         durationMs: 100,
-        sessionId: 'test',
+        sessionId: 'my-session',
       });
 
       expect(receivedSessionId).toBe('my-session');
+    });
+
+    it('payload sessionId overrides manager sessionId in hook context', async () => {
+      const manager = new HooksManager();
+      manager.setSessionId('stale-session');
+
+      let receivedSessionId = '';
+      manager.on('PostToolUse', {
+        handler: (_payload, context) => {
+          receivedSessionId = context.sessionId;
+        },
+      });
+
+      await manager.emit('PostToolUse', {
+        toolName: 'Bash',
+        toolInput: {},
+        toolOutput: 'ok',
+        durationMs: 100,
+        sessionId: 'fresh-session',
+      });
+
+      expect(receivedSessionId).toBe('fresh-session');
+    });
+
+    it('falls back to manager sessionId for custom hooks without sessionId in payload', async () => {
+      const manager = new HooksManager({
+        AgentThinking: {
+          payload: z4.object({
+            thought: z4.string(),
+          }),
+          result: z4.void(),
+        },
+      });
+      manager.setSessionId('manager-session');
+
+      let receivedSessionId = '';
+      manager.on('AgentThinking', {
+        handler: (_payload, context) => {
+          receivedSessionId = context.sessionId;
+        },
+      });
+
+      await manager.emit('AgentThinking', {
+        thought: 'hmm',
+      });
+
+      expect(receivedSessionId).toBe('manager-session');
     });
   });
 
@@ -397,7 +444,7 @@ describe('HooksManager', () => {
   });
 
   describe('abortInflight', () => {
-    it('aborts the signal on the HookContext of in-flight emits', async () => {
+    it('aborts the signal on the LifecycleHookContext of in-flight emits', async () => {
       const manager = new HooksManager();
       let observedAborted = false;
 

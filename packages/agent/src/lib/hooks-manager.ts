@@ -5,11 +5,11 @@ import { BUILT_IN_HOOK_NAMES, BUILT_IN_HOOKS, VOID_RESULT_HOOKS } from './hooks-
 import type {
   BuiltInHookDefinitions,
   EmitResult,
-  HookContext,
   HookEntry,
   HookHandler,
   HookRegistry,
   HooksManagerOptions,
+  LifecycleHookContext,
   ToolMatcher,
 } from './hooks-types.js';
 
@@ -29,6 +29,21 @@ interface EntryRegistration<P, R> {
   readonly handler: HookHandler<P, R>;
   readonly matcher?: ToolMatcher;
   readonly filter?: (payload: P) => boolean;
+}
+
+/**
+ * Typeguard: does the payload carry a string `sessionId` field?
+ *
+ * Used by `emit()` to prefer the payload's sessionId over the manager's
+ * stored value when they disagree (e.g., mid-session id changes).
+ */
+function payloadHasSessionId(payload: unknown): payload is {
+  sessionId: string;
+} {
+  if (typeof payload !== 'object' || payload === null || !('sessionId' in payload)) {
+    return false;
+  }
+  return typeof payload.sessionId === 'string';
 }
 
 //#endregion
@@ -77,7 +92,7 @@ export class HooksManager<Custom extends HookRegistry = Record<string, never>> {
   }
 
   /**
-   * Set the session ID used in HookContext for all handler invocations.
+   * Set the session ID used in LifecycleHookContext for all handler invocations.
    */
   setSessionId(sessionId: string): void {
     this.sessionId = sessionId;
@@ -166,10 +181,15 @@ export class HooksManager<Custom extends HookRegistry = Record<string, never>> {
     const controller = new AbortController();
     this.inflightControllers.add(controller);
 
-    const context: HookContext = {
+    // Payload sessionId takes precedence over the manager's stored value when
+    // available, keeping `payload.sessionId` and `ctx.sessionId` in sync even
+    // if the state's id changes mid-session.
+    const contextSessionId = payloadHasSessionId(payload) ? payload.sessionId : this.sessionId;
+
+    const context: LifecycleHookContext = {
       signal: controller.signal,
       hookName,
-      sessionId: this.sessionId,
+      sessionId: contextSessionId,
     };
 
     try {

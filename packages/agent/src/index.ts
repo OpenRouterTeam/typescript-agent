@@ -12,7 +12,7 @@ export type {
   BeforeCreateRequestHook,
   BeforeRequestContext,
   BeforeRequestHook,
-  HookContext as SDKHookContext,
+  HookContext,
   SDKInitHook,
 } from '@openrouter/sdk/hooks/types';
 export type { RequestOptions } from '@openrouter/sdk/lib/sdks';
@@ -126,7 +126,6 @@ export type {
   AsyncOutput,
   BuiltInHookDefinitions,
   EmitResult,
-  HookContext,
   HookDefinition,
   HookEntry,
   HookHandler,
@@ -134,6 +133,7 @@ export type {
   HookReturn,
   HooksManagerOptions,
   InlineHookConfig,
+  LifecycleHookContext,
   PermissionRequestPayload,
   PermissionRequestResult,
   PostToolUseFailurePayload,

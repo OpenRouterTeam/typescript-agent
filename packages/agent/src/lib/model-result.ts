@@ -133,6 +133,19 @@ function isUserStringMessage(value: unknown): value is {
 }
 
 /**
+ * Find the index of the last user-role, string-content message in an input
+ * array. Returns -1 when no such message exists.
+ */
+function findLatestUserStringIndex(arr: readonly unknown[]): number {
+  for (let i = arr.length - 1; i >= 0; i--) {
+    if (isUserStringMessage(arr[i])) {
+      return i;
+    }
+  }
+  return -1;
+}
+
+/**
  * Extract a user-facing prompt string from an input (string or message array),
  * and return an applier that writes a mutated prompt back into the same shape.
  *
@@ -156,13 +169,7 @@ function extractPromptAndApplier(input: models.InputsUnion): {
   }
 
   if (Array.isArray(input)) {
-    let targetIndex = -1;
-    for (let i = input.length - 1; i >= 0; i--) {
-      if (isUserStringMessage(input[i])) {
-        targetIndex = i;
-        break;
-      }
-    }
+    const targetIndex = findLatestUserStringIndex(input);
 
     if (targetIndex === -1) {
       return {
@@ -182,14 +189,20 @@ function extractPromptAndApplier(input: models.InputsUnion): {
     return {
       prompt: target.content,
       applyMutated: (mutated, original) => {
-        // Prefer the original in case the caller has already re-wrapped it.
+        // Re-derive the target index from the effective base array so an
+        // arbitrary `original` shape lands the mutation in the correct slot
+        // rather than the closed-over index from the initial extraction.
         const base = Array.isArray(original) ? original : input;
+        const idx = findLatestUserStringIndex(base);
+        if (idx === -1) {
+          return base;
+        }
         const out = [
           ...base,
         ];
-        const existing = out[targetIndex];
+        const existing = out[idx];
         if (isUserStringMessage(existing)) {
-          out[targetIndex] = {
+          out[idx] = {
             ...existing,
             content: mutated,
           };
@@ -912,9 +925,7 @@ export class ModelResult<
    * - `deny`: the tool should NOT run; caller should produce a denied result
    * - `ask_user`: fall through to the existing approval flow (the default)
    *
-   * Last-wins when multiple handlers return conflicting decisions. Risk level
-   * defaults to `medium` unless a tool carries an explicit signal in the
-   * future (schema reserved for extension).
+   * Last-wins when multiple handlers return conflicting decisions.
    */
   private async emitPermissionRequest(toolCall: ParsedToolCall<Tool>): Promise<{
     decision: 'allow' | 'deny' | 'ask_user';
@@ -926,12 +937,21 @@ export class ModelResult<
       };
     }
 
+    // Derive risk level from the tool's requireApproval shape: function => 'high'
+    // (caller actively decides), blanket true => 'medium', otherwise 'low'.
+    const tool = this.options.tools?.find(
+      (t) => isClientTool(t) && t.function.name === toolCall.name,
+    );
+    const requireApproval = tool && isClientTool(tool) ? tool.function.requireApproval : undefined;
+    const riskLevel: 'low' | 'medium' | 'high' =
+      typeof requireApproval === 'function' ? 'high' : requireApproval === true ? 'medium' : 'low';
+
     const emit = await this.hooksManager.emit(
       'PermissionRequest',
       {
         toolName: toolCall.name,
         toolInput: (toolCall.arguments ?? {}) as Record<string, unknown>,
-        riskLevel: 'medium' as const,
+        riskLevel,
         sessionId: this.currentState?.id ?? '',
       },
       {
@@ -1293,22 +1313,7 @@ export class ModelResult<
         const errorMessage =
           settled.reason instanceof Error ? settled.reason.message : String(settled.reason);
 
-        // Emit PostToolUseFailure for rejected promises
-        if (this.hooksManager) {
-          await this.hooksManager.emit(
-            'PostToolUseFailure',
-            {
-              toolName: originalToolCall.name,
-              toolInput: (originalToolCall.arguments ?? {}) as Record<string, unknown>,
-              error: settled.reason,
-              sessionId: this.currentState?.id ?? '',
-            },
-            {
-              toolName: originalToolCall.name,
-            },
-          );
-        }
-
+        // `runToolWithHooks` is the single point of emission for PostToolUseFailure.
         this.broadcastToolResult(originalToolCall.id, {
           error: errorMessage,
         } as InferToolOutputsUnion<TTools>);
@@ -1983,203 +1988,234 @@ export class ModelResult<
 
     // biome-ignore lint: IIFE used for lazy initialization pattern
     this.toolExecutionPromise = (async () => {
-      await this.initStream();
+      // SessionEnd/drain must fire on every exit path (success, early return,
+      // approval pause, interruption, and exceptions), so wrap the body in
+      // try/catch/finally and track the session-end reason as we go.
+      // Approval pauses keep reason='complete' because the run hasn't failed —
+      // it's simply paused awaiting user decisions.
+      let sessionEndReason: 'user' | 'error' | 'max_turns' | 'complete' = 'complete';
+      try {
+        await this.initStream();
 
-      // If resuming from approval and still pending, don't continue
-      if (this.isResumingFromApproval && this.currentState?.status === 'awaiting_approval') {
-        return;
-      }
-
-      // Get initial response
-      let currentResponse = await this.getInitialResponse();
-
-      // Save initial response to state
-      await this.saveResponseToState(currentResponse);
-
-      // Check if tools should be executed
-      const hasToolCalls = currentResponse.output.some(
-        (item) => hasTypeProperty(item) && item.type === 'function_call',
-      );
-
-      if (!this.options.tools?.length || !hasToolCalls) {
-        this.finalResponse = currentResponse;
-        await this.markStateComplete();
-        return;
-      }
-
-      // Extract and check tool calls
-      const toolCalls = extractToolCallsFromResponse(currentResponse);
-
-      // Check for approval requirements
-      if (await this.handleApprovalCheck(toolCalls, 0, currentResponse)) {
-        return; // Paused for approval
-      }
-
-      if (!this.hasExecutableToolCalls(toolCalls)) {
-        this.finalResponse = currentResponse;
-        await this.markStateComplete();
-        return;
-      }
-
-      // Main execution loop
-      let currentRound = 0;
-      // Cap consecutive forceResume overrides so a misbehaving Stop hook
-      // cannot spin the loop forever. We pick 3 as a conservative upper bound
-      // -- it's enough to let a hook gather a couple of follow-up actions but
-      // small enough that a buggy handler fails fast with a visible warning.
-      const MAX_FORCE_RESUME_OVERRIDES = 3;
-      let forceResumeCount = 0;
-
-      while (true) {
-        // Check for external interruption
-        if (await this.checkForInterruption(currentResponse)) {
+        // If resuming from approval and still pending, don't continue
+        if (this.isResumingFromApproval && this.currentState?.status === 'awaiting_approval') {
           return;
         }
 
-        // Check stop conditions
-        if (await this.shouldStopExecution()) {
-          // Emit Stop hook -- can force resume or inject prompt.
-          if (this.hooksManager) {
-            const stopResult = await this.hooksManager.emit('Stop', {
-              reason: 'end_turn' as const,
-              sessionId: this.currentState?.id ?? '',
-            });
+        // Get initial response
+        let currentResponse = await this.getInitialResponse();
 
-            // Honor forceResume if ANY handler returns it, not just the last.
-            const shouldForceResume = stopResult.results.some(
-              (r) => r && typeof r === 'object' && 'forceResume' in r && r.forceResume === true,
-            );
-
-            // Collect every appendPrompt the handlers supplied (concatenated
-            // with newlines). appendPrompt is honored independently of
-            // forceResume so a handler can nudge the next turn without
-            // forcing a resume.
-            const appendParts: string[] = [];
-            for (const r of stopResult.results) {
-              if (
-                r &&
-                typeof r === 'object' &&
-                'appendPrompt' in r &&
-                typeof r.appendPrompt === 'string' &&
-                r.appendPrompt.length > 0
-              ) {
-                appendParts.push(r.appendPrompt);
-              }
-            }
-            const appendPrompt = appendParts.join('\n');
-
-            if (appendPrompt) {
-              await this.injectAppendPromptMessage(appendPrompt);
-            }
-
-            if (shouldForceResume) {
-              if (forceResumeCount >= MAX_FORCE_RESUME_OVERRIDES) {
-                // Don't let the hook loop the engine forever. Log and stop.
-                console.warn(
-                  `[Stop hook] forceResume honored ${MAX_FORCE_RESUME_OVERRIDES} times without new progress; stopping to prevent an infinite loop.`,
-                );
-                break;
-              }
-              forceResumeCount++;
-              // Continue the loop. If appendPrompt was supplied we already
-              // injected it, which advances state so the stop condition may
-              // no longer fire on the next iteration.
-              continue;
-            }
-          }
-          break;
-        }
-
-        const currentToolCalls = extractToolCallsFromResponse(currentResponse);
-        if (currentToolCalls.length === 0) {
-          break;
-        }
-
-        // Check for approval requirements
-        if (await this.handleApprovalCheck(currentToolCalls, currentRound + 1, currentResponse)) {
-          return;
-        }
-
-        if (!this.hasExecutableToolCalls(currentToolCalls)) {
-          break;
-        }
-
-        // Build turn context
-        const turnNumber = currentRound + 1;
-        const turnContext: TurnContext = {
-          numberOfTurns: turnNumber,
-        };
-
-        await this.options.onTurnStart?.(turnContext);
-
-        // Resolve async functions for this turn
-        await this.resolveAsyncFunctionsForTurn(turnContext);
-
-        // Execute tools
-        const toolResults = await this.executeToolRound(currentToolCalls, turnContext);
-
-        // Server-tool output items are already-executed results in the
-        // response; collect them so toolResults presents a unified list.
-        const serverToolItems: ToolResultItem[] = [];
-        for (const item of currentResponse.output) {
-          if (!hasTypeProperty(item)) {
-            continue;
-          }
-          if (
-            item.type === 'message' ||
-            item.type === 'reasoning' ||
-            item.type === 'function_call'
-          ) {
-            continue;
-          }
-          // Everything else is a server-tool output item (web_search_call,
-          // image_generation_call, file_search_call, or generic
-          // OutputServerToolItem covering openrouter:datetime and any new
-          // SDK server tool types).
-          if (isServerToolResultItem(item)) {
-            serverToolItems.push(item);
-          }
-        }
-
-        // Track execution round
-        this.allToolExecutionRounds.push({
-          round: currentRound,
-          toolCalls: currentToolCalls,
-          response: currentResponse,
-          toolResults: [
-            ...toolResults,
-            ...serverToolItems,
-          ],
-        });
-
-        // Save tool results to state
-        await this.saveToolResultsToState(toolResults);
-
-        // Apply nextTurnParams
-        await this.applyNextTurnParams(currentToolCalls);
-
-        currentResponse = await this.makeFollowupRequest(currentResponse, toolResults, turnNumber);
-
-        await this.options.onTurnEnd?.(turnContext, currentResponse);
-
-        // Save new response to state
+        // Save initial response to state
         await this.saveResponseToState(currentResponse);
 
-        currentRound++;
-      }
+        // Check if tools should be executed
+        const hasToolCalls = currentResponse.output.some(
+          (item) => hasTypeProperty(item) && item.type === 'function_call',
+        );
 
-      // Validate and finalize
-      this.validateFinalResponse(currentResponse);
-      this.finalResponse = currentResponse;
-      await this.markStateComplete();
+        if (!this.options.tools?.length || !hasToolCalls) {
+          this.finalResponse = currentResponse;
+          await this.markStateComplete();
+          return;
+        }
 
-      // Emit SessionEnd hook and drain async handlers
-      if (this.hooksManager) {
-        await this.hooksManager.emit('SessionEnd', {
-          sessionId: this.currentState?.id ?? '',
-          reason: 'complete' as const,
-        });
-        await this.hooksManager.drain();
+        // Extract and check tool calls
+        const toolCalls = extractToolCallsFromResponse(currentResponse);
+
+        // Check for approval requirements
+        if (await this.handleApprovalCheck(toolCalls, 0, currentResponse)) {
+          return; // Paused for approval
+        }
+
+        if (!this.hasExecutableToolCalls(toolCalls)) {
+          this.finalResponse = currentResponse;
+          await this.markStateComplete();
+          return;
+        }
+
+        // Main execution loop
+        let currentRound = 0;
+        // Cap consecutive forceResume overrides so a misbehaving Stop hook
+        // cannot spin the loop forever. We pick 3 as a conservative upper bound
+        // -- it's enough to let a hook gather a couple of follow-up actions but
+        // small enough that a buggy handler fails fast with a visible warning.
+        const MAX_FORCE_RESUME_OVERRIDES = 3;
+        let forceResumeCount = 0;
+
+        while (true) {
+          // Check for external interruption
+          if (await this.checkForInterruption(currentResponse)) {
+            sessionEndReason = 'user';
+            return;
+          }
+
+          // Check stop conditions
+          if (await this.shouldStopExecution()) {
+            // Emit Stop hook -- can force resume or inject prompt.
+            // shouldStopExecution() is driven by stopWhen conditions (default
+            // stepCountIs), so 'max_turns' is the semantically accurate reason.
+            if (this.hooksManager) {
+              const stopResult = await this.hooksManager.emit('Stop', {
+                reason: 'max_turns' as const,
+                sessionId: this.currentState?.id ?? '',
+              });
+
+              // Honor forceResume if ANY handler returns it, not just the last.
+              const shouldForceResume = stopResult.results.some(
+                (r) => r && typeof r === 'object' && 'forceResume' in r && r.forceResume === true,
+              );
+
+              // Collect every appendPrompt the handlers supplied (concatenated
+              // with newlines). appendPrompt is honored independently of
+              // forceResume so a handler can nudge the next turn without
+              // forcing a resume.
+              const appendParts: string[] = [];
+              for (const r of stopResult.results) {
+                if (
+                  r &&
+                  typeof r === 'object' &&
+                  'appendPrompt' in r &&
+                  typeof r.appendPrompt === 'string' &&
+                  r.appendPrompt.length > 0
+                ) {
+                  appendParts.push(r.appendPrompt);
+                }
+              }
+              const appendPrompt = appendParts.join('\n');
+
+              if (appendPrompt) {
+                await this.injectAppendPromptMessage(appendPrompt);
+              }
+
+              if (shouldForceResume) {
+                if (forceResumeCount >= MAX_FORCE_RESUME_OVERRIDES) {
+                  // Don't let the hook loop the engine forever. Log and stop.
+                  console.warn(
+                    `[Stop hook] forceResume honored ${MAX_FORCE_RESUME_OVERRIDES} times without new progress; stopping to prevent an infinite loop.`,
+                  );
+                  sessionEndReason = 'max_turns';
+                  break;
+                }
+                forceResumeCount++;
+                // Continue the loop. If appendPrompt was supplied we already
+                // injected it, which advances state so the stop condition may
+                // no longer fire on the next iteration.
+                continue;
+              }
+            }
+            // Stop condition fired and the hook (if any) did not force resume
+            // -- this is a max_turns-style exit, not a natural completion.
+            sessionEndReason = 'max_turns';
+            break;
+          }
+
+          const currentToolCalls = extractToolCallsFromResponse(currentResponse);
+          if (currentToolCalls.length === 0) {
+            break;
+          }
+
+          // Check for approval requirements
+          if (await this.handleApprovalCheck(currentToolCalls, currentRound + 1, currentResponse)) {
+            return;
+          }
+
+          if (!this.hasExecutableToolCalls(currentToolCalls)) {
+            break;
+          }
+
+          // Build turn context
+          const turnNumber = currentRound + 1;
+          const turnContext: TurnContext = {
+            numberOfTurns: turnNumber,
+          };
+
+          await this.options.onTurnStart?.(turnContext);
+
+          // Resolve async functions for this turn
+          await this.resolveAsyncFunctionsForTurn(turnContext);
+
+          // Execute tools
+          const toolResults = await this.executeToolRound(currentToolCalls, turnContext);
+
+          // A tool round with observable progress resets the consecutive
+          // forceResume counter so a legitimate override earlier in the run
+          // does not count against a later, independent one.
+          if (toolResults.length > 0) {
+            forceResumeCount = 0;
+          }
+
+          // Server-tool output items are already-executed results in the
+          // response; collect them so toolResults presents a unified list.
+          const serverToolItems: ToolResultItem[] = [];
+          for (const item of currentResponse.output) {
+            if (!hasTypeProperty(item)) {
+              continue;
+            }
+            if (
+              item.type === 'message' ||
+              item.type === 'reasoning' ||
+              item.type === 'function_call'
+            ) {
+              continue;
+            }
+            // Everything else is a server-tool output item (web_search_call,
+            // image_generation_call, file_search_call, or generic
+            // OutputServerToolItem covering openrouter:datetime and any new
+            // SDK server tool types).
+            if (isServerToolResultItem(item)) {
+              serverToolItems.push(item);
+            }
+          }
+
+          // Track execution round
+          this.allToolExecutionRounds.push({
+            round: currentRound,
+            toolCalls: currentToolCalls,
+            response: currentResponse,
+            toolResults: [
+              ...toolResults,
+              ...serverToolItems,
+            ],
+          });
+
+          // Save tool results to state
+          await this.saveToolResultsToState(toolResults);
+
+          // Apply nextTurnParams
+          await this.applyNextTurnParams(currentToolCalls);
+
+          currentResponse = await this.makeFollowupRequest(
+            currentResponse,
+            toolResults,
+            turnNumber,
+          );
+          // A fresh response replaces the prior one -- that's new progress,
+          // so reset consecutive forceResume counting.
+          forceResumeCount = 0;
+
+          await this.options.onTurnEnd?.(turnContext, currentResponse);
+
+          // Save new response to state
+          await this.saveResponseToState(currentResponse);
+
+          currentRound++;
+        }
+
+        // Validate and finalize
+        this.validateFinalResponse(currentResponse);
+        this.finalResponse = currentResponse;
+        await this.markStateComplete();
+      } catch (error) {
+        sessionEndReason = 'error';
+        throw error;
+      } finally {
+        if (this.hooksManager) {
+          await this.hooksManager.emit('SessionEnd', {
+            sessionId: this.currentState?.id ?? '',
+            reason: sessionEndReason,
+          });
+          await this.hooksManager.drain();
+        }
       }
     })();
 

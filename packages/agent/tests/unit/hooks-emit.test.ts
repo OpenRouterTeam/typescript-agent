@@ -1,9 +1,9 @@
 import { describe, expect, it, vi } from 'vitest';
 import * as z4 from 'zod/v4';
 import { executeHandlerChain } from '../../src/lib/hooks-emit.js';
-import type { HookContext, HookEntry } from '../../src/lib/hooks-types.js';
+import type { HookEntry, LifecycleHookContext } from '../../src/lib/hooks-types.js';
 
-function makeContext(hookName = 'TestHook'): HookContext {
+function makeContext(hookName = 'TestHook'): LifecycleHookContext {
   return {
     signal: new AbortController().signal,
     hookName,
@@ -334,6 +334,70 @@ describe('executeHandlerChain', () => {
     // Let the detached work settle so the tracked promise resolves.
     resolveWork?.();
     await Promise.allSettled(result.pending);
+  });
+
+  it('logs a warning when async work rejects (default mode)', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    const work = Promise.reject(new Error('detached boom'));
+    const entries: HookEntry<unknown, void>[] = [
+      {
+        handler: () => ({
+          async: true as const,
+          work,
+        }),
+      },
+    ];
+
+    const result = await executeHandlerChain(entries, {}, makeContext(), {
+      hookName: 'MyHook',
+      throwOnHandlerError: false,
+    });
+
+    expect(result.pending.length).toBe(1);
+
+    // Drain detached work; this should not reject the tracked promise.
+    await Promise.allSettled(result.pending);
+
+    expect(warnSpy).toHaveBeenCalledTimes(1);
+    const [message, err] = warnSpy.mock.calls[0] ?? [];
+    expect(message).toContain('MyHook');
+    expect(message).toContain('rejected');
+    expect(err).toBeInstanceOf(Error);
+    if (err instanceof Error) {
+      expect(err.message).toBe('detached boom');
+    }
+
+    warnSpy.mockRestore();
+  });
+
+  it('logs (does not throw) when async work rejects in strict mode', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    const work = Promise.reject(new Error('strict detached boom'));
+    const entries: HookEntry<unknown, void>[] = [
+      {
+        handler: () => ({
+          async: true as const,
+          work,
+        }),
+      },
+    ];
+
+    // Strict mode governs sync handler failures only; fire-and-forget rejection
+    // must still just log, never throw.
+    const result = await executeHandlerChain(entries, {}, makeContext(), {
+      hookName: 'StrictHook',
+      throwOnHandlerError: true,
+    });
+
+    await Promise.allSettled(result.pending);
+
+    expect(warnSpy).toHaveBeenCalledTimes(1);
+    const [message] = warnSpy.mock.calls[0] ?? [];
+    expect(message).toContain('StrictHook');
+
+    warnSpy.mockRestore();
   });
 
   it('logs and continues on handler error in default mode', async () => {

@@ -33,13 +33,13 @@ export interface HookDefinition {
 export type HookRegistry = Record<string, HookDefinition>;
 
 /**
- * Context provided to every hook handler invocation.
+ * Context provided to every lifecycle-hook handler invocation.
  *
  * - `signal` is aborted if the manager's `abortInflight()` is called while the
  *   emit is still running. Handlers that kick off background work via
  *   {@link AsyncOutput} should observe the signal for cancellation.
  */
-export interface HookContext {
+export interface LifecycleHookContext {
   readonly signal: AbortSignal;
   readonly hookName: string;
   readonly sessionId: string;
@@ -81,7 +81,7 @@ export type HookReturn<R> = R | AsyncOutput | void;
  */
 export type HookHandler<P, R> = (
   payload: P,
-  context: HookContext,
+  context: LifecycleHookContext,
 ) => HookReturn<R> | Promise<HookReturn<R>>;
 
 /**
@@ -151,7 +151,7 @@ export interface PostToolUseFailurePayload {
 }
 
 export interface StopPayload {
-  readonly reason: 'end_turn' | 'max_tokens' | 'stop_sequence';
+  readonly reason: 'max_turns';
   readonly sessionId: string;
 }
 

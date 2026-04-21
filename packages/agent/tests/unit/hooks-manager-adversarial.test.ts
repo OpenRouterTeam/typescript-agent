@@ -336,7 +336,7 @@ describe('HooksManager (adversarial)', () => {
         toolInput: {},
         toolOutput: null,
         durationMs: 0,
-        sessionId: 'ignored',
+        sessionId: 'session-1',
       });
 
       manager.setSessionId('session-2');
@@ -345,12 +345,36 @@ describe('HooksManager (adversarial)', () => {
         toolInput: {},
         toolOutput: null,
         durationMs: 0,
-        sessionId: 'ignored',
+        sessionId: 'session-2',
       });
 
       expect(sessionIds).toEqual([
         'session-1',
         'session-2',
+      ]);
+    });
+
+    it('payload sessionId overrides the manager sessionId when they disagree', async () => {
+      const manager = new HooksManager();
+      const sessionIds: string[] = [];
+
+      manager.on('PostToolUse', {
+        handler: (_p, ctx) => {
+          sessionIds.push(ctx.sessionId);
+        },
+      });
+
+      manager.setSessionId('stale-manager-id');
+      await manager.emit('PostToolUse', {
+        toolName: 'T',
+        toolInput: {},
+        toolOutput: null,
+        durationMs: 0,
+        sessionId: 'fresh-payload-id',
+      });
+
+      expect(sessionIds).toEqual([
+        'fresh-payload-id',
       ]);
     });
   });

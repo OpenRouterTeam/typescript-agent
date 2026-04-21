@@ -1,8 +1,8 @@
 import { describe, expect, it, vi } from 'vitest';
 import { executeHandlerChain } from '../../src/lib/hooks-emit.js';
-import type { HookContext, HookEntry } from '../../src/lib/hooks-types.js';
+import type { HookEntry, LifecycleHookContext } from '../../src/lib/hooks-types.js';
 
-function makeContext(hookName = 'TestHook'): HookContext {
+function makeContext(hookName = 'TestHook'): LifecycleHookContext {
   return {
     signal: new AbortController().signal,
     hookName,

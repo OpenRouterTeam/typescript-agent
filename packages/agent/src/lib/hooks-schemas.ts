@@ -26,9 +26,7 @@ export const PostToolUseFailurePayloadSchema = z4.object({
 
 export const StopPayloadSchema = z4.object({
   reason: z4.enum([
-    'end_turn',
-    'max_tokens',
-    'stop_sequence',
+    'max_turns',
   ]),
   sessionId: z4.string(),
 });
