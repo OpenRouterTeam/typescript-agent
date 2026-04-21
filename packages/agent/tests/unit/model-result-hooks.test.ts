@@ -97,6 +97,8 @@ type InternalModelResult = {
     type: string;
     result?: unknown;
     reason?: string;
+    errorMessage?: string;
+    effectiveToolCall?: ParsedToolCall<Tool>;
   }>;
   emitPermissionRequest: (toolCall: ParsedToolCall<Tool>) => Promise<{
     decision: 'allow' | 'deny' | 'ask_user';
@@ -292,6 +294,132 @@ describe('ModelResult hooks integration', () => {
       expect(result.type).toBe('execution');
       expect(fail).toHaveBeenCalledTimes(1);
       expect(post).not.toHaveBeenCalled();
+    });
+
+    it('returns parse_error and skips hooks when arguments failed to parse', async () => {
+      const hooks = new HooksManager();
+      const pre = vi.fn();
+      const post = vi.fn();
+      const fail = vi.fn();
+      hooks.on('PreToolUse', {
+        handler: pre,
+      });
+      hooks.on('PostToolUse', {
+        handler: post,
+      });
+      hooks.on('PostToolUseFailure', {
+        handler: fail,
+      });
+
+      const execSpy = vi.fn();
+      const tool = makeAutoTool('parsebomb', () => {
+        execSpy();
+        return {
+          ran: true,
+        };
+      });
+      const m = buildModelResult({
+        tools: [
+          tool,
+        ] as const,
+        hooks,
+      });
+
+      // Simulate what the stream parser leaves when JSON.parse fails on the
+      // raw arguments: `arguments` stays a string instead of becoming an
+      // object. The hook chain must not see this payload.
+      const result = await internal(m).runToolWithHooks(
+        tool,
+        {
+          id: 'call_parse',
+          name: 'parsebomb',
+          arguments: '{not valid json' as unknown as Record<string, never>,
+        },
+        {
+          numberOfTurns: 1,
+        },
+      );
+
+      expect(result.type).toBe('parse_error');
+      expect(result.errorMessage).toContain('Failed to parse tool call arguments');
+      expect(execSpy).not.toHaveBeenCalled();
+      expect(pre).not.toHaveBeenCalled();
+      expect(post).not.toHaveBeenCalled();
+      expect(fail).not.toHaveBeenCalled();
+    });
+
+    it('preserves original null arguments on effectiveToolCall when no PreToolUse mutation fires', async () => {
+      // Regression: reference-equality against the coerced `{}` payload used
+      // to look like a mutation had occurred and overwrite `arguments` with
+      // `{}`, erasing the distinction between "no args" and "empty args".
+      // The fix tracks mutation application explicitly.
+      const hooks = new HooksManager();
+      const pre = vi.fn();
+      hooks.on('PreToolUse', {
+        handler: pre,
+      });
+
+      const tool = makeAutoTool('nopargs');
+      const m = buildModelResult({
+        tools: [
+          tool,
+        ] as const,
+        hooks,
+      });
+
+      const result = await internal(m).runToolWithHooks(
+        tool,
+        {
+          id: 'call_noargs',
+          name: 'nopargs',
+          arguments: null as unknown as Record<string, unknown>,
+        },
+        {
+          numberOfTurns: 1,
+        },
+      );
+
+      expect(result.type).toBe('execution');
+      expect(pre).toHaveBeenCalledTimes(1);
+      // effectiveToolCall.arguments must pass through unchanged when no
+      // handler piped a mutation — NOT silently coerced to {}.
+      expect(result.effectiveToolCall?.arguments).toBeNull();
+    });
+
+    it('applies mutatedInput from PreToolUse even when original arguments were null', async () => {
+      const hooks = new HooksManager();
+      hooks.on('PreToolUse', {
+        handler: () => ({
+          mutatedInput: {
+            injected: true,
+          },
+        }),
+      });
+
+      const tool = makeAutoTool('withmutation');
+      const m = buildModelResult({
+        tools: [
+          tool,
+        ] as const,
+        hooks,
+      });
+
+      const result = await internal(m).runToolWithHooks(
+        tool,
+        {
+          id: 'call_mut',
+          name: 'withmutation',
+          arguments: null as unknown as Record<string, unknown>,
+        },
+        {
+          numberOfTurns: 1,
+        },
+      );
+
+      expect(result.type).toBe('execution');
+      expect(result.effectiveToolCall?.arguments).toEqual({
+        injected: true,
+      });
     });
   });
 

@@ -797,6 +797,9 @@ export class ModelResult<
    * auto-executed, required approval, or was approved later.
    *
    * Return shape:
+   * - `parse_error`: `toolCall.arguments` was a raw JSON string the model
+   *   failed to produce valid JSON for. The caller should use the prebuilt
+   *   FunctionCallOutputItem and not execute the tool. No hooks fire.
    * - `hook_blocked`: PreToolUse returned `block` (boolean true or a reason
    *   string). The caller should synthesize a denied result without invoking
    *   the tool. The FunctionCallOutputItem is prebuilt for convenience.
@@ -810,6 +813,12 @@ export class ModelResult<
     onPreliminaryResult?: (toolCallId: string, result: unknown) => void,
   ): Promise<
     | {
+        type: 'parse_error';
+        toolCall: ParsedToolCall<Tool>;
+        errorMessage: string;
+        output: models.FunctionCallOutputItem;
+      }
+    | {
         type: 'hook_blocked';
         toolCall: ParsedToolCall<Tool>;
         reason: string;
@@ -821,15 +830,50 @@ export class ModelResult<
         result: Awaited<ReturnType<typeof executeTool>>;
       }
   > {
+    // Reject raw-string arguments before any hook fires. When the model
+    // produces invalid JSON, the parser leaves `toolCall.arguments` as the
+    // raw string; handing that to PreToolUse would either fail payload
+    // validation (silent no-op in non-strict mode) or deliver a malformed
+    // `toolInput` to handlers. Fail closed here so every execution path
+    // (auto-approve, manual approval, approved-on-resume) gets a consistent
+    // synthetic error without running the tool or firing hooks.
+    const rawArgs: unknown = toolCall.arguments;
+    if (typeof rawArgs === 'string') {
+      const errorMessage =
+        `Failed to parse tool call arguments for "${toolCall.name}": The model provided invalid JSON. ` +
+        `Raw arguments received: "${rawArgs}". ` +
+        'Please provide valid JSON arguments for this tool call.';
+      return {
+        type: 'parse_error',
+        toolCall,
+        errorMessage,
+        output: {
+          type: 'function_call_output' as const,
+          id: `output_${toolCall.id}`,
+          callId: toolCall.id,
+          output: JSON.stringify({
+            error: errorMessage,
+          }),
+        },
+      };
+    }
+
     let effectiveToolCall = toolCall;
 
     // Emit PreToolUse hook -- can block or mutate input.
     if (this.hooksManager) {
+      // Sentinel so downstream can tell "handler returned a replacement" apart
+      // from "handler didn't touch toolInput": a `??` fallback to `{}` when
+      // `toolCall.arguments` is null/undefined would otherwise defeat a
+      // reference-equality check against the original arguments, producing
+      // `{}` for tools that legitimately distinguish "no args" from "empty
+      // args". `mutationApplied` is the authoritative signal.
+      const originalToolInput = (toolCall.arguments ?? {}) as Record<string, unknown>;
       const preResult = await this.hooksManager.emit(
         'PreToolUse',
         {
           toolName: toolCall.name,
-          toolInput: (toolCall.arguments ?? {}) as Record<string, unknown>,
+          toolInput: originalToolInput,
           sessionId: this.currentState?.id ?? '',
         },
         {
@@ -860,9 +904,12 @@ export class ModelResult<
         };
       }
 
-      // Apply mutated input if present.
+      // Apply mutated input when a handler actually piped a replacement.
+      // `mutationApplied` is derived from an explicit `mutatedInput` result
+      // in the handler chain; see executeHandlerChain / applyMutations.
       const finalInput = preResult.finalPayload.toolInput;
-      if (finalInput !== toolCall.arguments) {
+      const mutationApplied = finalInput !== originalToolInput;
+      if (mutationApplied) {
         effectiveToolCall = {
           ...toolCall,
           arguments: finalInput,
@@ -1068,12 +1115,20 @@ export class ModelResult<
       }
 
       // Route through runToolWithHooks so PreToolUse/PostToolUse fire even on
-      // the auto-approve path.
+      // the auto-approve path. `runToolWithHooks` also fails closed on raw
+      // JSON-parse failures so hooks never see a malformed payload.
       const hookOutcome = await this.runToolWithHooks(
         tool,
         tc as ParsedToolCall<Tool>,
         turnContext,
       );
+
+      if (hookOutcome.type === 'parse_error') {
+        this.broadcastToolResult(tc.id, {
+          error: hookOutcome.errorMessage,
+        } as InferToolOutputsUnion<TTools>);
+        return createRejectedResult(tc.id, String(tc.name), hookOutcome.errorMessage);
+      }
 
       if (hookOutcome.type === 'hook_blocked') {
         return createRejectedResult(tc.id, String(tc.name), hookOutcome.reason);
@@ -1246,33 +1301,6 @@ export class ModelResult<
         return null;
       }
 
-      // Check if arguments failed to parse (remained as string instead of object)
-      const args: unknown = toolCall.arguments;
-      if (typeof args === 'string') {
-        const rawArgs = args;
-        const errorMessage =
-          `Failed to parse tool call arguments for "${toolCall.name}": The model provided invalid JSON. ` +
-          `Raw arguments received: "${rawArgs}". ` +
-          'Please provide valid JSON arguments for this tool call.';
-
-        this.broadcastToolResult(toolCall.id, {
-          error: errorMessage,
-        } as InferToolOutputsUnion<TTools>);
-
-        return {
-          type: 'parse_error' as const,
-          toolCall,
-          output: {
-            type: 'function_call_output' as const,
-            id: `output_${toolCall.id}`,
-            callId: toolCall.id,
-            output: JSON.stringify({
-              error: errorMessage,
-            }),
-          },
-        };
-      }
-
       const preliminaryResultsForCall: InferToolEventsUnion<TTools>[] = [];
 
       const hasBroadcaster = this.toolEventBroadcaster || this.turnBroadcaster;
@@ -1284,13 +1312,22 @@ export class ModelResult<
           }
         : undefined;
 
-      // Run the tool through the full Pre/Post lifecycle hooks.
+      // Run the tool through the full Pre/Post lifecycle hooks. The helper
+      // fails closed on a JSON-parse failure in toolCall.arguments so hooks
+      // never see a malformed payload; the caller below handles that case
+      // via the shared `parse_error` / `hook_blocked` branch.
       const executed = await this.runToolWithHooks(
         tool,
         toolCall,
         turnContext,
         onPreliminaryResult,
       );
+      if (executed.type === 'parse_error') {
+        this.broadcastToolResult(toolCall.id, {
+          error: executed.errorMessage,
+        } as InferToolOutputsUnion<TTools>);
+        return executed;
+      }
       if (executed.type === 'hook_blocked') {
         return executed;
       }
@@ -1846,6 +1883,16 @@ export class ModelResult<
         toolCall as ParsedToolCall<Tool>,
         turnContext,
       );
+
+      if (hookOutcome.type === 'parse_error') {
+        this.broadcastToolResult(callId, {
+          error: hookOutcome.errorMessage,
+        } as InferToolOutputsUnion<TTools>);
+        unsentResults.push(
+          createRejectedResult(callId, String(toolCall.name), hookOutcome.errorMessage),
+        );
+        continue;
+      }
 
       if (hookOutcome.type === 'hook_blocked') {
         unsentResults.push(createRejectedResult(callId, String(toolCall.name), hookOutcome.reason));

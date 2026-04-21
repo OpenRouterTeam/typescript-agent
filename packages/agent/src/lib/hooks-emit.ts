@@ -50,6 +50,18 @@ function isPlainMutableObject(value: unknown): value is Record<string, unknown> 
  *   responsible for draining/timing out that work
  * - Per-hook mutation piping (driven by {@link MUTATION_FIELD_MAP})
  * - Short-circuit on block/reject fields (non-empty string or `true`)
+ * - Cooperative abort via `context.signal`: the chain checks
+ *   `signal.aborted` between handlers and bails out when set so
+ *   `abortInflight()` has a deterministic effect on the chain itself (not just
+ *   on handlers that happen to consult the signal).
+ *
+ * Payload isolation: the initial payload is shallow-cloned before entering the
+ * chain so mutation piping (via {@link MUTATION_FIELD_MAP}) doesn't mutate the
+ * caller's payload at the top level. This is a top-level-only guarantee:
+ * handlers that directly mutate a nested object (e.g.
+ * `payload.toolInput.foo = 'bar'`) still reach the caller's original nested
+ * reference. Handlers MUST return mutations via the documented result fields
+ * (e.g. `mutatedInput`) rather than mutating nested payload fields in place.
  */
 export async function executeHandlerChain<P, R>(
   entries: ReadonlyArray<HookEntry<P, R>>,
@@ -64,7 +76,9 @@ export async function executeHandlerChain<P, R>(
   // produce `{}`; spreading an array reindexes it into an object. For those
   // cases we pass the value through untouched so handlers see the original
   // typed-`P` value. For plain objects we still clone so the chain can apply
-  // mutation piping without mutating the caller's payload in place.
+  // mutation piping without mutating the caller's payload at the top level.
+  // Nested fields are shared with the caller; see the function-level docstring
+  // for the invariant handlers are expected to respect.
   let currentPayload: P = isPlainMutableObject(initialPayload)
     ? ({
         ...initialPayload,
@@ -77,6 +91,13 @@ export async function executeHandlerChain<P, R>(
   const mutationMap = MUTATION_FIELD_MAP[options.hookName];
 
   for (let i = 0; i < entries.length; i++) {
+    // Cooperative abort: bail out of the chain when abortInflight() has fired.
+    // Checked before each handler so synchronous chains stop promptly instead
+    // of running to completion with only advisory notice to each handler.
+    if (context.signal.aborted) {
+      break;
+    }
+
     const entry = entries[i];
     if (!entry) {
       continue;
@@ -195,12 +216,38 @@ function trackAsyncWork(output: AsyncOutput, hookName: string): Promise<void> | 
     };
 
     const timeoutId = setTimeout(finish, timeout);
+    // In Node.js, Timeout objects expose `.unref()` to remove the reference
+    // the timer holds on the event loop. Without this, a leaked hook whose
+    // `work` never settles keeps the process alive for the full
+    // DEFAULT_ASYNC_TIMEOUT window after the main workload has finished.
+    // Guarded for browsers / other environments that return a plain number
+    // from setTimeout and don't expose the method.
+    if (isUnrefable(timeoutId)) {
+      timeoutId.unref();
+    }
 
     output.work?.then(finish, (error: unknown) => {
       console.warn(`[HooksManager] Async work for hook "${hookName}" rejected:`, error);
       finish();
     });
   });
+}
+
+/**
+ * Typeguard for the Node.js Timeout object that carries a `.unref()` method.
+ * Browsers and other environments return a number from setTimeout, which has
+ * no such method.
+ */
+function isUnrefable(handle: unknown): handle is {
+  unref: () => void;
+} {
+  if (typeof handle !== 'object' || handle === null || !('unref' in handle)) {
+    return false;
+  }
+  const candidate: {
+    unref: unknown;
+  } = handle;
+  return typeof candidate.unref === 'function';
 }
 
 /**

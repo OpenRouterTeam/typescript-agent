@@ -610,6 +610,76 @@ describe('executeHandlerChain (adversarial)', () => {
     });
   });
 
+  describe('abort signal propagation', () => {
+    it('bails out of the chain when context.signal aborts mid-chain', async () => {
+      const controller = new AbortController();
+      const firstHandler = vi.fn(async () => {
+        controller.abort();
+        return undefined;
+      });
+      const secondHandler = vi.fn();
+      const thirdHandler = vi.fn();
+
+      const entries: HookEntry<unknown, void>[] = [
+        {
+          handler: firstHandler,
+        },
+        {
+          handler: secondHandler,
+        },
+        {
+          handler: thirdHandler,
+        },
+      ];
+
+      await executeHandlerChain(
+        entries,
+        {},
+        {
+          signal: controller.signal,
+          hookName: 'Test',
+          sessionId: 's',
+        },
+        {
+          hookName: 'Test',
+          throwOnHandlerError: false,
+        },
+      );
+
+      expect(firstHandler).toHaveBeenCalledOnce();
+      expect(secondHandler).not.toHaveBeenCalled();
+      expect(thirdHandler).not.toHaveBeenCalled();
+    });
+
+    it('skips every handler when signal is already aborted before the chain', async () => {
+      const controller = new AbortController();
+      controller.abort();
+      const handler = vi.fn();
+
+      const entries: HookEntry<unknown, void>[] = [
+        {
+          handler,
+        },
+      ];
+
+      await executeHandlerChain(
+        entries,
+        {},
+        {
+          signal: controller.signal,
+          hookName: 'Test',
+          sessionId: 's',
+        },
+        {
+          hookName: 'Test',
+          throwOnHandlerError: false,
+        },
+      );
+
+      expect(handler).not.toHaveBeenCalled();
+    });
+  });
+
   describe('large chain stress', () => {
     it('handles 1000 handlers without stack overflow', async () => {
       const entries: HookEntry<
