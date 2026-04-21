@@ -7,6 +7,7 @@ import type { GetResponseOptions } from '../lib/model-result.js';
 import { ModelResult } from '../lib/model-result.js';
 import { convertToolsToAPIFormat } from '../lib/tool-executor.js';
 import type { Tool } from '../lib/tool-types.js';
+import { isServerTool } from '../lib/tool-types.js';
 
 // Re-export CallModelInput for convenience
 export type { CallModelInput } from '../lib/async-params.js';
@@ -115,7 +116,9 @@ export function callModel<
   // before they are registered for execution, so the model cannot call filtered
   // tools and the executor does not carry orphaned definitions.
   const activeSet = activeTools ? new Set(activeTools) : undefined;
-  const filteredTools = activeSet ? tools?.filter((t) => activeSet.has(t.function.name)) : tools;
+  const filteredTools = activeSet
+    ? tools?.filter((t) => isServerTool(t) || activeSet.has(t.function.name))
+    : tools;
 
   // Convert tools to API format - no cast needed now that convertToolsToAPIFormat accepts readonly
   const apiTools = filteredTools ? convertToolsToAPIFormat(filteredTools) : undefined;
