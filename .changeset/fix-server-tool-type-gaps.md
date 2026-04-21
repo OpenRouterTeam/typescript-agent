@@ -1,27 +1,25 @@
 ---
-"@openrouter/agent": minor
+"@openrouter/agent": patch
 ---
 
 Fix two type gaps that forced consumers to use `as any` when wiring up
-`callModel` with server tools and chat-format inputs.
+`callModel` with server tools and chat-format inputs. Both fixes are
+purely additive at the public-type level — `ServerTool` and
+`ServerTool<T>` continue to work exactly as before; no consumer code
+needs to change.
 
-**Breaking (type-level):** `ServerTool` is no longer generic. Callers
-writing `ServerTool<'openrouter:datetime'>` will fail to compile with
-`Type 'ServerTool' is not generic.` Migrate to `ServerToolNarrow<T>`
-(or use `ReturnType<typeof serverTool<T>>`). Code that only used
-`ServerTool` without a type argument is unaffected — that remains the
-recommended form for mixed-tool arrays.
-
-- **`ServerTool` is now a structural-base alias**, not a generic. The
-  factory returns a narrow `ServerToolNarrow<T>` that extends
-  `ServerToolBase` via interface extension, so a specific
-  `ServerToolNarrow<'openrouter:datetime'>` flows into the public
-  `ServerTool` alias without a cast. Mixed arrays like
-  `Array<ClientTool | ServerTool>` or `Tool[]` now accept any mix of
-  `tool()` and `serverTool()` results directly. New public types:
-  `ServerToolBase` (structural base) and `ServerToolNarrow<T>` (narrow
-  form when the exact `config` shape matters). The old `ServerTool<T>`
-  generic is replaced by `ServerToolNarrow<T>`.
+- **Mixed `Array<ClientTool | ServerTool>` now accepts narrow
+  `serverTool()` results without a cast.** Previously `ServerTool<T>`
+  defined `config: Extract<ServerToolConfig, { type: T }>`, which made
+  it invariant over `T` — so `ServerTool<'openrouter:datetime'>` was
+  not assignable to the bare `ServerTool` (= `ServerTool<ServerToolType>`).
+  `ServerTool` is now a conditional generic with a `never` default that
+  collapses to a non-generic structural base (`ServerToolBase`, also
+  newly exported), and narrow variants are represented as an
+  intersection with that base — so any `serverTool(...)` result flows
+  into `Array<ClientTool | ServerTool>` or `Tool[]` directly.
+  `ServerTool<'openrouter:datetime'>` (narrowing `config` at a call
+  site) still compiles as before.
 
 - **`callModel`'s `request.input` now accepts `InputsUnion`** (the SDK's
   wider message shape returned by `fromChatMessages()`), alongside the
