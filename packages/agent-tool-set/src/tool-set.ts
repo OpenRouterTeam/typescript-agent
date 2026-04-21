@@ -1,4 +1,5 @@
 import type { Tool } from '@openrouter/agent';
+import { isServerTool } from '@openrouter/agent';
 import type { ActivationInput, ActivationPredicate } from './types.js';
 
 type Entry<TShared extends Record<string, unknown>> =
@@ -32,6 +33,9 @@ function isPredicateMap<TShared extends Record<string, unknown>>(
 function buildToolsMap(tools: readonly Tool[]): Map<string, Tool> {
   const map = new Map<string, Tool>();
   for (const t of tools) {
+    if (isServerTool(t)) {
+      continue;
+    }
     const name = t.function.name;
     if (map.has(name)) {
       throw new Error(`Duplicate tool name: "${name}"`);
