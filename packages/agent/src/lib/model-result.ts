@@ -92,8 +92,8 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 /**
- * Type guard for stream event with toReadableStream method
- * Checks constructor name, prototype, and method availability
+ * Type guard for stream event responses
+ * Checks constructor name and readable stream behavior
  */
 function isEventStream(value: unknown): value is EventStream<models.StreamEvents> {
   if (value === null || typeof value !== 'object') {
@@ -106,11 +106,10 @@ function isEventStream(value: unknown): value is EventStream<models.StreamEvents
     return true;
   }
 
-  // Fallback: check for toReadableStream method (may be on prototype)
   const maybeStream = value as {
-    toReadableStream?: unknown;
+    getReader?: unknown;
   };
-  return typeof maybeStream.toReadableStream === 'function';
+  return typeof maybeStream.getReader === 'function';
 }
 
 export interface GetResponseOptions<
@@ -432,14 +431,11 @@ export class ModelResult<
 
   /**
    * Type guard to check if a value is a non-streaming response
-   * Only requires 'output' field and absence of 'toReadableStream' method
+   * Only requires 'output' field and absence of readable stream behavior
    */
   private isNonStreamingResponse(value: unknown): value is models.OpenResponsesResult {
     return (
-      value !== null &&
-      typeof value === 'object' &&
-      'output' in value &&
-      !('toReadableStream' in value)
+      value !== null && typeof value === 'object' && 'output' in value && !isEventStream(value)
     );
   }
 
