@@ -93,16 +93,14 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 /**
  * Type guard for stream event with toReadableStream method
- * Checks constructor name, prototype, and method availability
+ * Checks ReadableStream inheritance and method availability
  */
 function isEventStream(value: unknown): value is EventStream<models.StreamEvents> {
   if (value === null || typeof value !== 'object') {
     return false;
   }
 
-  // Check constructor name for EventStream
-  const constructorName = Object.getPrototypeOf(value)?.constructor?.name;
-  if (constructorName === 'EventStream') {
+  if (typeof ReadableStream !== 'undefined' && value instanceof ReadableStream) {
     return true;
   }
 
