@@ -1,5 +1,11 @@
 # @openrouter/agent
 
+## 0.4.1
+
+### Patch Changes
+
+- [#34](https://github.com/OpenRouterTeam/typescript-agent/pull/34) [`61aca10`](https://github.com/OpenRouterTeam/typescript-agent/commit/61aca10fd9434fe69fbe1e069e4b1858613a7da7) Thanks [@w0nche0l](https://github.com/w0nche0l)! - Detect streamed Responses API results by readable stream behavior instead of constructor names or unsupported adapters.
+
 ## 0.4.0
 
 ### Minor Changes
