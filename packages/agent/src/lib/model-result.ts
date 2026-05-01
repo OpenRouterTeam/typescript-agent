@@ -100,9 +100,7 @@ function isEventStream(value: unknown): value is EventStream<models.StreamEvents
     return false;
   }
 
-  // Check constructor name for EventStream
-  const constructorName = Object.getPrototypeOf(value)?.constructor?.name;
-  if (constructorName === 'EventStream') {
+  if (typeof ReadableStream !== 'undefined' && value instanceof ReadableStream) {
     return true;
   }
 
