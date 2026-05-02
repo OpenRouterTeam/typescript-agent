@@ -35,4 +35,4 @@ Pick the affected packages and bump type. On merge to `main`, the release workfl
 
 See [`.github/workflows/publish.yaml`](./.github/workflows/publish.yaml) for the full flow.
 
-// testing github actions
+// testing github actions 2
