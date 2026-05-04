@@ -7,6 +7,11 @@ config({
 
 export default defineConfig({
   test: {
+    coverage: {
+      enabled: true,
+      provider: 'v8',
+      include: ['packages/**/src/**.{js,jsx,ts,tsx}']
+    },
     globals: true,
     environment: 'node',
     env: {
