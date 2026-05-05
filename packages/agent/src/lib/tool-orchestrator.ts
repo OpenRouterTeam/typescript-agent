@@ -7,7 +7,7 @@ import { extractToolCallsFromResponse, responseHasToolCalls } from './stream-tra
 import { isFunctionCallItem } from './stream-type-guards.js';
 import { executeTool, findToolByName } from './tool-executor.js';
 import type { APITool, Tool, ToolExecutionResult } from './tool-types.js';
-import { hasExecuteFunction } from './tool-types.js';
+import { isAutoResolvableTool } from './tool-types.js';
 import { buildTurnContext } from './turn-context.js';
 
 /**
@@ -75,13 +75,13 @@ export async function executeToolLoop(
       break;
     }
 
-    // Check if any tools have execute functions
+    // Check if any tools can be auto-resolved (execute or HITL onToolCalled)
     const hasExecutableTools = toolCalls.some((toolCall) => {
       const tool = findToolByName(tools, toolCall.name);
-      return tool && hasExecuteFunction(tool);
+      return tool && isAutoResolvableTool(tool);
     });
 
-    // If no executable tools, return (manual execution mode)
+    // If no auto-resolvable tools, return (manual execution mode)
     if (!hasExecutableTools) {
       break;
     }
@@ -100,8 +100,8 @@ export async function executeToolLoop(
         } as ToolExecutionResult<Tool>;
       }
 
-      if (!hasExecuteFunction(tool)) {
-        // Tool has no execute function - return null to filter out
+      if (!isAutoResolvableTool(tool)) {
+        // Tool has no execute/onToolCalled - return null to filter out
         return null;
       }
 

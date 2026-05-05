@@ -1,11 +1,13 @@
 import type * as models from '@openrouter/sdk/models';
 import * as z4 from 'zod/v4';
 import type { $ZodObject, $ZodShape, $ZodType } from 'zod/v4/core';
+import { isFunctionCallItem, isFunctionCallOutputItem } from './stream-type-guards.js';
 import type { ToolContextStore } from './tool-context.js';
 import { buildToolExecuteContext } from './tool-context.js';
 import type {
   APITool,
   ClientTool,
+  HITLTool,
   ParsedToolCall,
   Tool,
   ToolExecuteContext,
@@ -15,6 +17,7 @@ import type {
 import {
   hasExecuteFunction,
   isGeneratorTool,
+  isHITLTool,
   isRegularExecuteTool,
   isServerTool,
 } from './tool-types.js';
@@ -322,8 +325,69 @@ export async function executeGeneratorTool(
 }
 
 /**
- * Execute a tool call
- * Automatically detects if it's a regular or generator tool
+ * Execute a HITL tool's `onToolCalled` hook.
+ *
+ * Returns:
+ * - `ToolExecutionResult` if the hook produced a value (short-circuit, send to model)
+ * - `null` if the hook returned `null` (pause — treat as manual tool)
+ * - `ToolExecutionResult` with `error` set if the hook threw
+ */
+// biome-ignore lint: parameters match the internal API shape
+export async function executeHITLTool(
+  tool: Tool,
+  toolCall: ParsedToolCall<Tool>,
+  context: TurnContext,
+  contextStore?: ToolContextStore,
+  sharedSchema?: $ZodObject<$ZodShape>,
+): Promise<ToolExecutionResult<Tool> | null> {
+  if (!isHITLTool(tool)) {
+    throw new Error(`Tool "${toolCall.name}" is not a HITL tool`);
+  }
+
+  try {
+    const validatedInput = validateToolInput(tool.function.inputSchema, toolCall.arguments);
+    const executeContext = buildExecuteCtx(tool, context, contextStore, sharedSchema);
+
+    const result = await Promise.resolve(
+      tool.function.onToolCalled(validatedInput, executeContext),
+    );
+
+    if (result === null) {
+      // Pause — treat as manual tool
+      return null;
+    }
+
+    if (tool.function.outputSchema) {
+      const validatedOutput = validateToolOutput(tool.function.outputSchema, result);
+      return {
+        toolCallId: toolCall.id,
+        toolName: toolCall.name,
+        result: validatedOutput,
+      };
+    }
+
+    return {
+      toolCallId: toolCall.id,
+      toolName: toolCall.name,
+      result,
+    };
+  } catch (error) {
+    return {
+      toolCallId: toolCall.id,
+      toolName: toolCall.name,
+      result: null,
+      error: error instanceof Error ? error : new Error(String(error)),
+    };
+  }
+}
+
+/**
+ * Execute a tool call.
+ * Automatically detects if it's a regular, generator, or HITL tool.
+ *
+ * Returns `null` only for HITL tools whose `onToolCalled` returned `null`
+ * (signaling a manual-style pause). All other tools always return a
+ * `ToolExecutionResult` (with `error` set on failure).
  */
 // biome-ignore lint: parameters match the internal API shape
 export async function executeTool(
@@ -333,7 +397,11 @@ export async function executeTool(
   onPreliminaryResult?: (toolCallId: string, result: unknown) => void,
   contextStore?: ToolContextStore,
   sharedSchema?: $ZodObject<$ZodShape>,
-): Promise<ToolExecutionResult<Tool>> {
+): Promise<ToolExecutionResult<Tool> | null> {
+  if (isHITLTool(tool)) {
+    return executeHITLTool(tool, toolCall, context, contextStore, sharedSchema);
+  }
+
   if (!hasExecuteFunction(tool)) {
     throw new Error(`Tool "${toolCall.name}" has no execute function. Use manual tool execution.`);
   }
@@ -390,4 +458,113 @@ export function formatToolExecutionError(error: Error, toolCall: ParsedToolCall<
   }
 
   return `Tool "${toolCall.name}" execution error: ${error.message}`;
+}
+
+/**
+ * Typeguard: input is a plain array of items. Narrows the InputsUnion's
+ * "string | Array<...>" shape so we can walk the array.
+ */
+function isItemArray(
+  input: models.InputsUnion,
+): input is Extract<models.InputsUnion, readonly unknown[]> {
+  return Array.isArray(input);
+}
+
+/**
+ * Walk the input items and apply `onResponseReceived` hooks for HITL tools.
+ *
+ * For each `function_call_output` item in `input`, locate the matching
+ * `function_call` (by `callId`) to identify the tool name. If that tool is a
+ * HITL tool with an `onResponseReceived` hook, invoke it with the parsed output
+ * and replace the item's `output` with the hook's return value (stringified).
+ *
+ * If a hook throws, the output is replaced with `{"error": "<message>"}` so the
+ * model sees a tool error. Items that don't match a HITL tool are left untouched.
+ *
+ * @returns a new input array when any item was rewritten, otherwise the original input.
+ */
+// biome-ignore lint: parameters match the internal API shape
+export async function applyOnResponseReceivedHooks(
+  input: models.InputsUnion,
+  tools: readonly Tool[] | undefined,
+  context: TurnContext,
+  contextStore?: ToolContextStore,
+  sharedSchema?: $ZodObject<$ZodShape>,
+): Promise<models.InputsUnion> {
+  if (!tools || tools.length === 0 || !isItemArray(input)) {
+    return input;
+  }
+
+  const hitlTools = tools.filter((t): t is HITLTool => isHITLTool(t));
+  if (hitlTools.length === 0) {
+    return input;
+  }
+  const hookByName = new Map<string, HITLTool>();
+  for (const t of hitlTools) {
+    if (t.function.onResponseReceived) {
+      hookByName.set(t.function.name, t);
+    }
+  }
+  if (hookByName.size === 0) {
+    return input;
+  }
+
+  // Build callId -> name map from function_call items in the array
+  const callIdToName = new Map<string, string>();
+  for (const item of input) {
+    if (isFunctionCallItem(item)) {
+      callIdToName.set(item.callId, item.name);
+    }
+  }
+
+  let changed = false;
+  const rewritten: unknown[] = [];
+  for (const item of input) {
+    if (!isFunctionCallOutputItem(item)) {
+      rewritten.push(item);
+      continue;
+    }
+    const toolName = callIdToName.get(item.callId);
+    if (!toolName) {
+      rewritten.push(item);
+      continue;
+    }
+    const tool = hookByName.get(toolName);
+    if (!tool || !tool.function.onResponseReceived) {
+      rewritten.push(item);
+      continue;
+    }
+
+    const raw = item.output;
+    let parsed: unknown = raw;
+    if (typeof raw === 'string') {
+      try {
+        parsed = JSON.parse(raw);
+      } catch {
+        parsed = raw;
+      }
+    }
+
+    const executeContext = buildExecuteCtx(tool, context, contextStore, sharedSchema);
+
+    let newOutput: string;
+    try {
+      const hookResult = await Promise.resolve(
+        tool.function.onResponseReceived(parsed, executeContext),
+      );
+      newOutput = JSON.stringify(hookResult);
+    } catch (err) {
+      newOutput = JSON.stringify({
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+
+    rewritten.push({
+      ...item,
+      output: newOutput,
+    });
+    changed = true;
+  }
+
+  return changed ? (rewritten as models.InputsUnion) : input;
 }

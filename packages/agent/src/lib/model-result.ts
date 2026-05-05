@@ -51,7 +51,7 @@ import {
 import type { ContextInput } from './tool-context.js';
 import { resolveContext, ToolContextStore } from './tool-context.js';
 import { ToolEventBroadcaster } from './tool-event-broadcaster.js';
-import { executeTool } from './tool-executor.js';
+import { applyOnResponseReceivedHooks, executeTool } from './tool-executor.js';
 import type {
   ConversationState,
   InferToolEventsUnion,
@@ -73,6 +73,7 @@ import type {
 } from './tool-types.js';
 import {
   hasExecuteFunction,
+  isAutoResolvableTool,
   isClientTool,
   isServerTool,
   isToolCallOutputEvent,
@@ -624,7 +625,7 @@ export class ModelResult<
   ): Promise<UnsentToolResult<TTools>[]> {
     const toolCallPromises = toolCalls.map(async (tc) => {
       const tool = this.options.tools?.find((t) => isClientTool(t) && t.function.name === tc.name);
-      if (!tool || !hasExecuteFunction(tool)) {
+      if (!tool || !isAutoResolvableTool(tool)) {
         return null;
       }
 
@@ -636,6 +637,11 @@ export class ModelResult<
         this.contextStore ?? undefined,
         this.options.sharedContextSchema,
       );
+
+      if (result === null) {
+        // HITL tool paused — no unsent result for this call in this round
+        return null;
+      }
 
       if (result.error) {
         return createRejectedResult(tc.id, String(tc.name), result.error.message);
@@ -748,7 +754,7 @@ export class ModelResult<
       const tool = this.options.tools?.find(
         (t) => isClientTool(t) && t.function.name === toolCall.name,
       );
-      if (!tool || !hasExecuteFunction(tool)) {
+      if (!tool || !isAutoResolvableTool(tool)) {
         return null;
       }
 
@@ -798,6 +804,14 @@ export class ModelResult<
         this.contextStore ?? undefined,
         this.options.sharedContextSchema,
       );
+
+      if (result === null) {
+        // HITL tool paused — surface as manual (no output this round)
+        return {
+          type: 'paused' as const,
+          toolCall,
+        };
+      }
 
       return {
         type: 'execution' as const,
@@ -855,6 +869,13 @@ export class ModelResult<
           output: value.output,
           timestamp: Date.now(),
         } satisfies ToolCallOutputEvent);
+        continue;
+      }
+
+      if (value.type === 'paused') {
+        // HITL tool returned null — emit nothing; the call surfaces to the caller
+        // for manual resume. The outer loop will end because toolResults lacks
+        // an entry for this call.
         continue;
       }
 
@@ -1227,6 +1248,21 @@ export class ModelResult<
         }
       }
 
+      // Apply onResponseReceived hooks to caller-supplied tool-output items
+      if (baseRequest.input !== undefined) {
+        const hookedInput = await applyOnResponseReceivedHooks(
+          baseRequest.input,
+          this.options.tools,
+          initialContext,
+          this.contextStore ?? undefined,
+          this.options.sharedContextSchema,
+        );
+        baseRequest = {
+          ...baseRequest,
+          input: hookedInput,
+        };
+      }
+
       // Store resolved request with stream mode
       this.resolvedRequest = {
         ...baseRequest,
@@ -1293,7 +1329,7 @@ export class ModelResult<
       const tool = this.options.tools?.find(
         (t) => isClientTool(t) && t.function.name === toolCall.name,
       );
-      if (!tool || !hasExecuteFunction(tool)) {
+      if (!tool || !isAutoResolvableTool(tool)) {
         // Can't execute, create error result
         unsentResults.push(
           createRejectedResult(callId, String(toolCall.name), 'Tool not found or not executable'),
@@ -1309,6 +1345,11 @@ export class ModelResult<
         this.contextStore ?? undefined,
         this.options.sharedContextSchema,
       );
+
+      if (result === null) {
+        // HITL tool paused on approval — no unsent result; caller resumes later
+        continue;
+      }
 
       if (result.error) {
         unsentResults.push(
@@ -1408,10 +1449,20 @@ export class ModelResult<
 
     const baseRequest = await this.resolveRequestForContext(turnContext);
 
+    // Apply onResponseReceived hooks to caller-supplied tool-output items
+    // (unsentToolResults merged into newInput above may include caller-provided outputs)
+    const hookedInput = await applyOnResponseReceivedHooks(
+      newInput,
+      this.options.tools,
+      turnContext,
+      this.contextStore ?? undefined,
+      this.options.sharedContextSchema,
+    );
+
     // Create request with the accumulated messages
     const request: models.ResponsesRequest = {
       ...baseRequest,
-      input: newInput,
+      input: hookedInput,
       stream: true,
     };
 

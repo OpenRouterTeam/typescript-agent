@@ -279,6 +279,36 @@ export interface ManualToolFunction<
 }
 
 /**
+ * Human-in-the-loop tool. Extends manual-tool semantics with two async hooks.
+ *
+ * `onToolCalled` fires when the model invokes the tool. Returning a value feeds
+ * the model directly (like regular `execute`); returning `null` pauses the loop
+ * like a manual tool, letting the caller resume later with a FunctionCallOutputItem.
+ *
+ * `onResponseReceived` fires on the next turn when an incoming FunctionCallOutputItem
+ * corresponds to a prior call of this tool (matched by callId → function_call.name).
+ * It receives the caller-supplied raw result and returns the value sent to the model.
+ * Throwing surfaces as a tool error to the model.
+ */
+export interface HITLToolFunction<
+  TInput extends $ZodObject<$ZodShape>,
+  TOutput extends $ZodType = $ZodType<unknown>,
+  TContext extends Record<string, unknown> = Record<string, unknown>,
+  TName extends string = string,
+> extends BaseToolFunction<TInput> {
+  outputSchema?: TOutput;
+  onToolCalled: (
+    params: zodInfer<TInput>,
+    context?: ToolExecuteContext<TName, TContext>,
+  ) => Promise<zodInfer<TOutput> | null> | zodInfer<TOutput> | null;
+  onResponseReceived?: (
+    rawResult: unknown,
+    context?: ToolExecuteContext<TName, TContext>,
+  ) => Promise<zodInfer<TOutput>> | zodInfer<TOutput>;
+  toModelOutput?: ToModelOutputFunction<zodInfer<TInput>, zodInfer<TOutput>>;
+}
+
+/**
  * Tool with execute function (regular or generator)
  */
 export type ToolWithExecute<
@@ -315,13 +345,26 @@ export type ManualTool<
 };
 
 /**
- * Union type of all client-executed tool shapes (function, generator, manual).
+ * Human-in-the-loop tool (with onToolCalled / onResponseReceived hooks)
+ */
+export type HITLTool<
+  TInput extends $ZodObject<$ZodShape> = $ZodObject<$ZodShape>,
+  TOutput extends $ZodType = $ZodType<unknown>,
+  TContext extends Record<string, unknown> = Record<string, unknown>,
+> = {
+  type: ToolType.Function;
+  function: HITLToolFunction<TInput, TOutput, TContext>;
+};
+
+/**
+ * Union type of all client-executed tool shapes (function, generator, manual, HITL).
  * These run in the user's process via the agent SDK's tool execution loop.
  */
 export type ClientTool =
   | ToolWithExecute<$ZodObject<$ZodShape>, $ZodType<unknown>>
   | ToolWithGenerator<$ZodObject<$ZodShape>, $ZodType<unknown>, $ZodType<unknown>>
-  | ManualTool<$ZodObject<$ZodShape>, $ZodType<unknown>>;
+  | ManualTool<$ZodObject<$ZodShape>, $ZodType<unknown>>
+  | HITLTool<$ZodObject<$ZodShape>, $ZodType<unknown>>;
 
 /**
  * Config payload for an OpenRouter server-executed tool. Derived directly
@@ -551,13 +594,36 @@ export function isRegularExecuteTool(tool: Tool): tool is ToolWithExecute {
 }
 
 /**
- * Type guard to check if a tool is a manual tool (no execute function)
+ * Type guard to check if a tool is a manual tool (no execute and no onToolCalled)
  */
 export function isManualTool(tool: Tool): tool is ManualTool {
   if (isServerTool(tool)) {
     return false;
   }
-  return !('execute' in tool.function);
+  return !('execute' in tool.function) && !('onToolCalled' in tool.function);
+}
+
+/**
+ * Type guard to check if a tool is a human-in-the-loop tool (has onToolCalled)
+ */
+export function isHITLTool(tool: Tool): tool is HITLTool {
+  if (isServerTool(tool)) {
+    return false;
+  }
+  return (
+    'onToolCalled' in tool.function && typeof tool.function.onToolCalled === 'function'
+  );
+}
+
+/**
+ * Type guard: true if the tool can be auto-resolved within a turn — either
+ * through a client execute/generator function or through a HITL onToolCalled hook.
+ * Returns false for manual tools (which always pause) and server tools.
+ */
+export function isAutoResolvableTool(
+  tool: Tool,
+): tool is ToolWithExecute | ToolWithGenerator | HITLTool {
+  return hasExecuteFunction(tool) || isHITLTool(tool);
 }
 
 /**

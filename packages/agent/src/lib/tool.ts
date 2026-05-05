@@ -1,5 +1,6 @@
 import type { $ZodObject, $ZodShape, $ZodType, infer as zodInfer } from 'zod/v4/core';
 import type {
+  HITLTool,
   ManualTool,
   NextTurnParamsFunctions,
   ServerTool,
@@ -110,6 +111,45 @@ type ManualToolConfig<TInput extends $ZodObject<$ZodShape>> = {
 };
 
 /**
+ * Configuration for a human-in-the-loop tool.
+ * Discriminated by the presence of `onToolCalled`. No `execute` or `eventSchema`.
+ *
+ * `onToolCalled` returning `null` pauses the loop (manual-tool semantics).
+ * Any non-null return is treated as the tool's result for the model.
+ *
+ * `onResponseReceived` is invoked on a later turn when an incoming
+ * `FunctionCallOutputItem` corresponds to a prior call of this tool; the
+ * returned value replaces what the model ultimately sees.
+ */
+type HITLToolConfig<
+  TInput extends $ZodObject<$ZodShape>,
+  TOutput extends $ZodType,
+  TContext extends Record<string, unknown> = Record<string, unknown>,
+  TName extends string = string,
+> = {
+  name: TName;
+  description?: string;
+  inputSchema: TInput;
+  outputSchema?: TOutput;
+  eventSchema?: undefined;
+  execute?: undefined;
+  /** Zod schema declaring the context data this tool needs */
+  contextSchema?: $ZodObject<$ZodShape>;
+  nextTurnParams?: NextTurnParamsFunctions<zodInfer<TInput>>;
+  requireApproval?: boolean | ToolApprovalCheck<zodInfer<TInput>>;
+  onToolCalled: (
+    params: zodInfer<TInput>,
+    context?: ToolExecuteContext<TName, TContext>,
+  ) => Promise<zodInfer<TOutput> | null> | zodInfer<TOutput> | null;
+  onResponseReceived?: (
+    rawResult: unknown,
+    context?: ToolExecuteContext<TName, TContext>,
+  ) => Promise<zodInfer<TOutput>> | zodInfer<TOutput>;
+  /** Convert tool execution output to model-facing output */
+  toModelOutput?: ToModelOutputFunction<zodInfer<TInput>, zodInfer<TOutput>>;
+};
+
+/**
  * Loose config type for the `tool<TShared>()` overload.
  * Accepts any valid tool config while typing `ctx.shared` from TShared.
  */
@@ -194,6 +234,16 @@ export function tool<
   config: GeneratorToolConfig<TInput, TEvent, TOutput, TContext, TName>,
 ): ToolWithGenerator<TInput, TEvent, TOutput, TContext>;
 
+// Overload for HITL tools (when onToolCalled is provided)
+export function tool<
+  TInput extends $ZodObject<$ZodShape>,
+  TOutput extends $ZodType,
+  TContext extends Record<string, unknown> = Record<string, unknown>,
+  TName extends string = string,
+>(
+  config: HITLToolConfig<TInput, TOutput, TContext, TName>,
+): HITLTool<TInput, TOutput, TContext>;
+
 // Overload for manual tools (execute: false)
 export function tool<TInput extends $ZodObject<$ZodShape>>(
   config: ManualToolConfig<TInput>,
@@ -233,6 +283,7 @@ export function tool(
     | GeneratorToolConfig<$ZodObject<$ZodShape>, $ZodType, $ZodType>
     | RegularToolConfig<$ZodObject<$ZodShape>, $ZodType, unknown>
     | ManualToolConfig<$ZodObject<$ZodShape>>
+    | HITLToolConfig<$ZodObject<$ZodShape>, $ZodType>
     | ToolConfigWithSharedContext<Record<string, unknown>>,
 ): Tool {
   // 'shared' is reserved for shared context — forbid it as a tool name
@@ -240,6 +291,48 @@ export function tool(
     throw new Error(
       `Tool name "${SHARED_CONTEXT_KEY}" is reserved for shared context. Choose a different name.`,
     );
+  }
+
+  // Check for HITL tool (has onToolCalled hook)
+  if ('onToolCalled' in config && typeof config.onToolCalled === 'function') {
+    const fn: HITLTool<$ZodObject<$ZodShape>, $ZodType>['function'] = {
+      name: config.name,
+      inputSchema: config.inputSchema,
+      onToolCalled: config.onToolCalled,
+    };
+
+    if (config.description !== undefined) {
+      fn.description = config.description;
+    }
+
+    if (config.outputSchema !== undefined) {
+      fn.outputSchema = config.outputSchema;
+    }
+
+    if (config.contextSchema !== undefined) {
+      fn.contextSchema = config.contextSchema;
+    }
+
+    if (config.nextTurnParams !== undefined) {
+      fn.nextTurnParams = config.nextTurnParams;
+    }
+
+    if (config.requireApproval !== undefined) {
+      fn.requireApproval = config.requireApproval;
+    }
+
+    if (config.onResponseReceived !== undefined) {
+      fn.onResponseReceived = config.onResponseReceived;
+    }
+
+    if (config.toModelOutput !== undefined) {
+      fn.toModelOutput = config.toModelOutput;
+    }
+
+    return {
+      type: ToolType.Function,
+      function: fn,
+    };
   }
 
   // Check for manual tool first (execute === false)
