@@ -34,5 +34,3 @@ pnpm changeset
 Pick the affected packages and bump type. On merge to `main`, the release workflow opens a "Version Packages" PR. Merging that PR publishes every package with a consumed changeset to npm — no republishing of unchanged packages.
 
 See [`.github/workflows/publish.yaml`](./.github/workflows/publish.yaml) for the full flow.
-
-// testing github actions 2
