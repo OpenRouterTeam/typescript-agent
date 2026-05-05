@@ -6,7 +6,6 @@ on:
 
 env:
   TURBO_TELEMETRY_DISABLED: '1'
-  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
   lint:

@@ -12,9 +12,7 @@
     "lint:fix": "biome check --write packages/*/src packages/*/tests",
     "typecheck": "turbo run typecheck",
     "changeset": "changeset",
-    "prepare": "husky",
-    "test2": "vitest",
-    "coverage": "vitest run --coverage"
+    "prepare": "husky"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.4.10",
