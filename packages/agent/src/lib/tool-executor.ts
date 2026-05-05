@@ -517,8 +517,12 @@ export async function applyOnResponseReceivedHooks(
     }
   }
 
+  // Element type of the array form of InputsUnion — use this so `rewritten`
+  // is structurally assignable back to InputsUnion without an `as` cast.
+  type InputsArrayItem = Extract<models.InputsUnion, readonly unknown[]>[number];
+
   let changed = false;
-  const rewritten: unknown[] = [];
+  const rewritten: InputsArrayItem[] = [];
   for (const item of input) {
     if (!isFunctionCallOutputItem(item)) {
       rewritten.push(item);
@@ -554,17 +558,21 @@ export async function applyOnResponseReceivedHooks(
       );
       newOutput = JSON.stringify(hookResult);
     } catch (err) {
+      // Preserve the caller's original output alongside the hook error so the
+      // model can distinguish a hook failure from a tool-reported error.
       newOutput = JSON.stringify({
         error: err instanceof Error ? err.message : String(err),
+        originalOutput: parsed,
       });
     }
 
-    rewritten.push({
+    const replaced: models.FunctionCallOutputItem = {
       ...item,
       output: newOutput,
-    });
+    };
+    rewritten.push(replaced);
     changed = true;
   }
 
-  return changed ? (rewritten as models.InputsUnion) : input;
+  return changed ? rewritten : input;
 }

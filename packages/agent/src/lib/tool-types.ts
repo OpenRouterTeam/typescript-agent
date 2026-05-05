@@ -939,9 +939,22 @@ export interface PartialResponse<TTools extends readonly Tool[] = readonly Tool[
 }
 
 /**
- * Status of a conversation state
+ * Status of a conversation state.
+ *
+ * - `in_progress`: conversation is actively executing
+ * - `complete`: conversation finished successfully
+ * - `interrupted`: execution was externally interrupted
+ * - `awaiting_approval`: tool calls are waiting for caller to approve/reject
+ * - `awaiting_hitl`: one or more HITL tools returned `null` from `onToolCalled`,
+ *   pausing execution so the caller can supply outputs for the paused calls
+ *   before resuming
  */
-export type ConversationStatus = 'complete' | 'interrupted' | 'awaiting_approval' | 'in_progress';
+export type ConversationStatus =
+  | 'complete'
+  | 'interrupted'
+  | 'awaiting_approval'
+  | 'awaiting_hitl'
+  | 'in_progress';
 
 /**
  * State for multi-turn conversations with persistence and approval gates
