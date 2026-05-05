@@ -240,9 +240,7 @@ export function tool<
   TOutput extends $ZodType,
   TContext extends Record<string, unknown> = Record<string, unknown>,
   TName extends string = string,
->(
-  config: HITLToolConfig<TInput, TOutput, TContext, TName>,
-): HITLTool<TInput, TOutput, TContext>;
+>(config: HITLToolConfig<TInput, TOutput, TContext, TName>): HITLTool<TInput, TOutput, TContext>;
 
 // Overload for manual tools (execute: false)
 export function tool<TInput extends $ZodObject<$ZodShape>>(

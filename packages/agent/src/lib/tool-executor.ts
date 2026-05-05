@@ -530,7 +530,7 @@ export async function applyOnResponseReceivedHooks(
       continue;
     }
     const tool = hookByName.get(toolName);
-    if (!tool || !tool.function.onResponseReceived) {
+    if (!tool?.function.onResponseReceived) {
       rewritten.push(item);
       continue;
     }

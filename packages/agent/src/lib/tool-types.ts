@@ -610,9 +610,7 @@ export function isHITLTool(tool: Tool): tool is HITLTool {
   if (isServerTool(tool)) {
     return false;
   }
-  return (
-    'onToolCalled' in tool.function && typeof tool.function.onToolCalled === 'function'
-  );
+  return 'onToolCalled' in tool.function && typeof tool.function.onToolCalled === 'function';
 }
 
 /**
