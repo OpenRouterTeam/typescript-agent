@@ -514,6 +514,111 @@ function formatHookError(
 }
 
 /**
+ * Parse a raw `FunctionCallOutputItem.output` value for HITL processing.
+ * JSON-parses string payloads when possible; leaves content arrays and
+ * non-string inputs untouched.
+ */
+function parseRawFunctionCallOutput(raw: unknown): unknown {
+  if (typeof raw !== 'string') {
+    return raw;
+  }
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return raw;
+  }
+}
+
+/** Build a name → HITL tool map from the registered tools. */
+function buildHitlToolMap(tools: readonly Tool[]): Map<string, HITLTool> {
+  const map = new Map<string, HITLTool>();
+  for (const t of tools) {
+    if (isHITLTool(t)) {
+      map.set(t.function.name, t);
+    }
+  }
+  return map;
+}
+
+/**
+ * Build a callId → tool-name map from `function_call` items in an input
+ * array, so `function_call_output` items can be associated with their tool.
+ */
+function buildCallIdToNameMap(
+  input: Extract<models.InputsUnion, readonly unknown[]>,
+): Map<string, string> {
+  const map = new Map<string, string>();
+  for (const item of input) {
+    if (isFunctionCallItem(item)) {
+      map.set(item.callId, item.name);
+    }
+  }
+  return map;
+}
+
+type HookOutput = string | models.FunctionCallOutputItemOutputUnion1[];
+
+/**
+ * Invoke `onResponseReceived`, validate the return against the tool's
+ * `outputSchema`, and convert the result (or any error) to a
+ * `FunctionCallOutputItem.output` payload.
+ */
+// biome-ignore lint: parameters match the internal API shape
+async function invokeOnResponseReceived(
+  tool: HITLTool,
+  parsed: unknown,
+  context: TurnContext,
+  contextStore?: ToolContextStore,
+  sharedSchema?: $ZodObject<$ZodShape>,
+): Promise<HookOutput> {
+  const hook = tool.function.onResponseReceived;
+  if (!hook) {
+    throw new Error('invokeOnResponseReceived called without onResponseReceived hook');
+  }
+  const executeContext = buildExecuteCtx(tool, context, contextStore, sharedSchema);
+  try {
+    const hookResult = await Promise.resolve(hook(parsed, executeContext));
+    const validation = z4.safeParse(tool.function.outputSchema, hookResult);
+    if (!validation.success) {
+      return formatHookError(validation.error.message, parsed);
+    }
+    return toFunctionCallOutputValue(hookResult);
+  } catch (err) {
+    // Preserve the caller's original output alongside the hook error so
+    // the model can distinguish a hook failure from a tool-reported error.
+    return formatHookError(err instanceof Error ? err.message : String(err), parsed);
+  }
+}
+
+/**
+ * Compute the (optional) replacement output for a single HITL
+ * `function_call_output` item. Returns `null` when the caller-supplied output
+ * is schema-conformant and should be left untouched.
+ */
+// biome-ignore lint: parameters match the internal API shape
+async function computeHitlItemOutput(
+  tool: HITLTool,
+  item: models.FunctionCallOutputItem,
+  context: TurnContext,
+  contextStore?: ToolContextStore,
+  sharedSchema?: $ZodObject<$ZodShape>,
+): Promise<HookOutput | null> {
+  const parsed = parseRawFunctionCallOutput(item.output);
+
+  if (tool.function.onResponseReceived) {
+    return invokeOnResponseReceived(tool, parsed, context, contextStore, sharedSchema);
+  }
+
+  // No hook — validate the parsed raw output against outputSchema. On
+  // success, leave the item untouched; on failure, surface an error wrapper.
+  const validation = z4.safeParse(tool.function.outputSchema, parsed);
+  if (validation.success) {
+    return null;
+  }
+  return formatHookError(validation.error.message, parsed);
+}
+
+/**
  * Walk the input items and apply HITL per-tool validation plus any
  * `onResponseReceived` hooks.
  *
@@ -546,23 +651,12 @@ export async function applyOnResponseReceivedHooks(
     return input;
   }
 
-  const hitlTools = tools.filter((t): t is HITLTool => isHITLTool(t));
-  if (hitlTools.length === 0) {
+  const hitlByName = buildHitlToolMap(tools);
+  if (hitlByName.size === 0) {
     return input;
   }
-  // All HITL tools participate now (validation runs even without a hook).
-  const hitlByName = new Map<string, HITLTool>();
-  for (const t of hitlTools) {
-    hitlByName.set(t.function.name, t);
-  }
 
-  // Build callId -> name map from function_call items in the array
-  const callIdToName = new Map<string, string>();
-  for (const item of input) {
-    if (isFunctionCallItem(item)) {
-      callIdToName.set(item.callId, item.name);
-    }
-  }
+  const callIdToName = buildCallIdToNameMap(input);
 
   // Element type of the array form of InputsUnion — use this so `rewritten`
   // is structurally assignable back to InputsUnion without an `as` cast.
@@ -571,83 +665,24 @@ export async function applyOnResponseReceivedHooks(
   let changed = false;
   const rewritten: InputsArrayItem[] = [];
   for (const item of input) {
-    if (!isFunctionCallOutputItem(item)) {
-      rewritten.push(item);
-      continue;
-    }
-    const toolName = callIdToName.get(item.callId);
-    if (!toolName) {
-      rewritten.push(item);
-      continue;
-    }
-    const tool = hitlByName.get(toolName);
-    if (!tool) {
+    const tool = isFunctionCallOutputItem(item)
+      ? hitlByName.get(callIdToName.get(item.callId) ?? '')
+      : undefined;
+    if (!tool || !isFunctionCallOutputItem(item)) {
       rewritten.push(item);
       continue;
     }
 
-    const raw = item.output;
-    // Parse string outputs as JSON when possible; leave content arrays and
-    // non-string inputs (e.g. already-parsed objects) alone.
-    let parsed: unknown = raw;
-    if (typeof raw === 'string') {
-      try {
-        parsed = JSON.parse(raw);
-      } catch {
-        parsed = raw;
-      }
+    const newOutput = await computeHitlItemOutput(tool, item, context, contextStore, sharedSchema);
+    if (newOutput === null) {
+      rewritten.push(item);
+      continue;
     }
 
-    let newOutput: string | models.FunctionCallOutputItemOutputUnion1[];
-
-    if (tool.function.onResponseReceived) {
-      const executeContext = buildExecuteCtx(tool, context, contextStore, sharedSchema);
-      try {
-        const hookResult = await Promise.resolve(
-          tool.function.onResponseReceived(parsed, executeContext),
-        );
-        // Validate the hook's return against outputSchema — the model must
-        // only see schema-conformant values. A validation failure here is
-        // surfaced the same way a hook throw is.
-        try {
-          validateToolOutput(tool.function.outputSchema, hookResult);
-        } catch (validationErr) {
-          newOutput = formatHookError(
-            validationErr instanceof Error ? validationErr.message : String(validationErr),
-            parsed,
-          );
-          const replaced: models.FunctionCallOutputItem = {
-            ...item,
-            output: newOutput,
-          };
-          rewritten.push(replaced);
-          changed = true;
-          continue;
-        }
-        newOutput = toFunctionCallOutputValue(hookResult);
-      } catch (err) {
-        // Preserve the caller's original output alongside the hook error so
-        // the model can distinguish a hook failure from a tool-reported error.
-        newOutput = formatHookError(err instanceof Error ? err.message : String(err), parsed);
-      }
-    } else {
-      // No hook — validate the parsed raw output against outputSchema.
-      // On success, leave the item untouched (same as the pre-change
-      // behavior). On failure, replace with an error wrapper so the model
-      // sees why the caller-supplied payload was rejected.
-      const parseResult = z4.safeParse(tool.function.outputSchema, parsed);
-      if (parseResult.success) {
-        rewritten.push(item);
-        continue;
-      }
-      newOutput = formatHookError(parseResult.error.message, parsed);
-    }
-
-    const replaced: models.FunctionCallOutputItem = {
+    rewritten.push({
       ...item,
       output: newOutput,
-    };
-    rewritten.push(replaced);
+    });
     changed = true;
   }
 

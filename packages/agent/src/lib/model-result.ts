@@ -93,6 +93,20 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 /**
+ * Human-readable label for a value that failed the `isRecord` check. Used
+ * exclusively to make `toModelOutput` misuse errors specific.
+ */
+function describeNonRecord(value: unknown): string {
+  if (value === null) {
+    return 'null';
+  }
+  if (Array.isArray(value)) {
+    return 'array';
+  }
+  return typeof value;
+}
+
+/**
  * Type guard for stream event responses
  * Checks constructor name and readable stream behavior
  */
@@ -783,6 +797,52 @@ export class ModelResult<
   }
 
   /**
+   * Compute the `output` payload sent to the model for a successfully
+   * settled tool execution. Routes through `toModelOutput` when the tool
+   * defines one (which may itself throw to surface an error), falls back to
+   * `JSON.stringify(result)` otherwise, and emits an error envelope when the
+   * executor itself reported an error.
+   */
+  private async computeToolOutputForModel(value: {
+    toolCall: ParsedToolCall<Tool>;
+    tool: Tool;
+    result: {
+      result: unknown;
+      error?: Error;
+    };
+  }): Promise<string | models.FunctionCallOutputItemOutputUnion1[]> {
+    if (value.result.error) {
+      return JSON.stringify({
+        error: value.result.error.message,
+      });
+    }
+
+    if (!isAutoResolvableTool(value.tool) || !value.tool.function.toModelOutput) {
+      return JSON.stringify(value.result.result);
+    }
+
+    // Arguments have already been validated upstream by the tool's Zod
+    // inputSchema (which must be a ZodObject), so the runtime shape is
+    // always a record here. A non-record value here signals a real upstream
+    // bug we want surfaced, not a case to paper over with `{}`.
+    const rawArgs: unknown = value.toolCall.arguments;
+    if (!isRecord(rawArgs)) {
+      throw new Error(
+        `toolCall.arguments for "${value.toolCall.name}" must be an object after Zod validation, got ${describeNonRecord(rawArgs)}`,
+      );
+    }
+
+    const modelOutputResult = await value.tool.function.toModelOutput({
+      output: value.result.result,
+      input: rawArgs,
+    });
+    if (modelOutputResult.type === 'content') {
+      return modelOutputResult.value;
+    }
+    return JSON.stringify(value.result.result);
+  }
+
+  /**
    * Execute all tools in a single round in parallel.
    * Emits tool.result events after tool execution completes.
    *
@@ -946,37 +1006,7 @@ export class ModelResult<
         value.preliminaryResultsForCall.length > 0 ? value.preliminaryResultsForCall : undefined,
       );
 
-      let outputForModel: string | models.FunctionCallOutputItemOutputUnion1[];
-
-      if (value.result.error) {
-        outputForModel = JSON.stringify({
-          error: value.result.error.message,
-        });
-      } else if (value.tool.function.toModelOutput) {
-        // toModelOutput exists - call it (may throw, which surfaces the error).
-        // Arguments have already been validated upstream by the tool's Zod
-        // inputSchema (which must be a ZodObject), so the runtime shape is
-        // always a record here. The `Tool` union widening loses the specific
-        // InferToolInput type, so we re-narrow defensively — a non-record
-        // value here signals a real upstream bug we want surfaced, not a
-        // case to paper over with `{}`.
-        const rawArgs: unknown = value.toolCall.arguments;
-        if (!isRecord(rawArgs)) {
-          throw new Error(
-            `toolCall.arguments for "${value.toolCall.name}" must be an object after Zod validation, got ${rawArgs === null ? 'null' : Array.isArray(rawArgs) ? 'array' : typeof rawArgs}`,
-          );
-        }
-        const modelOutputResult = await value.tool.function.toModelOutput({
-          output: value.result.result,
-          input: rawArgs,
-        });
-        outputForModel =
-          modelOutputResult.type === 'content'
-            ? modelOutputResult.value
-            : JSON.stringify(value.result.result);
-      } else {
-        outputForModel = JSON.stringify(value.result.result);
-      }
+      const outputForModel = await this.computeToolOutputForModel(value);
 
       const executedOutput: models.FunctionCallOutputItem = {
         type: 'function_call_output' as const,
