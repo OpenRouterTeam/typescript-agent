@@ -51,9 +51,10 @@ import {
 import type { ContextInput } from './tool-context.js';
 import { resolveContext, ToolContextStore } from './tool-context.js';
 import { ToolEventBroadcaster } from './tool-event-broadcaster.js';
-import { executeTool } from './tool-executor.js';
+import { applyOnResponseReceivedHooks, executeTool } from './tool-executor.js';
 import type {
   ConversationState,
+  ConversationStatus,
   InferToolEventsUnion,
   InferToolOutputsUnion,
   ParsedToolCall,
@@ -72,7 +73,7 @@ import type {
   UnsentToolResult,
 } from './tool-types.js';
 import {
-  hasExecuteFunction,
+  isAutoResolvableTool,
   isClientTool,
   isServerTool,
   isToolCallOutputEvent,
@@ -89,6 +90,20 @@ const DEFAULT_MAX_STEPS = 5;
  */
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+/**
+ * Human-readable label for a value that failed the `isRecord` check. Used
+ * exclusively to make `toModelOutput` misuse errors specific.
+ */
+function describeNonRecord(value: unknown): string {
+  if (value === null) {
+    return 'null';
+  }
+  if (Array.isArray(value)) {
+    return 'array';
+  }
+  return typeof value;
 }
 
 /**
@@ -591,24 +606,35 @@ export class ModelResult<
   }
 
   /**
-   * Check if any tool calls have execute functions.
+   * Check if any tool calls can be auto-resolved in the current turn.
    * Used to determine if automatic tool execution should be attempted.
    *
+   * A tool call is auto-resolvable if its tool has either an `execute` function
+   * (regular or generator) or an `onToolCalled` hook (HITL). HITL tools are
+   * included here because their hook fires before the model's follow-up request,
+   * even when the hook ultimately decides to pause by returning `null`.
+   *
    * @param toolCalls - The tool calls to check
-   * @returns True if at least one tool call has an executable function
+   * @returns True if at least one tool call is auto-resolvable
    */
   private hasExecutableToolCalls(toolCalls: ParsedToolCall<Tool>[]): boolean {
     return toolCalls.some((toolCall) => {
       const tool = this.options.tools?.find(
         (t) => isClientTool(t) && t.function.name === toolCall.name,
       );
-      return tool && hasExecuteFunction(tool);
+      return tool && isAutoResolvableTool(tool);
     });
   }
 
+  /**
+   * A manual tool call is one whose tool has neither an `execute` function nor
+   * an `onToolCalled` hook — i.e. the caller is expected to produce the output
+   * externally. HITL tools are auto-resolvable even when they pause, so they
+   * are not classified as manual here.
+   */
   private isManualToolCall(item: models.OutputFunctionCallItem): boolean {
     const tool = this.options.tools?.find((t) => isClientTool(t) && t.function.name === item.name);
-    return !!tool && !hasExecuteFunction(tool);
+    return !!tool && !isAutoResolvableTool(tool);
   }
 
   /**
@@ -624,7 +650,7 @@ export class ModelResult<
   ): Promise<UnsentToolResult<TTools>[]> {
     const toolCallPromises = toolCalls.map(async (tc) => {
       const tool = this.options.tools?.find((t) => isClientTool(t) && t.function.name === tc.name);
-      if (!tool || !hasExecuteFunction(tool)) {
+      if (!tool || !isAutoResolvableTool(tool)) {
         return null;
       }
 
@@ -636,6 +662,11 @@ export class ModelResult<
         this.contextStore ?? undefined,
         this.options.sharedContextSchema,
       );
+
+      if (result === null) {
+        // HITL tool paused — no unsent result for this call in this round
+        return null;
+      }
 
       if (result.error) {
         return createRejectedResult(tc.id, String(tc.name), result.error.message);
@@ -733,22 +764,108 @@ export class ModelResult<
   }
 
   /**
+   * Persist state when one or more HITL tools paused during a round.
+   *
+   * Mirrors `handleApprovalCheck` so paused HITL calls are surfaced through
+   * `pendingToolCalls` (visible via `getPendingToolCalls()` / `getState()`).
+   * Sets the status to `awaiting_hitl` so the caller can discriminate HITL
+   * pauses from approval pauses.
+   *
+   * Already-executed results from the same round are persisted on the turn's
+   * message history via `saveToolResultsToState` (called by the outer loop
+   * before this helper) — no need to duplicate them in `unsentToolResults`.
+   *
+   * @param currentResponse - The response that produced the paused tool calls
+   * @param pausedCalls - HITL tool calls whose `onToolCalled` returned `null`
+   */
+  private async persistHitlPause(
+    currentResponse: models.OpenResponsesResult,
+    pausedCalls: ParsedToolCall<Tool>[],
+  ): Promise<void> {
+    this.finalResponse = currentResponse;
+
+    if (!this.stateAccessor) {
+      return;
+    }
+
+    const stateUpdates: Partial<Omit<ConversationState<TTools>, 'id' | 'createdAt' | 'updatedAt'>> =
+      {
+        pendingToolCalls: pausedCalls as ParsedToolCall<TTools[number]>[],
+        status: 'awaiting_hitl',
+      };
+    await this.saveStateSafely(stateUpdates);
+  }
+
+  /**
+   * Compute the `output` payload sent to the model for a successfully
+   * settled tool execution. Routes through `toModelOutput` when the tool
+   * defines one (which may itself throw to surface an error), falls back to
+   * `JSON.stringify(result)` otherwise, and emits an error envelope when the
+   * executor itself reported an error.
+   */
+  private async computeToolOutputForModel(value: {
+    toolCall: ParsedToolCall<Tool>;
+    tool: Tool;
+    result: {
+      result: unknown;
+      error?: Error;
+    };
+  }): Promise<string | models.FunctionCallOutputItemOutputUnion1[]> {
+    if (value.result.error) {
+      return JSON.stringify({
+        error: value.result.error.message,
+      });
+    }
+
+    if (!isAutoResolvableTool(value.tool) || !value.tool.function.toModelOutput) {
+      return JSON.stringify(value.result.result);
+    }
+
+    // Arguments have already been validated upstream by the tool's Zod
+    // inputSchema (which must be a ZodObject), so the runtime shape is
+    // always a record here. A non-record value here signals a real upstream
+    // bug we want surfaced, not a case to paper over with `{}`.
+    const rawArgs: unknown = value.toolCall.arguments;
+    if (!isRecord(rawArgs)) {
+      throw new Error(
+        `toolCall.arguments for "${value.toolCall.name}" must be an object after Zod validation, got ${describeNonRecord(rawArgs)}`,
+      );
+    }
+
+    const modelOutputResult = await value.tool.function.toModelOutput({
+      output: value.result.result,
+      input: rawArgs,
+    });
+    if (modelOutputResult.type === 'content') {
+      return modelOutputResult.value;
+    }
+    return JSON.stringify(value.result.result);
+  }
+
+  /**
    * Execute all tools in a single round in parallel.
    * Emits tool.result events after tool execution completes.
    *
    * @param toolCalls - The tool calls to execute
    * @param turnContext - The current turn context
-   * @returns Array of function call outputs formatted for the API
+   * @returns Object with the function call outputs formatted for the API and
+   *   the list of HITL tool calls that paused (returned `null` from
+   *   `onToolCalled`). Callers should break out of the execution loop when
+   *   `pausedCalls` is non-empty rather than sending an incomplete set of
+   *   outputs back to the model.
    */
   private async executeToolRound(
     toolCalls: ParsedToolCall<Tool>[],
     turnContext: TurnContext,
-  ): Promise<models.FunctionCallOutputItem[]> {
+  ): Promise<{
+    toolResults: models.FunctionCallOutputItem[];
+    pausedCalls: ParsedToolCall<Tool>[];
+  }> {
     const toolCallPromises = toolCalls.map(async (toolCall) => {
       const tool = this.options.tools?.find(
         (t) => isClientTool(t) && t.function.name === toolCall.name,
       );
-      if (!tool || !hasExecuteFunction(tool)) {
+      if (!tool || !isAutoResolvableTool(tool)) {
         return null;
       }
 
@@ -799,6 +916,14 @@ export class ModelResult<
         this.options.sharedContextSchema,
       );
 
+      if (result === null) {
+        // HITL tool paused — surface as manual (no output this round)
+        return {
+          type: 'paused' as const,
+          toolCall,
+        };
+      }
+
       return {
         type: 'execution' as const,
         toolCall,
@@ -810,6 +935,7 @@ export class ModelResult<
 
     const settledResults = await Promise.allSettled(toolCallPromises);
     const toolResults: models.FunctionCallOutputItem[] = [];
+    const pausedCalls: ParsedToolCall<Tool>[] = [];
 
     for (let i = 0; i < settledResults.length; i++) {
       const settled = settledResults[i];
@@ -858,6 +984,15 @@ export class ModelResult<
         continue;
       }
 
+      if (value.type === 'paused') {
+        // HITL tool returned null — record the pause so the caller can break
+        // out of the outer loop before attempting a follow-up request with an
+        // incomplete set of outputs. The call will be surfaced via state
+        // (pendingToolCalls + status='awaiting_hitl') for manual resume.
+        pausedCalls.push(value.toolCall);
+        continue;
+      }
+
       const toolResult = (
         value.result.error
           ? {
@@ -871,37 +1006,7 @@ export class ModelResult<
         value.preliminaryResultsForCall.length > 0 ? value.preliminaryResultsForCall : undefined,
       );
 
-      let outputForModel: string | models.FunctionCallOutputItemOutputUnion1[];
-
-      if (value.result.error) {
-        outputForModel = JSON.stringify({
-          error: value.result.error.message,
-        });
-      } else if (value.tool.function.toModelOutput) {
-        // toModelOutput exists - call it (may throw, which surfaces the error).
-        // Arguments have already been validated upstream by the tool's Zod
-        // inputSchema (which must be a ZodObject), so the runtime shape is
-        // always a record here. The `Tool` union widening loses the specific
-        // InferToolInput type, so we re-narrow defensively — a non-record
-        // value here signals a real upstream bug we want surfaced, not a
-        // case to paper over with `{}`.
-        const rawArgs: unknown = value.toolCall.arguments;
-        if (!isRecord(rawArgs)) {
-          throw new Error(
-            `toolCall.arguments for "${value.toolCall.name}" must be an object after Zod validation, got ${rawArgs === null ? 'null' : Array.isArray(rawArgs) ? 'array' : typeof rawArgs}`,
-          );
-        }
-        const modelOutputResult = await value.tool.function.toModelOutput({
-          output: value.result.result,
-          input: rawArgs,
-        });
-        outputForModel =
-          modelOutputResult.type === 'content'
-            ? modelOutputResult.value
-            : JSON.stringify(value.result.result);
-      } else {
-        outputForModel = JSON.stringify(value.result.result);
-      }
+      const outputForModel = await this.computeToolOutputForModel(value);
 
       const executedOutput: models.FunctionCallOutputItem = {
         type: 'function_call_output' as const,
@@ -917,7 +1022,10 @@ export class ModelResult<
       } satisfies ToolCallOutputEvent);
     }
 
-    return toolResults;
+    return {
+      toolResults,
+      pausedCalls,
+    };
   }
 
   /**
@@ -1080,6 +1188,88 @@ export class ModelResult<
   }
 
   /**
+   * Apply `onResponseReceived` hooks to the freshly-supplied input items
+   * only, without re-hooking historical items that live in
+   * `currentState.messages`. Historical `function_call` items are passed to
+   * `applyOnResponseReceivedHooks` purely as callId → toolName
+   * name-resolution context and are dropped from the returned array.
+   *
+   * This keeps hooks idempotent across `callModel` invocations on the same
+   * conversation: the first call hooks the caller-supplied output, and
+   * subsequent calls (which rehydrate state) do not re-fire it.
+   *
+   * @param freshItems - Items newly supplied this turn (not yet hooked).
+   *   May contain any mix of InputsUnion array members — only
+   *   `function_call_output` items are affected by hooks; everything else
+   *   is returned unchanged.
+   * @param historicalItems - Existing messages from loaded state. Only
+   *   `function_call` entries are consulted for name resolution; no other
+   *   items are inspected and none are mutated.
+   * @param turnContext - Turn context for hook invocation
+   * @returns The fresh items in original order, with `output` rewritten on
+   *   any `function_call_output` whose matching HITL tool defines
+   *   `onResponseReceived`.
+   */
+  private async applyHooksToFreshItems(
+    freshItems: models.BaseInputsUnion[],
+    historicalItems: models.InputsUnion,
+    turnContext: TurnContext,
+  ): Promise<models.BaseInputsUnion[]> {
+    if (freshItems.length === 0) {
+      return freshItems;
+    }
+
+    // Collect function_call items from history so the hook executor can
+    // resolve callId -> toolName without us having to mirror that logic.
+    const historyArray = Array.isArray(historicalItems)
+      ? historicalItems
+      : [
+          historicalItems,
+        ];
+    const functionCallItems: models.BaseInputsUnion[] = [];
+    for (const item of historyArray) {
+      if (isFunctionCallItem(item)) {
+        functionCallItems.push(item);
+      }
+    }
+
+    // Build a synthetic input that puts the historical function_calls
+    // BEFORE the fresh items. `applyOnResponseReceivedHooks` only rewrites
+    // function_call_output items, so the function_call items are seen only
+    // as name-resolution context.
+    const syntheticInput: models.InputsUnion = [
+      ...functionCallItems,
+      ...freshItems,
+    ];
+
+    const hookedInput = await applyOnResponseReceivedHooks(
+      syntheticInput,
+      this.options.tools,
+      turnContext,
+      this.contextStore ?? undefined,
+      this.options.sharedContextSchema,
+    );
+
+    if (hookedInput === syntheticInput) {
+      // No rewrites; return the originals unchanged.
+      return freshItems;
+    }
+
+    // Drop the leading function_call items we prepended; what remains is
+    // the fresh items in their original order (some with rewritten outputs).
+    const hookedArray = Array.isArray(hookedInput)
+      ? hookedInput
+      : [
+          hookedInput,
+        ];
+    if (hookedArray.length !== syntheticInput.length) {
+      // Shouldn't happen (hooks only rewrite in-place), but be conservative.
+      return freshItems;
+    }
+    return hookedArray.slice(functionCallItems.length);
+  }
+
+  /**
    * Safely persist state with error handling.
    * Wraps state save operations to ensure failures are properly reported.
    *
@@ -1143,9 +1333,16 @@ export class ModelResult<
         if (loadedState) {
           this.currentState = loadedState;
 
-          // Check if we're resuming from awaiting_approval with decisions
+          // Check if we're resuming from awaiting_approval or awaiting_hitl
+          // with decisions. `awaiting_hitl` reuses `processApprovalDecisions`
+          // because the resume mechanism is identical — the caller supplies
+          // `approveToolCalls`/`rejectToolCalls` for paused call IDs, and we
+          // re-invoke `executeTool` on approved calls (which re-runs
+          // `onToolCalled` for HITL tools).
+          const isResumableStatus =
+            loadedState.status === 'awaiting_approval' || loadedState.status === 'awaiting_hitl';
           if (
-            loadedState.status === 'awaiting_approval' &&
+            isResumableStatus &&
             (this.approvedToolCalls.length > 0 || this.rejectedToolCalls.length > 0)
           ) {
             // Initialize context store before resuming so tools have access
@@ -1198,33 +1395,65 @@ export class ModelResult<
       // Resolve any async functions first
       let baseRequest = await this.resolveRequestForContext(initialContext);
 
-      // If we have state with existing messages, use those as input
-      if (
-        this.currentState?.messages &&
+      // Split input into "historical" (already in state.messages) and "fresh"
+      // (newly supplied this turn). `onResponseReceived` must fire only for
+      // fresh items — re-hooking historical outputs on every callModel call
+      // would double-invoke non-idempotent hooks.
+      const hasLoadedHistory =
+        !!this.currentState?.messages &&
         Array.isArray(this.currentState.messages) &&
-        this.currentState.messages.length > 0
-      ) {
-        // Append new input to existing messages
+        this.currentState.messages.length > 0;
+
+      if (hasLoadedHistory && this.currentState) {
+        // `currentState.messages` is InputsUnion — keep it as that union so
+        // appendToMessages (which expects InputsUnion) accepts it directly.
+        const historicalMessages: models.InputsUnion = this.currentState.messages;
+
+        // Normalize the caller-supplied input for this turn into an array of
+        // fresh items. Undefined stays undefined (no new items). The widening
+        // to BaseInputsUnion[] matches the signature of appendToMessages and
+        // mirrors the pre-existing pattern elsewhere in this file; the two
+        // union shapes (InputsUnion1 vs BaseInputsUnion1) describe the same
+        // SDK input items with different nominal types, and BaseInputsUnion
+        // already includes `any` in its element type, so the runtime shape
+        // is preserved either way.
         const newInput = baseRequest.input;
-        if (newInput) {
-          const inputArray = Array.isArray(newInput)
-            ? newInput
+        let freshItems: models.BaseInputsUnion[] | undefined;
+        if (newInput !== undefined) {
+          freshItems = Array.isArray(newInput)
+            ? (newInput as models.BaseInputsUnion[])
             : [
                 newInput,
               ];
-          baseRequest = {
-            ...baseRequest,
-            input: appendToMessages(
-              this.currentState.messages,
-              inputArray as models.BaseInputsUnion[],
-            ),
-          };
-        } else {
-          baseRequest = {
-            ...baseRequest,
-            input: this.currentState.messages,
-          };
         }
+
+        // Hook fresh items only (historical function_calls serve as
+        // name-resolution context). Leave historical items untouched.
+        const hookedFresh = freshItems
+          ? await this.applyHooksToFreshItems(freshItems, historicalMessages, initialContext)
+          : undefined;
+
+        baseRequest = {
+          ...baseRequest,
+          input: hookedFresh
+            ? appendToMessages(historicalMessages, hookedFresh)
+            : historicalMessages,
+        };
+      } else if (baseRequest.input !== undefined) {
+        // No loaded history — everything in input is fresh. Hook the whole
+        // thing (non-array inputs pass through applyOnResponseReceivedHooks
+        // unchanged).
+        const hookedInput = await applyOnResponseReceivedHooks(
+          baseRequest.input,
+          this.options.tools,
+          initialContext,
+          this.contextStore ?? undefined,
+          this.options.sharedContextSchema,
+        );
+        baseRequest = {
+          ...baseRequest,
+          input: hookedInput,
+        };
       }
 
       // Store resolved request with stream mode
@@ -1283,6 +1512,10 @@ export class ModelResult<
       // context is handled via contextStore, not on TurnContext
     };
 
+    // Track approved HITL calls that paused (onToolCalled returned null) —
+    // these stay in pendingToolCalls so the caller can resume them later.
+    const hitlPausedIds = new Set<string>();
+
     // Process approvals - execute the approved tools
     for (const callId of this.approvedToolCalls) {
       const toolCall = pendingCalls.find((tc) => tc.id === callId);
@@ -1293,7 +1526,7 @@ export class ModelResult<
       const tool = this.options.tools?.find(
         (t) => isClientTool(t) && t.function.name === toolCall.name,
       );
-      if (!tool || !hasExecuteFunction(tool)) {
+      if (!tool || !isAutoResolvableTool(tool)) {
         // Can't execute, create error result
         unsentResults.push(
           createRejectedResult(callId, String(toolCall.name), 'Tool not found or not executable'),
@@ -1309,6 +1542,13 @@ export class ModelResult<
         this.contextStore ?? undefined,
         this.options.sharedContextSchema,
       );
+
+      if (result === null) {
+        // HITL tool paused on approval — keep the call visible to the caller
+        // via pendingToolCalls (status becomes 'awaiting_hitl' below).
+        hitlPausedIds.add(callId);
+        continue;
+      }
 
       if (result.error) {
         unsentResults.push(
@@ -1329,17 +1569,35 @@ export class ModelResult<
       unsentResults.push(createRejectedResult(callId, String(toolCall.name), 'Rejected by user'));
     }
 
-    // Remove processed calls from pending
-    const processedIds = new Set([
-      ...this.approvedToolCalls,
-      ...this.rejectedToolCalls,
-    ]);
+    // Remove processed calls from pending. Approved HITL calls that paused are
+    // NOT considered processed — they stay on pendingToolCalls so getPendingToolCalls()
+    // still surfaces them to the caller on resume.
+    const processedIds = new Set(
+      [
+        ...this.approvedToolCalls,
+        ...this.rejectedToolCalls,
+      ].filter((id) => !hitlPausedIds.has(id)),
+    );
     const remainingPending = pendingCalls.filter((tc) => !processedIds.has(tc.id));
+
+    // Determine status:
+    //   - Any still-unprocessed approval-required call keeps us in 'awaiting_approval'
+    //   - Otherwise, any HITL paused call moves us to 'awaiting_hitl'
+    //   - Otherwise, we continue with 'in_progress'
+    const remainingUnresolvedApprovals = remainingPending.filter((tc) => !hitlPausedIds.has(tc.id));
+    let nextStatus: ConversationStatus;
+    if (remainingUnresolvedApprovals.length > 0) {
+      nextStatus = 'awaiting_approval';
+    } else if (hitlPausedIds.size > 0) {
+      nextStatus = 'awaiting_hitl';
+    } else {
+      nextStatus = 'in_progress';
+    }
 
     // Update state - conditionally include optional properties only if they have values
     const stateUpdates: Partial<Omit<ConversationState<TTools>, 'id' | 'createdAt' | 'updatedAt'>> =
       {
-        status: remainingPending.length > 0 ? 'awaiting_approval' : 'in_progress',
+        status: nextStatus,
       };
     if (remainingPending.length > 0) {
       stateUpdates.pendingToolCalls = remainingPending;
@@ -1362,8 +1620,8 @@ export class ModelResult<
       await this.saveStateSafely();
     }
 
-    // If we still have pending approvals, stop here
-    if (remainingPending.length > 0) {
+    // If we are paused (for approval or for HITL), stop here
+    if (nextStatus !== 'in_progress') {
       return;
     }
 
@@ -1387,7 +1645,17 @@ export class ModelResult<
     // Convert to API format
     const toolOutputs = unsentResultsToAPIFormat(unsentResults);
 
-    // Build new input with tool results
+    // Build turn context for hook resolution
+    // numberOfTurns represents the current turn number (1-indexed after initial)
+    const turnContext: TurnContext = {
+      numberOfTurns: this.allToolExecutionRounds.length + 1,
+    };
+
+    // Append SDK-generated tool outputs directly — `onResponseReceived` is
+    // reserved for caller-supplied outputs (the resume-with-function-call-
+    // output path, hooked during init). SDK-produced outputs from auto-
+    // executed tools already went through the tool's own execute/generator
+    // pipeline and must not be mutated by the resume hook.
     const currentMessages = this.currentState.messages;
     const newInput = appendToMessages(currentMessages, toolOutputs);
 
@@ -1401,14 +1669,12 @@ export class ModelResult<
     await this.saveStateSafely();
 
     // Build request with the updated input
-    // numberOfTurns represents the current turn number (1-indexed after initial)
-    const turnContext: TurnContext = {
-      numberOfTurns: this.allToolExecutionRounds.length + 1,
-    };
-
     const baseRequest = await this.resolveRequestForContext(turnContext);
 
-    // Create request with the accumulated messages
+    // No hooking here: SDK-generated outputs are appended as-is and any
+    // caller-supplied items in `newInput` (carried over from init) were
+    // already hooked during `initStream` — re-hooking would double-fire
+    // non-idempotent hooks.
     const request: models.ResponsesRequest = {
       ...baseRequest,
       input: newInput,
@@ -1453,8 +1719,14 @@ export class ModelResult<
     this.toolExecutionPromise = (async () => {
       await this.initStream();
 
-      // If resuming from approval and still pending, don't continue
-      if (this.isResumingFromApproval && this.currentState?.status === 'awaiting_approval') {
+      // If resuming from approval or HITL pause and still pending, don't continue.
+      // `processApprovalDecisions` runs in initStream for resumes; if it left us
+      // paused (any remaining pending calls), the outer loop should not execute.
+      if (
+        this.isResumingFromApproval &&
+        (this.currentState?.status === 'awaiting_approval' ||
+          this.currentState?.status === 'awaiting_hitl')
+      ) {
         return;
       }
 
@@ -1529,7 +1801,10 @@ export class ModelResult<
         await this.resolveAsyncFunctionsForTurn(turnContext);
 
         // Execute tools
-        const toolResults = await this.executeToolRound(currentToolCalls, turnContext);
+        const { toolResults, pausedCalls } = await this.executeToolRound(
+          currentToolCalls,
+          turnContext,
+        );
 
         // Server-tool output items are already-executed results in the
         // response; collect them so toolResults presents a unified list.
@@ -1567,6 +1842,14 @@ export class ModelResult<
 
         // Save tool results to state
         await this.saveToolResultsToState(toolResults);
+
+        // If any HITL tools paused this round, stop here without making a
+        // follow-up request — sending an incomplete set of outputs would be
+        // incorrect. Persist the paused calls so the caller can resume later.
+        if (pausedCalls.length > 0) {
+          await this.persistHitlPause(currentResponse, pausedCalls);
+          return;
+        }
 
         // Apply nextTurnParams
         await this.applyNextTurnParams(currentToolCalls);
@@ -2193,14 +2476,17 @@ export class ModelResult<
   // =========================================================================
 
   /**
-   * Check if the conversation requires human approval to continue.
-   * Returns true if there are pending tool calls awaiting approval.
+   * Check if the conversation requires human input to continue.
+   * Returns true when the conversation is paused waiting for caller-supplied
+   * decisions — either approval/rejection (`awaiting_approval`) or HITL tool
+   * resume (`awaiting_hitl`). Also returns true whenever `pendingToolCalls`
+   * is populated regardless of status.
    */
   async requiresApproval(): Promise<boolean> {
     await this.initStream();
 
-    // If we have pending tool calls in state, approval is required
-    if (this.currentState?.status === 'awaiting_approval') {
+    const status = this.currentState?.status;
+    if (status === 'awaiting_approval' || status === 'awaiting_hitl') {
       return true;
     }
 
