@@ -1,5 +1,43 @@
 # @openrouter/agent
 
+## 0.5.0
+
+### Minor Changes
+
+- Add human-in-the-loop (HITL) tool type, a new `ClientTool` variant that sits
+  between regular `execute` tools and `manual` tools. HITL tools define two
+  async hooks:
+
+  - `onToolCalled(input, context)` runs when the model invokes the tool.
+    Return a value to feed the model directly (like a regular `execute` tool),
+    or return `null` to pause the conversation so the caller can supply the
+    output later — the same flow used by manual tools.
+  - `onResponseReceived(rawResult, context)` runs on the next turn when an
+    incoming `function_call_output` matches a prior call of this tool. It lets
+    the caller transform or validate the raw response before it reaches the
+    model. Throwing surfaces as a tool error to the model.
+
+  HITL tools require an `outputSchema`, which is used to validate both the
+  `onToolCalled` return value (when non-null) and caller-supplied responses
+  (after any `onResponseReceived` transform, or as-is when no hook is defined).
+
+  New `ConversationStatus` value `'awaiting_hitl'` is emitted when one or more
+  HITL tools return `null` from `onToolCalled`, signaling that the caller
+  should resume with outputs for the paused calls.
+
+  New public exports:
+
+  - Types: `HITLTool`, `HITLToolFunction`
+  - Guards: `isHITLTool`, `isAutoResolvableTool` (true for execute / generator
+    / HITL tools — i.e. anything that can resolve within a turn)
+
+  `isManualTool` now returns `false` for HITL tools, so existing manual-tool
+  branches continue to behave correctly.
+
+### Patch Changes
+
+- [#34](https://github.com/OpenRouterTeam/typescript-agent/pull/34) [`61aca10`](https://github.com/OpenRouterTeam/typescript-agent/commit/61aca10fd9434fe69fbe1e069e4b1858613a7da7) Thanks [@w0nche0l](https://github.com/w0nche0l)! - Detect streamed Responses API results by readable stream behavior instead of constructor names or unsupported adapters.
+
 ## 0.4.0
 
 ### Minor Changes
