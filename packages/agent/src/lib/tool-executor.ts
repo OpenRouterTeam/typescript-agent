@@ -1,6 +1,7 @@
 import type * as models from '@openrouter/sdk/models';
 import * as z4 from 'zod/v4';
 import type { $ZodObject, $ZodShape, $ZodType } from 'zod/v4/core';
+import { isContentArray } from './conversation-state.js';
 import { isFunctionCallItem, isFunctionCallOutputItem } from './stream-type-guards.js';
 import type { ToolContextStore } from './tool-context.js';
 import { buildToolExecuteContext } from './tool-context.js';
@@ -357,19 +358,12 @@ export async function executeHITLTool(
       return null;
     }
 
-    if (tool.function.outputSchema) {
-      const validatedOutput = validateToolOutput(tool.function.outputSchema, result);
-      return {
-        toolCallId: toolCall.id,
-        toolName: toolCall.name,
-        result: validatedOutput,
-      };
-    }
-
+    // outputSchema is required on HITL tools — validate unconditionally.
+    const validatedOutput = validateToolOutput(tool.function.outputSchema, result);
     return {
       toolCallId: toolCall.id,
       toolName: toolCall.name,
-      result,
+      result: validatedOutput,
     };
   } catch (error) {
     return {
@@ -471,15 +465,72 @@ function isItemArray(
 }
 
 /**
- * Walk the input items and apply `onResponseReceived` hooks for HITL tools.
+ * Serialize a value for `FunctionCallOutputItem.output`, preserving the
+ * content-array shape (input_text/input_image/input_file blocks) verbatim so
+ * multimodal outputs are not corrupted by JSON.stringify. All other values
+ * are stringified. Matches the detection used elsewhere in the SDK
+ * (`unsentResultsToAPIFormat`).
+ */
+function toFunctionCallOutputValue(
+  value: unknown,
+): string | models.FunctionCallOutputItemOutputUnion1[] {
+  if (isContentArray(value)) {
+    return value;
+  }
+  return JSON.stringify(value);
+}
+
+/**
+ * Format a validation/hook-error payload alongside the caller's original output.
+ * The wrapper itself is a synthetic object and is always JSON. The
+ * `originalOutput` slot preserves a content-array shape verbatim if the
+ * caller supplied one, so the model can still see the rich payload that
+ * triggered the error.
+ */
+function formatHookError(
+  message: string,
+  originalOutput: unknown,
+): string | models.FunctionCallOutputItemOutputUnion1[] {
+  if (isContentArray(originalOutput)) {
+    // When the caller supplied a content array, we cannot cram both the
+    // error wrapper and the content blocks into a single content array —
+    // the `FunctionCallOutputItemOutputUnion1` members are visible-to-model
+    // blocks, not arbitrary JSON. Emit a text block carrying the error plus
+    // the original content blocks so the model sees both.
+    return [
+      {
+        type: 'input_text',
+        text: JSON.stringify({
+          error: message,
+        }),
+      },
+      ...originalOutput,
+    ];
+  }
+  return JSON.stringify({
+    error: message,
+    originalOutput,
+  });
+}
+
+/**
+ * Walk the input items and apply HITL per-tool validation plus any
+ * `onResponseReceived` hooks.
  *
  * For each `function_call_output` item in `input`, locate the matching
  * `function_call` (by `callId`) to identify the tool name. If that tool is a
- * HITL tool with an `onResponseReceived` hook, invoke it with the parsed output
- * and replace the item's `output` with the hook's return value (stringified).
+ * HITL tool, validate the value the model will see against the tool's
+ * `outputSchema`:
  *
- * If a hook throws, the output is replaced with `{"error": "<message>"}` so the
- * model sees a tool error. Items that don't match a HITL tool are left untouched.
+ * - With `onResponseReceived`: invoke it with the parsed raw output, validate
+ *   the hook's return against `outputSchema`, then serialize (preserving
+ *   content-array shapes). Hook throws or validation failures are replaced
+ *   with `{error, originalOutput}` so the model sees a tool error.
+ * - Without `onResponseReceived`: validate the parsed raw output against
+ *   `outputSchema`. If it matches, leave the item untouched. Otherwise
+ *   replace with `{error, originalOutput}` using the same shape.
+ *
+ * Items that don't match a HITL tool are left untouched.
  *
  * @returns a new input array when any item was rewritten, otherwise the original input.
  */
@@ -499,14 +550,10 @@ export async function applyOnResponseReceivedHooks(
   if (hitlTools.length === 0) {
     return input;
   }
-  const hookByName = new Map<string, HITLTool>();
+  // All HITL tools participate now (validation runs even without a hook).
+  const hitlByName = new Map<string, HITLTool>();
   for (const t of hitlTools) {
-    if (t.function.onResponseReceived) {
-      hookByName.set(t.function.name, t);
-    }
-  }
-  if (hookByName.size === 0) {
-    return input;
+    hitlByName.set(t.function.name, t);
   }
 
   // Build callId -> name map from function_call items in the array
@@ -533,13 +580,15 @@ export async function applyOnResponseReceivedHooks(
       rewritten.push(item);
       continue;
     }
-    const tool = hookByName.get(toolName);
-    if (!tool?.function.onResponseReceived) {
+    const tool = hitlByName.get(toolName);
+    if (!tool) {
       rewritten.push(item);
       continue;
     }
 
     const raw = item.output;
+    // Parse string outputs as JSON when possible; leave content arrays and
+    // non-string inputs (e.g. already-parsed objects) alone.
     let parsed: unknown = raw;
     if (typeof raw === 'string') {
       try {
@@ -549,21 +598,49 @@ export async function applyOnResponseReceivedHooks(
       }
     }
 
-    const executeContext = buildExecuteCtx(tool, context, contextStore, sharedSchema);
+    let newOutput: string | models.FunctionCallOutputItemOutputUnion1[];
 
-    let newOutput: string;
-    try {
-      const hookResult = await Promise.resolve(
-        tool.function.onResponseReceived(parsed, executeContext),
-      );
-      newOutput = JSON.stringify(hookResult);
-    } catch (err) {
-      // Preserve the caller's original output alongside the hook error so the
-      // model can distinguish a hook failure from a tool-reported error.
-      newOutput = JSON.stringify({
-        error: err instanceof Error ? err.message : String(err),
-        originalOutput: parsed,
-      });
+    if (tool.function.onResponseReceived) {
+      const executeContext = buildExecuteCtx(tool, context, contextStore, sharedSchema);
+      try {
+        const hookResult = await Promise.resolve(
+          tool.function.onResponseReceived(parsed, executeContext),
+        );
+        // Validate the hook's return against outputSchema — the model must
+        // only see schema-conformant values. A validation failure here is
+        // surfaced the same way a hook throw is.
+        try {
+          validateToolOutput(tool.function.outputSchema, hookResult);
+        } catch (validationErr) {
+          newOutput = formatHookError(
+            validationErr instanceof Error ? validationErr.message : String(validationErr),
+            parsed,
+          );
+          const replaced: models.FunctionCallOutputItem = {
+            ...item,
+            output: newOutput,
+          };
+          rewritten.push(replaced);
+          changed = true;
+          continue;
+        }
+        newOutput = toFunctionCallOutputValue(hookResult);
+      } catch (err) {
+        // Preserve the caller's original output alongside the hook error so
+        // the model can distinguish a hook failure from a tool-reported error.
+        newOutput = formatHookError(err instanceof Error ? err.message : String(err), parsed);
+      }
+    } else {
+      // No hook — validate the parsed raw output against outputSchema.
+      // On success, leave the item untouched (same as the pre-change
+      // behavior). On failure, replace with an error wrapper so the model
+      // sees why the caller-supplied payload was rejected.
+      const parseResult = z4.safeParse(tool.function.outputSchema, parsed);
+      if (parseResult.success) {
+        rewritten.push(item);
+        continue;
+      }
+      newOutput = formatHookError(parseResult.error.message, parsed);
     }
 
     const replaced: models.FunctionCallOutputItem = {

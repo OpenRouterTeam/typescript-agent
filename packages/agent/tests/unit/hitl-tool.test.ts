@@ -87,11 +87,29 @@ describe('tool() factory — HITL tools', () => {
       inputSchema: z.object({
         x: z.number(),
       }),
+      outputSchema: z.object({
+        ok: z.boolean(),
+      }),
       onToolCalled: async () => ({
         ok: true,
       }),
     });
     expect('onResponseReceived' in t.function).toBe(false);
+  });
+
+  it('throws when a HITL tool is created without an outputSchema', () => {
+    expect(() =>
+      tool({
+        name: 'approve',
+        inputSchema: z.object({
+          x: z.number(),
+        }),
+        // @ts-expect-error outputSchema is now required for HITL tools
+        onToolCalled: async () => ({
+          ok: true,
+        }),
+      }),
+    ).toThrow(/outputSchema/);
   });
 
   it('isManualTool returns true only for tools with neither execute nor onToolCalled', () => {
@@ -106,6 +124,9 @@ describe('tool() factory — HITL tools', () => {
       name: 'hitl',
       inputSchema: z.object({
         x: z.number(),
+      }),
+      outputSchema: z.object({
+        ok: z.boolean(),
       }),
       onToolCalled: async () => null,
     });
@@ -160,6 +181,9 @@ describe('executeHITLTool', () => {
       inputSchema: z.object({
         amount: z.number(),
       }),
+      outputSchema: z.object({
+        ok: z.boolean(),
+      }),
       onToolCalled: async () => null,
     });
 
@@ -178,6 +202,9 @@ describe('executeHITLTool', () => {
       name: 'approve',
       inputSchema: z.object({
         amount: z.number(),
+      }),
+      outputSchema: z.object({
+        ok: z.boolean(),
       }),
       onToolCalled: async () => {
         throw new Error('boom');
@@ -229,6 +256,9 @@ describe('executeTool dispatcher with HITL tools', () => {
       inputSchema: z.object({
         amount: z.number(),
       }),
+      outputSchema: z.object({
+        approved: z.boolean(),
+      }),
       onToolCalled: async () => ({
         approved: true,
       }),
@@ -252,6 +282,9 @@ describe('executeTool dispatcher with HITL tools', () => {
       name: 'approve',
       inputSchema: z.object({
         amount: z.number(),
+      }),
+      outputSchema: z.object({
+        ok: z.boolean(),
       }),
       onToolCalled: async () => null,
     });
@@ -294,13 +327,20 @@ describe('applyOnResponseReceivedHooks', () => {
       inputSchema: z.object({
         amount: z.number(),
       }),
+      outputSchema: z.object({
+        ok: z.boolean(),
+        reviewedAt: z.number(),
+      }),
       onToolCalled: async () => null,
       onResponseReceived: async (raw) => {
-        const obj = raw as {
-          ok: boolean;
-        };
+        if (!isRawRecord(raw)) {
+          return {
+            ok: false,
+            reviewedAt: 1234,
+          };
+        }
         return {
-          ...obj,
+          ...raw,
           reviewedAt: 1234,
         };
       },
@@ -372,6 +412,9 @@ describe('applyOnResponseReceivedHooks', () => {
       inputSchema: z.object({
         amount: z.number(),
       }),
+      outputSchema: z.object({
+        ok: z.boolean(),
+      }),
       onToolCalled: async () => null,
       onResponseReceived: async () => {
         throw new Error('invalid result');
@@ -412,6 +455,9 @@ describe('applyOnResponseReceivedHooks', () => {
       inputSchema: z.object({
         amount: z.number(),
       }),
+      outputSchema: z.object({
+        ok: z.boolean(),
+      }),
       onToolCalled: async () => null,
       onResponseReceived: async () => {
         throw new Error('invalid result');
@@ -441,12 +487,20 @@ describe('applyOnResponseReceivedHooks', () => {
   });
 
   it('passes the parsed raw result (not the raw string) to the hook', async () => {
-    const spy = vi.fn(async (raw: unknown) => raw);
+    // Loose outputSchema accepting any object keeps the focus of this
+    // test on argument propagation, not schema validation.
+    const spy = vi.fn(async (raw: unknown) => {
+      if (!isRawRecord(raw)) {
+        return {};
+      }
+      return raw;
+    });
     const t: HITLTool = tool({
       name: 'approve',
       inputSchema: z.object({
         amount: z.number(),
       }),
+      outputSchema: z.record(z.string(), z.unknown()),
       onToolCalled: async () => null,
       onResponseReceived: spy,
     });
@@ -472,12 +526,19 @@ describe('applyOnResponseReceivedHooks', () => {
   });
 
   it('passes the raw string through to the hook when output is not JSON', async () => {
-    const spy = vi.fn(async (raw: unknown) => raw);
+    // Permissive outputSchema so the string hook-return passes validation.
+    const spy = vi.fn(async (raw: unknown) => {
+      if (typeof raw !== 'string') {
+        return 'fallback';
+      }
+      return raw;
+    });
     const t: HITLTool = tool({
       name: 'approve',
       inputSchema: z.object({
         amount: z.number(),
       }),
+      outputSchema: z.string(),
       onToolCalled: async () => null,
       onResponseReceived: spy,
     });
@@ -503,11 +564,19 @@ describe('applyOnResponseReceivedHooks', () => {
       inputSchema: z.object({
         amount: z.number(),
       }),
+      outputSchema: z.record(z.string(), z.unknown()),
       onToolCalled: async () => null,
-      onResponseReceived: async (raw) => ({
-        ...(raw as object),
-        tagged: true,
-      }),
+      onResponseReceived: async (raw) => {
+        if (!isRawRecord(raw)) {
+          return {
+            tagged: true,
+          };
+        }
+        return {
+          ...raw,
+          tagged: true,
+        };
+      },
     });
 
     // No function_call in the input at all — just an orphan output
@@ -530,11 +599,14 @@ describe('applyOnResponseReceivedHooks', () => {
     expect(result).toBe(input);
   });
 
-  it('ignores tools without onResponseReceived even if they are HITL', async () => {
+  it('validates raw output against outputSchema when no onResponseReceived hook is defined (passes)', async () => {
     const t = tool({
       name: 'approve',
       inputSchema: z.object({
         amount: z.number(),
+      }),
+      outputSchema: z.object({
+        ok: z.boolean(),
       }),
       onToolCalled: async () => null,
     });
@@ -545,6 +617,264 @@ describe('applyOnResponseReceivedHooks', () => {
         'c1',
         JSON.stringify({
           ok: true,
+        }),
+      ),
+    ];
+
+    // Schema-conformant raw outputs should leave the item (and the array
+    // reference) untouched.
+    const result = await applyOnResponseReceivedHooks(
+      input,
+      [
+        t,
+      ],
+      turnContext,
+    );
+    expect(result).toBe(input);
+  });
+
+  it('replaces output with an error object when raw does not match outputSchema and no hook is defined', async () => {
+    const t = tool({
+      name: 'approve',
+      inputSchema: z.object({
+        amount: z.number(),
+      }),
+      outputSchema: z.object({
+        ok: z.boolean(),
+      }),
+      onToolCalled: async () => null,
+    });
+
+    const badPayload = {
+      ok: 'nope',
+    };
+    const input: models.InputsUnion = [
+      callItem('c1', 'approve'),
+      outputItem('c1', JSON.stringify(badPayload)),
+    ];
+
+    const result = await applyOnResponseReceivedHooks(
+      input,
+      [
+        t,
+      ],
+      turnContext,
+    );
+    const arr = result as unknown[];
+    const out = arr[1] as models.FunctionCallOutputItem;
+    const parsed = JSON.parse(out.output as string) as {
+      error: string;
+      originalOutput: unknown;
+    };
+    expect(typeof parsed.error).toBe('string');
+    expect(parsed.error.length).toBeGreaterThan(0);
+    expect(parsed.originalOutput).toEqual(badPayload);
+  });
+
+  it('replaces output with an error object when the hook return does not match outputSchema', async () => {
+    const t = tool({
+      name: 'approve',
+      inputSchema: z.object({
+        amount: z.number(),
+      }),
+      outputSchema: z.object({
+        ok: z.boolean(),
+      }),
+      onToolCalled: async () => null,
+      // Intentionally return a value that does not match outputSchema.
+      onResponseReceived: async () => ({
+        ok: 'yes' as unknown as boolean,
+      }),
+    });
+
+    const originalPayload = {
+      ok: true,
+    };
+    const input: models.InputsUnion = [
+      callItem('c1', 'approve'),
+      outputItem('c1', JSON.stringify(originalPayload)),
+    ];
+
+    const result = await applyOnResponseReceivedHooks(
+      input,
+      [
+        t,
+      ],
+      turnContext,
+    );
+    const arr = result as unknown[];
+    const out = arr[1] as models.FunctionCallOutputItem;
+    const parsed = JSON.parse(out.output as string) as {
+      error: string;
+      originalOutput: unknown;
+    };
+    expect(typeof parsed.error).toBe('string');
+    expect(parsed.error.length).toBeGreaterThan(0);
+    expect(parsed.originalOutput).toEqual(originalPayload);
+  });
+
+  it('preserves a content-array hook return verbatim (no JSON.stringify)', async () => {
+    const contentArray = [
+      {
+        type: 'input_text' as const,
+        text: 'hello',
+      },
+      {
+        type: 'input_image' as const,
+        detail: 'auto' as const,
+        imageUrl: 'https://example.com/img.png',
+      },
+    ];
+
+    const t = tool({
+      name: 'describe',
+      inputSchema: z.object({
+        id: z.string(),
+      }),
+      // Loose schema — we care about shape preservation, not the schema type.
+      outputSchema: z.array(z.record(z.string(), z.unknown())),
+      onToolCalled: async () => null,
+      onResponseReceived: async () => contentArray,
+    });
+
+    const input: models.InputsUnion = [
+      callItem('c1', 'describe'),
+      outputItem(
+        'c1',
+        JSON.stringify({
+          ok: true,
+        }),
+      ),
+    ];
+
+    const result = await applyOnResponseReceivedHooks(
+      input,
+      [
+        t,
+      ],
+      turnContext,
+    );
+    const arr = result as unknown[];
+    const out = arr[1] as models.FunctionCallOutputItem;
+    // output should be the content-array verbatim, not a JSON string.
+    expect(Array.isArray(out.output)).toBe(true);
+    expect(out.output).toEqual(contentArray);
+  });
+
+  it('preserves a caller-supplied content-array output across no-hook validation', async () => {
+    const contentArray = [
+      {
+        type: 'input_text' as const,
+        text: 'plain text',
+      },
+    ];
+
+    const t = tool({
+      name: 'describe',
+      inputSchema: z.object({
+        id: z.string(),
+      }),
+      outputSchema: z.array(z.record(z.string(), z.unknown())),
+      onToolCalled: async () => null,
+    });
+
+    const input: models.InputsUnion = [
+      callItem('c1', 'describe'),
+      {
+        type: 'function_call_output',
+        id: 'output_c1',
+        callId: 'c1',
+        output: contentArray,
+      },
+    ];
+
+    const result = await applyOnResponseReceivedHooks(
+      input,
+      [
+        t,
+      ],
+      turnContext,
+    );
+    // Schema-conformant content-array output should be untouched.
+    expect(result).toBe(input);
+  });
+
+  it('preserves a caller-supplied content-array in originalOutput when the hook throws', async () => {
+    const contentArray = [
+      {
+        type: 'input_text' as const,
+        text: 'caller payload',
+      },
+    ];
+
+    const t = tool({
+      name: 'describe',
+      inputSchema: z.object({
+        id: z.string(),
+      }),
+      outputSchema: z.object({
+        ok: z.boolean(),
+      }),
+      onToolCalled: async () => null,
+      onResponseReceived: async () => {
+        throw new Error('bad hook');
+      },
+    });
+
+    const input: models.InputsUnion = [
+      callItem('c1', 'describe'),
+      {
+        type: 'function_call_output',
+        id: 'output_c1',
+        callId: 'c1',
+        output: contentArray,
+      },
+    ];
+
+    const result = await applyOnResponseReceivedHooks(
+      input,
+      [
+        t,
+      ],
+      turnContext,
+    );
+    const arr = result as unknown[];
+    const out = arr[1] as models.FunctionCallOutputItem;
+    // A content-array originalOutput cannot be embedded inside a JSON
+    // wrapper (the output union is a content array of visible blocks, not
+    // arbitrary JSON). The replacement uses a content-array form: the
+    // error as an input_text block followed by the original blocks.
+    if (!Array.isArray(out.output)) {
+      throw new Error('Expected content-array output on hook failure');
+    }
+    const errBlock = out.output[0];
+    expect(errBlock?.type).toBe('input_text');
+    if (!errBlock || errBlock.type !== 'input_text') {
+      throw new Error('Expected first block to be input_text');
+    }
+    const errPayload = JSON.parse(errBlock.text) as {
+      error: string;
+    };
+    expect(errPayload.error).toBe('bad hook');
+    // Remaining blocks are the caller's original content-array payload.
+    expect(out.output.slice(1)).toEqual(contentArray);
+  });
+
+  it('ignores manual tools (no onToolCalled) — they are not HITL', async () => {
+    const t = tool({
+      name: 'manual',
+      inputSchema: z.object({
+        x: z.number(),
+      }),
+      execute: false,
+    });
+
+    const input: models.InputsUnion = [
+      callItem('c1', 'manual'),
+      outputItem(
+        'c1',
+        JSON.stringify({
+          y: 1,
         }),
       ),
     ];
@@ -817,6 +1147,9 @@ describe('HITL flow through ModelResult (integration)', () => {
       inputSchema: z.object({
         amount: z.number(),
       }),
+      outputSchema: z.object({
+        ok: z.boolean(),
+      }),
       onToolCalled: async () => null,
     });
 
@@ -892,6 +1225,10 @@ describe('HITL flow through ModelResult (integration)', () => {
       inputSchema: z.object({
         amount: z.number(),
       }),
+      outputSchema: z.object({
+        ok: z.boolean(),
+        reviewedAt: z.number(),
+      }),
       onToolCalled,
       onResponseReceived: async (raw) => {
         // Transform the caller's raw output before the model sees it.
@@ -902,7 +1239,7 @@ describe('HITL flow through ModelResult (integration)', () => {
           };
         }
         return {
-          ...raw,
+          ok: raw.ok === true,
           reviewedAt: 1234,
         };
       },
@@ -1044,6 +1381,9 @@ describe('HITL pause persists state (Fix #2)', () => {
       inputSchema: z.object({
         amount: z.number(),
       }),
+      outputSchema: z.object({
+        ok: z.boolean(),
+      }),
       onToolCalled: async () => null,
     });
 
@@ -1107,6 +1447,9 @@ describe('Approved HITL pauses retain pendingToolCalls (Fix #9)', () => {
       name: 'approve',
       inputSchema: z.object({
         amount: z.number(),
+      }),
+      outputSchema: z.object({
+        ok: z.boolean(),
       }),
       requireApproval: true,
       onToolCalled,
@@ -1271,19 +1614,171 @@ describe('hasExecutableToolCalls treats HITL tools as auto-resolvable (Fix #1)',
   });
 });
 
-describe('continueWithUnsentResults does not re-hook caller-supplied items (Fix #8)', () => {
+describe('continueWithUnsentResults does not hook SDK-generated outputs (Fix #4)', () => {
   beforeEach(() => {
     mockBetaResponsesSend.mockReset();
   });
 
-  it('onResponseReceived fires once per caller-supplied output across init + resume', async () => {
-    // Scenario: caller supplies a function_call_output for a HITL tool in
-    // the initial input, the model requests another (approval-required)
-    // tool call in response, and after the caller approves that second
-    // call the loop resumes via continueWithUnsentResults. Before Fix #8
-    // the initial caller-supplied output would be re-hooked during
-    // resume because applyOnResponseReceivedHooks walked the full
-    // accumulated newInput.
+  it('onResponseReceived does NOT fire for SDK-generated outputs produced during continueWithUnsentResults', async () => {
+    // Scenario: a HITL tool requires approval AND defines both onToolCalled
+    // (which produces an output on approval) and onResponseReceived (which
+    // is documented to apply only to CALLER-supplied outputs — i.e. the
+    // resume-by-passing-a-function_call_output path). When the caller
+    // approves the pending call, processApprovalDecisions invokes
+    // onToolCalled, queues the result in unsentToolResults, and
+    // continueWithUnsentResults stitches it onto the message history and
+    // sends the follow-up request. The SDK-generated output must NOT be
+    // run through onResponseReceived — that hook is reserved for outputs
+    // the caller produces externally.
+    const onToolCalled = vi.fn(async () => ({
+      ok: true,
+    }));
+    const onResponseReceived = vi.fn(async (raw: unknown) => {
+      // Should never run in this test. If it does, the assertion below
+      // catches it; returning a distinct payload makes misbehaviour
+      // easy to diagnose in the wire capture as well.
+      if (!isRawRecord(raw)) {
+        return {
+          hooked: true,
+        };
+      }
+      return {
+        ...raw,
+        hooked: true,
+      };
+    });
+
+    const approve = tool({
+      name: 'approve',
+      inputSchema: z.object({
+        amount: z.number(),
+      }),
+      outputSchema: z.object({
+        ok: z.boolean(),
+      }),
+      requireApproval: true,
+      onToolCalled,
+      onResponseReceived,
+    });
+
+    const tools = [
+      approve,
+    ] as const;
+
+    // Pre-populate state as if a prior run left us awaiting_approval with
+    // one pending call c1. This bypasses the initial model turn (we are
+    // jumping straight to the resume path) so the only invocation of a
+    // hook we care about happens inside continueWithUnsentResults.
+    const pending: ParsedToolCall<(typeof tools)[number]> = {
+      id: 'c1',
+      name: 'approve',
+      arguments: {
+        amount: 5,
+      },
+    };
+    const savedState: ConversationState<typeof tools> = {
+      id: 'conv_test',
+      messages: [
+        makeFunctionCallItem(
+          'c1',
+          'approve',
+          JSON.stringify({
+            amount: 5,
+          }),
+        ),
+      ],
+      pendingToolCalls: [
+        pending,
+      ],
+      status: 'awaiting_approval',
+      createdAt: 0,
+      updatedAt: 0,
+    };
+
+    // After the approval resolves and the follow-up request fires, the
+    // model replies with a plain message.
+    const followupTurn = makeResponse('resp_followup', [
+      makeMessageItem('msg_1', 'done'),
+    ]);
+    mockBetaResponsesSend.mockResolvedValueOnce({
+      ok: true,
+      value: makeCompletedStream(followupTurn),
+    });
+
+    const { accessor } = createMemoryAccessor<typeof tools>(savedState);
+
+    const result = new ModelResult<typeof tools>({
+      request: {
+        model: 'test-model',
+        input: 'approve 5',
+        tools: [
+          {
+            type: 'function',
+            name: 'approve',
+            description: null,
+            strict: null,
+            parameters: {},
+          },
+        ],
+      },
+      client: {} as OpenRouterCore,
+      tools,
+      state: accessor,
+      // Caller approves c1 — onToolCalled will produce {ok: true} and the
+      // follow-up request will carry that SDK-generated output.
+      approveToolCalls: [
+        'c1',
+      ],
+    });
+
+    await result.getResponse();
+
+    // onToolCalled fired exactly once (during processApprovalDecisions).
+    expect(onToolCalled).toHaveBeenCalledTimes(1);
+
+    // The critical assertion: onResponseReceived must NOT have fired.
+    // SDK-generated outputs are appended verbatim; the hook is reserved
+    // for caller-supplied outputs only.
+    expect(onResponseReceived).not.toHaveBeenCalled();
+
+    // And the wire request must carry the raw SDK-generated output, not
+    // a hook-transformed version.
+    expect(mockBetaResponsesSend).toHaveBeenCalledTimes(1);
+    const callArg = mockBetaResponsesSend.mock.calls[0]?.[1];
+    if (!isSendCallArg(callArg)) {
+      throw new Error('Send call arg did not match expected shape');
+    }
+    const input = callArg.responsesRequest.input;
+    if (!Array.isArray(input)) {
+      throw new Error('Expected follow-up input to be an array');
+    }
+    const output = input.find(isFunctionCallOutput);
+    if (!output) {
+      throw new Error('Expected a function_call_output in the follow-up input');
+    }
+    const rawOutput = output.output;
+    if (typeof rawOutput !== 'string') {
+      throw new Error('Expected function_call_output.output to be a string');
+    }
+    expect(JSON.parse(rawOutput)).toEqual({
+      ok: true,
+    });
+  });
+});
+
+describe('initStream does not re-hook historical outputs (Fix #3)', () => {
+  beforeEach(() => {
+    mockBetaResponsesSend.mockReset();
+  });
+
+  it('onResponseReceived fires only for fresh caller-supplied outputs, not historical ones loaded from state', async () => {
+    // Scenario: state already contains a function_call / function_call_output
+    // pair from a prior run (the output was hooked when it was first
+    // supplied). On a new callModel invocation, the caller passes fresh
+    // input that includes ANOTHER function_call / function_call_output pair
+    // for the same HITL tool. The hook must fire for the fresh output
+    // ONLY — the historical output must not be re-hooked (non-idempotent
+    // hooks would double-fire otherwise).
     const onResponseReceived = vi.fn(async (raw: unknown) => {
       if (!isRawRecord(raw)) {
         return {
@@ -1301,93 +1796,90 @@ describe('continueWithUnsentResults does not re-hook caller-supplied items (Fix 
       inputSchema: z.object({
         amount: z.number(),
       }),
-      onToolCalled: async () => ({
-        ok: true,
+      outputSchema: z.object({
+        ok: z.boolean(),
       }),
+      onToolCalled: async () => null,
       onResponseReceived,
-    });
-
-    const needsApproval = tool({
-      name: 'dangerous',
-      inputSchema: z.object({
-        x: z.number(),
-      }),
-      requireApproval: true,
-      execute: async () => ({
-        done: true,
-      }),
     });
 
     const tools = [
       approve,
-      needsApproval,
     ] as const;
 
-    // Initial model turn requests `dangerous`, forcing an approval pause.
-    const turn0 = makeResponse('resp_turn_0', [
-      makeFunctionCallItem(
-        'd1',
-        'dangerous',
-        JSON.stringify({
-          x: 1,
-        }),
-      ),
-    ]);
-    // After the caller approves d1 and execution resumes, the model
-    // replies with a plain message.
-    const turn1 = makeResponse('resp_turn_1', [
-      makeMessageItem('msg_1', 'done'),
-    ]);
-
-    mockBetaResponsesSend
-      .mockResolvedValueOnce({
+    // Pre-populated state: a historical function_call + function_call_output
+    // pair (c0) that was already hooked on the prior run. Its `output`
+    // field here simulates an already-hooked payload. If initStream
+    // re-hooks it, the mock will observe a second invocation for c0.
+    const historicalCall = makeFunctionCallItem(
+      'c0',
+      'approve',
+      JSON.stringify({
+        amount: 1,
+      }),
+    );
+    const historicalOutput: models.FunctionCallOutputItem = {
+      type: 'function_call_output',
+      id: 'output_c0',
+      callId: 'c0',
+      output: JSON.stringify({
         ok: true,
-        value: makeCompletedStream(turn0),
-      })
-      .mockResolvedValueOnce({
-        ok: true,
-        value: makeCompletedStream(turn1),
-      });
+        hooked: true,
+      }),
+    };
 
-    // Caller-supplied initial input: a function_call_output for `approve`
-    // that will be hooked during init (via applyOnResponseReceivedHooks).
-    const initialInput: models.InputsUnion = [
+    const savedState: ConversationState<typeof tools> = {
+      id: 'conv_test',
+      messages: [
+        historicalCall,
+        historicalOutput,
+      ],
+      status: 'in_progress',
+      createdAt: 0,
+      updatedAt: 0,
+    };
+
+    // Fresh input: a new function_call / function_call_output pair (c1)
+    // that the caller is supplying this turn. The hook should fire for
+    // c1 but NOT for c0.
+    const freshInput: models.InputsUnion = [
       makeFunctionCallItem(
-        'c0',
+        'c1',
         'approve',
         JSON.stringify({
-          amount: 5,
+          amount: 2,
         }),
       ),
       {
         type: 'function_call_output',
-        id: 'output_c0',
-        callId: 'c0',
+        id: 'output_c1',
+        callId: 'c1',
         output: JSON.stringify({
           ok: true,
         }),
       },
     ];
 
-    const { accessor } = createMemoryAccessor<typeof tools>();
+    // After the fresh output is hooked and appended to history, the model
+    // replies with a plain message.
+    const replyTurn = makeResponse('resp_reply', [
+      makeMessageItem('msg_1', 'noted'),
+    ]);
+    mockBetaResponsesSend.mockResolvedValueOnce({
+      ok: true,
+      value: makeCompletedStream(replyTurn),
+    });
 
-    // First pass: initial run. The initial caller-supplied output gets
-    // hooked once during init.
-    const result1 = new ModelResult<typeof tools>({
+    const { accessor } = createMemoryAccessor<typeof tools>(savedState);
+
+    const result = new ModelResult<typeof tools>({
       request: {
         model: 'test-model',
-        input: initialInput,
+        input: freshInput,
         tools: [
           {
             type: 'function',
             name: 'approve',
-            description: null,
-            strict: null,
-            parameters: {},
-          },
-          {
-            type: 'function',
-            name: 'dangerous',
             description: null,
             strict: null,
             parameters: {},
@@ -1399,47 +1891,59 @@ describe('continueWithUnsentResults does not re-hook caller-supplied items (Fix 
       state: accessor,
     });
 
-    await result1.getResponse();
+    await result.getResponse();
+
+    // Hook fired exactly once — for the fresh c1 output — and received
+    // the fresh payload, NOT the already-hooked historical one.
     expect(onResponseReceived).toHaveBeenCalledTimes(1);
-
-    // Second pass: resume by approving d1. continueWithUnsentResults
-    // must NOT re-hook the earlier c0 output (which lives in the saved
-    // messages from the first run).
-    onResponseReceived.mockClear();
-
-    const result2 = new ModelResult<typeof tools>({
-      request: {
-        model: 'test-model',
-        input: initialInput,
-        tools: [
-          {
-            type: 'function',
-            name: 'approve',
-            description: null,
-            strict: null,
-            parameters: {},
-          },
-          {
-            type: 'function',
-            name: 'dangerous',
-            description: null,
-            strict: null,
-            parameters: {},
-          },
-        ],
-      },
-      client: {} as OpenRouterCore,
-      tools,
-      state: accessor,
-      approveToolCalls: [
-        'd1',
-      ],
+    const hookArg = onResponseReceived.mock.calls[0]?.[0];
+    expect(hookArg).toEqual({
+      ok: true,
     });
 
-    await result2.getResponse();
+    // The wire request must carry both outputs with the correct values:
+    //   - c0: unchanged historical output (not re-hooked)
+    //   - c1: hooked fresh output
+    expect(mockBetaResponsesSend).toHaveBeenCalledTimes(1);
+    const callArg = mockBetaResponsesSend.mock.calls[0]?.[1];
+    if (!isSendCallArg(callArg)) {
+      throw new Error('Send call arg did not match expected shape');
+    }
+    const input = callArg.responsesRequest.input;
+    if (!Array.isArray(input)) {
+      throw new Error('Expected input to be an array');
+    }
+    const outputs = input.filter(isFunctionCallOutput);
+    expect(outputs).toHaveLength(2);
 
-    // On resume, `dangerous` is an execute tool (no hook) and the c0
-    // output lives in message history — the hook must NOT run again.
-    expect(onResponseReceived).not.toHaveBeenCalled();
+    const c0Output = outputs.find((o) => o.callId === 'c0');
+    if (!c0Output) {
+      throw new Error('Expected c0 output to be preserved');
+    }
+    const c0Raw = c0Output.output;
+    if (typeof c0Raw !== 'string') {
+      throw new Error('Expected c0 output.output to be a string');
+    }
+    // c0 preserved verbatim — NOT re-hooked. The hooked: true marker is
+    // from the historical (prior-run) payload, not a re-hook.
+    expect(JSON.parse(c0Raw)).toEqual({
+      ok: true,
+      hooked: true,
+    });
+
+    const c1Output = outputs.find((o) => o.callId === 'c1');
+    if (!c1Output) {
+      throw new Error('Expected c1 output to be present');
+    }
+    const c1Raw = c1Output.output;
+    if (typeof c1Raw !== 'string') {
+      throw new Error('Expected c1 output.output to be a string');
+    }
+    // c1 was hooked — the fresh payload plus hooked: true added by the
+    // onResponseReceived implementation above.
+    expect(JSON.parse(c1Raw)).toEqual({
+      ok: true,
+      hooked: true,
+    });
   });
 });

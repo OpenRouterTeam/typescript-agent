@@ -296,7 +296,13 @@ export interface HITLToolFunction<
   TContext extends Record<string, unknown> = Record<string, unknown>,
   TName extends string = string,
 > extends BaseToolFunction<TInput> {
-  outputSchema?: TOutput;
+  /**
+   * Required for HITL tools. Used to validate both the `onToolCalled` return
+   * value (when non-null) and the caller-supplied response that comes back via
+   * a matching `function_call_output` — whether transformed by
+   * `onResponseReceived` or passed through directly when no hook is defined.
+   */
+  outputSchema: TOutput;
   onToolCalled: (
     params: zodInfer<TInput>,
     context?: ToolExecuteContext<TName, TContext>,

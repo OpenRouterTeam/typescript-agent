@@ -130,7 +130,13 @@ type HITLToolConfig<
   name: TName;
   description?: string;
   inputSchema: TInput;
-  outputSchema?: TOutput;
+  /**
+   * Required for HITL tools. Used to validate both the `onToolCalled` return
+   * value (when non-null) and the caller-supplied response that comes back via
+   * a matching `function_call_output` — whether transformed by
+   * `onResponseReceived` or passed through directly when no hook is defined.
+   */
+  outputSchema: TOutput;
   eventSchema?: undefined;
   execute?: undefined;
   /** Zod schema declaring the context data this tool needs */
@@ -293,18 +299,24 @@ export function tool(
 
   // Check for HITL tool (has onToolCalled hook)
   if ('onToolCalled' in config && typeof config.onToolCalled === 'function') {
+    // outputSchema is required at the type level for HITL configs, but
+    // defensively check at runtime too — JavaScript callers can bypass types.
+    const hitlName = config.name;
+    if (!('outputSchema' in config) || config.outputSchema === undefined) {
+      throw new Error(
+        `HITL tool "${hitlName}" must declare an outputSchema. HITL tools require a schema so caller-supplied responses can be validated before the model sees them.`,
+      );
+    }
+
     const fn: HITLTool<$ZodObject<$ZodShape>, $ZodType>['function'] = {
       name: config.name,
       inputSchema: config.inputSchema,
+      outputSchema: config.outputSchema,
       onToolCalled: config.onToolCalled,
     };
 
     if (config.description !== undefined) {
       fn.description = config.description;
-    }
-
-    if (config.outputSchema !== undefined) {
-      fn.outputSchema = config.outputSchema;
     }
 
     if (config.contextSchema !== undefined) {

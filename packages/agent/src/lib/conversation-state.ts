@@ -244,7 +244,9 @@ export function createRejectedResult<TTools extends readonly Tool[] = readonly T
  * Check if a value is a valid content array (array of input_text, input_image, or input_file blocks).
  * These can be passed directly as tool output without JSON.stringify.
  */
-function isContentArray(value: unknown): value is models.FunctionCallOutputItemOutputUnion1[] {
+export function isContentArray(
+  value: unknown,
+): value is models.FunctionCallOutputItemOutputUnion1[] {
   if (!Array.isArray(value)) {
     return false;
   }

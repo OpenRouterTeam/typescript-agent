@@ -1158,45 +1158,58 @@ export class ModelResult<
   }
 
   /**
-   * Apply `onResponseReceived` hooks to the freshly-produced tool outputs
-   * only, without re-hooking caller-supplied outputs that were already hooked
-   * during init. Uses the existing `function_call` items from message history
-   * for name resolution but drops them from the returned array.
+   * Apply `onResponseReceived` hooks to the freshly-supplied input items
+   * only, without re-hooking historical items that live in
+   * `currentState.messages`. Historical `function_call` items are passed to
+   * `applyOnResponseReceivedHooks` purely as callId → toolName
+   * name-resolution context and are dropped from the returned array.
    *
-   * @param freshToolOutputs - Outputs produced in this turn (not yet hooked)
-   * @param messageHistory - Existing conversation messages; scanned for
-   *   matching `function_call` items to resolve tool names
+   * This keeps hooks idempotent across `callModel` invocations on the same
+   * conversation: the first call hooks the caller-supplied output, and
+   * subsequent calls (which rehydrate state) do not re-fire it.
+   *
+   * @param freshItems - Items newly supplied this turn (not yet hooked).
+   *   May contain any mix of InputsUnion array members — only
+   *   `function_call_output` items are affected by hooks; everything else
+   *   is returned unchanged.
+   * @param historicalItems - Existing messages from loaded state. Only
+   *   `function_call` entries are consulted for name resolution; no other
+   *   items are inspected and none are mutated.
    * @param turnContext - Turn context for hook invocation
-   * @returns The tool outputs with hook-rewritten `output` values where a
-   *   matching HITL tool defines `onResponseReceived`
+   * @returns The fresh items in original order, with `output` rewritten on
+   *   any `function_call_output` whose matching HITL tool defines
+   *   `onResponseReceived`.
    */
-  private async hookFreshToolOutputs(
-    freshToolOutputs: models.FunctionCallOutputItem[],
-    messageHistory: models.InputsUnion,
+  private async applyHooksToFreshItems(
+    freshItems: models.BaseInputsUnion[],
+    historicalItems: models.InputsUnion,
     turnContext: TurnContext,
-  ): Promise<models.FunctionCallOutputItem[]> {
-    if (freshToolOutputs.length === 0) {
-      return freshToolOutputs;
+  ): Promise<models.BaseInputsUnion[]> {
+    if (freshItems.length === 0) {
+      return freshItems;
     }
 
-    // Collect function_call items from history so `applyOnResponseReceivedHooks`
-    // can resolve callId -> toolName. We don't mutate history here — the items
-    // are only used to power the internal callIdToName map.
-    const historyArray = Array.isArray(messageHistory)
-      ? messageHistory
+    // Collect function_call items from history so the hook executor can
+    // resolve callId -> toolName without us having to mirror that logic.
+    const historyArray = Array.isArray(historicalItems)
+      ? historicalItems
       : [
-          messageHistory,
+          historicalItems,
         ];
     const functionCallItems: models.BaseInputsUnion[] = [];
     for (const item of historyArray) {
-      if (item && typeof item === 'object' && 'type' in item && item.type === 'function_call') {
-        functionCallItems.push(item as models.BaseInputsUnion);
+      if (isFunctionCallItem(item)) {
+        functionCallItems.push(item);
       }
     }
 
+    // Build a synthetic input that puts the historical function_calls
+    // BEFORE the fresh items. `applyOnResponseReceivedHooks` only rewrites
+    // function_call_output items, so the function_call items are seen only
+    // as name-resolution context.
     const syntheticInput: models.InputsUnion = [
       ...functionCallItems,
-      ...freshToolOutputs,
+      ...freshItems,
     ];
 
     const hookedInput = await applyOnResponseReceivedHooks(
@@ -1209,27 +1222,21 @@ export class ModelResult<
 
     if (hookedInput === syntheticInput) {
       // No rewrites; return the originals unchanged.
-      return freshToolOutputs;
+      return freshItems;
     }
 
-    // Extract the rewritten tool outputs (they sit after the function_calls).
+    // Drop the leading function_call items we prepended; what remains is
+    // the fresh items in their original order (some with rewritten outputs).
     const hookedArray = Array.isArray(hookedInput)
       ? hookedInput
       : [
           hookedInput,
         ];
-    const extracted: models.FunctionCallOutputItem[] = [];
-    for (const item of hookedArray) {
-      if (
-        item &&
-        typeof item === 'object' &&
-        'type' in item &&
-        item.type === 'function_call_output'
-      ) {
-        extracted.push(item as models.FunctionCallOutputItem);
-      }
+    if (hookedArray.length !== syntheticInput.length) {
+      // Shouldn't happen (hooks only rewrite in-place), but be conservative.
+      return freshItems;
     }
-    return extracted.length === freshToolOutputs.length ? extracted : freshToolOutputs;
+    return hookedArray.slice(functionCallItems.length);
   }
 
   /**
@@ -1358,37 +1365,54 @@ export class ModelResult<
       // Resolve any async functions first
       let baseRequest = await this.resolveRequestForContext(initialContext);
 
-      // If we have state with existing messages, use those as input
-      if (
-        this.currentState?.messages &&
+      // Split input into "historical" (already in state.messages) and "fresh"
+      // (newly supplied this turn). `onResponseReceived` must fire only for
+      // fresh items — re-hooking historical outputs on every callModel call
+      // would double-invoke non-idempotent hooks.
+      const hasLoadedHistory =
+        !!this.currentState?.messages &&
         Array.isArray(this.currentState.messages) &&
-        this.currentState.messages.length > 0
-      ) {
-        // Append new input to existing messages
+        this.currentState.messages.length > 0;
+
+      if (hasLoadedHistory && this.currentState) {
+        // `currentState.messages` is InputsUnion — keep it as that union so
+        // appendToMessages (which expects InputsUnion) accepts it directly.
+        const historicalMessages: models.InputsUnion = this.currentState.messages;
+
+        // Normalize the caller-supplied input for this turn into an array of
+        // fresh items. Undefined stays undefined (no new items). The widening
+        // to BaseInputsUnion[] matches the signature of appendToMessages and
+        // mirrors the pre-existing pattern elsewhere in this file; the two
+        // union shapes (InputsUnion1 vs BaseInputsUnion1) describe the same
+        // SDK input items with different nominal types, and BaseInputsUnion
+        // already includes `any` in its element type, so the runtime shape
+        // is preserved either way.
         const newInput = baseRequest.input;
-        if (newInput) {
-          const inputArray = Array.isArray(newInput)
-            ? newInput
+        let freshItems: models.BaseInputsUnion[] | undefined;
+        if (newInput !== undefined) {
+          freshItems = Array.isArray(newInput)
+            ? (newInput as models.BaseInputsUnion[])
             : [
                 newInput,
               ];
-          baseRequest = {
-            ...baseRequest,
-            input: appendToMessages(
-              this.currentState.messages,
-              inputArray as models.BaseInputsUnion[],
-            ),
-          };
-        } else {
-          baseRequest = {
-            ...baseRequest,
-            input: this.currentState.messages,
-          };
         }
-      }
 
-      // Apply onResponseReceived hooks to caller-supplied tool-output items
-      if (baseRequest.input !== undefined) {
+        // Hook fresh items only (historical function_calls serve as
+        // name-resolution context). Leave historical items untouched.
+        const hookedFresh = freshItems
+          ? await this.applyHooksToFreshItems(freshItems, historicalMessages, initialContext)
+          : undefined;
+
+        baseRequest = {
+          ...baseRequest,
+          input: hookedFresh
+            ? appendToMessages(historicalMessages, hookedFresh)
+            : historicalMessages,
+        };
+      } else if (baseRequest.input !== undefined) {
+        // No loaded history — everything in input is fresh. Hook the whole
+        // thing (non-array inputs pass through applyOnResponseReceivedHooks
+        // unchanged).
         const hookedInput = await applyOnResponseReceivedHooks(
           baseRequest.input,
           this.options.tools,
@@ -1597,19 +1621,13 @@ export class ModelResult<
       numberOfTurns: this.allToolExecutionRounds.length + 1,
     };
 
-    // Apply onResponseReceived hooks ONLY to the newly-added tool outputs.
-    // `currentMessages` already contains caller-supplied outputs that were
-    // hooked during init (see `initStream` -> `applyOnResponseReceivedHooks`);
-    // re-hooking them would double-invoke non-idempotent hooks.
+    // Append SDK-generated tool outputs directly — `onResponseReceived` is
+    // reserved for caller-supplied outputs (the resume-with-function-call-
+    // output path, hooked during init). SDK-produced outputs from auto-
+    // executed tools already went through the tool's own execute/generator
+    // pipeline and must not be mutated by the resume hook.
     const currentMessages = this.currentState.messages;
-    const hookedToolOutputs = await this.hookFreshToolOutputs(
-      toolOutputs,
-      currentMessages,
-      turnContext,
-    );
-
-    // Build new input with the hooked tool results appended
-    const newInput = appendToMessages(currentMessages, hookedToolOutputs);
+    const newInput = appendToMessages(currentMessages, toolOutputs);
 
     // Clear unsent results from state
     this.currentState = updateState(this.currentState, {
@@ -1623,10 +1641,10 @@ export class ModelResult<
     // Build request with the updated input
     const baseRequest = await this.resolveRequestForContext(turnContext);
 
-    // Create request with the accumulated messages. No full-input re-hooking:
-    // the fresh tool outputs were hooked above via `hookFreshToolOutputs`, and
-    // previously-hooked items in `newInput` (carried over from init) must not
-    // be re-hooked here (non-idempotent hooks would double-fire).
+    // No hooking here: SDK-generated outputs are appended as-is and any
+    // caller-supplied items in `newInput` (carried over from init) were
+    // already hooked during `initStream` — re-hooking would double-fire
+    // non-idempotent hooks.
     const request: models.ResponsesRequest = {
       ...baseRequest,
       input: newInput,
