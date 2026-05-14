@@ -21,7 +21,7 @@ import {
   executeNextTurnParamsFunctions,
 } from './next-turn-params.js';
 import { ReusableReadableStream } from './reusable-stream.js';
-import { isStopConditionMet, stepCountIs } from './stop-conditions.js';
+import { isStopConditionMet } from './stop-conditions.js';
 import type { ItemInProgress, StreamableOutputItem } from './stream-transformers.js';
 import {
   buildItemsStream,
@@ -78,12 +78,6 @@ import {
   isServerTool,
   isToolCallOutputEvent,
 } from './tool-types.js';
-
-/**
- * Default maximum number of tool execution steps if no stopWhen is specified.
- * This prevents infinite loops in tool execution.
- */
-const DEFAULT_MAX_STEPS = 5;
 
 /**
  * Typeguard for plain-object records (non-null, non-array).
@@ -566,11 +560,16 @@ export class ModelResult<
    * Returns true if execution should stop.
    *
    * @remarks
-   * Default: stepCountIs(DEFAULT_MAX_STEPS) if no stopWhen is specified.
+   * When no `stopWhen` is specified, this returns false and execution stops
+   * only when the model produces a turn without tool calls. Pass an explicit
+   * `stopWhen` (e.g. `stepCountIs(n)`, `maxCost(...)`) to bound the loop.
    * This evaluates stop conditions against the complete step history.
    */
   private async shouldStopExecution(): Promise<boolean> {
-    const stopWhen = this.options.stopWhen ?? stepCountIs(DEFAULT_MAX_STEPS);
+    const { stopWhen } = this.options;
+    if (stopWhen === undefined) {
+      return false;
+    }
 
     const stopConditions = Array.isArray(stopWhen)
       ? stopWhen

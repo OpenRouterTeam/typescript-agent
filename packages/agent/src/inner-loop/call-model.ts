@@ -64,7 +64,8 @@ export type { CallModelInput } from '../lib/async-params.js';
  * stopWhen: [stepCountIs(10), maxCost(0.50), hasToolCall('finalize')]
  * ```
  *
- * Default: `stepCountIs(5)` if not specified
+ * If `stopWhen` is omitted, the loop runs until the model produces a turn
+ * with no tool calls. Pass `stopWhen` to bound iterations, cost, or tokens.
  */
 export function callModel<
   TTools extends readonly Tool[],
