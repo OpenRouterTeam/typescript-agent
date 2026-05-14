@@ -1,5 +1,11 @@
 # @openrouter/agent
 
+## 0.6.0
+
+### Minor Changes
+
+- [#42](https://github.com/OpenRouterTeam/typescript-agent/pull/42) [`8e71f06`](https://github.com/OpenRouterTeam/typescript-agent/commit/8e71f06024f41e60ccdc68577016637a31912779) Thanks [@mattapperson](https://github.com/mattapperson)! - Remove implicit 5-step cap in `callModel`. When `stopWhen` is omitted, the tool-execution loop now runs until the model produces a turn with no tool calls instead of stopping at 5 steps. Pass an explicit `stopWhen` (e.g. `stepCountIs(n)`, `maxCost(...)`, `maxTokensUsed(...)`) to bound iterations.
+
 ## 0.5.0
 
 ### Minor Changes
