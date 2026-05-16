@@ -45,6 +45,15 @@ importers:
         specifier: ^4.0.0
         version: 4.3.6
 
+  packages/agent-tool-set:
+    dependencies:
+      '@openrouter/agent':
+        specifier: workspace:*
+        version: link:../agent
+      zod:
+        specifier: ^4.0.0
+        version: 4.3.6
+
 packages:
 
   '@babel/runtime@7.29.2':
