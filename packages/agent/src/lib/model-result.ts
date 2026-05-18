@@ -151,6 +151,13 @@ export interface GetResponseOptions<
   onTurnStart?: (context: TurnContext) => void | Promise<void>;
   /** Callback invoked at the end of each tool execution turn */
   onTurnEnd?: (context: TurnContext, response: models.OpenResponsesResult) => void | Promise<void>;
+  /**
+   * When the loop exits because `stopWhen` was met and the last response
+   * still contained tool calls, make one more model request with no tools so
+   * the model produces a final text response. A string value is appended as
+   * a final user message.
+   */
+  allowFinalResponse?: boolean | string;
 }
 
 /**
@@ -1147,6 +1154,94 @@ export class ModelResult<
   }
 
   /**
+   * Make a final no-tools request to coerce a text response after the loop
+   * was halted by `stopWhen` mid-tool-call. Reuses the resolved request so
+   * `instructions`, `model`, and other API fields ride along unchanged.
+   * `tools`, `toolChoice`, and `parallelToolCalls` are stripped — the whole
+   * point is to force a text turn. The caller is expected to have already
+   * executed the pending tool calls and to pass their outputs in
+   * `toolOutputs` so every function_call in the input has a matching output.
+   */
+  private async makeFinalResponseRequest(
+    currentResponse: models.OpenResponsesResult,
+    toolOutputs: models.FunctionCallOutputItem[],
+    allowFinalResponse: boolean | string,
+    turnNumber: number,
+  ): Promise<models.OpenResponsesResult> {
+    if (!this.resolvedRequest) {
+      throw new Error('Request not initialized');
+    }
+
+    const originalInput = this.resolvedRequest.input;
+    const normalizedOriginalInput: models.BaseInputsUnion[] = Array.isArray(originalInput)
+      ? originalInput
+      : originalInput
+        ? [
+            {
+              role: 'user',
+              content: originalInput,
+            },
+          ]
+        : [];
+
+    const newInput: models.InputsUnion = [
+      ...normalizedOriginalInput,
+      ...(Array.isArray(currentResponse.output)
+        ? currentResponse.output
+        : [
+            currentResponse.output,
+          ]),
+      ...toolOutputs,
+      ...(typeof allowFinalResponse === 'string' && allowFinalResponse.length > 0
+        ? [
+            {
+              role: 'user' as const,
+              content: allowFinalResponse,
+            },
+          ]
+        : []),
+    ];
+
+    const {
+      tools: _tools,
+      toolChoice: _toolChoice,
+      parallelToolCalls: _parallelToolCalls,
+      ...rest
+    } = this.resolvedRequest;
+
+    const finalRequest: models.ResponsesRequest = {
+      ...rest,
+      input: newInput,
+      stream: true,
+    };
+
+    const result = await betaResponsesSend(
+      this.options.client,
+      {
+        responsesRequest: finalRequest,
+      },
+      this.options.options,
+    );
+
+    if (!result.ok) {
+      throw result.error;
+    }
+
+    const value = result.value;
+    if (isEventStream(value)) {
+      const stream = new ReusableReadableStream(value);
+      if (this.turnBroadcaster) {
+        return this.pipeAndConsumeStream(stream, turnNumber);
+      }
+      return consumeStreamForCompletion(stream);
+    }
+    if (this.isNonStreamingResponse(value)) {
+      return value;
+    }
+    throw new Error('Unexpected response type from API');
+  }
+
+  /**
    * Validate the final response has required fields.
    *
    * @param response - The response to validate
@@ -1762,6 +1857,7 @@ export class ModelResult<
 
       // Main execution loop
       let currentRound = 0;
+      let stoppedByStopWhen = false;
 
       while (true) {
         // Check for external interruption
@@ -1771,6 +1867,7 @@ export class ModelResult<
 
         // Check stop conditions
         if (await this.shouldStopExecution()) {
+          stoppedByStopWhen = true;
           break;
         }
 
@@ -1861,6 +1958,91 @@ export class ModelResult<
         await this.saveResponseToState(currentResponse);
 
         currentRound++;
+      }
+
+      // If stopWhen broke the loop while the model was still emitting tool
+      // calls, execute those tool calls so they have matching outputs, then
+      // make one more no-tools request to coerce a final text response. An
+      // empty string still counts as "on" — it just means "don't append a
+      // user message."
+      const allowFinalResponse = this.options.allowFinalResponse;
+      const finalResponseEnabled =
+        allowFinalResponse === true || typeof allowFinalResponse === 'string';
+      const pendingToolCalls = stoppedByStopWhen
+        ? extractToolCallsFromResponse(currentResponse)
+        : [];
+      if (
+        stoppedByStopWhen &&
+        finalResponseEnabled &&
+        pendingToolCalls.length > 0 &&
+        this.hasExecutableToolCalls(pendingToolCalls)
+      ) {
+        const turnNumber = currentRound + 1;
+        const turnContext: TurnContext = {
+          numberOfTurns: turnNumber,
+        };
+
+        await this.options.onTurnStart?.(turnContext);
+        await this.resolveAsyncFunctionsForTurn(turnContext);
+
+        const { toolResults, pausedCalls } = await this.executeToolRound(
+          pendingToolCalls,
+          turnContext,
+        );
+
+        // Track the executed round and persist real outputs BEFORE the HITL
+        // pause check — mirrors the in-loop ordering at executeToolsIfNeeded
+        // so a partial batch (HITL + regular tools) doesn't drop the regular
+        // tool's output from state on resume.
+        this.allToolExecutionRounds.push({
+          round: currentRound,
+          toolCalls: pendingToolCalls,
+          response: currentResponse,
+          toolResults: [
+            ...toolResults,
+          ],
+        });
+        await this.saveToolResultsToState(toolResults);
+
+        if (pausedCalls.length > 0) {
+          // HITL paused — persist and exit without making the final no-tools
+          // request. The conversation will resume via the normal awaiting_hitl
+          // flow.
+          await this.persistHitlPause(currentResponse, pausedCalls);
+          return;
+        }
+
+        // Apply any nextTurnParams from the executed tools so they affect the
+        // final no-tools request (mirrors the in-loop behavior).
+        await this.applyNextTurnParams(pendingToolCalls);
+
+        // Pair any manual tool calls (no execute fn) with stub outputs so
+        // every function_call in the *request* has a matching output. Stubs
+        // are NOT persisted to state — only real tool outputs are — so a
+        // resumed conversation doesn't see "Tool execution skipped" as if it
+        // were a real result.
+        const executedCallIds = new Set(toolResults.map((r) => r.callId));
+        const stubOutputs: models.FunctionCallOutputItem[] = pendingToolCalls
+          .filter((tc) => !executedCallIds.has(tc.id))
+          .map((tc) => ({
+            type: 'function_call_output' as const,
+            callId: tc.id,
+            output: 'Tool execution skipped: step limit reached.',
+          }));
+        const requestOutputs = [
+          ...toolResults,
+          ...stubOutputs,
+        ];
+
+        currentResponse = await this.makeFinalResponseRequest(
+          currentResponse,
+          requestOutputs,
+          allowFinalResponse,
+          turnNumber,
+        );
+
+        await this.options.onTurnEnd?.(turnContext, currentResponse);
+        await this.saveResponseToState(currentResponse);
       }
 
       // Validate and finalize

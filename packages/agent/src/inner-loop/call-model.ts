@@ -66,6 +66,14 @@ export type { CallModelInput } from '../lib/async-params.js';
  *
  * If `stopWhen` is omitted, the loop runs until the model produces a turn
  * with no tool calls. Pass `stopWhen` to bound iterations, cost, or tokens.
+ *
+ * **Final Response After Stop:**
+ *
+ * When `stopWhen` fires while the model is still emitting tool calls, set
+ * `allowFinalResponse: true` (or a string) to force one final model turn
+ * with no tools so the loop ends with a natural-language summary rather
+ * than a half-finished tool call. A string value is appended as a final
+ * user message.
  */
 export function callModel<
   TTools extends readonly Tool[],
@@ -92,6 +100,7 @@ export function callModel<
     sharedContextSchema,
     onTurnStart,
     onTurnEnd,
+    allowFinalResponse,
     ...apiRequest
   } = request;
 
@@ -152,6 +161,9 @@ export function callModel<
     }),
     ...(onTurnEnd !== undefined && {
       onTurnEnd,
+    }),
+    ...(allowFinalResponse !== undefined && {
+      allowFinalResponse,
     }),
   } as GetResponseOptions<TTools, TShared>);
 }
