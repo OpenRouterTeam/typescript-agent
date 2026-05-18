@@ -169,6 +169,26 @@ Built-in stop conditions:
 | `maxCost(dollars)` | Stop when total cost exceeds a dollar amount |
 | `finishReasonIs(reason)` | Stop on a specific finish reason |
 
+**Final response after stop**
+
+When `stopWhen` fires while the model is still emitting tool calls, pass
+`allowFinalResponse` to force one more model turn with no tools:
+
+```typescript
+callModel(client, {
+  model: 'openai/gpt-4o',
+  input: 'Research this topic',
+  tools: [searchTool] as const,
+  stopWhen: stepCountIs(5),
+  allowFinalResponse: 'Please summarize what you found.',
+  // or just: allowFinalResponse: true
+});
+```
+
+The full conversation (including the unanswered tool calls) and the original
+`instructions` are sent. A string value is appended as a final `user`
+message.
+
 ### Tool Approval
 
 Gate tool execution with approval checks for sensitive operations:

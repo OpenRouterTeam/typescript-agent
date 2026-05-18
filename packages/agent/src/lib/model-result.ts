@@ -151,6 +151,13 @@ export interface GetResponseOptions<
   onTurnStart?: (context: TurnContext) => void | Promise<void>;
   /** Callback invoked at the end of each tool execution turn */
   onTurnEnd?: (context: TurnContext, response: models.OpenResponsesResult) => void | Promise<void>;
+  /**
+   * When the loop exits because `stopWhen` was met and the last response
+   * still contained tool calls, make one more model request with no tools so
+   * the model produces a final text response. A string value is appended as
+   * a final user message.
+   */
+  allowFinalResponse?: boolean | string;
 }
 
 /**
@@ -1147,6 +1154,85 @@ export class ModelResult<
   }
 
   /**
+   * Make a final no-tools request to coerce a text response after the loop
+   * was halted by `stopWhen` mid-tool-call. Reuses the resolved request so
+   * `instructions`, `model`, and other API fields ride along unchanged.
+   * Tools and `toolChoice` are stripped — the whole point is to force a
+   * text turn.
+   */
+  private async makeFinalResponseRequest(
+    currentResponse: models.OpenResponsesResult,
+    allowFinalResponse: boolean | string,
+    turnNumber: number,
+  ): Promise<models.OpenResponsesResult> {
+    if (!this.resolvedRequest) {
+      throw new Error('Request not initialized');
+    }
+
+    const originalInput = this.resolvedRequest.input;
+    const normalizedOriginalInput: models.BaseInputsUnion[] = Array.isArray(originalInput)
+      ? originalInput
+      : originalInput
+        ? [
+            {
+              role: 'user',
+              content: originalInput,
+            },
+          ]
+        : [];
+
+    const newInput: models.InputsUnion = [
+      ...normalizedOriginalInput,
+      ...(Array.isArray(currentResponse.output)
+        ? currentResponse.output
+        : [
+            currentResponse.output,
+          ]),
+      ...(typeof allowFinalResponse === 'string'
+        ? [
+            {
+              role: 'user' as const,
+              content: allowFinalResponse,
+            },
+          ]
+        : []),
+    ];
+
+    const { tools: _tools, toolChoice: _toolChoice, ...rest } = this.resolvedRequest;
+
+    const finalRequest: models.ResponsesRequest = {
+      ...rest,
+      input: newInput,
+      stream: true,
+    };
+
+    const result = await betaResponsesSend(
+      this.options.client,
+      {
+        responsesRequest: finalRequest,
+      },
+      this.options.options,
+    );
+
+    if (!result.ok) {
+      throw result.error;
+    }
+
+    const value = result.value;
+    if (isEventStream(value)) {
+      const stream = new ReusableReadableStream(value);
+      if (this.turnBroadcaster) {
+        return this.pipeAndConsumeStream(stream, turnNumber);
+      }
+      return consumeStreamForCompletion(stream);
+    }
+    if (this.isNonStreamingResponse(value)) {
+      return value;
+    }
+    throw new Error('Unexpected response type from API');
+  }
+
+  /**
    * Validate the final response has required fields.
    *
    * @param response - The response to validate
@@ -1762,6 +1848,7 @@ export class ModelResult<
 
       // Main execution loop
       let currentRound = 0;
+      let stoppedByStopWhen = false;
 
       while (true) {
         // Check for external interruption
@@ -1771,6 +1858,7 @@ export class ModelResult<
 
         // Check stop conditions
         if (await this.shouldStopExecution()) {
+          stoppedByStopWhen = true;
           break;
         }
 
@@ -1861,6 +1949,20 @@ export class ModelResult<
         await this.saveResponseToState(currentResponse);
 
         currentRound++;
+      }
+
+      // If stopWhen broke the loop while the model was still emitting tool
+      // calls, optionally make one more no-tools request to coerce a final
+      // text response.
+      if (stoppedByStopWhen && this.options.allowFinalResponse) {
+        const pendingToolCalls = extractToolCallsFromResponse(currentResponse);
+        if (pendingToolCalls.length > 0) {
+          currentResponse = await this.makeFinalResponseRequest(
+            currentResponse,
+            this.options.allowFinalResponse,
+            currentRound + 1,
+          );
+        }
       }
 
       // Validate and finalize
