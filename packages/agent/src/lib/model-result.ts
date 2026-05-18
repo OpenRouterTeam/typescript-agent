@@ -1968,12 +1968,15 @@ export class ModelResult<
       const allowFinalResponse = this.options.allowFinalResponse;
       const finalResponseEnabled =
         allowFinalResponse === true || typeof allowFinalResponse === 'string';
+      const pendingToolCalls = stoppedByStopWhen
+        ? extractToolCallsFromResponse(currentResponse)
+        : [];
       if (
         stoppedByStopWhen &&
         finalResponseEnabled &&
-        this.hasExecutableToolCalls(extractToolCallsFromResponse(currentResponse))
+        pendingToolCalls.length > 0 &&
+        this.hasExecutableToolCalls(pendingToolCalls)
       ) {
-        const pendingToolCalls = extractToolCallsFromResponse(currentResponse);
         const turnNumber = currentRound + 1;
         const turnContext: TurnContext = {
           numberOfTurns: turnNumber,
@@ -1987,15 +1990,37 @@ export class ModelResult<
           turnContext,
         );
 
+        // Track the executed round and persist real outputs BEFORE the HITL
+        // pause check — mirrors the in-loop ordering at executeToolsIfNeeded
+        // so a partial batch (HITL + regular tools) doesn't drop the regular
+        // tool's output from state on resume.
+        this.allToolExecutionRounds.push({
+          round: currentRound,
+          toolCalls: pendingToolCalls,
+          response: currentResponse,
+          toolResults: [
+            ...toolResults,
+          ],
+        });
+        await this.saveToolResultsToState(toolResults);
+
         if (pausedCalls.length > 0) {
-          // HITL paused — preserve the existing pause semantics: persist and
-          // exit without making the final no-tools request.
+          // HITL paused — persist and exit without making the final no-tools
+          // request. The conversation will resume via the normal awaiting_hitl
+          // flow.
           await this.persistHitlPause(currentResponse, pausedCalls);
           return;
         }
 
+        // Apply any nextTurnParams from the executed tools so they affect the
+        // final no-tools request (mirrors the in-loop behavior).
+        await this.applyNextTurnParams(pendingToolCalls);
+
         // Pair any manual tool calls (no execute fn) with stub outputs so
-        // every function_call in the input has a matching output.
+        // every function_call in the *request* has a matching output. Stubs
+        // are NOT persisted to state — only real tool outputs are — so a
+        // resumed conversation doesn't see "Tool execution skipped" as if it
+        // were a real result.
         const executedCallIds = new Set(toolResults.map((r) => r.callId));
         const stubOutputs: models.FunctionCallOutputItem[] = pendingToolCalls
           .filter((tc) => !executedCallIds.has(tc.id))
@@ -2004,25 +2029,14 @@ export class ModelResult<
             callId: tc.id,
             output: 'Tool execution skipped: step limit reached.',
           }));
-        const allOutputs = [
+        const requestOutputs = [
           ...toolResults,
           ...stubOutputs,
         ];
 
-        // Track the executed round so state-resume sees the full conversation.
-        this.allToolExecutionRounds.push({
-          round: currentRound,
-          toolCalls: pendingToolCalls,
-          response: currentResponse,
-          toolResults: [
-            ...allOutputs,
-          ],
-        });
-        await this.saveToolResultsToState(allOutputs);
-
         currentResponse = await this.makeFinalResponseRequest(
           currentResponse,
-          allOutputs,
+          requestOutputs,
           allowFinalResponse,
           turnNumber,
         );

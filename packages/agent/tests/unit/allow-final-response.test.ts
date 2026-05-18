@@ -344,4 +344,146 @@ describe('allowFinalResponse', () => {
     // Final response is the tool-call response, unchanged.
     expect(finalResult.id).toBe('resp_tool_call');
   });
+
+  it('handles a streaming final-response (production hot path)', async () => {
+    const makeStream = (response: models.OpenResponsesResult) =>
+      new ReadableStream<models.StreamEvents>({
+        start(controller) {
+          controller.enqueue({
+            type: 'response.completed',
+            response,
+            sequenceNumber: 0,
+          } as models.StreamEvents);
+          controller.close();
+        },
+      });
+
+    mockBetaResponsesSend
+      .mockResolvedValueOnce({
+        ok: true,
+        value: toolCallResponse(),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        value: makeStream(textResponse('streamed summary')),
+      });
+
+    const text = await callModel(client, {
+      model: 'test-model',
+      input: 'What is the weather?',
+      tools: [
+        weatherTool,
+      ] as const,
+      stopWhen: stepCountIs(0),
+      allowFinalResponse: true,
+    }).getText();
+
+    expect(text).toBe('streamed summary');
+    expect(mockBetaResponsesSend).toHaveBeenCalledTimes(2);
+  });
+
+  it('persists only real tool outputs (not stubs) on state save', async () => {
+    // A turn where the model called both an executable and a manual tool.
+    const mixedToolCallResponse = (): models.OpenResponsesResult =>
+      ({
+        ...toolCallResponse(),
+        output: [
+          {
+            type: 'function_call',
+            id: 'fc_exec',
+            callId: 'call_exec',
+            name: 'get_weather',
+            arguments: '{"location":"Tokyo"}',
+            status: 'completed',
+          },
+          {
+            type: 'function_call',
+            id: 'fc_manual',
+            callId: 'call_manual',
+            name: 'submit_report',
+            arguments: '{"text":"hi"}',
+            status: 'completed',
+          },
+        ],
+      }) as models.OpenResponsesResult;
+
+    const manualTool = {
+      type: ToolType.Function,
+      function: {
+        name: 'submit_report',
+        description: 'Submit a report — no execute fn (manual).',
+        inputSchema: z.object({
+          text: z.string(),
+        }),
+        outputSchema: z.object({
+          ok: z.boolean(),
+        }),
+      },
+    } as const;
+
+    // Capture every state save by intercepting via a custom state accessor.
+    const saved: Array<{
+      messages?: unknown;
+    }> = [];
+    const stateAccessor = {
+      load: async () => null,
+      save: async (state: { messages?: unknown }) => {
+        saved.push(state);
+      },
+    };
+
+    mockBetaResponsesSend
+      .mockResolvedValueOnce({
+        ok: true,
+        value: mixedToolCallResponse(),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        value: textResponse('done'),
+      });
+
+    await callModel(client, {
+      model: 'test-model',
+      input: 'mixed',
+      tools: [
+        weatherTool,
+        manualTool,
+      ] as const,
+      stopWhen: stepCountIs(0),
+      allowFinalResponse: true,
+      state: stateAccessor as unknown as Parameters<typeof callModel>[1]['state'],
+    }).getText();
+
+    // Find the save call that wrote tool outputs to messages.
+    const allMessages = saved.flatMap(
+      (s) =>
+        (s.messages as
+          | Array<{
+              type?: string;
+              output?: string;
+            }>
+          | undefined) ?? [],
+    );
+    const persistedOutputs = allMessages.filter((m) => m.type === 'function_call_output');
+    // Only the real (executed) output should be persisted — NOT the stub.
+    expect(persistedOutputs.length).toBeGreaterThanOrEqual(1);
+    for (const out of persistedOutputs) {
+      expect(out.output).not.toMatch(/skipped/i);
+    }
+    // Sanity: at least one persisted output came from the executed tool.
+    expect(persistedOutputs.some((o) => o.output?.includes('"temperature":22'))).toBe(true);
+
+    // The REQUEST still has the stub paired with the manual call.
+    const secondCallRequest = mockBetaResponsesSend.mock.calls[1]?.[1]?.responsesRequest;
+    const requestInput = secondCallRequest?.input as Array<{
+      type?: string;
+      callId?: string;
+      output?: string;
+    }>;
+    const manualStub = requestInput.find(
+      (i) => i.type === 'function_call_output' && i.callId === 'call_manual',
+    );
+    expect(manualStub).toBeDefined();
+    expect(manualStub?.output).toMatch(/skipped/i);
+  });
 });
