@@ -185,9 +185,12 @@ callModel(client, {
 });
 ```
 
-The full conversation (including the unanswered tool calls) and the original
-`instructions` are sent. A string value is appended as a final `user`
-message.
+The pending tool calls from the halted turn are executed first so they
+have real outputs in the input, then the full conversation and the
+original `instructions` are sent to the model with no tools defined. A
+non-empty string value is appended as a final `user` message. Any
+non-executable (manual) tool calls in the halted turn are paired with
+synthesized stub `function_call_output` items so the input is well-formed.
 
 ### Tool Approval
 

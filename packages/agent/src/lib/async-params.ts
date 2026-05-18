@@ -82,15 +82,20 @@ type BaseCallModelInput<
   onTurnEnd?: (context: TurnContext, response: OpenResponsesResult) => void | Promise<void>;
   /**
    * When the loop exits because `stopWhen` was met and the last response
-   * still contained tool calls, make one more model request with no tools so
-   * the model produces a final text response.
+   * still contained tool calls, execute those pending tool calls (so they
+   * have matching outputs) and then make one more model request with no
+   * tools so the model produces a final text response.
    *
-   * - `true` — re-prompt with the accumulated conversation and no tools.
-   * - string — additionally append that string as a final user message
-   *   (e.g. "Please summarize what you've learned").
+   * - `true` (or `''`) — re-prompt with the accumulated conversation and no
+   *   tools.
+   * - non-empty string — additionally append that string as a final user
+   *   message (e.g. `"Please summarize what you've learned"`).
    *
-   * The full accumulated input array and the original `instructions` are sent.
-   * Has no effect when the loop exits for any other reason.
+   * The full accumulated input array and the original `instructions` are
+   * sent. Manual (non-executable) tool calls in the halted turn are paired
+   * with synthesized stub `function_call_output` items so the input is
+   * well-formed. Has no effect when the loop exits for any other reason
+   * (HITL pause, approval pause, interruption, or natural completion).
    */
   allowFinalResponse?: boolean | string;
 };
