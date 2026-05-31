@@ -78,6 +78,7 @@ import {
   isServerTool,
   isToolCallOutputEvent,
 } from './tool-types.js';
+import { normalizeInputToArray } from './turn-context.js';
 
 /**
  * Typeguard for plain-object records (non-null, non-array).
@@ -1498,6 +1499,13 @@ export class ModelResult<
         Array.isArray(this.currentState.messages) &&
         this.currentState.messages.length > 0;
 
+      // Track fresh user input items that need to be persisted to state.
+      // Without this, state.messages only contains response outputs and tool
+      // results — prior user turns are lost when a new callModel resumes from
+      // persisted state, breaking conversation fidelity and cache_control
+      // prompt caching at user-message boundaries.
+      let freshItemsForState: models.BaseInputsUnion[] | undefined;
+
       if (hasLoadedHistory && this.currentState) {
         // `currentState.messages` is InputsUnion — keep it as that union so
         // appendToMessages (which expects InputsUnion) accepts it directly.
@@ -1527,6 +1535,8 @@ export class ModelResult<
           ? await this.applyHooksToFreshItems(freshItems, historicalMessages, initialContext)
           : undefined;
 
+        freshItemsForState = hookedFresh;
+
         baseRequest = {
           ...baseRequest,
           input: hookedFresh
@@ -1548,6 +1558,23 @@ export class ModelResult<
           ...baseRequest,
           input: hookedInput,
         };
+        // All input is fresh when there's no loaded history — normalize to
+        // array form for state persistence.
+        freshItemsForState = normalizeInputToArray(hookedInput) as models.BaseInputsUnion[];
+      }
+
+      // Persist fresh user input items to state so they survive across
+      // callModel invocations. This ensures the resume path
+      // (state.messages + new input) reconstructs the full conversation.
+      if (
+        this.stateAccessor &&
+        this.currentState &&
+        freshItemsForState &&
+        freshItemsForState.length > 0
+      ) {
+        await this.saveStateSafely({
+          messages: appendToMessages(this.currentState.messages, freshItemsForState),
+        });
       }
 
       // Store resolved request with stream mode
