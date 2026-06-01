@@ -329,4 +329,60 @@ describe('User Input Persistence to State', () => {
     expect(userItems[0]!.content).toBe('Question 1');
     expect(userItems[1]!.content).toBe('Question 2');
   });
+
+  it('does not duplicate user input in state when retrying after API failure', async () => {
+    // First attempt: API call fails
+    mockBetaResponsesSend.mockResolvedValueOnce({
+      ok: false,
+      error: new Error('API failure'),
+    });
+
+    const result1 = callModel(client, {
+      model: 'test-model',
+      input: [
+        {
+          role: 'user',
+          content: 'Hello',
+        },
+      ],
+      state: stateAccessor,
+    });
+
+    await expect(result1.getText()).rejects.toThrow();
+
+    // State should NOT contain the user message after a failed API call
+    const messagesAfterFailure = storedState?.messages as
+      | Array<{ role?: string }>
+      | undefined;
+    const userItemsAfterFailure = messagesAfterFailure?.filter((m) => m.role === 'user') ?? [];
+    expect(userItemsAfterFailure.length).toBe(0);
+
+    // Retry: same input, API succeeds
+    mockBetaResponsesSend.mockResolvedValueOnce({
+      ok: true,
+      value: textResponse('Hello back!'),
+    });
+
+    const result2 = callModel(client, {
+      model: 'test-model',
+      input: [
+        {
+          role: 'user',
+          content: 'Hello',
+        },
+      ],
+      state: stateAccessor,
+    });
+
+    await result2.getText();
+
+    // Should contain exactly one user message, not two
+    const messages = storedState!.messages as Array<{
+      role?: string;
+      content?: string;
+    }>;
+    const userItems = messages.filter((m) => m.role === 'user');
+    expect(userItems.length).toBe(1);
+    expect(userItems[0]!.content).toBe('Hello');
+  });
 });

@@ -232,6 +232,7 @@ export class ModelResult<
   private approvedToolCalls: string[] = [];
   private rejectedToolCalls: string[] = [];
   private isResumingFromApproval = false;
+  private pendingFreshItems: models.BaseInputsUnion[] | undefined;
 
   // Unified turn broadcaster for multi-turn streaming
   private turnBroadcaster: ToolEventBroadcaster<
@@ -492,9 +493,19 @@ export class ModelResult<
           response.output,
         ];
 
+    // Persist any fresh user input items that were collected during
+    // initStream, followed by the response output. Deferring the user-input
+    // persist to here (rather than before the API call) avoids duplicating
+    // user turns in state when a caller retries after an API failure.
+    let messages = this.currentState.messages;
+    if (this.pendingFreshItems && this.pendingFreshItems.length > 0) {
+      messages = appendToMessages(messages, this.pendingFreshItems);
+      this.pendingFreshItems = undefined;
+    }
+
     await this.saveStateSafely({
       messages: appendToMessages(
-        this.currentState.messages,
+        messages,
         outputItems as models.BaseInputsUnion[],
       ),
       previousResponseId: response.id,
@@ -1499,13 +1510,6 @@ export class ModelResult<
         Array.isArray(this.currentState.messages) &&
         this.currentState.messages.length > 0;
 
-      // Track fresh user input items that need to be persisted to state.
-      // Without this, state.messages only contains response outputs and tool
-      // results — prior user turns are lost when a new callModel resumes from
-      // persisted state, breaking conversation fidelity and cache_control
-      // prompt caching at user-message boundaries.
-      let freshItemsForState: models.BaseInputsUnion[] | undefined;
-
       if (hasLoadedHistory && this.currentState) {
         // `currentState.messages` is InputsUnion — keep it as that union so
         // appendToMessages (which expects InputsUnion) accepts it directly.
@@ -1535,7 +1539,7 @@ export class ModelResult<
           ? await this.applyHooksToFreshItems(freshItems, historicalMessages, initialContext)
           : undefined;
 
-        freshItemsForState = hookedFresh;
+        this.pendingFreshItems = hookedFresh;
 
         baseRequest = {
           ...baseRequest,
@@ -1558,23 +1562,7 @@ export class ModelResult<
           ...baseRequest,
           input: hookedInput,
         };
-        // All input is fresh when there's no loaded history — normalize to
-        // array form for state persistence.
-        freshItemsForState = normalizeInputToArray(hookedInput) as models.BaseInputsUnion[];
-      }
-
-      // Persist fresh user input items to state so they survive across
-      // callModel invocations. This ensures the resume path
-      // (state.messages + new input) reconstructs the full conversation.
-      if (
-        this.stateAccessor &&
-        this.currentState &&
-        freshItemsForState &&
-        freshItemsForState.length > 0
-      ) {
-        await this.saveStateSafely({
-          messages: appendToMessages(this.currentState.messages, freshItemsForState),
-        });
+        this.pendingFreshItems = normalizeInputToArray(hookedInput) as models.BaseInputsUnion[];
       }
 
       // Store resolved request with stream mode
