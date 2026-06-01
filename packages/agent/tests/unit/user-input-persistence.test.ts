@@ -352,7 +352,9 @@ describe('User Input Persistence to State', () => {
 
     // State should NOT contain the user message after a failed API call
     const messagesAfterFailure = storedState?.messages as
-      | Array<{ role?: string }>
+      | Array<{
+          role?: string;
+        }>
       | undefined;
     const userItemsAfterFailure = messagesAfterFailure?.filter((m) => m.role === 'user') ?? [];
     expect(userItemsAfterFailure.length).toBe(0);

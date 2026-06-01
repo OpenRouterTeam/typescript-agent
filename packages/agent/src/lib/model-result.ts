@@ -504,10 +504,7 @@ export class ModelResult<
     }
 
     await this.saveStateSafely({
-      messages: appendToMessages(
-        messages,
-        outputItems as models.BaseInputsUnion[],
-      ),
+      messages: appendToMessages(messages, outputItems as models.BaseInputsUnion[]),
       previousResponseId: response.id,
     });
   }
