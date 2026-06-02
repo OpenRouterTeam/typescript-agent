@@ -367,11 +367,15 @@ describe('User Input Persistence to State', () => {
 
     const messages = storedState!.messages as Array<{
       role?: string;
+      type?: string;
       content?: string;
     }>;
     const userItems = messages.filter((m) => m.role === 'user');
     expect(userItems.length).toBe(1);
     expect(userItems[0]!.content).toBe('Hello');
+
+    const assistantItems = messages.filter((m) => m.role === 'assistant' || m.type === 'message');
+    expect(assistantItems.length).toBe(1);
   });
 
   it('should not duplicate user input in state when retrying after API failure', async () => {
