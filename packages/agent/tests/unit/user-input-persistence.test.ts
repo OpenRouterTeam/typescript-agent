@@ -313,6 +313,67 @@ describe('User Input Persistence to State', () => {
     expect(userItems[1]!.content).toBe('Question 2');
   });
 
+  it('should not persist user input when stream fails mid-read (ok:true + stream error)', async () => {
+    const failingStream = new ReadableStream({
+      start(controller) {
+        controller.error(new Error('stream dropped'));
+      },
+    });
+
+    mockBetaResponsesSend.mockResolvedValueOnce({
+      ok: true,
+      value: failingStream,
+    });
+
+    const result1 = callModel(client, {
+      model: 'test-model',
+      input: [
+        {
+          role: 'user',
+          content: 'Hello',
+        },
+      ],
+      state: stateAccessor,
+    });
+
+    await expect(result1.getText()).rejects.toThrow();
+
+    const messagesAfterStreamFailure = storedState?.messages as
+      | Array<{
+          role?: string;
+        }>
+      | undefined;
+    const userItemsAfterFailure =
+      messagesAfterStreamFailure?.filter((m) => m.role === 'user') ?? [];
+    expect(userItemsAfterFailure.length).toBe(0);
+
+    mockBetaResponsesSend.mockResolvedValueOnce({
+      ok: true,
+      value: textResponse('Hello back!'),
+    });
+
+    const result2 = callModel(client, {
+      model: 'test-model',
+      input: [
+        {
+          role: 'user',
+          content: 'Hello',
+        },
+      ],
+      state: stateAccessor,
+    });
+
+    await result2.getText();
+
+    const messages = storedState!.messages as Array<{
+      role?: string;
+      content?: string;
+    }>;
+    const userItems = messages.filter((m) => m.role === 'user');
+    expect(userItems.length).toBe(1);
+    expect(userItems[0]!.content).toBe('Hello');
+  });
+
   it('should not duplicate user input in state when retrying after API failure', async () => {
     mockBetaResponsesSend.mockResolvedValueOnce({
       ok: false,
