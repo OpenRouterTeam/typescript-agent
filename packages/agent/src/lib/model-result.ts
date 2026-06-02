@@ -78,6 +78,7 @@ import {
   isServerTool,
   isToolCallOutputEvent,
 } from './tool-types.js';
+import { normalizeInputToArray } from './turn-context.js';
 
 /**
  * Typeguard for plain-object records (non-null, non-array).
@@ -1493,10 +1494,16 @@ export class ModelResult<
       // (newly supplied this turn). `onResponseReceived` must fire only for
       // fresh items — re-hooking historical outputs on every callModel call
       // would double-invoke non-idempotent hooks.
+      //
+      // Fresh items are tracked locally and persisted to state only after the
+      // API call succeeds, avoiding duplication when a caller retries after a
+      // transient API failure.
       const hasLoadedHistory =
         !!this.currentState?.messages &&
         Array.isArray(this.currentState.messages) &&
         this.currentState.messages.length > 0;
+
+      let freshItemsForState: models.BaseInputsUnion[] | undefined;
 
       if (hasLoadedHistory && this.currentState) {
         // `currentState.messages` is InputsUnion — keep it as that union so
@@ -1527,6 +1534,8 @@ export class ModelResult<
           ? await this.applyHooksToFreshItems(freshItems, historicalMessages, initialContext)
           : undefined;
 
+        freshItemsForState = hookedFresh;
+
         baseRequest = {
           ...baseRequest,
           input: hookedFresh
@@ -1544,6 +1553,9 @@ export class ModelResult<
           this.contextStore ?? undefined,
           this.options.sharedContextSchema,
         );
+
+        freshItemsForState = normalizeInputToArray(hookedInput);
+
         baseRequest = {
           ...baseRequest,
           input: hookedInput,
@@ -1570,6 +1582,21 @@ export class ModelResult<
 
       if (!apiResult.ok) {
         throw apiResult.error;
+      }
+
+      // Persist fresh user items to state now that the API accepted the
+      // request. This runs after the success check so a transient API
+      // failure does not leave orphaned user turns in state (which would
+      // cause duplicates when the caller retries with the same input).
+      if (
+        freshItemsForState &&
+        freshItemsForState.length > 0 &&
+        this.stateAccessor &&
+        this.currentState
+      ) {
+        await this.saveStateSafely({
+          messages: appendToMessages(this.currentState.messages, freshItemsForState),
+        });
       }
 
       // Handle both streaming and non-streaming responses

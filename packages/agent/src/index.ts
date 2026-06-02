@@ -44,8 +44,9 @@ export type {
   // Output item types (StreamableOutputItem members)
   OutputFileSearchCallItem,
   OutputFunctionCallItem,
+  OutputImage,
+  OutputImage as OutputInputImage,
   OutputImageGenerationCallItem,
-  OutputInputImage,
   OutputItems,
   OutputMessage,
   OutputReasoningItem,
