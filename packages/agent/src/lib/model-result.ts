@@ -78,6 +78,7 @@ import {
   isServerTool,
   isToolCallOutputEvent,
 } from './tool-types.js';
+import { normalizeInputToArray } from './turn-context.js';
 
 /**
  * Typeguard for plain-object records (non-null, non-array).
@@ -218,6 +219,8 @@ export class ModelResult<
   }> = [];
   // Track resolved request after async function resolution
   private resolvedRequest: models.ResponsesRequest | null = null;
+  // Fresh user items to persist atomically with the assistant response
+  private pendingFreshItems: models.BaseInputsUnion[] | undefined;
 
   // State management for multi-turn conversations
   private stateAccessor: StateAccessor<TTools> | null = null;
@@ -491,11 +494,17 @@ export class ModelResult<
           response.output,
         ];
 
+    // Persist pending fresh user items together with the assistant output
+    // so they land atomically — if the stream failed before reaching here
+    // neither the user turn nor the assistant turn is written to state.
+    let messages = this.currentState.messages;
+    if (this.pendingFreshItems && this.pendingFreshItems.length > 0) {
+      messages = appendToMessages(messages, this.pendingFreshItems);
+      this.pendingFreshItems = undefined;
+    }
+
     await this.saveStateSafely({
-      messages: appendToMessages(
-        this.currentState.messages,
-        outputItems as models.BaseInputsUnion[],
-      ),
+      messages: appendToMessages(messages, outputItems as models.BaseInputsUnion[]),
       previousResponseId: response.id,
     });
   }
@@ -1493,10 +1502,16 @@ export class ModelResult<
       // (newly supplied this turn). `onResponseReceived` must fire only for
       // fresh items — re-hooking historical outputs on every callModel call
       // would double-invoke non-idempotent hooks.
+      //
+      // Fresh items are tracked locally and persisted to state only after the
+      // API call succeeds, avoiding duplication when a caller retries after a
+      // transient API failure.
       const hasLoadedHistory =
         !!this.currentState?.messages &&
         Array.isArray(this.currentState.messages) &&
         this.currentState.messages.length > 0;
+
+      let freshItemsForState: models.BaseInputsUnion[] | undefined;
 
       if (hasLoadedHistory && this.currentState) {
         // `currentState.messages` is InputsUnion — keep it as that union so
@@ -1527,6 +1542,8 @@ export class ModelResult<
           ? await this.applyHooksToFreshItems(freshItems, historicalMessages, initialContext)
           : undefined;
 
+        freshItemsForState = hookedFresh;
+
         baseRequest = {
           ...baseRequest,
           input: hookedFresh
@@ -1544,6 +1561,9 @@ export class ModelResult<
           this.contextStore ?? undefined,
           this.options.sharedContextSchema,
         );
+
+        freshItemsForState = normalizeInputToArray(hookedInput);
+
         baseRequest = {
           ...baseRequest,
           input: hookedInput,
@@ -1570,6 +1590,14 @@ export class ModelResult<
 
       if (!apiResult.ok) {
         throw apiResult.error;
+      }
+
+      // Stash fresh user items so saveResponseToState can persist them
+      // atomically with the assistant output. Writing them here would leave
+      // an orphaned user turn if the stream fails after ok:true — on retry
+      // the same input would be appended again, producing duplicates.
+      if (freshItemsForState && freshItemsForState.length > 0) {
+        this.pendingFreshItems = freshItemsForState;
       }
 
       // Handle both streaming and non-streaming responses
