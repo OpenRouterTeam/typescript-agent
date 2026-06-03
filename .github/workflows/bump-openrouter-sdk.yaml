@@ -37,18 +37,13 @@ jobs:
       noop: ${{ steps.bump.outputs.noop }}
       pr_number: ${{ steps.open.outputs.pr_number }}
     steps:
-      # An App token (or PAT) is required so the opened PR triggers Perry + CI.
-      # secrets.GITHUB_TOKEN would suppress downstream workflow runs.
-      - name: Generate GitHub App token
-        id: app-token
-        uses: actions/create-github-app-token@v3
-        with:
-          app-id: ${{ secrets.AGENT_BUMP_APP_ID }}
-          private-key: ${{ secrets.AGENT_BUMP_APP_PRIVATE_KEY }}
-
+      # SUBTREE_PUSH_PAT (a PAT, not GITHUB_TOKEN) so the opened PR triggers
+      # Perry + CI — GITHUB_TOKEN would suppress those downstream runs. This is
+      # the org's established cross-repo PAT (the same one the monorepo uses to
+      # push into the SDK repos).
       - uses: actions/checkout@v4
         with:
-          token: ${{ steps.app-token.outputs.token }}
+          token: ${{ secrets.SUBTREE_PUSH_PAT }}
           fetch-depth: 0
 
       - uses: pnpm/action-setup@v4
@@ -73,7 +68,7 @@ jobs:
         id: bump
         env:
           TARGET_VERSION: ${{ steps.ver.outputs.version }}
-          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          GH_TOKEN: ${{ secrets.SUBTREE_PUSH_PAT }}
         run: |
           chmod +x .github/scripts/bump-sdk.sh
           ./.github/scripts/bump-sdk.sh
@@ -82,7 +77,7 @@ jobs:
         id: open
         if: steps.bump.outputs.noop != 'true'
         env:
-          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          GH_TOKEN: ${{ secrets.SUBTREE_PUSH_PAT }}
         run: |
           set -euo pipefail
           PR_URL=$(gh pr create \
@@ -110,18 +105,11 @@ jobs:
       contents: write
       pull-requests: write
     steps:
-      - name: Generate GitHub App token
-        id: app-token
-        uses: actions/create-github-app-token@v3
-        with:
-          app-id: ${{ secrets.AGENT_BUMP_APP_ID }}
-          private-key: ${{ secrets.AGENT_BUMP_APP_PRIVATE_KEY }}
-
       - uses: actions/checkout@v4
 
       - name: Wait for Perry + CI, then merge or alert
         env:
-          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          GH_TOKEN: ${{ secrets.SUBTREE_PUSH_PAT }}
           PR: ${{ needs.bump.outputs.pr_number }}
           REPO: OpenRouterTeam/typescript-agent
           AUTO_MERGE: ${{ github.event.inputs.dry_run != 'true' }}

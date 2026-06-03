@@ -137,7 +137,9 @@ jobs:
       - name: Dispatch monorepo bump
         if: ${{ !inputs.dry-run && steps.published.outputs.version != '' }}
         env:
-          GH_TOKEN: ${{ secrets.WEB_DISPATCH_PAT }}
+          # Reuse the org's cross-repo PAT; needs contents:write on
+          # OpenRouterTeam/openrouter-web to be accepted.
+          GH_TOKEN: ${{ secrets.SUBTREE_PUSH_PAT }}
         run: |
           set -euo pipefail
           gh api repos/OpenRouterTeam/openrouter-web/dispatches \
