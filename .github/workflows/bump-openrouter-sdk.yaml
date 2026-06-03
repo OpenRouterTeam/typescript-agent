@@ -37,13 +37,11 @@ jobs:
       noop: ${{ steps.bump.outputs.noop }}
       pr_number: ${{ steps.open.outputs.pr_number }}
     steps:
-      # SUBTREE_PUSH_PAT (a PAT, not GITHUB_TOKEN) so the opened PR triggers
-      # Perry + CI — GITHUB_TOKEN would suppress those downstream runs. This is
-      # the org's established cross-repo PAT (the same one the monorepo uses to
-      # push into the SDK repos).
+      # GH_TOKEN is a PAT (not the Actions GITHUB_TOKEN) so the opened PR
+      # triggers Perry + CI — GITHUB_TOKEN would suppress those downstream runs.
       - uses: actions/checkout@v4
         with:
-          token: ${{ secrets.SUBTREE_PUSH_PAT }}
+          token: ${{ secrets.GH_TOKEN }}
           fetch-depth: 0
 
       - uses: pnpm/action-setup@v4
@@ -68,7 +66,7 @@ jobs:
         id: bump
         env:
           TARGET_VERSION: ${{ steps.ver.outputs.version }}
-          GH_TOKEN: ${{ secrets.SUBTREE_PUSH_PAT }}
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
         run: |
           chmod +x .github/scripts/bump-sdk.sh
           ./.github/scripts/bump-sdk.sh
@@ -77,7 +75,7 @@ jobs:
         id: open
         if: steps.bump.outputs.noop != 'true'
         env:
-          GH_TOKEN: ${{ secrets.SUBTREE_PUSH_PAT }}
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
         run: |
           set -euo pipefail
           PR_URL=$(gh pr create \
@@ -109,7 +107,7 @@ jobs:
 
       - name: Wait for Perry + CI, then merge or alert
         env:
-          GH_TOKEN: ${{ secrets.SUBTREE_PUSH_PAT }}
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
           PR: ${{ needs.bump.outputs.pr_number }}
           REPO: OpenRouterTeam/typescript-agent
           AUTO_MERGE: ${{ github.event.inputs.dry_run != 'true' }}
