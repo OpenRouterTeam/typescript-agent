@@ -61,6 +61,7 @@ jobs:
       - run: pnpm run test
 
       - name: Version PR or Publish (changesets)
+        id: changesets
         if: >
           github.event_name == 'push' ||
           (github.event_name == 'workflow_dispatch' && inputs.mode == 'version')
@@ -73,6 +74,15 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      # Record the npm version before a manual publish so the dispatch step can
+      # tell whether this run actually published a new @openrouter/agent (the
+      # changesets/action `published` output only exists for the push /
+      # mode=version path, not this manual one).
+      - name: Capture pre-publish version (manual publish)
+        id: pre-publish
+        if: github.event_name == 'workflow_dispatch' && inputs.mode == 'publish' && !inputs.dry-run
+        run: echo "version=$(npm view @openrouter/agent version)" >> "$GITHUB_OUTPUT"
 
       - name: Publish (workflow_dispatch, live)
         if: github.event_name == 'workflow_dispatch' && inputs.mode == 'publish' && !inputs.dry-run
@@ -90,3 +100,50 @@ jobs:
         run: pnpm -r publish --dry-run --access public --provenance --no-git-checks
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      # HOP B trigger: when @openrouter/agent is actually published, tell the
+      # monorepo (openrouter-web) to bump its pinned @openrouter/agent for
+      # server tools. Two publish paths produce a real publish:
+      #   1. changesets/action on push (Version PR merged) → `published` output
+      #   2. manual workflow_dispatch mode=publish → detect via npm version diff
+      - name: Resolve published @openrouter/agent version
+        id: published
+        if: ${{ !inputs.dry-run }}
+        run: |
+          set -euo pipefail
+          VERSION=""
+
+          # Path 1: changesets/action publish leg.
+          if [ "${{ steps.changesets.outputs.published }}" = "true" ]; then
+            VERSION=$(printf '%s' '${{ steps.changesets.outputs.publishedPackages }}' \
+              | python3 -c "import sys,json; pkgs=json.load(sys.stdin); print(next((p['version'] for p in pkgs if p['name']=='@openrouter/agent'), ''))")
+          fi
+
+          # Path 2: manual live publish — compare npm version before/after.
+          if [ -z "$VERSION" ] && [ -n "${{ steps.pre-publish.outputs.version }}" ]; then
+            AFTER="$(npm view @openrouter/agent version)"
+            if [ "$AFTER" != "${{ steps.pre-publish.outputs.version }}" ]; then
+              VERSION="$AFTER"
+            fi
+          fi
+
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          if [ -n "$VERSION" ]; then
+            echo "Published @openrouter/agent $VERSION"
+          else
+            echo "No new @openrouter/agent publish detected — no dispatch"
+          fi
+
+      - name: Dispatch monorepo bump
+        if: ${{ !inputs.dry-run && steps.published.outputs.version != '' }}
+        env:
+          # Reuse the org's cross-repo PAT; needs contents:write on
+          # OpenRouterTeam/openrouter-web to be accepted.
+          GH_TOKEN: ${{ secrets.SUBTREE_PUSH_PAT }}
+        run: |
+          set -euo pipefail
+          gh api repos/OpenRouterTeam/openrouter-web/dispatches \
+            -f event_type=openrouter-agent-published \
+            -F "client_payload[version]=${{ steps.published.outputs.version }}" \
+            -F "client_payload[source_run_url]=${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          echo "Dispatched openrouter-agent-published (version ${{ steps.published.outputs.version }}) to openrouter-web"

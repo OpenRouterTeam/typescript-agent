@@ -1,0 +1,121 @@
+name: Bump @openrouter/sdk
+
+# HOP A of the SDK release chain. Triggered by typescript-sdk after it publishes
+# a new @openrouter/sdk to npm. Opens a PR bumping the dependency in
+# packages/agent, lets Perry + CI run, then auto-merges on green (or alerts and
+# leaves the PR red on failure). Merging the PR feeds the changesets release
+# flow in publish.yaml, which cuts a new @openrouter/agent and dispatches HOP B.
+
+on:
+  repository_dispatch:
+    types: [openrouter-sdk-published]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "@openrouter/sdk version to bump to (blank = npm latest)"
+        required: false
+        type: string
+      dry_run:
+        description: "Open the PR and run the gate, but do not merge"
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: bump-openrouter-sdk
+  cancel-in-progress: false
+
+jobs:
+  bump:
+    runs-on: ubuntu-latest
+    outputs:
+      branch: ${{ steps.bump.outputs.branch }}
+      noop: ${{ steps.bump.outputs.noop }}
+      pr_number: ${{ steps.open.outputs.pr_number }}
+    steps:
+      # SUBTREE_PUSH_PAT (a PAT, not GITHUB_TOKEN) so the opened PR triggers
+      # Perry + CI — GITHUB_TOKEN would suppress those downstream runs. This is
+      # the org's established cross-repo PAT (the same one the monorepo uses to
+      # push into the SDK repos).
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.SUBTREE_PUSH_PAT }}
+          fetch-depth: 0
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Resolve target version
+        id: ver
+        run: |
+          set -euo pipefail
+          V="${{ github.event.client_payload.version || github.event.inputs.version }}"
+          if [ -z "$V" ]; then
+            V="$(npm view @openrouter/sdk version)"
+          fi
+          echo "version=$V" >> "$GITHUB_OUTPUT"
+          echo "Target @openrouter/sdk version: $V"
+
+      - name: Bump, relock, changeset, push branch
+        id: bump
+        env:
+          TARGET_VERSION: ${{ steps.ver.outputs.version }}
+          GH_TOKEN: ${{ secrets.SUBTREE_PUSH_PAT }}
+        run: |
+          chmod +x .github/scripts/bump-sdk.sh
+          ./.github/scripts/bump-sdk.sh
+
+      - name: Open PR
+        id: open
+        if: steps.bump.outputs.noop != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.SUBTREE_PUSH_PAT }}
+        run: |
+          set -euo pipefail
+          PR_URL=$(gh pr create \
+            --repo OpenRouterTeam/typescript-agent \
+            --base main \
+            --head "${{ steps.bump.outputs.branch }}" \
+            --title "chore: bump @openrouter/sdk to ${{ steps.ver.outputs.version }}" \
+            --body "$(cat <<'EOF'
+          Automated bump of `@openrouter/sdk` from the SDK release chain.
+
+          Source: ${{ github.event.client_payload.source_run_url || github.event.inputs.version && 'manual workflow_dispatch' }}
+
+          This PR will be auto-merged once Perry and CI pass. On failure it is
+          left open for a human. [sdk-bot]
+          EOF
+          )")
+          echo "Created $PR_URL"
+          echo "pr_number=$(echo "$PR_URL" | grep -oE '[0-9]+$')" >> "$GITHUB_OUTPUT"
+
+  gate:
+    needs: bump
+    if: needs.bump.outputs.noop != 'true' && needs.bump.outputs.pr_number != ''
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Wait for Perry + CI, then merge or alert
+        env:
+          GH_TOKEN: ${{ secrets.SUBTREE_PUSH_PAT }}
+          PR: ${{ needs.bump.outputs.pr_number }}
+          REPO: OpenRouterTeam/typescript-agent
+          AUTO_MERGE: ${{ github.event.inputs.dry_run != 'true' }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          SLACK_BOT_TOKEN: ${{ secrets.CI_RELEASE_ALERT_SLACK_BOT_TOKEN }}
+          SLACK_CHANNEL_ID: ${{ secrets.CI_RELEASE_ALERT_SLACK_CHANNEL_ID }}
+        run: |
+          chmod +x .github/scripts/pr-gate.sh
+          ./.github/scripts/pr-gate.sh
