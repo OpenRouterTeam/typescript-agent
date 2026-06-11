@@ -133,6 +133,9 @@ export type { ContextInput } from './lib/tool-context.js';
 export { buildToolExecuteContext, ToolContextStore } from './lib/tool-context.js';
 // Real-time tool event broadcasting
 export { ToolEventBroadcaster } from './lib/tool-event-broadcaster.js';
+// Tool-level retry
+export type { ToolRetryContext, ToolRetryOptions } from './lib/tool-retry.js';
+export { withToolRetry } from './lib/tool-retry.js';
 export type {
   ChatStreamEvent,
   ClientTool,
@@ -178,6 +181,7 @@ export type {
   ToolWithGenerator,
   TurnContext,
   TurnEndEvent,
+  TurnRetryEvent,
   TurnStartEvent,
   TypedToolCall,
   TypedToolCallUnion,
@@ -198,11 +202,20 @@ export {
   isToolPreliminaryResultEvent,
   isToolResultEvent,
   isTurnEndEvent,
+  isTurnRetryEvent,
   isTurnStartEvent,
   ToolType,
   toolHasApprovalConfigured,
 } from './lib/tool-types.js';
 // Turn context helpers
 export { buildTurnContext, normalizeInputToArray } from './lib/turn-context.js';
+// Turn-level retry
+export type { RetryTurnOptions, TurnRetryContext } from './lib/turn-retry.js';
+export {
+  defaultIsTurnRetryable,
+  TurnIdleTimeoutError,
+  TurnResponseFailedError,
+  TurnStreamEndedError,
+} from './lib/turn-retry.js';
 export type { Hook, OpenRouterOptions, SDKOptions } from './openrouter.js';
 export { OpenRouter } from './openrouter.js';

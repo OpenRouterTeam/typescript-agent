@@ -812,6 +812,24 @@ export type TurnEndEvent = {
 };
 
 /**
+ * Turn retry event emitted when a turn failed and is about to be re-sent
+ * (requires the `retryTurn` option). Events already emitted for this turn
+ * before the failure should be treated as void — the retried attempt
+ * re-streams the turn from the start. For send-phase failures (the request
+ * never produced a stream) a `turn.retry` may precede the turn's
+ * `turn.start`.
+ */
+export type TurnRetryEvent = {
+  type: 'turn.retry';
+  turnNumber: number;
+  /** The retry attempt about to be made (1 = first retry). */
+  attempt: number;
+  /** Message of the error that caused the retry. */
+  error: string;
+  timestamp: number;
+};
+
+/**
  * Enhanced stream event types for getFullResponsesStream
  * Extends StreamEvents with tool preliminary results, tool results,
  * and turn delimiter events for multi-turn streaming
@@ -824,7 +842,8 @@ export type ResponseStreamEvent<TEvent = unknown, TResult = unknown> =
   | ToolResultEvent<TResult, TEvent>
   | ToolCallOutputEvent
   | TurnStartEvent
-  | TurnEndEvent;
+  | TurnEndEvent
+  | TurnRetryEvent;
 
 /**
  * Type guard to check if an event is a tool preliminary result event
@@ -863,6 +882,13 @@ export function isTurnStartEvent(event: ResponseStreamEvent): event is TurnStart
  */
 export function isTurnEndEvent(event: ResponseStreamEvent): event is TurnEndEvent {
   return event.type === 'turn.end';
+}
+
+/**
+ * Type guard to check if an event is a turn retry event
+ */
+export function isTurnRetryEvent(event: ResponseStreamEvent): event is TurnRetryEvent {
+  return event.type === 'turn.retry';
 }
 
 /**

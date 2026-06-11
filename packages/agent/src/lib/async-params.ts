@@ -10,6 +10,7 @@ import type {
   ToolContextMapWithShared,
   TurnContext,
 } from './tool-types.js';
+import type { RetryTurnOptions } from './turn-retry.js';
 
 // Re-export Tool type for convenience
 export type { Tool } from './tool-types.js';
@@ -98,6 +99,22 @@ type BaseCallModelInput<
    * (HITL pause, approval pause, interruption, or natural completion).
    */
   allowFinalResponse?: boolean | string;
+  /**
+   * Retry a failed turn (one provider request + stream consumption) instead
+   * of aborting the whole tool loop. The accumulated conversation —
+   * including all tool results gathered in prior turns — is preserved
+   * across retries, so a single dead stream no longer discards the loop's
+   * gathered context.
+   *
+   * `idleTimeoutMs` additionally converts silently-hung streams (no events,
+   * no terminal frame, connection left open) into retryable failures.
+   *
+   * Mid-turn retries emit a `turn.retry` event on
+   * `getFullResponsesStream()`; events already received for that turn
+   * should be treated as void since the retried attempt re-streams the
+   * turn from the start.
+   */
+  retryTurn?: RetryTurnOptions;
 };
 
 /**
@@ -199,6 +216,7 @@ export async function resolveAsyncFunctions<TTools extends readonly Tool[] = rea
     'onTurnStart', // Client-side turn start callback
     'onTurnEnd', // Client-side turn end callback
     'allowFinalResponse', // Client-side: triggers no-tools final turn when stopWhen breaks the loop
+    'retryTurn', // Client-side turn retry configuration
   ]);
 
   // Iterate over all keys in the input

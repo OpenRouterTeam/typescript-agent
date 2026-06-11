@@ -31,6 +31,12 @@ import {
   isWebSearchCallOutputItem,
 } from './stream-type-guards.js';
 import type { ClientTool, ParsedToolCall, ServerTool, Tool } from './tool-types.js';
+import {
+  iterateWithIdleTimeout,
+  TurnIdleTimeoutError,
+  TurnResponseFailedError,
+  TurnStreamEndedError,
+} from './turn-retry.js';
 
 /**
  * Extract text deltas from responses stream events
@@ -630,14 +636,29 @@ export async function* buildMessageStream(
 }
 
 /**
- * Consume stream until completion and return the complete response
+ * Consume stream until completion and return the complete response.
+ *
+ * When `idleTimeoutMs` is set, a gap of more than that many milliseconds
+ * between events fails consumption with a retryable `TurnIdleTimeoutError`
+ * (the caller is responsible for cancelling the underlying stream).
  */
 export async function consumeStreamForCompletion(
   stream: ReusableReadableStream<models.StreamEvents>,
+  options?: {
+    idleTimeoutMs?: number | undefined;
+    turnNumber?: number | undefined;
+  },
 ): Promise<models.OpenResponsesResult> {
   const consumer = stream.createConsumer();
+  const turnNumber = options?.turnNumber ?? 0;
 
-  for await (const event of consumer) {
+  const events = iterateWithIdleTimeout(
+    consumer,
+    options?.idleTimeoutMs,
+    () => new TurnIdleTimeoutError(turnNumber, options?.idleTimeoutMs ?? 0),
+  );
+
+  for await (const event of events) {
     if (!('type' in event)) {
       continue;
     }
@@ -648,7 +669,7 @@ export async function consumeStreamForCompletion(
 
     if (isResponseFailedEvent(event)) {
       // The failed event contains the full response with error information
-      throw new Error(`Response failed: ${JSON.stringify(event.response.error)}`);
+      throw new TurnResponseFailedError(`Response failed: ${JSON.stringify(event.response.error)}`);
     }
 
     if (isResponseIncompleteEvent(event)) {
@@ -657,7 +678,7 @@ export async function consumeStreamForCompletion(
     }
   }
 
-  throw new Error('Stream ended without completion event');
+  throw new TurnStreamEndedError('Stream ended without completion event');
 }
 
 /**

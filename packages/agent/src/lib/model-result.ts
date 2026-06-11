@@ -69,6 +69,7 @@ import type {
   ToolStreamEvent,
   TurnContext,
   TurnEndEvent,
+  TurnRetryEvent,
   TurnStartEvent,
   UnsentToolResult,
 } from './tool-types.js';
@@ -79,6 +80,16 @@ import {
   isToolCallOutputEvent,
 } from './tool-types.js';
 import { normalizeInputToArray } from './turn-context.js';
+import type { RetryTurnOptions } from './turn-retry.js';
+import {
+  defaultIsTurnRetryable,
+  iterateWithIdleTimeout,
+  resolveBackoffMs,
+  sleep,
+  TurnIdleTimeoutError,
+  TurnResponseFailedError,
+  TurnStreamEndedError,
+} from './turn-retry.js';
 
 /**
  * Typeguard for plain-object records (non-null, non-array).
@@ -159,6 +170,15 @@ export interface GetResponseOptions<
    * a final user message.
    */
   allowFinalResponse?: boolean | string;
+
+  /**
+   * Retry a failed turn (one provider request + stream consumption) instead
+   * of aborting the whole loop. The accumulated conversation — including all
+   * tool results gathered in prior turns — is preserved across retries.
+   * `idleTimeoutMs` additionally converts silently-hung streams into
+   * retryable failures. Mid-turn retries emit a `turn.retry` event.
+   */
+  retryTurn?: RetryTurnOptions;
 }
 
 /**
@@ -298,6 +318,7 @@ export class ModelResult<
     }
 
     const stream = this.reusableStream;
+    const retryEnabled = !!this.options.retryTurn;
 
     // biome-ignore lint: IIFE used for fire-and-forget async pipe
     this.initialPipePromise = (async () => {
@@ -308,51 +329,84 @@ export class ModelResult<
       } satisfies TurnStartEvent);
 
       const consumer = stream.createConsumer();
+      let sawTerminalEvent = false;
       for await (const event of consumer) {
         broadcaster.push(event);
+        if (isResponseCompletedEvent(event) || isResponseIncompleteEvent(event)) {
+          sawTerminalEvent = true;
+        }
       }
 
-      broadcaster.push({
-        type: 'turn.end',
-        turnNumber: 0,
-        timestamp: Date.now(),
-      } satisfies TurnEndEvent);
+      // With turn retry enabled, a stream that ended without a terminal
+      // event is a failed attempt that the loop path will retry — the
+      // retried attempt (pipeAndConsumeStream) owns turn.end for turn 0.
+      if (!retryEnabled || sawTerminalEvent) {
+        broadcaster.push({
+          type: 'turn.end',
+          turnNumber: 0,
+          timestamp: Date.now(),
+        } satisfies TurnEndEvent);
+      }
     })().catch((error) => {
-      broadcaster.complete(error instanceof Error ? error : new Error(String(error)));
+      // With turn retry enabled the loop path owns turn-0 failures (it will
+      // retry or reject); completing the broadcaster here would poison every
+      // stream consumer before the retry gets a chance.
+      if (!retryEnabled) {
+        broadcaster.complete(error instanceof Error ? error : new Error(String(error)));
+      }
     });
   }
 
   /**
    * Pipe a follow-up stream into the turn broadcaster and capture the completed response.
    * Emits turn.start / turn.end delimiters around the stream events.
+   *
+   * Retried attempts pass `emitTurnStart: false` — the `turn.retry` event
+   * (pushed by the retry driver) marks the restart instead of a duplicate
+   * `turn.start`.
    */
   private async pipeAndConsumeStream(
     stream: ReusableReadableStream<models.StreamEvents>,
     turnNumber: number,
+    opts?: {
+      emitTurnStart?: boolean;
+    },
   ): Promise<models.OpenResponsesResult> {
     const broadcaster = this.turnBroadcaster!;
 
-    broadcaster.push({
-      type: 'turn.start',
-      turnNumber,
-      timestamp: Date.now(),
-    } satisfies TurnStartEvent);
+    if (opts?.emitTurnStart !== false) {
+      broadcaster.push({
+        type: 'turn.start',
+        turnNumber,
+        timestamp: Date.now(),
+      } satisfies TurnStartEvent);
+    }
 
     const consumer = stream.createConsumer();
+    const idleTimeoutMs = this.options.retryTurn?.idleTimeoutMs;
+    const events = iterateWithIdleTimeout(
+      consumer,
+      idleTimeoutMs,
+      () => new TurnIdleTimeoutError(turnNumber, idleTimeoutMs ?? 0),
+    );
     let completedResponse: models.OpenResponsesResult | null = null;
 
-    for await (const event of consumer) {
+    for await (const event of events) {
       broadcaster.push(event);
       if (isResponseCompletedEvent(event)) {
         completedResponse = event.response;
       }
       if (isResponseFailedEvent(event)) {
         const errorMsg = 'message' in event ? String(event.message) : 'Response failed';
-        throw new Error(errorMsg);
+        throw new TurnResponseFailedError(errorMsg);
       }
       if (isResponseIncompleteEvent(event)) {
         completedResponse = event.response;
       }
+    }
+
+    if (!completedResponse) {
+      throw new TurnStreamEndedError('Follow-up stream ended without a completed response');
     }
 
     broadcaster.push({
@@ -360,10 +414,6 @@ export class ModelResult<
       turnNumber,
       timestamp: Date.now(),
     } satisfies TurnEndEvent);
-
-    if (!completedResponse) {
-      throw new Error('Follow-up stream ended without a completed response');
-    }
 
     return completedResponse;
   }
@@ -475,6 +525,198 @@ export class ModelResult<
       return consumeStreamForCompletion(this.reusableStream);
     }
     throw new Error('Neither stream nor response initialized');
+  }
+
+  // =========================================================================
+  // Turn-level retry
+  // =========================================================================
+
+  /**
+   * Run a turn attempt with retry per the `retryTurn` option. `attemptFn`
+   * receives the attempt number (0 = initial attempt) and must be safe to
+   * call repeatedly — all conversation-state mutation happens outside it.
+   * Each retry pushes a `turn.retry` event to the turn broadcaster (when one
+   * exists) before re-attempting.
+   */
+  private async runTurnAttempts<T>(
+    turnNumber: number,
+    attemptFn: (attempt: number) => Promise<T>,
+  ): Promise<T> {
+    const config = this.options.retryTurn;
+    const limit = config ? (config.limit ?? 2) : 0;
+    let attempt = 0;
+
+    while (true) {
+      try {
+        return await attemptFn(attempt);
+      } catch (error) {
+        const err = error instanceof Error ? error : new Error(String(error));
+        if (!config || attempt >= limit) {
+          throw err;
+        }
+
+        const retryContext = {
+          turnNumber,
+          attempt: attempt + 1,
+        };
+        const retryable = config.isRetryable
+          ? await config.isRetryable(err, retryContext)
+          : defaultIsTurnRetryable(err);
+        if (!retryable) {
+          throw err;
+        }
+
+        attempt++;
+        this.turnBroadcaster?.push({
+          type: 'turn.retry',
+          turnNumber,
+          attempt,
+          error: err.message,
+          timestamp: Date.now(),
+        } satisfies TurnRetryEvent);
+
+        const backoff = resolveBackoffMs(config.backoffMs, attempt);
+        if (backoff > 0) {
+          await sleep(backoff);
+        }
+      }
+    }
+  }
+
+  /**
+   * Send a turn request and consume its stream to a completed response.
+   * This is the idempotent retry unit: it performs no conversation-state
+   * mutation, so a failed call can be re-issued as-is. On failure the
+   * stream is cancelled to release the underlying connection.
+   */
+  private async sendAndConsumeTurn(
+    request: models.ResponsesRequest,
+    turnNumber: number,
+    attempt: number,
+  ): Promise<models.OpenResponsesResult> {
+    const result = await betaResponsesSend(
+      this.options.client,
+      {
+        responsesRequest: request,
+      },
+      this.options.options,
+    );
+
+    if (!result.ok) {
+      throw result.error;
+    }
+
+    const value = result.value;
+    if (isEventStream(value)) {
+      const stream = new ReusableReadableStream(value);
+      try {
+        if (this.turnBroadcaster) {
+          return await this.pipeAndConsumeStream(stream, turnNumber, {
+            emitTurnStart: attempt === 0,
+          });
+        }
+        return await consumeStreamForCompletion(stream, {
+          idleTimeoutMs: this.options.retryTurn?.idleTimeoutMs,
+          turnNumber,
+        });
+      } catch (error) {
+        // Abort the (possibly hung) upstream connection before retrying.
+        void stream.cancel().catch(() => {});
+        throw error;
+      }
+    }
+    if (this.isNonStreamingResponse(value)) {
+      return value;
+    }
+    throw new Error('Unexpected response type from API');
+  }
+
+  /**
+   * Consume the initial (turn 0) response with turn-level retry. A retry
+   * re-issues the already-resolved initial request — the resolved input and
+   * instructions are unchanged — and replaces `this.reusableStream` so
+   * late-attaching consumers replay the successful attempt. When the turn
+   * broadcaster is active, the retried attempt is piped through
+   * `pipeAndConsumeStream` so stream consumers receive the fresh events
+   * (the failed initial pipe intentionally skips its `turn.end`).
+   */
+  private async getInitialResponseWithRetry(): Promise<models.OpenResponsesResult> {
+    if (!this.options.retryTurn) {
+      return this.getInitialResponse();
+    }
+
+    return this.runTurnAttempts(0, async (attempt) => {
+      if (attempt === 0) {
+        if (this.finalResponse) {
+          return this.finalResponse;
+        }
+        const stream = this.reusableStream;
+        if (!stream) {
+          throw new Error('Neither stream nor response initialized');
+        }
+        try {
+          return await consumeStreamForCompletion(stream, {
+            idleTimeoutMs: this.options.retryTurn?.idleTimeoutMs,
+            turnNumber: 0,
+          });
+        } catch (error) {
+          void stream.cancel().catch(() => {});
+          throw error;
+        }
+      }
+
+      // Retry attempt: re-issue the resolved initial request.
+      if (!this.resolvedRequest) {
+        throw new Error('Request not initialized');
+      }
+      const request: models.ResponsesRequest = {
+        ...this.resolvedRequest,
+        stream: true,
+      };
+
+      const result = await betaResponsesSend(
+        this.options.client,
+        {
+          responsesRequest: request,
+        },
+        this.options.options,
+      );
+      if (!result.ok) {
+        throw result.error;
+      }
+
+      const value = result.value;
+      if (isEventStream(value)) {
+        const stream = new ReusableReadableStream(value);
+        this.reusableStream = stream;
+        try {
+          if (this.turnBroadcaster && this.initialStreamPipeStarted) {
+            return await this.pipeAndConsumeStream(stream, 0, {
+              emitTurnStart: false,
+            });
+          }
+          return await consumeStreamForCompletion(stream, {
+            idleTimeoutMs: this.options.retryTurn?.idleTimeoutMs,
+            turnNumber: 0,
+          });
+        } catch (error) {
+          void stream.cancel().catch(() => {});
+          throw error;
+        }
+      }
+      if (this.isNonStreamingResponse(value)) {
+        this.finalResponse = value;
+        if (this.turnBroadcaster && this.initialStreamPipeStarted) {
+          this.turnBroadcaster.push({
+            type: 'turn.end',
+            turnNumber: 0,
+            timestamp: Date.now(),
+          } satisfies TurnEndEvent);
+        }
+        return value;
+      }
+      throw new Error('Unexpected response type from API');
+    });
   }
 
   /**
@@ -1133,33 +1375,11 @@ export class ModelResult<
       stream: true,
     };
 
-    const newResult = await betaResponsesSend(
-      this.options.client,
-      {
-        responsesRequest: newRequest,
-      },
-      this.options.options,
+    // The conversation state for this turn is fully captured in `newRequest`
+    // above — send + consume is the idempotent retry unit.
+    return this.runTurnAttempts(turnNumber, (attempt) =>
+      this.sendAndConsumeTurn(newRequest, turnNumber, attempt),
     );
-
-    if (!newResult.ok) {
-      throw newResult.error;
-    }
-
-    // Handle streaming or non-streaming response
-    const value = newResult.value;
-    if (isEventStream(value)) {
-      const followUpStream = new ReusableReadableStream(value);
-
-      if (this.turnBroadcaster) {
-        return this.pipeAndConsumeStream(followUpStream, turnNumber);
-      }
-
-      return consumeStreamForCompletion(followUpStream);
-    }
-    if (this.isNonStreamingResponse(value)) {
-      return value;
-    }
-    throw new Error('Unexpected response type from API');
   }
 
   /**
@@ -1224,30 +1444,11 @@ export class ModelResult<
       stream: true,
     };
 
-    const result = await betaResponsesSend(
-      this.options.client,
-      {
-        responsesRequest: finalRequest,
-      },
-      this.options.options,
+    // `finalRequest` carries the full conversation — send + consume is the
+    // idempotent retry unit.
+    return this.runTurnAttempts(turnNumber, (attempt) =>
+      this.sendAndConsumeTurn(finalRequest, turnNumber, attempt),
     );
-
-    if (!result.ok) {
-      throw result.error;
-    }
-
-    const value = result.value;
-    if (isEventStream(value)) {
-      const stream = new ReusableReadableStream(value);
-      if (this.turnBroadcaster) {
-        return this.pipeAndConsumeStream(stream, turnNumber);
-      }
-      return consumeStreamForCompletion(stream);
-    }
-    if (this.isNonStreamingResponse(value)) {
-      return value;
-    }
-    throw new Error('Unexpected response type from API');
   }
 
   /**
@@ -1579,18 +1780,22 @@ export class ModelResult<
       // Force stream mode for initial request
       const request = this.resolvedRequest;
 
-      // Make the API request
-      const apiResult = await betaResponsesSend(
-        this.options.client,
-        {
-          responsesRequest: request,
-        },
-        this.options.options,
-      );
-
-      if (!apiResult.ok) {
-        throw apiResult.error;
-      }
+      // Make the API request. Send-phase failures (the request never
+      // produced a stream) are retried per `retryTurn`; nothing has been
+      // exposed to consumers yet, so the retry is invisible.
+      const apiResult = await this.runTurnAttempts(0, async () => {
+        const result = await betaResponsesSend(
+          this.options.client,
+          {
+            responsesRequest: request,
+          },
+          this.options.options,
+        );
+        if (!result.ok) {
+          throw result.error;
+        }
+        return result;
+      });
 
       // Stash fresh user items so saveResponseToState can persist them
       // atomically with the assistant output. Writing them here would leave
@@ -1805,18 +2010,20 @@ export class ModelResult<
 
     this.resolvedRequest = request;
 
-    // Make the API request
-    const apiResult = await betaResponsesSend(
-      this.options.client,
-      {
-        responsesRequest: request,
-      },
-      this.options.options,
-    );
-
-    if (!apiResult.ok) {
-      throw apiResult.error;
-    }
+    // Make the API request (send-phase failures retried per `retryTurn`)
+    const apiResult = await this.runTurnAttempts(turnContext.numberOfTurns, async () => {
+      const result = await betaResponsesSend(
+        this.options.client,
+        {
+          responsesRequest: request,
+        },
+        this.options.options,
+      );
+      if (!result.ok) {
+        throw result.error;
+      }
+      return result;
+    });
 
     // Handle both streaming and non-streaming responses
     if (isEventStream(apiResult.value)) {
@@ -1852,8 +2059,8 @@ export class ModelResult<
         return;
       }
 
-      // Get initial response
-      let currentResponse = await this.getInitialResponse();
+      // Get initial response (with turn-level retry when configured)
+      let currentResponse = await this.getInitialResponseWithRetry();
 
       // Save initial response to state
       await this.saveResponseToState(currentResponse);

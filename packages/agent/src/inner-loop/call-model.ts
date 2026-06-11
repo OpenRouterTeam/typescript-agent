@@ -101,6 +101,7 @@ export function callModel<
     onTurnStart,
     onTurnEnd,
     allowFinalResponse,
+    retryTurn,
     ...apiRequest
   } = request;
 
@@ -164,6 +165,9 @@ export function callModel<
     }),
     ...(allowFinalResponse !== undefined && {
       allowFinalResponse,
+    }),
+    ...(retryTurn !== undefined && {
+      retryTurn,
     }),
   } as GetResponseOptions<TTools, TShared>);
 }
