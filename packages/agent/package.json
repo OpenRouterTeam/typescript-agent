@@ -116,7 +116,7 @@
     "compile": "tsc"
   },
   "dependencies": {
-    "@openrouter/sdk": "^0.12.12",
+    "@openrouter/sdk": "^0.13.7",
     "zod": "^4.0.0"
   }
 }
