@@ -1,5 +1,11 @@
 # @openrouter/agent
 
+## 0.7.2
+
+### Patch Changes
+
+- [#53](https://github.com/OpenRouterTeam/typescript-agent/pull/53) [`a5341f2`](https://github.com/OpenRouterTeam/typescript-agent/commit/a5341f21555b5d2d982484c199d7d9c3093eabe6) Thanks [@Cybourgeoisie](https://github.com/Cybourgeoisie)! - Bump @openrouter/sdk to 0.13.7
+
 ## 0.7.0
 
 ### Minor Changes
