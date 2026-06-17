@@ -57,7 +57,18 @@ type BaseCallModelInput<
     models.ResponsesRequest[K]
   >;
 } & {
-  input: FieldOrAsyncFunction<Item[]> | string;
+  /**
+   * The input for the model turn. Accepts either:
+   * - A plain `string` prompt.
+   * - An array of typed `Item[]` (the narrow, local item union).
+   * - The SDK's `InputsUnion` shape (a `string` or broader item array)
+   *   — this is what converters like `fromChatMessages()` return, so
+   *   those results assign directly without a cast.
+   *
+   * When a function is provided, it is resolved once per call with the
+   * current turn context before the request is sent.
+   */
+  input: FieldOrAsyncFunction<Item[]> | FieldOrAsyncFunction<models.InputsUnion>;
   tools?: TTools;
   stopWhen?: StopWhen<TTools>;
   /** Typed context data passed to tools via contextSchema. Includes optional `shared` key. */

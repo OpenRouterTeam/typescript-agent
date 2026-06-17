@@ -30,7 +30,7 @@ import {
   isURLCitationAnnotation,
   isWebSearchCallOutputItem,
 } from './stream-type-guards.js';
-import type { ClientTool, ParsedToolCall, ServerTool, Tool } from './tool-types.js';
+import type { ClientTool, ParsedToolCall, ServerToolBase, Tool } from './tool-types.js';
 
 /**
  * Extract text deltas from responses stream events
@@ -261,13 +261,20 @@ type KnownServerToolOutputs = {
  * map via KnownServerToolOutputs; anything else falls back to the
  * provider-side server-tool output union (`OpenRouterServerToolOutput`)
  * so the SDK's forward-compat variants flow through automatically.
+ *
+ * Inference reads `config.type` directly rather than `ServerTool<infer K>`
+ * so it works whether the source is the narrow intersection form or the
+ * wide `ServerToolBase` base — both expose the same `config.type` field.
  */
-type InferServerToolOutput<S> =
-  S extends ServerTool<infer K>
-    ? K extends keyof KnownServerToolOutputs
-      ? KnownServerToolOutputs[K]
-      : OpenRouterServerToolOutput
-    : never;
+type InferServerToolOutput<S> = S extends {
+  readonly config: {
+    readonly type: infer K;
+  };
+}
+  ? K extends keyof KnownServerToolOutputs
+    ? KnownServerToolOutputs[K]
+    : OpenRouterServerToolOutput
+  : never;
 
 /**
  * Union of output item shapes produced by the server tools present in
@@ -275,7 +282,7 @@ type InferServerToolOutput<S> =
  * to every mapped output plus the generic fallback. Unused otherwise.
  */
 type InferServerToolOutputsUnion<TTools extends readonly Tool[]> = InferServerToolOutput<
-  Extract<TTools[number], ServerTool>
+  Extract<TTools[number], ServerToolBase>
 >;
 
 /**

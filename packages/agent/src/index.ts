@@ -154,6 +154,7 @@ export type {
   ResponseStreamEvent,
   ResponseStreamEvent as EnhancedResponseStreamEvent,
   ServerTool,
+  ServerToolBase,
   ServerToolConfig,
   ServerToolResultItem,
   ServerToolType,
