@@ -134,4 +134,30 @@ describe('isSerializedMCPServer', () => {
       }),
     ).toBe(true);
   });
+
+  it('rejects snapshots with a non-finite cachedAt', () => {
+    const base = {
+      version: 1,
+      url: 'https://x',
+      transport: 'sse',
+      tools: [
+        {
+          name: 'a',
+          inputSchema: {},
+        },
+      ],
+    };
+    for (const cachedAt of [
+      Number.NaN,
+      Number.POSITIVE_INFINITY,
+      Number.NEGATIVE_INFINITY,
+    ]) {
+      expect(
+        isSerializedMCPServer({
+          ...base,
+          cachedAt,
+        }),
+      ).toBe(false);
+    }
+  });
 });

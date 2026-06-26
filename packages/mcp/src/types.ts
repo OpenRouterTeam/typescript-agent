@@ -55,9 +55,17 @@ export interface CreateMCPToolsOptions {
   };
   /** Prefix applied to every wrapped tool name (e.g. `"github_"`). */
   toolNamePrefix?: string;
-  /** Allow-list of MCP tool names to expose. */
+  /**
+   * Allow-list of MCP tool names to expose. Applies to discovered MCP tools
+   * only; synthetic `list_resources`/`read_resource` tools are controlled
+   * exclusively by `resources`.
+   */
   includeTools?: readonly string[];
-  /** Deny-list of MCP tool names to skip. */
+  /**
+   * Deny-list of MCP tool names to skip. Applies to discovered MCP tools only;
+   * synthetic `list_resources`/`read_resource` tools are controlled
+   * exclusively by `resources`.
+   */
   excludeTools?: readonly string[];
   /** Behavior when a tool's JSON Schema can't be fully represented in Zod. */
   onUnconvertibleSchema?: UnconvertibleSchemaMode;

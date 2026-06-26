@@ -69,7 +69,7 @@ export function isSerializedMCPServer(value: unknown): value is SerializedMCPSer
   if (typeof value['url'] !== 'string' || !isTransportKind(value['transport'])) {
     return false;
   }
-  if (typeof value['cachedAt'] !== 'number') {
+  if (typeof value['cachedAt'] !== 'number' || !Number.isFinite(value['cachedAt'])) {
     return false;
   }
   const { tools } = value;
