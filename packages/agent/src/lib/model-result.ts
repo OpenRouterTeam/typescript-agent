@@ -3207,6 +3207,10 @@ export class ModelResult<
             numberOfTurns: turnNumber,
           };
 
+          if (await this.handleApprovalCheck(pendingToolCalls, turnNumber, currentResponse)) {
+            return;
+          }
+
           await this.options.onTurnStart?.(turnContext);
           await this.resolveAsyncFunctionsForTurn(turnContext);
 
