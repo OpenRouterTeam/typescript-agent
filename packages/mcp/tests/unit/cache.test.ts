@@ -49,6 +49,20 @@ describe('serializeServer', () => {
     expect(snap.cachedAt).toBe(1_000);
   });
 
+  it('replaces a negative cachedAt with a valid epoch', async () => {
+    const snap = await serializeServer({
+      url: 'https://mcp.example.com/mcp',
+      transport: 'streamableHttp',
+      toolDefs,
+      cacheCredentials: false,
+      cachedAt: -1,
+    });
+    // isFiniteEpoch rejects the negative input, so serializeServer falls back to
+    // a current timestamp — the resulting snapshot must pass the read validator.
+    expect(snap.cachedAt).toBeGreaterThanOrEqual(0);
+    expect(isSerializedMCPServer(snap)).toBe(true);
+  });
+
   it('omits credentials when cacheCredentials is false', async () => {
     const snap = await serializeServer({
       url: 'https://mcp.example.com/mcp',
