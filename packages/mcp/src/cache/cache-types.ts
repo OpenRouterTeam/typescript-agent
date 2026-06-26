@@ -46,6 +46,15 @@ function isTransportKind(value: unknown): value is MCPTransportKind {
   return value === 'streamableHttp' || value === 'sse';
 }
 
+/**
+ * The shared "valid `cachedAt`" rule. Consumed by both the read-side snapshot
+ * validator and the write-side serializer so the two can't drift if the rule is
+ * later tightened.
+ */
+export function isFiniteEpoch(value: unknown): value is number {
+  return typeof value === 'number' && Number.isFinite(value);
+}
+
 function isSerializedToolDef(value: unknown): value is SerializedMCPToolDef {
   return (
     isJsonSchemaObject(value) &&
@@ -69,7 +78,7 @@ export function isSerializedMCPServer(value: unknown): value is SerializedMCPSer
   if (typeof value['url'] !== 'string' || !isTransportKind(value['transport'])) {
     return false;
   }
-  if (typeof value['cachedAt'] !== 'number' || !Number.isFinite(value['cachedAt'])) {
+  if (!isFiniteEpoch(value['cachedAt'])) {
     return false;
   }
   const { tools } = value;

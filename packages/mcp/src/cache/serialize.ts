@@ -4,6 +4,7 @@ import type { MCPAuth } from '../auth/auth-types.js';
 import type { McpToolDef } from '../tool-wrapper.js';
 import type { MCPTransportKind } from '../types.js';
 import type { SerializedMCPServer, SerializedTokenSet } from './cache-types.js';
+import { isFiniteEpoch } from './cache-types.js';
 
 export interface SerializeInput {
   url: string;
@@ -18,10 +19,6 @@ export interface SerializeInput {
   auth?: MCPAuth;
   cacheCredentials: boolean;
   cachedAt: number;
-}
-
-function isExpiry(value: unknown): value is number {
-  return typeof value === 'number' && Number.isFinite(value);
 }
 
 /** Pull a serializable token set from an OAuth provider, if it has tokens. */
@@ -98,7 +95,7 @@ export async function serializeServer(input: SerializeInput): Promise<Serialized
       capabilities: input.capabilities,
     }),
     tools,
-    cachedAt: isExpiry(input.cachedAt) ? input.cachedAt : Date.now(),
+    cachedAt: isFiniteEpoch(input.cachedAt) ? input.cachedAt : Date.now(),
   };
 
   if (input.cacheCredentials) {
