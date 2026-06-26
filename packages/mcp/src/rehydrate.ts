@@ -42,6 +42,10 @@ export interface RehydrateMCPToolsOptions {
   emitProgress?: boolean;
   autoRefreshOnListChanged?: boolean;
   cacheCredentials?: boolean;
+  clientInfo?: {
+    name: string;
+    version: string;
+  };
 }
 
 function snapshotToToolDefs(snapshot: SerializedMCPServer): McpToolDef[] {
@@ -119,6 +123,9 @@ function toCreateOptions(
     ...(options.signal !== undefined && {
       signal: options.signal,
     }),
+    ...(options.clientInfo !== undefined && {
+      clientInfo: options.clientInfo,
+    }),
     ...(options.toolNamePrefix !== undefined && {
       toolNamePrefix: options.toolNamePrefix,
     }),
@@ -187,6 +194,9 @@ export async function rehydrateMCPTools(
       }),
       ...(options.fetch !== undefined && {
         fetch: options.fetch,
+      }),
+      ...(options.clientInfo !== undefined && {
+        clientInfo: options.clientInfo,
       }),
       ...(snapshot.sessionId !== undefined && {
         sessionId: snapshot.sessionId,

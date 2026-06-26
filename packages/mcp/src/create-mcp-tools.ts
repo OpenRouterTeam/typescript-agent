@@ -136,17 +136,24 @@ export async function freshConnect(
     }),
   });
 
-  const initialToolDefs = await listToolDefs(connection, options.signal);
-  return makeHandle({
-    connection,
-    options,
-    context: {
-      url,
-      transport: connection.transport,
-      cacheKey,
-    },
-    initialToolDefs,
-  });
+  // Tear the connection down if discovery or the initial cache write throws —
+  // otherwise the open transport (HTTP keep-alive / SSE stream) leaks.
+  try {
+    const initialToolDefs = await listToolDefs(connection, options.signal);
+    return await makeHandle({
+      connection,
+      options,
+      context: {
+        url,
+        transport: connection.transport,
+        cacheKey,
+      },
+      initialToolDefs,
+    });
+  } catch (err) {
+    await connection.close().catch(() => {});
+    throw err;
+  }
 }
 
 async function tryCacheHit(
@@ -172,6 +179,9 @@ async function tryCacheHit(
     }),
     ...(options.fetch !== undefined && {
       fetch: options.fetch,
+    }),
+    ...(options.clientInfo !== undefined && {
+      clientInfo: options.clientInfo,
     }),
     ...(options.onUnconvertibleSchema !== undefined && {
       onUnconvertibleSchema: options.onUnconvertibleSchema,
@@ -297,11 +307,15 @@ export async function makeHandle(args: MakeHandleArgs): Promise<MCPToolsHandle> 
 
   if (options.autoRefreshOnListChanged ?? true) {
     connection.setToolListChangedHandler(() => {
-      void refresh().then(() => {
-        for (const listener of listeners) {
-          listener(tools);
-        }
-      });
+      // Fire-and-forget, but never let a failed refresh escape as an unhandled
+      // rejection. On failure listeners keep the last good tool set.
+      void refresh()
+        .then((next) => {
+          for (const listener of listeners) {
+            listener(next);
+          }
+        })
+        .catch(() => {});
     });
   }
 
