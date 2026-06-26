@@ -67,7 +67,7 @@ vi.mock('../../src/mcp-connection.js', () => ({
   },
 }));
 
-const { freshConnect } = await import('../../src/create-mcp-tools.js');
+const { freshConnect } = await import('../../src/handle.js');
 
 function nameOf(tool: unknown): string | undefined {
   if (

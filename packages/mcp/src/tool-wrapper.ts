@@ -1,7 +1,7 @@
 import type { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import type { Progress } from '@modelcontextprotocol/sdk/types.js';
-import type { Tool } from '@openrouter/agent';
-import { tool } from '@openrouter/agent';
+import { tool } from '@openrouter/agent/tool';
+import type { Tool } from '@openrouter/agent/tool-types';
 import * as z from 'zod';
 import type { RawCallToolResult } from './result-mapper.js';
 import { mapCallToolResult } from './result-mapper.js';

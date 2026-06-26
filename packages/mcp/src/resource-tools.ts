@@ -1,6 +1,6 @@
 import type { Client } from '@modelcontextprotocol/sdk/client/index.js';
-import type { Tool } from '@openrouter/agent';
-import { tool } from '@openrouter/agent';
+import { tool } from '@openrouter/agent/tool';
+import type { Tool } from '@openrouter/agent/tool-types';
 import * as z from 'zod';
 
 export interface ResourceToolsOptions {

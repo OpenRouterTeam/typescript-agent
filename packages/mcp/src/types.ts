@@ -1,10 +1,10 @@
-import type { Tool } from '@openrouter/agent';
+import type { Tool } from '@openrouter/agent/tool-types';
 import type { MCPAuth } from './auth/auth-types.js';
 import type { MCPCacheStore } from './cache/cache-store.js';
 import type { UnconvertibleSchemaMode } from './schema/json-schema-to-zod.js';
+import type { MCPTransportKind } from './transport-types.js';
 
-/** Non-stdio MCP transports this package supports. */
-export type MCPTransportKind = 'streamableHttp' | 'sse';
+export type { MCPTransportKind };
 
 /**
  * Response to a server-initiated elicitation request. `accept` must carry

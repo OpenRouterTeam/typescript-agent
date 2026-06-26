@@ -1,5 +1,5 @@
 import type { Client } from '@modelcontextprotocol/sdk/client/index.js';
-import type { Tool } from '@openrouter/agent';
+import type { Tool } from '@openrouter/agent/tool-types';
 import { MCPError } from './errors.js';
 import { buildResourceTools } from './resource-tools.js';
 import type { UnconvertibleSchemaMode } from './schema/json-schema-to-zod.js';

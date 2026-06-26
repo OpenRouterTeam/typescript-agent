@@ -1,7 +1,6 @@
 import type * as models from '@openrouter/sdk/models';
 import type { StreamEvents } from '@openrouter/sdk/models';
 import type { $ZodObject, $ZodShape, $ZodType, infer as zodInfer } from 'zod/v4/core';
-import type { ModelResult } from './model-result.js';
 
 /**
  * Tool type enum for enhanced tools
@@ -726,21 +725,6 @@ export type StopCondition<TTools extends readonly Tool[] = readonly Tool[]> = (o
 export type StopWhen<TTools extends readonly Tool[] = readonly Tool[]> =
   | StopCondition<TTools>
   | ReadonlyArray<StopCondition<TTools>>;
-
-/**
- * Result of executeTools operation
- */
-export interface ExecuteToolsResult<TTools extends readonly Tool[]> {
-  finalResponse: ModelResult<TTools>;
-  allResponses: ModelResult<TTools>[];
-  toolResults: Map<
-    string,
-    {
-      result: unknown;
-      preliminaryResults?: unknown[];
-    }
-  >;
-}
 
 /**
  * Standard tool format for OpenRouter API (JSON Schema based)

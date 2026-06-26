@@ -1,5 +1,5 @@
 import { isJsonSchemaObject } from '../schema/json-schema-guards.js';
-import type { MCPTransportKind } from '../types.js';
+import type { MCPTransportKind } from '../transport-types.js';
 
 /** A discovered tool definition as stored in a cache snapshot. */
 export interface SerializedMCPToolDef {
