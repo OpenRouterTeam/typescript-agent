@@ -14,7 +14,25 @@ function normalizeUrl(url: string | URL): URL {
   return url instanceof URL ? url : new URL(url);
 }
 
-/** Read the discovered tools off the live connection into our internal shape. */
+// Hard cap on pagination pages. A well-behaved server terminates the cursor
+// chain by omitting `nextCursor`; this bounds a misbehaving one that never does.
+const MAX_LIST_PAGES = 1000;
+
+/**
+ * Normalize a paginated `nextCursor` field: treat anything that is not a
+ * non-empty string as "no more pages" so a malformed cursor terminates the loop.
+ */
+function nextCursorOrUndefined(value: string | undefined): string | undefined {
+  return typeof value === 'string' && value.length > 0 ? value : undefined;
+}
+
+/**
+ * Read the discovered tools off the live connection into our internal shape.
+ *
+ * `tools/list` is paginated: each response may carry a `nextCursor` that must be
+ * passed back as `{ cursor }` to fetch the next page. We accumulate every page so
+ * servers that paginate their tool list aren't silently truncated.
+ */
 async function listToolDefs(
   connection: MCPConnection,
   signal: AbortSignal | undefined,
@@ -25,17 +43,37 @@ async function listToolDefs(
           signal,
         }
       : undefined;
-  const { tools } = await connection.client.listTools(undefined, requestOptions);
-  return tools.map((t) => ({
-    name: t.name,
-    ...(t.description !== undefined && {
-      description: t.description,
-    }),
-    inputSchema: t.inputSchema,
-    ...(t.outputSchema !== undefined && {
-      outputSchema: t.outputSchema,
-    }),
-  }));
+  const collected: McpToolDef[] = [];
+  let cursor: string | undefined;
+  for (let page = 0; page < MAX_LIST_PAGES; page += 1) {
+    const params =
+      cursor !== undefined
+        ? {
+            cursor,
+          }
+        : undefined;
+    const { tools, nextCursor } = await connection.client.listTools(params, requestOptions);
+    for (const t of tools) {
+      collected.push({
+        name: t.name,
+        ...(t.description !== undefined && {
+          description: t.description,
+        }),
+        inputSchema: t.inputSchema,
+        ...(t.outputSchema !== undefined && {
+          outputSchema: t.outputSchema,
+        }),
+      });
+    }
+    const next = nextCursorOrUndefined(nextCursor);
+    // Stop at the end of the chain, or if the server echoes the same cursor
+    // (which would otherwise spin forever).
+    if (next === undefined || next === cursor) {
+      break;
+    }
+    cursor = next;
+  }
+  return collected;
 }
 
 function serverHasResources(connection: MCPConnection): boolean {
@@ -62,6 +100,23 @@ export async function createMCPTools(options: CreateMCPToolsOptions): Promise<MC
     }
   }
 
+  return freshConnect(options, url, cacheKey);
+}
+
+/**
+ * Connect, discover tools via `listTools()`, and build a handle WITHOUT
+ * consulting the cache for a hit. The cache (when present on `options`) is still
+ * written through `makeHandle`, so refreshes persist. This is the cold cache-miss
+ * path, and is also called directly by `rehydrateMCPTools`'s fallback: routing
+ * the fallback here instead of back through `createMCPTools` is what prevents the
+ * cache-fallback loop — re-reading the same snapshot would re-enter rehydrate and
+ * recurse without bound.
+ */
+export async function freshConnect(
+  options: CreateMCPToolsOptions,
+  url: URL,
+  cacheKey: string,
+): Promise<MCPToolsHandle> {
   const connection = await connect({
     url,
     ...(options.transport !== undefined && {
@@ -126,6 +181,30 @@ async function tryCacheHit(
     }),
     ...(options.signal !== undefined && {
       signal: options.signal,
+    }),
+    // Thread tool-shaping + credential-caching options through so a cache hit
+    // applies the same filters/prefix the cold call did, and a credential-bearing
+    // snapshot stays credential-bearing on the next writeCache.
+    ...(options.toolNamePrefix !== undefined && {
+      toolNamePrefix: options.toolNamePrefix,
+    }),
+    ...(options.includeTools !== undefined && {
+      includeTools: options.includeTools,
+    }),
+    ...(options.excludeTools !== undefined && {
+      excludeTools: options.excludeTools,
+    }),
+    ...(options.resources !== undefined && {
+      resources: options.resources,
+    }),
+    ...(options.emitProgress !== undefined && {
+      emitProgress: options.emitProgress,
+    }),
+    ...(options.autoRefreshOnListChanged !== undefined && {
+      autoRefreshOnListChanged: options.autoRefreshOnListChanged,
+    }),
+    ...(options.cacheCredentials !== undefined && {
+      cacheCredentials: options.cacheCredentials,
     }),
     cache: {
       store,

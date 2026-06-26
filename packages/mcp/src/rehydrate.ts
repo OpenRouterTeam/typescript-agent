@@ -3,12 +3,17 @@ import type { MCPCacheStore } from './cache/cache-store.js';
 import { defaultCacheKey } from './cache/cache-store.js';
 import type { SerializedMCPServer } from './cache/cache-types.js';
 import { isSerializedMCPServer } from './cache/cache-types.js';
-import { createMCPTools, makeHandle } from './create-mcp-tools.js';
+import { freshConnect, makeHandle } from './create-mcp-tools.js';
 import { MCPCacheError } from './errors.js';
 import { connect } from './mcp-connection.js';
 import type { UnconvertibleSchemaMode } from './schema/json-schema-to-zod.js';
 import type { McpToolDef } from './tool-wrapper.js';
-import type { CreateMCPToolsOptions, ElicitationHandler, MCPToolsHandle } from './types.js';
+import type {
+  CreateMCPToolsOptions,
+  ElicitationHandler,
+  MCPToolsHandle,
+  ResourcesOption,
+} from './types.js';
 
 /** Clock skew (ms) treated as "already expired" when checking cached tokens. */
 const EXPIRY_SKEW_MS = 30_000;
@@ -28,6 +33,15 @@ export interface RehydrateMCPToolsOptions {
   };
   /** On expiry / missing creds / connection failure, do a full reconnect. Default true. */
   reconnectOnExpiry?: boolean;
+  // Tool-shaping + caching options threaded through from `createMCPTools` so a
+  // cache hit applies the same filters/prefix as the original cold call.
+  toolNamePrefix?: string;
+  includeTools?: readonly string[];
+  excludeTools?: readonly string[];
+  resources?: ResourcesOption;
+  emitProgress?: boolean;
+  autoRefreshOnListChanged?: boolean;
+  cacheCredentials?: boolean;
 }
 
 function snapshotToToolDefs(snapshot: SerializedMCPServer): McpToolDef[] {
@@ -56,15 +70,42 @@ function tokensExpired(snapshot: SerializedMCPServer): boolean {
   return expiresAt - Date.now() <= EXPIRY_SKEW_MS;
 }
 
+/**
+ * Reconstruct an {@link MCPAuth} from credentials persisted in a snapshot (only
+ * present when it was serialized with `cacheCredentials: true`). Prefer static
+ * headers when present; otherwise fall back to the OAuth/bearer access token.
+ * Returns undefined when the snapshot carries no usable credentials.
+ */
+function authFromSnapshot(snapshot: SerializedMCPServer): MCPAuth | undefined {
+  const auth = snapshot.auth;
+  if (auth === undefined) {
+    return undefined;
+  }
+  if (auth.headers !== undefined && Object.keys(auth.headers).length > 0) {
+    return {
+      kind: 'headers',
+      headers: auth.headers,
+    };
+  }
+  if (auth.tokens?.accessToken !== undefined) {
+    return {
+      kind: 'bearer',
+      token: auth.tokens.accessToken,
+    };
+  }
+  return undefined;
+}
+
 function toCreateOptions(
   options: RehydrateMCPToolsOptions,
   snapshot: SerializedMCPServer,
+  effectiveAuth: MCPAuth | undefined,
 ): CreateMCPToolsOptions {
   return {
     url: snapshot.url,
     transport: snapshot.transport,
-    ...(options.auth !== undefined && {
-      auth: options.auth,
+    ...(effectiveAuth !== undefined && {
+      auth: effectiveAuth,
     }),
     ...(options.fetch !== undefined && {
       fetch: options.fetch,
@@ -77,6 +118,27 @@ function toCreateOptions(
     }),
     ...(options.signal !== undefined && {
       signal: options.signal,
+    }),
+    ...(options.toolNamePrefix !== undefined && {
+      toolNamePrefix: options.toolNamePrefix,
+    }),
+    ...(options.includeTools !== undefined && {
+      includeTools: options.includeTools,
+    }),
+    ...(options.excludeTools !== undefined && {
+      excludeTools: options.excludeTools,
+    }),
+    ...(options.resources !== undefined && {
+      resources: options.resources,
+    }),
+    ...(options.emitProgress !== undefined && {
+      emitProgress: options.emitProgress,
+    }),
+    ...(options.autoRefreshOnListChanged !== undefined && {
+      autoRefreshOnListChanged: options.autoRefreshOnListChanged,
+    }),
+    ...(options.cacheCredentials !== undefined && {
+      cacheCredentials: options.cacheCredentials,
     }),
     ...(options.cache !== undefined && {
       cache: options.cache,
@@ -102,18 +164,26 @@ export async function rehydrateMCPTools(
   const reconnectOnExpiry = options.reconnectOnExpiry ?? true;
   const url = new URL(snapshot.url);
   const cacheKey = options.cache?.key ?? defaultCacheKey(url.href);
-  const hasCredentials = options.auth !== undefined || snapshot.auth !== undefined;
+  // Fall back to credentials cached in the snapshot when the caller didn't pass
+  // any — otherwise a credential-bearing snapshot would reconnect unauthenticated.
+  const effectiveAuth = options.auth ?? authFromSnapshot(snapshot);
+  const hasCredentials = effectiveAuth !== undefined;
+  // Route the fallback through `freshConnect`, NOT `createMCPTools`: the latter
+  // would re-read this same snapshot and re-enter rehydrate, recursing without
+  // bound on any no-credential / expired-token snapshot. `freshConnect` still
+  // writes the refreshed result back to the cache via `makeHandle`.
+  const createOptions = toCreateOptions(options, snapshot, effectiveAuth);
 
   if ((tokensExpired(snapshot) || !hasCredentials) && reconnectOnExpiry) {
-    return createMCPTools(toCreateOptions(options, snapshot));
+    return freshConnect(createOptions, url, cacheKey);
   }
 
   try {
     const connection = await connect({
       url,
       transport: snapshot.transport,
-      ...(options.auth !== undefined && {
-        auth: options.auth,
+      ...(effectiveAuth !== undefined && {
+        auth: effectiveAuth,
       }),
       ...(options.fetch !== undefined && {
         fetch: options.fetch,
@@ -126,7 +196,6 @@ export async function rehydrateMCPTools(
       }),
     });
 
-    const createOptions = toCreateOptions(options, snapshot);
     // Rebuild tools from the snapshot — no listTools() round-trip.
     return makeHandle({
       connection,
@@ -140,7 +209,7 @@ export async function rehydrateMCPTools(
     });
   } catch (err) {
     if (reconnectOnExpiry) {
-      return createMCPTools(toCreateOptions(options, snapshot));
+      return freshConnect(createOptions, url, cacheKey);
     }
     throw new MCPCacheError('Failed to rehydrate MCP connection from snapshot', {
       cause: err,
