@@ -323,6 +323,61 @@ describe('allowFinalResponse', () => {
     expect(fnCallOutput?.output).toContain('"temperature":99');
   });
 
+  it('pauses for approval before executing final-response tool calls', async () => {
+    const executeSpy = vi.fn(async (_p: { location: string }) => ({
+      temperature: 99,
+    }));
+    const approvalTool = {
+      type: ToolType.Function,
+      function: {
+        name: 'get_weather',
+        description: 'Get the weather for a location.',
+        inputSchema: z.object({
+          location: z.string(),
+        }),
+        outputSchema: z.object({
+          temperature: z.number(),
+        }),
+        requireApproval: true,
+        execute: executeSpy,
+      },
+    } as const;
+    const saved: Array<{
+      status?: string;
+      pendingToolCalls?: unknown[];
+    }> = [];
+    const stateAccessor = {
+      load: async () => null,
+      save: async (state: { status?: string; pendingToolCalls?: unknown[] }) => {
+        saved.push(state);
+      },
+    };
+
+    mockBetaResponsesSend.mockResolvedValueOnce({
+      ok: true,
+      value: toolCallResponse(),
+    });
+
+    const result = callModel(client, {
+      model: 'test-model',
+      input: 'What is the weather?',
+      tools: [
+        approvalTool,
+      ] as const,
+      stopWhen: stepCountIs(0),
+      allowFinalResponse: true,
+      state: stateAccessor as unknown as Parameters<typeof callModel>[1]['state'],
+    });
+
+    const pending = await result.getPendingToolCalls();
+
+    expect(pending).toHaveLength(1);
+    expect(pending[0]?.name).toBe('get_weather');
+    expect(executeSpy).not.toHaveBeenCalled();
+    expect(mockBetaResponsesSend).toHaveBeenCalledTimes(1);
+    expect(saved.some((state) => state.status === 'awaiting_approval')).toBe(true);
+  });
+
   it('does not trigger when allowFinalResponse is false', async () => {
     mockBetaResponsesSend.mockResolvedValueOnce({
       ok: true,

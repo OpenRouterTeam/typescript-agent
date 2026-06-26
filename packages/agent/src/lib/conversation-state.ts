@@ -1,4 +1,5 @@
 import type * as models from '@openrouter/sdk/models';
+import * as z4 from 'zod/v4';
 import type {
   ConversationState,
   ParsedToolCall,
@@ -104,6 +105,21 @@ export function appendToMessages(
   ];
 }
 
+function normalizeToolCallArguments<
+  TTool extends Exclude<
+    Tool,
+    {
+      _brand: 'server-tool';
+    }
+  >,
+>(toolCall: ParsedToolCall<TTool>, tool: TTool): ParsedToolCall<TTool> {
+  const parsed = z4.safeParse(tool.function.inputSchema, toolCall.arguments);
+  if (parsed.success) {
+    toolCall.arguments = parsed.data as ParsedToolCall<TTool>['arguments'];
+  }
+  return toolCall;
+}
+
 /**
  * Check if a tool call requires approval
  * @param toolCall - The tool call to check
@@ -120,12 +136,6 @@ export async function toolRequiresApproval<TTools extends readonly Tool[]>(
     context: TurnContext,
   ) => boolean | Promise<boolean>,
 ): Promise<boolean> {
-  // Call-level check takes precedence
-  if (callLevelCheck) {
-    return callLevelCheck(toolCall, context);
-  }
-
-  // Fall back to tool-level setting (server tools never require approval)
   const tool = tools.find(
     (
       t,
@@ -136,6 +146,16 @@ export async function toolRequiresApproval<TTools extends readonly Tool[]>(
       }
     > => isClientTool(t) && t.function.name === toolCall.name,
   );
+  if (tool) {
+    normalizeToolCallArguments(toolCall as ParsedToolCall<typeof tool>, tool);
+  }
+
+  // Call-level check takes precedence
+  if (callLevelCheck) {
+    return callLevelCheck(toolCall, context);
+  }
+
+  // Fall back to tool-level setting (server tools never require approval)
   if (!tool) {
     return false;
   }

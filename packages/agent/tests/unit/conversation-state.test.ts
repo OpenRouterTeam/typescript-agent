@@ -308,6 +308,36 @@ describe('Conversation State Utilities', () => {
       ).toBe(true);
     });
 
+    it('should apply schema defaults before function-based approval checks', async () => {
+      const toolWithDefaultedApproval = tool({
+        name: 'defaulted_action',
+        inputSchema: z.object({
+          destructive: z.boolean().default(true),
+        }),
+        requireApproval: (params) => params.destructive === true,
+        execute: async () => ({}),
+      });
+
+      const toolCall = {
+        id: '1',
+        name: 'defaulted_action',
+        arguments: {},
+      };
+
+      expect(
+        await toolRequiresApproval(
+          toolCall,
+          [
+            toolWithDefaultedApproval,
+          ],
+          context,
+        ),
+      ).toBe(true);
+      expect(toolCall.arguments).toEqual({
+        destructive: true,
+      });
+    });
+
     it('should support async function-based tool-level requireApproval', async () => {
       // Tool with async function-based approval
       const toolWithAsyncApproval = tool({
