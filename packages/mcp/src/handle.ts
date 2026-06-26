@@ -1,5 +1,8 @@
 import type { Tool } from '@openrouter/agent/tool-types';
+import type { BuildToolsOptions } from './build-tools.js';
 import { buildTools } from './build-tools.js';
+import type { SerializedMCPServer } from './cache/cache-types.js';
+import type { SerializeInput } from './cache/serialize.js';
 import { serializeServer } from './cache/serialize.js';
 import type { MCPConnection } from './mcp-connection.js';
 import { connect } from './mcp-connection.js';
@@ -154,56 +157,27 @@ export async function makeHandle(args: MakeHandleArgs): Promise<MCPToolsHandle> 
   let toolDefs = initialToolDefs;
   const serverInfo = connection.client.getServerVersion();
 
-  const rebuild = (): Tool[] =>
-    buildTools({
-      client: connection.client,
-      toolDefs,
-      ...(options.toolNamePrefix !== undefined && {
-        namePrefix: options.toolNamePrefix,
-      }),
-      ...(options.includeTools !== undefined && {
-        includeTools: options.includeTools,
-      }),
-      ...(options.excludeTools !== undefined && {
-        excludeTools: options.excludeTools,
-      }),
-      ...(options.onUnconvertibleSchema !== undefined && {
-        schemaMode: options.onUnconvertibleSchema,
-      }),
-      emitProgress: options.emitProgress ?? true,
-      ...(options.signal !== undefined && {
-        signal: options.signal,
-      }),
-      ...(options.resources !== undefined && {
-        resources: options.resources,
-      }),
-      serverHasResources: serverHasResources(connection),
-    });
+  const rebuild = (): Tool[] => buildTools(buildToolsArgs(connection, toolDefs, options));
 
   let tools: readonly Tool[] = rebuild();
+
+  const snapshot = (): Promise<SerializedMCPServer> =>
+    serializeServer(
+      serializeArgs({
+        connection,
+        context,
+        toolDefs,
+        serverInfo,
+        options,
+      }),
+    );
 
   const writeCache = async (): Promise<void> => {
     const store = options.cache?.store;
     if (store === undefined) {
       return;
     }
-    const snapshot = await serializeServer({
-      url: context.url.href,
-      transport: connection.transport,
-      toolDefs,
-      ...(serverInfo !== undefined && {
-        serverInfo,
-      }),
-      ...(connection.sessionId !== undefined && {
-        sessionId: connection.sessionId,
-      }),
-      ...(options.auth !== undefined && {
-        auth: options.auth,
-      }),
-      cacheCredentials: options.cacheCredentials ?? false,
-      cachedAt: Date.now(),
-    });
-    await store.set(context.cacheKey, snapshot);
+    await store.set(context.cacheKey, await snapshot());
   };
 
   const refresh = async (): Promise<readonly Tool[]> => {
@@ -236,28 +210,78 @@ export async function makeHandle(args: MakeHandleArgs): Promise<MCPToolsHandle> 
     ...(serverInfo !== undefined && {
       serverInfo,
     }),
-    serialize: () =>
-      serializeServer({
-        url: context.url.href,
-        transport: connection.transport,
-        toolDefs,
-        ...(serverInfo !== undefined && {
-          serverInfo,
-        }),
-        ...(connection.sessionId !== undefined && {
-          sessionId: connection.sessionId,
-        }),
-        ...(options.auth !== undefined && {
-          auth: options.auth,
-        }),
-        cacheCredentials: options.cacheCredentials ?? false,
-        cachedAt: Date.now(),
-      }),
+    serialize: snapshot,
     refresh,
     onToolsChanged: (listener) => {
       listeners.add(listener);
       return () => listeners.delete(listener);
     },
     close: () => connection.close(),
+  };
+}
+
+/** Assemble the {@link buildTools} arguments, threading only the defined options. */
+function buildToolsArgs(
+  connection: MCPConnection,
+  toolDefs: McpToolDef[],
+  options: CreateMCPToolsOptions,
+): BuildToolsOptions {
+  return {
+    client: connection.client,
+    toolDefs,
+    emitProgress: options.emitProgress ?? true,
+    serverHasResources: serverHasResources(connection),
+    ...(options.toolNamePrefix !== undefined && {
+      namePrefix: options.toolNamePrefix,
+    }),
+    ...(options.includeTools !== undefined && {
+      includeTools: options.includeTools,
+    }),
+    ...(options.excludeTools !== undefined && {
+      excludeTools: options.excludeTools,
+    }),
+    ...(options.onUnconvertibleSchema !== undefined && {
+      schemaMode: options.onUnconvertibleSchema,
+    }),
+    ...(options.signal !== undefined && {
+      signal: options.signal,
+    }),
+    ...(options.resources !== undefined && {
+      resources: options.resources,
+    }),
+  };
+}
+
+interface SerializeArgsInput {
+  connection: MCPConnection;
+  context: HandleContext;
+  toolDefs: McpToolDef[];
+  serverInfo:
+    | {
+        name?: string;
+        version?: string;
+      }
+    | undefined;
+  options: CreateMCPToolsOptions;
+}
+
+/** Assemble the {@link serializeServer} input, threading only the defined fields. */
+function serializeArgs(args: SerializeArgsInput): SerializeInput {
+  const { connection, context, toolDefs, serverInfo, options } = args;
+  return {
+    url: context.url.href,
+    transport: connection.transport,
+    toolDefs,
+    cacheCredentials: options.cacheCredentials ?? false,
+    cachedAt: Date.now(),
+    ...(serverInfo !== undefined && {
+      serverInfo,
+    }),
+    ...(connection.sessionId !== undefined && {
+      sessionId: connection.sessionId,
+    }),
+    ...(options.auth !== undefined && {
+      auth: options.auth,
+    }),
   };
 }
