@@ -47,12 +47,14 @@ function isTransportKind(value: unknown): value is MCPTransportKind {
 }
 
 /**
- * The shared "valid `cachedAt`" rule. Consumed by both the read-side snapshot
- * validator and the write-side serializer so the two can't drift if the rule is
- * later tightened.
+ * The shared "valid `cachedAt`" rule: a finite, non-negative epoch (ms).
+ * Consumed by both the read-side snapshot validator and the write-side
+ * serializer so the two can't drift. Rejecting negatives keeps the invariant
+ * honest at the boundary rather than relying on downstream maxAge arithmetic to
+ * fail-safe on a clock-skewed or garbage value.
  */
 export function isFiniteEpoch(value: unknown): value is number {
-  return typeof value === 'number' && Number.isFinite(value);
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0;
 }
 
 function isSerializedToolDef(value: unknown): value is SerializedMCPToolDef {

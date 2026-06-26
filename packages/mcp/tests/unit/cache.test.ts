@@ -135,7 +135,7 @@ describe('isSerializedMCPServer', () => {
     ).toBe(true);
   });
 
-  it('rejects snapshots with a non-finite cachedAt', () => {
+  it('rejects snapshots with a non-finite or negative cachedAt', () => {
     const base = {
       version: 1,
       url: 'https://x',
@@ -151,6 +151,7 @@ describe('isSerializedMCPServer', () => {
       Number.NaN,
       Number.POSITIVE_INFINITY,
       Number.NEGATIVE_INFINITY,
+      -1,
     ]) {
       expect(
         isSerializedMCPServer({
