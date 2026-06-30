@@ -1,6 +1,6 @@
 import type { Client } from '@modelcontextprotocol/sdk/client/index.js';
-import { tool } from '@openrouter/agent/tool';
-import type { Tool } from '@openrouter/agent/tool-types';
+import { markMcp, tool } from '@openrouter/agent/tool';
+import type { McpBranded } from '@openrouter/agent/tool-types';
 import * as z from 'zod';
 
 export interface ResourceToolsOptions {
@@ -89,7 +89,7 @@ async function collectPages<Item>(
  *
  * Only call this when the server advertises the `resources` capability.
  */
-export function buildResourceTools(options: ResourceToolsOptions): Tool[] {
+export function buildResourceTools(options: ResourceToolsOptions): McpBranded[] {
   const prefix = options.namePrefix ?? '';
   const requestOptions =
     options.signal !== undefined
@@ -183,7 +183,7 @@ export function buildResourceTools(options: ResourceToolsOptions): Tool[] {
   });
 
   return [
-    listResources,
-    readResource,
+    markMcp(listResources),
+    markMcp(readResource),
   ];
 }

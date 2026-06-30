@@ -1,7 +1,7 @@
 import type { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import type { Progress } from '@modelcontextprotocol/sdk/types.js';
-import { tool } from '@openrouter/agent/tool';
-import type { Tool } from '@openrouter/agent/tool-types';
+import { markMcp, tool } from '@openrouter/agent/tool';
+import type { McpBranded } from '@openrouter/agent/tool-types';
 import * as z from 'zod';
 import type { RawCallToolResult } from './result-mapper.js';
 import { mapCallToolResult } from './result-mapper.js';
@@ -74,7 +74,7 @@ async function invokeTool(invokeArgs: InvokeToolArgs): Promise<unknown> {
  * are converted to Zod so the model sees faithful parameters. The abort signal,
  * if supplied, is threaded into the underlying `callTool`.
  */
-export function wrapMcpTool(def: McpToolDef, options: WrapToolOptions): Tool {
+export function wrapMcpTool(def: McpToolDef, options: WrapToolOptions): McpBranded {
   const name = `${options.namePrefix ?? ''}${def.name}`;
   const inputSchema = convertMcpInputSchema(def.inputSchema, options.schemaMode);
   const outputSchema =
@@ -83,78 +83,82 @@ export function wrapMcpTool(def: McpToolDef, options: WrapToolOptions): Tool {
       : undefined;
 
   if (options.emitProgress === true) {
-    return tool({
+    return markMcp(
+      tool({
+        name,
+        ...(def.description !== undefined && {
+          description: def.description,
+        }),
+        inputSchema,
+        eventSchema: progressEventSchema,
+        outputSchema: outputSchema ?? z.unknown(),
+        execute: async function* (args: Record<string, unknown>) {
+          const queue: Array<z.infer<typeof progressEventSchema>> = [];
+          let notify: (() => void) | undefined;
+          const onprogress = (p: Progress): void => {
+            queue.push({
+              type: 'progress',
+              progress: p.progress,
+              ...(p.total !== undefined && {
+                total: p.total,
+              }),
+              ...(typeof p.message === 'string' && {
+                message: p.message,
+              }),
+            });
+            notify?.();
+          };
+
+          const resultPromise = invokeTool({
+            options,
+            mcpName: def.name,
+            args,
+            onprogress,
+          });
+          let done = false;
+          const finalize = resultPromise.finally(() => {
+            done = true;
+            notify?.();
+          });
+
+          while (!done || queue.length > 0) {
+            while (queue.length > 0) {
+              const event = queue.shift();
+              if (event !== undefined) {
+                yield event;
+              }
+            }
+            if (done) {
+              break;
+            }
+            await new Promise<void>((resolve) => {
+              notify = resolve;
+            });
+            notify = undefined;
+          }
+
+          return await finalize;
+        },
+      }),
+    );
+  }
+
+  return markMcp(
+    tool({
       name,
       ...(def.description !== undefined && {
         description: def.description,
       }),
       inputSchema,
-      eventSchema: progressEventSchema,
-      outputSchema: outputSchema ?? z.unknown(),
-      execute: async function* (args: Record<string, unknown>) {
-        const queue: Array<z.infer<typeof progressEventSchema>> = [];
-        let notify: (() => void) | undefined;
-        const onprogress = (p: Progress): void => {
-          queue.push({
-            type: 'progress',
-            progress: p.progress,
-            ...(p.total !== undefined && {
-              total: p.total,
-            }),
-            ...(typeof p.message === 'string' && {
-              message: p.message,
-            }),
-          });
-          notify?.();
-        };
-
-        const resultPromise = invokeTool({
+      ...(outputSchema !== undefined && {
+        outputSchema,
+      }),
+      execute: (args: Record<string, unknown>) =>
+        invokeTool({
           options,
           mcpName: def.name,
           args,
-          onprogress,
-        });
-        let done = false;
-        const finalize = resultPromise.finally(() => {
-          done = true;
-          notify?.();
-        });
-
-        while (!done || queue.length > 0) {
-          while (queue.length > 0) {
-            const event = queue.shift();
-            if (event !== undefined) {
-              yield event;
-            }
-          }
-          if (done) {
-            break;
-          }
-          await new Promise<void>((resolve) => {
-            notify = resolve;
-          });
-          notify = undefined;
-        }
-
-        return await finalize;
-      },
-    });
-  }
-
-  return tool({
-    name,
-    ...(def.description !== undefined && {
-      description: def.description,
+        }),
     }),
-    inputSchema,
-    ...(outputSchema !== undefined && {
-      outputSchema,
-    }),
-    execute: (args: Record<string, unknown>) =>
-      invokeTool({
-        options,
-        mcpName: def.name,
-        args,
-      }),
-  });
+  );
 }

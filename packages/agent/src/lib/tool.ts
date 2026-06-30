@@ -2,6 +2,7 @@ import type { $ZodObject, $ZodShape, $ZodType, infer as zodInfer } from 'zod/v4/
 import type {
   HITLTool,
   ManualTool,
+  McpBranded,
   NextTurnParamsFunctions,
   ServerTool,
   ServerToolConfig,
@@ -477,6 +478,20 @@ export function serverTool<T extends ServerToolType>(
   return {
     _brand: 'server-tool',
     config,
+  };
+}
+
+/**
+ * Add the additive MCP brand to an already-built client tool (see
+ * {@link McpBranded}). Non-mutating: returns a shallow copy carrying `_mcp`, so
+ * the tool's runtime behavior and wire shape are unchanged — only its type (and
+ * the runtime {@link isMcpTool} check) now identify it as MCP-originated. Used
+ * by `@openrouter/mcp` to mark wrapped remote tools.
+ */
+export function markMcp<T extends Tool>(toolToMark: T): McpBranded<T> {
+  return {
+    ...toolToMark,
+    _mcp: true as const,
   };
 }
 

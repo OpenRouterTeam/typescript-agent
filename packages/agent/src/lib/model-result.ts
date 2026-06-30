@@ -75,6 +75,7 @@ import type {
 import {
   isAutoResolvableTool,
   isClientTool,
+  isMcpTool,
   isServerTool,
   isToolCallOutputEvent,
 } from './tool-types.js';
@@ -200,6 +201,7 @@ export class ModelResult<
     | {
         type: 'tool_result';
         toolCallId: string;
+        source: 'client' | 'mcp';
         result: InferToolOutputsUnion<TTools>;
         preliminaryResults?: InferToolEventsUnion<TTools>[];
       }
@@ -369,17 +371,29 @@ export class ModelResult<
   }
 
   /**
+   * Resolve a tool's result `source` from its call name by looking it up in the
+   * configured tools. Used where the concrete tool reference isn't in scope
+   * (e.g. a rejected execution). Defaults to `'client'` when not found.
+   */
+  private toolSourceByName(name: string): 'client' | 'mcp' {
+    const matched = this.options.tools?.find((t) => isClientTool(t) && t.function.name === name);
+    return matched !== undefined && isMcpTool(matched) ? 'mcp' : 'client';
+  }
+
+  /**
    * Push a tool result event to both the legacy tool event broadcaster
    * and the unified turn broadcaster.
    */
   private broadcastToolResult(
     toolCallId: string,
+    source: 'client' | 'mcp',
     result: InferToolOutputsUnion<TTools>,
     preliminaryResults?: InferToolEventsUnion<TTools>[],
   ): void {
     this.toolEventBroadcaster?.push({
       type: 'tool_result' as const,
       toolCallId,
+      source,
       result,
       ...(preliminaryResults?.length && {
         preliminaryResults,
@@ -388,6 +402,7 @@ export class ModelResult<
     this.turnBroadcaster?.push({
       type: 'tool.result' as const,
       toolCallId,
+      source,
       result,
       timestamp: Date.now(),
       ...(preliminaryResults?.length && {
@@ -607,11 +622,21 @@ export class ModelResult<
         // `toolResults` is client-tool-centric; server-tool output items are
         // surfaced on `serverToolResults` so stop conditions can react to
         // either class of result.
-        toolResults: round.toolResults.filter(isFunctionCallOutput).map((tr) => ({
-          toolCallId: tr.callId,
-          toolName: round.toolCalls.find((tc) => tc.id === tr.callId)?.name ?? '',
-          result: typeof tr.output === 'string' ? JSON.parse(tr.output) : tr.output,
-        })),
+        toolResults: round.toolResults.filter(isFunctionCallOutput).map((tr) => {
+          const toolName = round.toolCalls.find((tc) => tc.id === tr.callId)?.name ?? '';
+          const matchedTool = this.options.tools?.find(
+            (t) => isClientTool(t) && t.function.name === toolName,
+          );
+          return {
+            toolCallId: tr.callId,
+            toolName,
+            source:
+              matchedTool !== undefined && isMcpTool(matchedTool)
+                ? ('mcp' as const)
+                : ('client' as const),
+            result: typeof tr.output === 'string' ? JSON.parse(tr.output) : tr.output,
+          };
+        }),
         serverToolResults: round.toolResults.filter(isServerToolResult),
         response: round.response,
         usage: round.response.usage,
@@ -893,7 +918,7 @@ export class ModelResult<
           `Raw arguments received: "${rawArgs}". ` +
           'Please provide valid JSON arguments for this tool call.';
 
-        this.broadcastToolResult(toolCall.id, {
+        this.broadcastToolResult(toolCall.id, isMcpTool(tool) ? 'mcp' : 'client', {
           error: errorMessage,
         } as InferToolOutputsUnion<TTools>);
 
@@ -963,9 +988,13 @@ export class ModelResult<
         const errorMessage =
           settled.reason instanceof Error ? settled.reason.message : String(settled.reason);
 
-        this.broadcastToolResult(originalToolCall.id, {
-          error: errorMessage,
-        } as InferToolOutputsUnion<TTools>);
+        this.broadcastToolResult(
+          originalToolCall.id,
+          this.toolSourceByName(originalToolCall.name),
+          {
+            error: errorMessage,
+          } as InferToolOutputsUnion<TTools>,
+        );
 
         const rejectedOutput: models.FunctionCallOutputItem = {
           type: 'function_call_output' as const,
@@ -1017,6 +1046,7 @@ export class ModelResult<
       ) as InferToolOutputsUnion<TTools>;
       this.broadcastToolResult(
         value.toolCall.id,
+        isMcpTool(value.tool) ? 'mcp' : 'client',
         toolResult,
         value.preliminaryResultsForCall.length > 0 ? value.preliminaryResultsForCall : undefined,
       );
@@ -2131,7 +2161,7 @@ export class ModelResult<
   getFullResponsesStream(): AsyncIterableIterator<
     ResponseStreamEvent<InferToolEventsUnion<TTools>, InferToolOutputsUnion<TTools>>
   > {
-    return async function* (this: ModelResult<TTools>) {
+    return async function* (this: ModelResult<TTools, TShared>) {
       await this.initStream();
 
       if (!this.reusableStream && !this.finalResponse) {
@@ -2164,7 +2194,7 @@ export class ModelResult<
    * including text from follow-up responses in multi-turn tool loops.
    */
   getTextStream(): AsyncIterableIterator<string> {
-    return async function* (this: ModelResult<TTools>) {
+    return async function* (this: ModelResult<TTools, TShared>) {
       await this.initStream();
 
       if (!this.reusableStream && !this.finalResponse) {
@@ -2233,7 +2263,7 @@ export class ModelResult<
       return false;
     };
 
-    return async function* (this: ModelResult<TTools>) {
+    return async function* (this: ModelResult<TTools, TShared>) {
       await this.initStream();
 
       if (!this.reusableStream && !this.finalResponse) {
@@ -2402,7 +2432,7 @@ export class ModelResult<
   getNewMessagesStream(): AsyncIterableIterator<
     models.OutputMessage | models.FunctionCallOutputItem | models.OutputFunctionCallItem
   > {
-    return async function* (this: ModelResult<TTools>) {
+    return async function* (this: ModelResult<TTools, TShared>) {
       await this.initStream();
 
       if (!this.reusableStream && !this.finalResponse) {
@@ -2470,7 +2500,7 @@ export class ModelResult<
    * including reasoning from follow-up responses in multi-turn tool loops.
    */
   getReasoningStream(): AsyncIterableIterator<string> {
-    return async function* (this: ModelResult<TTools>) {
+    return async function* (this: ModelResult<TTools, TShared>) {
       await this.initStream();
 
       if (!this.reusableStream && !this.finalResponse) {
@@ -2503,7 +2533,7 @@ export class ModelResult<
    * - Preliminary results as { type: "preliminary_result", toolCallId, result }
    */
   getToolStream(): AsyncIterableIterator<ToolStreamEvent<InferToolEventsUnion<TTools>>> {
-    return async function* (this: ModelResult<TTools>) {
+    return async function* (this: ModelResult<TTools, TShared>) {
       await this.initStream();
 
       if (!this.reusableStream && !this.finalResponse) {
@@ -2584,7 +2614,7 @@ export class ModelResult<
    * Each iteration yields a complete tool call with parsed arguments.
    */
   getToolCallsStream(): AsyncIterableIterator<ParsedToolCall<TTools[number]>> {
-    return async function* (this: ModelResult<TTools>) {
+    return async function* (this: ModelResult<TTools, TShared>) {
       await this.initStream();
 
       if (!this.reusableStream && !this.finalResponse) {

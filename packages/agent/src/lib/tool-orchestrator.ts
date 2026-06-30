@@ -7,7 +7,7 @@ import { extractToolCallsFromResponse, responseHasToolCalls } from './stream-tra
 import { isFunctionCallItem } from './stream-type-guards.js';
 import { executeTool, findToolByName } from './tool-executor.js';
 import type { APITool, Tool, ToolExecutionResult } from './tool-types.js';
-import { isAutoResolvableTool } from './tool-types.js';
+import { isAutoResolvableTool, isMcpTool } from './tool-types.js';
 import { buildTurnContext } from './turn-context.js';
 
 /**
@@ -95,6 +95,7 @@ export async function executeToolLoop(
         return {
           toolCallId: toolCall.id,
           toolName: toolCall.name,
+          source: 'client',
           result: null,
           error: new Error(`Tool "${toolCall.name}" not found in tool definitions`),
         } as ToolExecutionResult<Tool>;
@@ -153,9 +154,11 @@ export async function executeToolLoop(
         }
       } else {
         // Promise rejected - create error result
+        const rejectedTool = findToolByName(tools, toolCall.name);
         roundResults.push({
           toolCallId: toolCall.id,
           toolName: toolCall.name,
+          source: rejectedTool !== undefined && isMcpTool(rejectedTool) ? 'mcp' : 'client',
           result: null,
           error:
             settled.reason instanceof Error ? settled.reason : new Error(String(settled.reason)),

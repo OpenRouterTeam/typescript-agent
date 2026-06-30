@@ -127,7 +127,7 @@ export {
   hasUnsupportedContent,
 } from './lib/stream-transformers.js';
 // Tool creation helpers
-export { serverTool, tool } from './lib/tool.js';
+export { markMcp, serverTool, tool } from './lib/tool.js';
 export type { ContextInput } from './lib/tool-context.js';
 // Tool context helpers
 export { buildToolExecuteContext, ToolContextStore } from './lib/tool-context.js';
@@ -147,6 +147,7 @@ export type {
   InferToolOutput,
   InferToolOutputsUnion,
   ManualTool,
+  McpBranded,
   NextTurnParamsContext,
   NextTurnParamsFunctions,
   ParsedToolCall,
@@ -192,6 +193,7 @@ export {
   isGeneratorTool,
   isHITLTool,
   isManualTool,
+  isMcpTool,
   isRegularExecuteTool,
   isServerTool,
   isToolCallOutputEvent,
