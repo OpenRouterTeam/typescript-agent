@@ -49,7 +49,8 @@ describe('serializeServer', () => {
     expect(snap.cachedAt).toBe(1_000);
   });
 
-  it('replaces a negative cachedAt with a valid epoch', async () => {
+  it('replaces a negative cachedAt with a fresh timestamp', async () => {
+    const before = Date.now();
     const snap = await serializeServer({
       url: 'https://mcp.example.com/mcp',
       transport: 'streamableHttp',
@@ -58,8 +59,10 @@ describe('serializeServer', () => {
       cachedAt: -1,
     });
     // isFiniteEpoch rejects the negative input, so serializeServer falls back to
-    // a current timestamp — the resulting snapshot must pass the read validator.
-    expect(snap.cachedAt).toBeGreaterThanOrEqual(0);
+    // Date.now() — assert it's the current time, not just any non-negative value,
+    // so a regression to a hard-coded sentinel would be caught.
+    expect(snap.cachedAt).toBeGreaterThanOrEqual(before);
+    expect(snap.cachedAt).toBeLessThanOrEqual(Date.now());
     expect(isSerializedMCPServer(snap)).toBe(true);
   });
 
