@@ -19,6 +19,7 @@ import {
   hasExecuteFunction,
   isGeneratorTool,
   isHITLTool,
+  isMcpTool,
   isRegularExecuteTool,
   isServerTool,
 } from './tool-types.js';
@@ -208,6 +209,8 @@ export async function executeRegularTool(
     );
   }
 
+  const source = isMcpTool(tool) ? 'mcp' : 'client';
+
   try {
     const validatedInput = validateToolInput(tool.function.inputSchema, toolCall.arguments);
     const executeContext = buildExecuteCtx(tool, context, contextStore, sharedSchema);
@@ -222,6 +225,7 @@ export async function executeRegularTool(
       return {
         toolCallId: toolCall.id,
         toolName: toolCall.name,
+        source,
         result: validatedOutput,
       };
     }
@@ -229,12 +233,14 @@ export async function executeRegularTool(
     return {
       toolCallId: toolCall.id,
       toolName: toolCall.name,
+      source,
       result,
     };
   } catch (error) {
     return {
       toolCallId: toolCall.id,
       toolName: toolCall.name,
+      source,
       result: null,
       error: error instanceof Error ? error : new Error(String(error)),
     };
@@ -259,6 +265,8 @@ export async function executeGeneratorTool(
   if (!isGeneratorTool(tool)) {
     throw new Error(`Tool "${toolCall.name}" is not a generator tool`);
   }
+
+  const source = isMcpTool(tool) ? 'mcp' : 'client';
 
   try {
     const validatedInput = validateToolInput(tool.function.inputSchema, toolCall.arguments);
@@ -312,6 +320,7 @@ export async function executeGeneratorTool(
     return {
       toolCallId: toolCall.id,
       toolName: toolCall.name,
+      source,
       result: finalResult,
       preliminaryResults,
     };
@@ -319,6 +328,7 @@ export async function executeGeneratorTool(
     return {
       toolCallId: toolCall.id,
       toolName: toolCall.name,
+      source,
       result: null,
       error: error instanceof Error ? error : new Error(String(error)),
     };
@@ -345,6 +355,8 @@ export async function executeHITLTool(
     throw new Error(`Tool "${toolCall.name}" is not a HITL tool`);
   }
 
+  const source = isMcpTool(tool) ? 'mcp' : 'client';
+
   try {
     const validatedInput = validateToolInput(tool.function.inputSchema, toolCall.arguments);
     const executeContext = buildExecuteCtx(tool, context, contextStore, sharedSchema);
@@ -363,12 +375,14 @@ export async function executeHITLTool(
     return {
       toolCallId: toolCall.id,
       toolName: toolCall.name,
+      source,
       result: validatedOutput,
     };
   } catch (error) {
     return {
       toolCallId: toolCall.id,
       toolName: toolCall.name,
+      source,
       result: null,
       error: error instanceof Error ? error : new Error(String(error)),
     };

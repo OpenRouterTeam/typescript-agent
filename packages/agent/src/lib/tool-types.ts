@@ -1,7 +1,6 @@
 import type * as models from '@openrouter/sdk/models';
 import type { StreamEvents } from '@openrouter/sdk/models';
 import type { $ZodObject, $ZodShape, $ZodType, infer as zodInfer } from 'zod/v4/core';
-import type { ModelResult } from './model-result.js';
 
 /**
  * Tool type enum for enhanced tools
@@ -566,6 +565,33 @@ export function isServerTool(tool: Tool): tool is ServerTool {
 }
 
 /**
+ * A client tool additionally branded as originating from an MCP server. The
+ * `_mcp` marker is purely informational: it does NOT change how the tool is
+ * executed (MCP tools keep their local `execute` fn and run through the normal
+ * client-tool path) or serialized (they go on the wire as `type: 'function'`).
+ * It exists only so result types can discriminate MCP results — whose output
+ * schema is `unknown` at compile time — from precisely-typed client tools,
+ * preventing a single MCP tool from collapsing the whole result union.
+ */
+export type McpBranded<T extends Tool = Tool> = T & {
+  readonly _mcp: true;
+};
+
+/**
+ * Type guard: true if the tool carries the additive MCP brand (see
+ * {@link McpBranded}). Structural check on `_mcp`, so no cast is needed.
+ */
+export function isMcpTool(tool: Tool): tool is McpBranded {
+  if (typeof tool !== 'object' || tool === null) {
+    return false;
+  }
+  if (!('_mcp' in tool)) {
+    return false;
+  }
+  return tool._mcp === true;
+}
+
+/**
  * Type guard: true if the tool is a client-executed tool (function, generator, or manual).
  */
 export function isClientTool(tool: Tool): tool is ClientTool {
@@ -647,22 +673,70 @@ export interface ParsedToolCall<T extends Tool> {
 }
 
 /**
- * Result of tool execution
+ * Result of tool execution.
+ *
+ * The `_mcp` brand is tested BEFORE the execute/generator branch: an MCP tool
+ * is structurally also a `ToolWithExecute`, so checking the brand last would let
+ * its `unknown` output flow through and collapse the result union. Brand-first
+ * isolates MCP results as `unknown` under `source: 'mcp'` while every other tool
+ * keeps its precise, schema-derived result under `source: 'client'`. Consumers
+ * narrow on `source` (narrowing on the `toolName` literal alone does not exclude
+ * the MCP branch, whose `toolName` is `string`).
+ *
  * @template T - The tool type to infer result types from
  */
 export interface ToolExecutionResult<T extends Tool> {
   toolCallId: string;
-  toolName: string;
-  result: T extends
-    | ToolWithExecute<$ZodObject<$ZodShape>, infer O>
-    | ToolWithGenerator<$ZodObject<$ZodShape>, $ZodType<unknown>, infer O>
-    ? zodInfer<O>
-    : unknown; // Final result (sent to model)
+  toolName: T extends {
+    function: {
+      name: infer N extends string;
+    };
+  }
+    ? N
+    : string;
+  source: ToolSource<T>;
+  result: T extends {
+    readonly _mcp: true;
+  }
+    ? unknown
+    : [
+          Tool,
+        ] extends [
+          T,
+        ]
+      ? unknown // wide `Tool`: result not statically known
+      : T extends
+            | ToolWithExecute<$ZodObject<$ZodShape>, infer O>
+            | ToolWithGenerator<$ZodObject<$ZodShape>, $ZodType<unknown>, infer O>
+        ? zodInfer<O>
+        : unknown; // Final result (sent to model)
   preliminaryResults?: T extends ToolWithGenerator<$ZodObject<$ZodShape>, infer E>
     ? zodInfer<E>[]
     : undefined; // All yielded values from generator
   error?: Error;
 }
+
+/**
+ * The `source` discriminant for a tool result. A specific MCP-branded tool is
+ * `'mcp'`; a specific client tool is `'client'`; the wide `Tool` (used by the
+ * internal executor before the concrete tool type is known) is the full union,
+ * so a runtime-computed `'client' | 'mcp'` assigns into it.
+ */
+export type ToolSource<T extends Tool> = [
+  Tool,
+] extends [
+  T,
+]
+  ? 'client' | 'mcp' // wide `Tool`: source not statically known
+  : [
+        T,
+      ] extends [
+        {
+          readonly _mcp: true;
+        },
+      ]
+    ? 'mcp'
+    : 'client';
 
 /**
  * Warning from step execution
@@ -728,21 +802,6 @@ export type StopWhen<TTools extends readonly Tool[] = readonly Tool[]> =
   | ReadonlyArray<StopCondition<TTools>>;
 
 /**
- * Result of executeTools operation
- */
-export interface ExecuteToolsResult<TTools extends readonly Tool[]> {
-  finalResponse: ModelResult<TTools>;
-  allResponses: ModelResult<TTools>[];
-  toolResults: Map<
-    string,
-    {
-      result: unknown;
-      preliminaryResults?: unknown[];
-    }
-  >;
-}
-
-/**
  * Standard tool format for OpenRouter API (JSON Schema based)
  * Matches ResponsesRequestToolFunction structure
  */
@@ -776,6 +835,13 @@ export type ToolPreliminaryResultEvent<TEvent = unknown> = {
 export type ToolResultEvent<TResult = unknown, TPreliminaryResults = unknown> = {
   type: 'tool.result';
   toolCallId: string;
+  /**
+   * Origin of the tool: `'mcp'` for tools wrapped from a remote MCP server
+   * (whose `result` is `unknown`), `'client'` for locally-defined tools. Lets
+   * consumers discriminate so an MCP result's `unknown` doesn't force callers to
+   * treat every tool result as untyped.
+   */
+  source: 'client' | 'mcp';
   result: TResult;
   timestamp: number;
   preliminaryResults?: TPreliminaryResults[];

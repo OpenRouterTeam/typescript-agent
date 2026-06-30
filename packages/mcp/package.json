@@ -1,0 +1,72 @@
+{
+  "name": "@openrouter/mcp",
+  "version": "0.1.0",
+  "author": "OpenRouter",
+  "description": "Expose remote MCP server tools (Streamable HTTP / SSE) as tools for @openrouter/agent's callModel, with serializable caching and pluggable auth.",
+  "keywords": [
+    "openrouter",
+    "mcp",
+    "model-context-protocol",
+    "agent",
+    "typescript",
+    "ai",
+    "tools",
+    "llm"
+  ],
+  "license": "Apache-2.0",
+  "type": "module",
+  "main": "./esm/index.js",
+  "exports": {
+    ".": {
+      "types": "./esm/index.d.ts",
+      "default": "./esm/index.js"
+    },
+    "./create-mcp-tools": {
+      "types": "./esm/create-mcp-tools.d.ts",
+      "default": "./esm/create-mcp-tools.js"
+    },
+    "./types": {
+      "types": "./esm/types.d.ts",
+      "default": "./esm/types.js"
+    },
+    "./schema": {
+      "types": "./esm/schema/json-schema-to-zod.d.ts",
+      "default": "./esm/schema/json-schema-to-zod.js"
+    },
+    "./cache": {
+      "types": "./esm/cache/cache-store.d.ts",
+      "default": "./esm/cache/cache-store.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "sideEffects": false,
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/OpenRouterTeam/typescript-agent.git",
+    "directory": "packages/mcp"
+  },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
+  "files": [
+    "esm",
+    "package.json",
+    "README.md"
+  ],
+  "scripts": {
+    "lint": "biome check src tests",
+    "lint:fix": "biome check --write src tests",
+    "build": "tsc",
+    "test": "vitest --run --project unit",
+    "test:e2e": "vitest --run --project e2e",
+    "test:watch": "vitest --watch --project unit",
+    "typecheck": "tsc --noEmit",
+    "compile": "tsc"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "@openrouter/agent": "workspace:*",
+    "zod": "^4.0.0"
+  }
+}
