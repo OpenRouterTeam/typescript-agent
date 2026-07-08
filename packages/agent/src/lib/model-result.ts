@@ -2005,6 +2005,22 @@ export class ModelResult<
           return;
         }
 
+        // Manual (client-executed) tools produce no output this round —
+        // `executeToolRound` returns nothing for them — so a mixed round of
+        // auto-executed and manual calls would otherwise send a follow-up
+        // request whose input contains a `function_call` with no matching
+        // `function_call_output`. Providers reject that history with a 400
+        // ("No tool output found for function call ..."). Stop the loop and
+        // surface the response instead, so the caller can execute the manual
+        // calls and continue — mirroring the all-manual behavior of the
+        // `hasExecutableToolCalls` guards. Also covers calls to tool names
+        // not present in `options.tools` at all.
+        const resolvedCallIds = new Set(toolResults.map((r) => r.callId));
+        const hasUnresolvedToolCalls = currentToolCalls.some((tc) => !resolvedCallIds.has(tc.id));
+        if (hasUnresolvedToolCalls) {
+          break;
+        }
+
         // Apply nextTurnParams
         await this.applyNextTurnParams(currentToolCalls);
 
