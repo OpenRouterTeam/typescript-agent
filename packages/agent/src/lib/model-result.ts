@@ -369,6 +369,10 @@ export class ModelResult<
   // Without this, an exception in initStream before SessionStart would lead to
   // a dangling SessionEnd (breaking audit-log / resource-pair contracts).
   private sessionStartEmitted = false;
+  // Tool call ids the PermissionRequest hook denied without pausing. The
+  // normal tool round consults this to synthesize rejected outputs instead of
+  // executing the calls.
+  private readonly hookDeniedCalls = new Map<string, string>();
 
   constructor(options: GetResponseOptions<TTools, TShared>) {
     this.options = options;
@@ -1282,38 +1286,42 @@ export class ModelResult<
       // context is handled via contextStore, not on TurnContext
     };
 
-    const { requiresApproval: needsApproval, autoExecute: autoExecuteInitial } =
-      await partitionToolCalls(
-        toolCalls as ParsedToolCall<TTools[number]>[],
-        this.options.tools,
-        turnContext,
-        this.requireApprovalFn ?? undefined,
-      );
+    const { requiresApproval: needsApproval, autoExecute } = await partitionToolCalls(
+      toolCalls as ParsedToolCall<TTools[number]>[],
+      this.options.tools,
+      turnContext,
+      this.requireApprovalFn ?? undefined,
+    );
 
-    // Seed the auto-execute list with anything that didn't need approval. The
-    // PermissionRequest hook may promote more calls into this bucket (allow)
-    // or synthesize pre-denied results (deny) below.
-    const autoExecute: ParsedToolCall<TTools[number]>[] = [
-      ...autoExecuteInitial,
-    ];
-    const preDeniedResults: UnsentToolResult<TTools>[] = [];
-    const stillPending: ParsedToolCall<TTools[number]>[] = [];
+    // Nothing needs an approval gate: return immediately WITHOUT executing
+    // anything. The main loop's executeToolRound runs every call exactly
+    // once; pre-executing here would double-run side-effecting tools.
+    if (needsApproval.length === 0) {
+      return false;
+    }
 
     // Run the PermissionRequest hook for each tool that needs approval.
-    // This lets hooks short-circuit the approval flow in either direction.
-    if (this.hooksManager && needsApproval.length > 0) {
+    // This lets hooks short-circuit the approval flow in either direction:
+    // 'allow' promotes the call past the gate (executed once by the normal
+    // round), 'deny' synthesizes a rejection (recorded so the round emits a
+    // rejected output instead of executing), 'ask_user' falls through to the
+    // human approval flow.
+    const denied: {
+      tc: ParsedToolCall<TTools[number]>;
+      reason: string;
+    }[] = [];
+    const stillPending: ParsedToolCall<TTools[number]>[] = [];
+
+    if (this.hooksManager) {
       for (const tc of needsApproval) {
         const { decision, reason } = await this.emitPermissionRequest(tc as ParsedToolCall<Tool>);
         if (decision === 'allow') {
-          autoExecute.push(tc);
+          // Promoted past the gate; the normal tool round executes it once.
         } else if (decision === 'deny') {
-          preDeniedResults.push(
-            createRejectedResult(
-              tc.id,
-              String(tc.name),
-              reason ?? 'Denied by PermissionRequest hook',
-            ) as UnsentToolResult<TTools>,
-          );
+          denied.push({
+            tc,
+            reason: reason ?? 'Denied by PermissionRequest hook',
+          });
         } else {
           stillPending.push(tc);
         }
@@ -1322,38 +1330,41 @@ export class ModelResult<
       stillPending.push(...needsApproval);
     }
 
-    // Validate: approval requires state accessor when any tool needs a gate
-    // or is being pre-denied by the hook.
-    if (!this.stateAccessor && (stillPending.length > 0 || preDeniedResults.length > 0)) {
+    if (stillPending.length === 0) {
+      // The hook resolved every gated call, so we do not pause. Record denied
+      // calls so executeToolRound synthesizes rejections instead of running
+      // them; allowed calls execute once via the normal round.
+      for (const d of denied) {
+        this.hookDeniedCalls.set(d.tc.id, d.reason);
+      }
+      return false;
+    }
+
+    // Validate: pausing for approval requires a state accessor.
+    if (!this.stateAccessor) {
       const toolNames = stillPending.map((tc) => tc.name).join(', ');
       throw new Error(
-        `Tool(s) require approval but no state accessor is configured: ${toolNames || '(hook-denied tools)'}. ` +
+        `Tool(s) require approval but no state accessor is configured: ${toolNames}. ` +
           'Provide a StateAccessor via the "state" parameter to enable approval workflows.',
       );
     }
 
-    // Execute auto-approve tools (includes any promoted by hook "allow").
-    const unsentResults = await this.executeAutoApproveTools(autoExecute, turnContext);
+    // We are pausing: the normal tool round will NOT run for this response,
+    // so execute the auto-approved calls now and persist their results as
+    // unsent so the resume path can pick them up without re-executing.
+    const unsentResults = await this.executeAutoApproveTools(
+      autoExecute as ParsedToolCall<TTools[number]>[],
+      turnContext,
+    );
 
     // Combine pre-denied results (from hook "deny") with executed results.
     const combinedResults: UnsentToolResult<TTools>[] = [
       ...unsentResults,
-      ...preDeniedResults,
+      ...denied.map(
+        (d) =>
+          createRejectedResult(d.tc.id, String(d.tc.name), d.reason) as UnsentToolResult<TTools>,
+      ),
     ];
-
-    if (stillPending.length === 0) {
-      // Nothing needs human approval. Persist the results we already have so
-      // the caller's normal flow can pick them up on the next turn without
-      // re-executing the tools. This path can be reached even when no tool
-      // originally required approval (the hook said "allow" on everything)
-      // or when the hook denied everything.
-      if (this.stateAccessor && combinedResults.length > 0) {
-        await this.saveStateSafely({
-          unsentToolResults: combinedResults,
-        });
-      }
-      return false;
-    }
 
     // Save state with pending approvals (only reached when stillPending > 0).
     const stateUpdates: Partial<Omit<ConversationState<TTools>, 'id' | 'createdAt' | 'updatedAt'>> =
@@ -1516,6 +1527,27 @@ export class ModelResult<
       );
       if (!tool || !isAutoResolvableTool(tool)) {
         return null;
+      }
+
+      // PermissionRequest hook denied this call without pausing: synthesize a
+      // rejection instead of executing. Consume the entry so a later round
+      // with a reused id is not affected.
+      const denialReason = this.hookDeniedCalls.get(toolCall.id);
+      if (denialReason !== undefined) {
+        this.hookDeniedCalls.delete(toolCall.id);
+        return {
+          type: 'hook_blocked' as const,
+          toolCall,
+          reason: denialReason,
+          output: {
+            type: 'function_call_output' as const,
+            id: `output_${toolCall.id}`,
+            callId: toolCall.id,
+            output: JSON.stringify({
+              error: denialReason,
+            }),
+          },
+        };
       }
 
       const preliminaryResultsForCall: InferToolEventsUnion<TTools>[] = [];

@@ -108,6 +108,16 @@ type InternalModelResult = {
     toolCalls: ParsedToolCall<Tool>[],
     turnContext: TurnContext,
   ) => Promise<UnsentToolResult<readonly Tool[]>[]>;
+  executeToolRound: (
+    toolCalls: ParsedToolCall<Tool>[],
+    turnContext: TurnContext,
+  ) => Promise<{
+    toolResults: {
+      callId: string;
+      output: string;
+    }[];
+    pausedCalls: ParsedToolCall<Tool>[];
+  }>;
   handleApprovalCheck: (
     toolCalls: ParsedToolCall<Tool>[],
     currentRound: number,
@@ -527,10 +537,12 @@ describe('ModelResult hooks integration', () => {
         makeResponse(),
       );
 
-      // When the hook says allow, the call is promoted to auto-execute and the
-      // gate is not triggered — handleApprovalCheck should return false.
+      // When the hook says allow, the call is promoted past the gate and the
+      // approval flow does not pause — handleApprovalCheck returns false.
+      // Execution is deferred to the normal tool round (which runs each call
+      // exactly once), so nothing has executed yet at this point.
       expect(paused).toBe(false);
-      expect(executed).toHaveBeenCalledTimes(1);
+      expect(executed).not.toHaveBeenCalled();
     });
 
     it('deny: synthesizes a denied result and does not execute', async () => {
@@ -595,10 +607,24 @@ describe('ModelResult hooks integration', () => {
 
       expect(paused).toBe(false);
       expect(executed).not.toHaveBeenCalled();
-      const latest = stateAccessor.getLatest();
-      const denied = (latest?.unsentToolResults ?? []).find((r) => r.callId === 'c_deny');
-      expect(denied).toBeDefined();
-      expect(denied?.error).toBe('policy');
+
+      // The denial is recorded for the tool round, which synthesizes a
+      // rejected output instead of executing the call.
+      const { toolResults } = await ent.executeToolRound(
+        [
+          {
+            id: 'c_deny',
+            name: 'guarded',
+            arguments: {},
+          },
+        ] as ParsedToolCall<Tool>[],
+        {
+          numberOfTurns: 1,
+        },
+      );
+      expect(executed).not.toHaveBeenCalled();
+      expect(toolResults).toHaveLength(1);
+      expect(toolResults[0]?.output).toContain('policy');
     });
 
     it('ask_user: falls through to the existing approval flow', async () => {
@@ -981,7 +1007,10 @@ describe('ModelResult hooks integration', () => {
       const mProto = m as unknown as {
         getInitialResponse: () => Promise<OpenResponsesResult>;
         shouldStopExecution: () => Promise<boolean>;
-        executeToolRound: (...args: unknown[]) => Promise<unknown[]>;
+        executeToolRound: (...args: unknown[]) => Promise<{
+          toolResults: unknown[];
+          pausedCalls: unknown[];
+        }>;
         makeFollowupRequest: (...args: unknown[]) => Promise<OpenResponsesResult>;
       };
       mProto.getInitialResponse = async () => toolCallResponse;
@@ -992,14 +1021,17 @@ describe('ModelResult hooks integration', () => {
         // which emits Stop and the handler forces a resume.
         return shouldStopCalls !== 3;
       };
-      mProto.executeToolRound = async () => [
-        {
-          type: 'function_call_output',
-          id: 'output_c1',
-          callId: 'c1',
-          output: '{}',
-        },
-      ];
+      mProto.executeToolRound = async () => ({
+        toolResults: [
+          {
+            type: 'function_call_output',
+            id: 'output_c1',
+            callId: 'c1',
+            output: '{}',
+          },
+        ],
+        pausedCalls: [],
+      });
       // Return the same tool-call response so the loop keeps going after
       // the reset, giving us more forceResume iterations.
       mProto.makeFollowupRequest = async () => toolCallResponse;
