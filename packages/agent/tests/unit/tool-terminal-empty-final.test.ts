@@ -229,4 +229,80 @@ describe('tool-terminal empty final response (PR-2)', () => {
 
     expect(mockBetaResponsesSend).toHaveBeenCalledTimes(1);
   });
+
+  it('persists the successful empty-final retry response to conversation state', async () => {
+    mockBetaResponsesSend
+      .mockResolvedValueOnce({
+        ok: true,
+        value: toolCallResponse(),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        value: emptyOutputResponse('resp_empty'),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        value: textResponse('Done posting.', 'resp_retry_text'),
+      });
+
+    let stored: unknown = null;
+    const result = callModel(client, {
+      model: 'test-model',
+      input: 'Review and post a comment.',
+      tools: [
+        postCommentTool,
+      ] as const,
+      state: {
+        load: async () => stored as never,
+        save: async (s: unknown) => {
+          stored = s;
+        },
+      },
+    });
+
+    const text = await result.getText();
+    expect(text).toBe('Done posting.');
+
+    // The retried final turn must be recorded in state — the assistant
+    // message from resp_retry_text must appear in messages.
+    const messages = (
+      stored as {
+        messages: Array<{
+          type?: string;
+          role?: string;
+        }>;
+      }
+    ).messages;
+    const assistantMessages = messages.filter(
+      (m) => m.type === 'message' && m.role === 'assistant',
+    );
+    expect(assistantMessages.length).toBeGreaterThan(0);
+    expect(JSON.stringify(messages)).toContain('Done posting.');
+  });
+
+  it('does not send strictFinalResponse (or other client-only fields) to the API', async () => {
+    mockBetaResponsesSend.mockResolvedValueOnce({
+      ok: true,
+      value: textResponse('Hi.', 'resp_text'),
+    });
+
+    await callModel(client, {
+      model: 'test-model',
+      input: 'Hello',
+      strictFinalResponse: true,
+      allowFinalResponse: true,
+    }).getText();
+
+    const request = mockBetaResponsesSend.mock.calls[0]?.[1]?.responsesRequest as Record<
+      string,
+      unknown
+    >;
+    expect(request).toBeDefined();
+    expect(request).not.toHaveProperty('strictFinalResponse');
+    expect(request).not.toHaveProperty('allowFinalResponse');
+    expect(request).not.toHaveProperty('stopWhen');
+    expect(request).not.toHaveProperty('sharedContextSchema');
+    expect(request).not.toHaveProperty('onTurnStart');
+    expect(request).not.toHaveProperty('onTurnEnd');
+  });
 });

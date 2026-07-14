@@ -1362,8 +1362,11 @@ export class ModelResult<
     if (hasAsyncFunctions(this.options.request)) {
       return resolveAsyncFunctions(this.options.request, context);
     }
-    // Already resolved, extract non-function fields
-    // Filter out stopWhen and state-related fields that aren't part of the API request
+    // Already resolved, extract non-function fields.
+    // Strip ALL client-only fields — keep this list in sync with
+    // `clientOnlyFields` in async-params.ts, which handles the async path.
+    // (`sharedContextSchema` is absent here: call-model.ts destructures it
+    // before the request reaches ModelResult.)
     const {
       stopWhen: _,
       state: _s,
@@ -1371,6 +1374,10 @@ export class ModelResult<
       approveToolCalls: _a,
       rejectToolCalls: _rj,
       context: _c,
+      onTurnStart: _ots,
+      onTurnEnd: _ote,
+      allowFinalResponse: _afr,
+      strictFinalResponse: _sfr,
       ...rest
     } = this.options.request;
     return rest as ResolvedCallModelInput;
@@ -2190,6 +2197,10 @@ export class ModelResult<
       if (canTolerateEmptyFinal && isEmptyOutput) {
         const turnNumber = this.allToolExecutionRounds.length + 1;
         currentResponse = await this.retryCurrentRequest(turnNumber);
+        // Persist the retried response like every other response in the
+        // loop — otherwise stateful conversations silently lose the final
+        // turn's content on resume.
+        await this.saveResponseToState(currentResponse);
       }
 
       const allowEmptyOutput =
