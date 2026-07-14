@@ -82,9 +82,14 @@ for await (const delta of result.getReasoningStream()) {
   process.stdout.write(delta);
 }
 
-// Stream tool execution events
+// Stream tool-call argument deltas (plus preliminary results from generator tools)
 for await (const event of result.getToolStream()) {
-  console.log(event);
+  console.log(event); // { type: 'delta', content: '...' } | { type: 'preliminary_result', ... }
+}
+
+// Stream all response events, including tool execution results
+for await (const event of result.getFullResponsesStream()) {
+  // includes tool.result / tool.call_output events
 }
 
 // Stream structured tool calls
@@ -95,6 +100,17 @@ for await (const toolCall of result.getToolCallsStream()) {
 // Get all tool calls after completion
 const toolCalls = await result.getToolCalls();
 ```
+
+What each stream emits:
+
+| Method | Emits |
+|---|---|
+| `getTextStream()` | assistant text deltas |
+| `getReasoningStream()` | reasoning deltas |
+| `getToolStream()` | tool-call **argument deltas**; `preliminary_result` events for generator tools — *not* execution results |
+| `getToolCallsStream()` | parsed tool calls as they complete |
+| `getItemsStream()` | all output items (messages, function calls, …) |
+| `getFullResponsesStream()` | every response event, including `tool.result` / `tool.call_output` execution events |
 
 ### Tool Types
 
@@ -234,7 +250,8 @@ const dbTool = tool({
   inputSchema: z.object({ sql: z.string() }),
   contextSchema: z.object({ connectionString: z.string() }),
   execute: async ({ sql }, ctx) => {
-    const db = connect(ctx?.context.connectionString);
+    // Tool context is available on ctx.local
+    const db = connect(ctx?.local.connectionString);
     return db.query(sql);
   },
 });
@@ -267,13 +284,22 @@ const result = callModel(client, {
 
 ### Conversation State Management
 
-Persist multi-turn conversations with full state tracking:
+Persist multi-turn conversations with full state tracking. The `state`
+option takes a `StateAccessor` — a `{ load, save }` pair over any storage
+backend (memory, SQLite, Redis, …). The loop calls `load` before the run and
+`save` as the conversation progresses:
 
 ```typescript
-import { createInitialState, callModel } from '@openrouter/agent';
+import { callModel, type ConversationState, type StateAccessor } from '@openrouter/agent';
 
-// Start a conversation
-let state = createInitialState();
+// Any storage backend — here, a simple in-memory holder
+let stored: ConversationState | null = null;
+const state: StateAccessor = {
+  load: async () => stored,
+  save: async (s) => {
+    stored = s;
+  },
+};
 
 // First turn
 const result1 = callModel(client, {
@@ -282,11 +308,12 @@ const result1 = callModel(client, {
   tools: [searchTool] as const,
   state,
 });
+await result1.getText();
 
-// State is updated with messages, tool calls, and metadata
-state = (await result1.getResponse()).state;
+// Read the updated state (messages, tool calls, status, metadata)
+const snapshot = await result1.getState();
 
-// Continue the conversation
+// Continue the conversation — the accessor loads the saved history
 const result2 = callModel(client, {
   model: 'openai/gpt-4o',
   input: 'Now summarize what you found',
@@ -294,6 +321,9 @@ const result2 = callModel(client, {
   state,
 });
 ```
+
+`ConversationState` is plain JSON — `JSON.stringify`/`JSON.parse` it into any
+store (this is how serverless/cold-start resume works).
 
 ### Dynamic Parameters Between Turns
 
