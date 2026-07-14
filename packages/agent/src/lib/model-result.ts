@@ -844,6 +844,46 @@ export class ModelResult<
   }
 
   /**
+   * Persist state when the loop stops due to unresolved manual (client-executed)
+   * tool calls — tools with neither `execute` nor `onToolCalled`.
+   *
+   * Mirrors `persistHitlPause` so callers can read the unresolved calls via
+   * `getPendingToolCalls()` / `getState()` after the loop ends. Uses the
+   * distinct status `awaiting_client_tools` so consumers can discriminate
+   * manual pauses from HITL pauses (`awaiting_hitl`).
+   *
+   * Resume behavior: `awaiting_client_tools` is intentionally NOT treated as a
+   * resumable status for `processApprovalDecisions` — manual tools are not
+   * approved/rejected via call IDs; the caller executes them externally and
+   * typically supplies `function_call_output` items as new input on the next
+   * `callModel`. On that next call, `initStream`'s normal path flips status to
+   * `in_progress` (same as a non-decision resume of any other paused state)
+   * while leaving `pendingToolCalls` in place until the caller overwrites
+   * state. Callers should harvest pendings from the paused result before
+   * continuing.
+   *
+   * @param currentResponse - The response that produced the unresolved calls
+   * @param unresolvedCalls - Manual (or otherwise non-auto-resolvable) tool calls
+   */
+  private async persistClientToolsPause(
+    currentResponse: models.OpenResponsesResult,
+    unresolvedCalls: ParsedToolCall<Tool>[],
+  ): Promise<void> {
+    this.finalResponse = currentResponse;
+
+    if (!this.stateAccessor || unresolvedCalls.length === 0) {
+      return;
+    }
+
+    const stateUpdates: Partial<Omit<ConversationState<TTools>, 'id' | 'createdAt' | 'updatedAt'>> =
+      {
+        pendingToolCalls: unresolvedCalls as ParsedToolCall<TTools[number]>[],
+        status: 'awaiting_client_tools',
+      };
+    await this.saveStateSafely(stateUpdates);
+  }
+
+  /**
    * Compute the `output` payload sent to the model for a successfully
    * settled tool execution. Routes through `toModelOutput` when the tool
    * defines one (which may itself throw to surface an error), falls back to
@@ -1581,6 +1621,17 @@ export class ModelResult<
             ]);
             await this.saveStateSafely();
           }
+
+          // Resuming from awaiting_client_tools without going through the
+          // approval-decision path (manual tools aren't approved/rejected by
+          // call ID). Caller already harvested pendingToolCalls from the prior
+          // result; drop them so a fresh turn doesn't leave orphaned pendings.
+          // Status flip to in_progress happens below with the normal path.
+          if (loadedState.status === 'awaiting_client_tools') {
+            this.clearOptionalStateProperties([
+              'pendingToolCalls',
+            ]);
+          }
         } else {
           this.currentState = createInitialState<TTools>();
         }
@@ -1985,10 +2036,11 @@ export class ModelResult<
         return; // Paused for approval
       }
 
+      // All tool calls are manual (no execute / no onToolCalled) or otherwise
+      // non-auto-resolvable — stop and surface them as pending client tools
+      // instead of marking the conversation complete with empty pendings.
       if (!this.hasExecutableToolCalls(toolCalls)) {
-        this.validateFinalResponse(currentResponse);
-        this.finalResponse = currentResponse;
-        await this.markStateComplete();
+        await this.persistClientToolsPause(currentResponse, toolCalls);
         return;
       }
 
@@ -2018,8 +2070,12 @@ export class ModelResult<
           return;
         }
 
+        // All-manual (or otherwise non-auto-resolvable) mid-loop round: stop
+        // and persist the unresolved calls the same way the first-round guard
+        // does above, so getPendingToolCalls() surfaces them after loop end.
         if (!this.hasExecutableToolCalls(currentToolCalls)) {
-          break;
+          await this.persistClientToolsPause(currentResponse, currentToolCalls);
+          return;
         }
 
         // Build turn context
@@ -2095,9 +2151,13 @@ export class ModelResult<
         // `hasExecutableToolCalls` guards. Also covers calls to tool names
         // not present in `options.tools` at all.
         const resolvedCallIds = new Set(toolResults.map((r) => r.callId));
-        const hasUnresolvedToolCalls = currentToolCalls.some((tc) => !resolvedCallIds.has(tc.id));
-        if (hasUnresolvedToolCalls) {
-          break;
+        const unresolvedToolCalls = currentToolCalls.filter((tc) => !resolvedCallIds.has(tc.id));
+        if (unresolvedToolCalls.length > 0) {
+          // Mixed auto + manual (or unknown-name) round — regular tool outputs
+          // were already persisted via saveToolResultsToState above; surface
+          // the unresolved calls on pendingToolCalls and stop.
+          await this.persistClientToolsPause(currentResponse, unresolvedToolCalls);
+          return;
         }
 
         // Apply nextTurnParams
@@ -2832,17 +2892,22 @@ export class ModelResult<
   // =========================================================================
 
   /**
-   * Check if the conversation requires human input to continue.
+   * Check if the conversation requires human/client input to continue.
    * Returns true when the conversation is paused waiting for caller-supplied
-   * decisions — either approval/rejection (`awaiting_approval`) or HITL tool
-   * resume (`awaiting_hitl`). Also returns true whenever `pendingToolCalls`
-   * is populated regardless of status.
+   * decisions — approval/rejection (`awaiting_approval`), HITL tool resume
+   * (`awaiting_hitl`), or client-executed manual tools (`awaiting_client_tools`).
+   * Also returns true whenever `pendingToolCalls` is populated regardless of
+   * status.
    */
   async requiresApproval(): Promise<boolean> {
     await this.initStream();
 
     const status = this.currentState?.status;
-    if (status === 'awaiting_approval' || status === 'awaiting_hitl') {
+    if (
+      status === 'awaiting_approval' ||
+      status === 'awaiting_hitl' ||
+      status === 'awaiting_client_tools'
+    ) {
       return true;
     }
 
