@@ -10,6 +10,7 @@ vi.mock('@openrouter/sdk/funcs/betaResponsesSend', () => ({
 }));
 
 import { callModel } from '../../src/inner-loop/call-model.js';
+import { stepCountIs } from '../../src/lib/stop-conditions.js';
 import { ToolType } from '../../src/lib/tool-types.js';
 
 function toolCallResponse(): models.OpenResponsesResult {
@@ -186,6 +187,50 @@ describe('tool-terminal empty final response (PR-2)', () => {
 
     expect(text).toBe('Done posting.');
     expect(mockBetaResponsesSend).toHaveBeenCalledTimes(3);
+  });
+
+  it('retries the same no-tools request when allowFinalResponse returns empty', async () => {
+    mockBetaResponsesSend
+      .mockResolvedValueOnce({
+        ok: true,
+        value: toolCallResponse(),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        value: emptyOutputResponse('resp_empty'),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        value: textResponse('Done posting.', 'resp_retry_text'),
+      });
+
+    const text = await callModel(client, {
+      model: 'test-model',
+      input: 'Review and post a comment.',
+      tools: [
+        postCommentTool,
+      ] as const,
+      stopWhen: stepCountIs(0),
+      allowFinalResponse: 'Summarize the result.',
+    }).getText();
+
+    expect(text).toBe('Done posting.');
+    const finalRequest = mockBetaResponsesSend.mock.calls[1]?.[1]?.responsesRequest;
+    const retryRequest = mockBetaResponsesSend.mock.calls[2]?.[1]?.responsesRequest;
+    expect(retryRequest).toEqual(finalRequest);
+    expect(retryRequest).not.toHaveProperty('tools');
+    expect(retryRequest.input).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          type: 'function_call_output',
+          callId: 'call_abc',
+        }),
+        expect.objectContaining({
+          role: 'user',
+          content: 'Summarize the result.',
+        }),
+      ]),
+    );
   });
 
   it('throws on empty final after tool rounds when strictFinalResponse is true', async () => {

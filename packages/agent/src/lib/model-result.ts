@@ -1260,6 +1260,7 @@ export class ModelResult<
       input: newInput,
       stream: true,
     };
+    this.resolvedRequest = finalRequest;
 
     const result = await betaResponsesSend(
       this.options.client,
