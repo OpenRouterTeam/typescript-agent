@@ -160,6 +160,13 @@ export interface GetResponseOptions<
    * a final user message.
    */
   allowFinalResponse?: boolean | string;
+  /**
+   * When true, always throw if the final response has an empty `output` array
+   * (legacy behavior). Default false: after at least one completed tool
+   * execution round, an empty final turn is retried once and then accepted
+   * so tool-terminal runs are not reported as failures.
+   */
+  strictFinalResponse?: boolean;
 }
 
 /**
@@ -1284,15 +1291,64 @@ export class ModelResult<
    * Validate the final response has required fields.
    *
    * @param response - The response to validate
+   * @param allowEmptyOutput - When true, tolerate an empty (but present) output array
    * @throws Error if response is missing required fields or has invalid output
    */
-  private validateFinalResponse(response: models.OpenResponsesResult): void {
+  private validateFinalResponse(
+    response: models.OpenResponsesResult,
+    allowEmptyOutput = false,
+  ): void {
     if (!response?.id || !response?.output) {
       throw new Error('Invalid final response: missing required fields');
     }
     if (!Array.isArray(response.output) || response.output.length === 0) {
+      if (allowEmptyOutput) {
+        return;
+      }
       throw new Error('Invalid final response: empty or invalid output');
     }
+  }
+
+  /**
+   * Re-send the current resolved request (same accumulated input) once.
+   * Used when a follow-up after tool execution returned an empty `output`.
+   */
+  private async retryCurrentRequest(turnNumber: number): Promise<models.OpenResponsesResult> {
+    if (!this.resolvedRequest) {
+      throw new Error('Request not initialized');
+    }
+
+    const newRequest: models.ResponsesRequest = {
+      ...this.resolvedRequest,
+      stream: true,
+    };
+
+    const newResult = await betaResponsesSend(
+      this.options.client,
+      {
+        responsesRequest: newRequest,
+      },
+      this.options.options,
+    );
+
+    if (!newResult.ok) {
+      throw newResult.error;
+    }
+
+    const value = newResult.value;
+    if (isEventStream(value)) {
+      const followUpStream = new ReusableReadableStream(value);
+
+      if (this.turnBroadcaster) {
+        return this.pipeAndConsumeStream(followUpStream, turnNumber);
+      }
+
+      return consumeStreamForCompletion(followUpStream);
+    }
+    if (this.isNonStreamingResponse(value)) {
+      return value;
+    }
+    throw new Error('Unexpected response type from API');
   }
 
   /**
@@ -1894,6 +1950,8 @@ export class ModelResult<
       );
 
       if (!this.options.tools?.length || !hasToolCalls) {
+        // No tool work: keep hard throw on empty/invalid final output.
+        this.validateFinalResponse(currentResponse);
         this.finalResponse = currentResponse;
         await this.markStateComplete();
         return;
@@ -1908,6 +1966,7 @@ export class ModelResult<
       }
 
       if (!this.hasExecutableToolCalls(toolCalls)) {
+        this.validateFinalResponse(currentResponse);
         this.finalResponse = currentResponse;
         await this.markStateComplete();
         return;
@@ -2119,8 +2178,26 @@ export class ModelResult<
         await this.saveResponseToState(currentResponse);
       }
 
-      // Validate and finalize
-      this.validateFinalResponse(currentResponse);
+      // Validate and finalize. Mini-class models intermittently return an
+      // empty final turn after a successful tool round (the tool call was
+      // the answer). Retry once, then tolerate empty output so a completed
+      // run isn't reported as failure — unless `strictFinalResponse` is set.
+      const canTolerateEmptyFinal =
+        this.allToolExecutionRounds.length > 0 && this.options.strictFinalResponse !== true;
+      const isEmptyOutput =
+        Array.isArray(currentResponse.output) && currentResponse.output.length === 0;
+
+      if (canTolerateEmptyFinal && isEmptyOutput) {
+        const turnNumber = this.allToolExecutionRounds.length + 1;
+        currentResponse = await this.retryCurrentRequest(turnNumber);
+      }
+
+      const allowEmptyOutput =
+        canTolerateEmptyFinal &&
+        Array.isArray(currentResponse.output) &&
+        currentResponse.output.length === 0;
+
+      this.validateFinalResponse(currentResponse, allowEmptyOutput);
       this.finalResponse = currentResponse;
       await this.markStateComplete();
     })();

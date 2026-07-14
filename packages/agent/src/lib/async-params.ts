@@ -98,6 +98,12 @@ type BaseCallModelInput<
    * (HITL pause, approval pause, interruption, or natural completion).
    */
   allowFinalResponse?: boolean | string;
+  /**
+   * When true, throw if the final response has an empty `output` array even
+   * after completed tool rounds (legacy behavior). Default false: empty
+   * finals after tool work are retried once, then accepted with empty text.
+   */
+  strictFinalResponse?: boolean;
 };
 
 /**
@@ -199,6 +205,7 @@ export async function resolveAsyncFunctions<TTools extends readonly Tool[] = rea
     'onTurnStart', // Client-side turn start callback
     'onTurnEnd', // Client-side turn end callback
     'allowFinalResponse', // Client-side: triggers no-tools final turn when stopWhen breaks the loop
+    'strictFinalResponse', // Client-side: restore throw on empty final after tool rounds
   ]);
 
   // Iterate over all keys in the input

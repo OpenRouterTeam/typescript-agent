@@ -101,6 +101,7 @@ export function callModel<
     onTurnStart,
     onTurnEnd,
     allowFinalResponse,
+    strictFinalResponse,
     ...apiRequest
   } = request;
 
@@ -164,6 +165,9 @@ export function callModel<
     }),
     ...(allowFinalResponse !== undefined && {
       allowFinalResponse,
+    }),
+    ...(strictFinalResponse !== undefined && {
+      strictFinalResponse,
     }),
   } as GetResponseOptions<TTools, TShared>);
 }
