@@ -235,6 +235,153 @@ describe('manual tool pending state (PR-4)', () => {
     });
   });
 
+  it('clears pending manual calls only after a resume succeeds', async () => {
+    const { accessor, get } = createMemoryAccessor();
+    mockBetaResponsesSend
+      .mockResolvedValueOnce({
+        ok: true,
+        value: makeResponse('resp_manual', [
+          functionCallItem('call_manual_1', 'exec_command', '{"command":"pwd"}'),
+        ]),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        value: makeResponse('resp_done', [
+          {
+            id: 'msg_done',
+            type: 'message',
+            role: 'assistant',
+            status: 'completed',
+            content: [
+              {
+                type: 'output_text',
+                text: 'done',
+                annotations: [],
+              },
+            ],
+          },
+        ]),
+      });
+
+    await callModel(client, {
+      model: 'test-model',
+      input: 'run pwd',
+      tools: [
+        manualTool,
+      ] as const,
+      state: accessor,
+    }).getPendingToolCalls();
+
+    await callModel(client, {
+      model: 'test-model',
+      input: [
+        {
+          type: 'function_call_output',
+          callId: 'call_manual_1',
+          output: '{"stdout":"/tmp"}',
+        },
+      ],
+      tools: [
+        manualTool,
+      ] as const,
+      state: accessor,
+    }).getResponse();
+
+    expect(get()?.status).toBe('complete');
+    expect(get()?.pendingToolCalls).toBeUndefined();
+  });
+
+  it('keeps pending manual calls when a resume request fails', async () => {
+    const { accessor, get } = createMemoryAccessor();
+    mockBetaResponsesSend.mockResolvedValueOnce({
+      ok: true,
+      value: makeResponse('resp_manual', [
+        functionCallItem('call_manual_1', 'exec_command', '{"command":"pwd"}'),
+      ]),
+    });
+
+    await callModel(client, {
+      model: 'test-model',
+      input: 'run pwd',
+      tools: [
+        manualTool,
+      ] as const,
+      state: accessor,
+    }).getPendingToolCalls();
+
+    mockBetaResponsesSend.mockResolvedValueOnce({
+      ok: false,
+      error: new Error('temporary failure'),
+    });
+
+    await expect(
+      callModel(client, {
+        model: 'test-model',
+        input: [
+          {
+            type: 'function_call_output',
+            callId: 'call_manual_1',
+            output: '{"stdout":"/tmp"}',
+          },
+        ],
+        tools: [
+          manualTool,
+        ] as const,
+        state: accessor,
+      }).getResponse(),
+    ).rejects.toThrow('temporary failure');
+
+    expect(get()?.status).toBe('awaiting_client_tools');
+    expect(get()?.pendingToolCalls?.[0]?.id).toBe('call_manual_1');
+  });
+
+  it('does not mutate a loaded paused-state object before resume succeeds', async () => {
+    const pausedState: ConversationState = {
+      id: 'conv_manual',
+      messages: [
+        functionCallItem('call_manual_1', 'exec_command', '{"command":"pwd"}'),
+      ],
+      pendingToolCalls: [
+        {
+          id: 'call_manual_1',
+          name: 'exec_command',
+          arguments: {
+            command: 'pwd',
+          },
+        },
+      ],
+      status: 'awaiting_client_tools',
+      createdAt: 0,
+      updatedAt: 0,
+    };
+    const accessor: StateAccessor = {
+      load: async () => pausedState,
+      save: async () => undefined,
+    };
+    mockBetaResponsesSend.mockResolvedValueOnce({
+      ok: true,
+      value: makeResponse('resp_done', []),
+    });
+
+    await callModel(client, {
+      model: 'test-model',
+      input: [
+        {
+          type: 'function_call_output',
+          callId: 'call_manual_1',
+          output: '{"stdout":"/tmp"}',
+        },
+      ],
+      tools: [
+        manualTool,
+      ] as const,
+      state: accessor,
+    }).getResponse();
+
+    expect(pausedState.status).toBe('awaiting_client_tools');
+    expect(pausedState.pendingToolCalls?.[0]?.id).toBe('call_manual_1');
+  });
+
   it('HITL pause still yields awaiting_hitl (no regression)', async () => {
     mockBetaResponsesSend.mockResolvedValueOnce({
       ok: true,

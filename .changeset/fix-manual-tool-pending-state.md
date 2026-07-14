@@ -8,4 +8,4 @@ Previously, HITL pauses (`onToolCalled → null`) correctly populated `pendingTo
 
 - New `ConversationStatus` value: `'awaiting_client_tools'` (additive; does not replace `'awaiting_hitl'`).
 - Mixed auto+manual rounds still execute/persist regular tool outputs, then pause with only the unresolved manual calls in `pendingToolCalls`.
-- Resume with new input from `'awaiting_client_tools'` clears the stale pendings and continues as a normal turn — callers should harvest `getPendingToolCalls()` from the paused result before continuing. Manual tools are not approved/rejected via call IDs (unlike HITL/`awaiting_approval`).
+- A successful resume with new input from `'awaiting_client_tools'` clears the stale pendings and continues as a normal turn. Failed resume requests leave the paused state intact. Manual tools are not approved/rejected via call IDs (unlike HITL/`awaiting_approval`).

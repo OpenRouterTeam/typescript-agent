@@ -230,6 +230,7 @@ export class ModelResult<
   private resolvedRequest: models.ResponsesRequest | null = null;
   // Fresh user items to persist atomically with the assistant response
   private pendingFreshItems: models.BaseInputsUnion[] | undefined;
+  private resumingFromClientTools = false;
 
   // State management for multi-turn conversations
   private stateAccessor: StateAccessor<TTools> | null = null;
@@ -525,10 +526,23 @@ export class ModelResult<
       this.pendingFreshItems = undefined;
     }
 
-    await this.saveStateSafely({
-      messages: appendToMessages(messages, outputItems as models.BaseInputsUnion[]),
-      previousResponseId: response.id,
-    });
+    const stateUpdates: Partial<Omit<ConversationState<TTools>, 'id' | 'createdAt' | 'updatedAt'>> =
+      {
+        messages: appendToMessages(messages, outputItems as models.BaseInputsUnion[]),
+        previousResponseId: response.id,
+      };
+    if (this.resumingFromClientTools) {
+      this.currentState = {
+        ...this.currentState,
+      };
+      this.clearOptionalStateProperties([
+        'pendingToolCalls',
+      ]);
+      this.resumingFromClientTools = false;
+      stateUpdates.status = 'in_progress';
+    }
+
+    await this.saveStateSafely(stateUpdates);
   }
 
   /**
@@ -856,11 +870,8 @@ export class ModelResult<
    * resumable status for `processApprovalDecisions` — manual tools are not
    * approved/rejected via call IDs; the caller executes them externally and
    * typically supplies `function_call_output` items as new input on the next
-   * `callModel`. On that next call, `initStream`'s normal path flips status to
-   * `in_progress` (same as a non-decision resume of any other paused state)
-   * while leaving `pendingToolCalls` in place until the caller overwrites
-   * state. Callers should harvest pendings from the paused result before
-   * continuing.
+   * `callModel`. The paused status and calls remain durable until that request
+   * produces a response; they are then cleared atomically with the response.
    *
    * @param currentResponse - The response that produced the unresolved calls
    * @param unresolvedCalls - Manual (or otherwise non-auto-resolvable) tool calls
@@ -1622,24 +1633,19 @@ export class ModelResult<
             await this.saveStateSafely();
           }
 
-          // Resuming from awaiting_client_tools without going through the
-          // approval-decision path (manual tools aren't approved/rejected by
-          // call ID). Caller already harvested pendingToolCalls from the prior
-          // result; drop them so a fresh turn doesn't leave orphaned pendings.
-          // Status flip to in_progress happens below with the normal path.
-          if (loadedState.status === 'awaiting_client_tools') {
-            this.clearOptionalStateProperties([
-              'pendingToolCalls',
-            ]);
-          }
+          // Keep manual calls durable until the resumed request produces a
+          // response. Clearing before the API call would lose the only copy if
+          // that request failed.
+          this.resumingFromClientTools = loadedState.status === 'awaiting_client_tools';
         } else {
           this.currentState = createInitialState<TTools>();
         }
 
-        // Update status to in_progress
-        await this.saveStateSafely({
-          status: 'in_progress',
-        });
+        if (!this.resumingFromClientTools) {
+          await this.saveStateSafely({
+            status: 'in_progress',
+          });
+        }
       }
 
       // Resolve async functions before initial request
