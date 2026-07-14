@@ -24,18 +24,30 @@ export interface ExecuteChainOptions {
    * not validated.
    */
   readonly resultSchema?: $ZodType | undefined;
+  /**
+   * Invoked when a handler's fire-and-forget `work` exceeds its
+   * `asyncTimeout`. The manager uses this to abort the emit's signal so
+   * handlers that observe `context.signal` can cancel the stale work.
+   */
+  readonly onAsyncTimeout?: ((hookName: string) => void) | undefined;
 }
 
 /**
- * Returns true for non-null, non-array plain objects -- values where
- * object-spread cloning is safe. Custom hooks can register payload schemas
- * like `z.number()`, `z.string()`, or `z.array(...)`; spreading a primitive
- * silently produces `{}` and spreading an array reindexes it into an object,
- * which would hand handlers a mangled value. This mirrors the invariant that
- * `applyMutations` relies on when deciding whether mutation piping can run.
+ * Returns true only for plain objects (prototype of `Object.prototype` or
+ * `null`) -- values where object-spread cloning is safe. Custom hooks can
+ * register payload schemas like `z.number()`, `z.string()`, `z.array(...)`,
+ * or `z.date()`; spreading a primitive silently produces `{}`, spreading an
+ * array reindexes it into an object, and spreading a `Date`/`Map`/class
+ * instance flattens it to a near-empty POJO. All of those would hand handlers
+ * a mangled value, so only true plain objects are cloned; everything else
+ * passes through untouched (and does not participate in mutation piping).
  */
 function isPlainMutableObject(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
+  if (typeof value !== 'object' || value === null) {
+    return false;
+  }
+  const proto = Object.getPrototypeOf(value);
+  return proto === Object.prototype || proto === null;
 }
 
 /**
@@ -85,6 +97,7 @@ export async function executeHandlerChain<P, R>(
       } as P)
     : initialPayload;
   let blocked = false;
+  let mutated = false;
 
   const blockField = BLOCK_FIELDS[options.hookName];
   const canBlock = BLOCK_HOOKS.has(options.hookName);
@@ -103,20 +116,30 @@ export async function executeHandlerChain<P, R>(
       continue;
     }
 
-    // Matcher check for tool-scoped hooks. Matchers fail closed: if a matcher
-    // is registered and no toolName is available for this emit, we skip the
-    // handler rather than invoking it globally.
-    if (entry.matcher !== undefined) {
-      if (options.toolName === undefined) {
-        continue;
+    // Matcher and filter checks run under the same error policy as handlers:
+    // in non-strict mode a throwing user-supplied matcher function or filter
+    // is logged and the entry skipped, instead of crashing the whole chain.
+    //
+    // Matchers fail closed: if a matcher is registered and no toolName is
+    // available for this emit, we skip the handler rather than invoking it
+    // globally.
+    let shouldRun: boolean;
+    try {
+      shouldRun =
+        (entry.matcher === undefined ||
+          (options.toolName !== undefined && matchesTool(entry.matcher, options.toolName))) &&
+        (!entry.filter || Boolean(entry.filter(currentPayload)));
+    } catch (error) {
+      if (options.throwOnHandlerError) {
+        throw error;
       }
-      if (!matchesTool(entry.matcher, options.toolName)) {
-        continue;
-      }
+      console.warn(
+        `[HooksManager] Matcher/filter for handler ${i} of hook "${options.hookName}" threw:`,
+        error,
+      );
+      continue;
     }
-
-    // Filter check
-    if (entry.filter && !entry.filter(currentPayload)) {
+    if (!shouldRun) {
       continue;
     }
 
@@ -127,7 +150,7 @@ export async function executeHandlerChain<P, R>(
       // detached work. Track the (optional) work promise for drain/timeout.
       if (isAsyncOutput(returnValue)) {
         const asyncOutput: AsyncOutput = returnValue;
-        const trackedWork = trackAsyncWork(asyncOutput, options.hookName);
+        const trackedWork = trackAsyncWork(asyncOutput, options.hookName, options.onAsyncTimeout);
         if (trackedWork !== undefined) {
           pending.push(trackedWork);
         }
@@ -165,7 +188,11 @@ export async function executeHandlerChain<P, R>(
 
       // Apply mutation piping -- only hooks listed in MUTATION_FIELD_MAP participate.
       if (mutationMap) {
-        currentPayload = applyMutations(currentPayload, result, mutationMap);
+        const applied = applyMutations(currentPayload, result, mutationMap);
+        if (applied !== currentPayload) {
+          currentPayload = applied;
+          mutated = true;
+        }
       }
 
       // Short-circuit on block
@@ -186,6 +213,7 @@ export async function executeHandlerChain<P, R>(
     pending,
     finalPayload: currentPayload,
     blocked,
+    mutated,
   };
 }
 
@@ -194,11 +222,21 @@ export async function executeHandlerChain<P, R>(
  * when the handler's detached `work` settles OR the timeout fires -- whichever
  * is first. Returns `undefined` if there is no work to track.
  *
+ * On timeout, `onTimeout` is invoked (the manager uses it to abort the emit's
+ * signal) and the tracking promise resolves so `drain()` stops waiting. The
+ * detached `work` itself cannot be forcibly cancelled -- handlers must observe
+ * `context.signal` to actually stop; the timeout only bounds how long the
+ * manager waits and signals cancellation cooperatively.
+ *
  * Rejections of the detached `work` promise are logged as warnings. Note:
  * `throwOnHandlerError` governs synchronous handler failures only -- detached
  * fire-and-forget work never re-throws here, it just surfaces via the warning.
  */
-function trackAsyncWork(output: AsyncOutput, hookName: string): Promise<void> | undefined {
+function trackAsyncWork(
+  output: AsyncOutput,
+  hookName: string,
+  onTimeout?: (hookName: string) => void,
+): Promise<void> | undefined {
   if (output.work === undefined) {
     return undefined;
   }
@@ -215,7 +253,15 @@ function trackAsyncWork(output: AsyncOutput, hookName: string): Promise<void> | 
       resolve();
     };
 
-    const timeoutId = setTimeout(finish, timeout);
+    const timeoutId = setTimeout(() => {
+      if (!settled) {
+        console.warn(
+          `[HooksManager] Async work for hook "${hookName}" exceeded its ${timeout}ms timeout; abandoning wait.`,
+        );
+        onTimeout?.(hookName);
+      }
+      finish();
+    }, timeout);
     // In Node.js, Timeout objects expose `.unref()` to remove the reference
     // the timer holds on the event loop. Without this, a leaked hook whose
     // `work` never settles keeps the process alive for the full

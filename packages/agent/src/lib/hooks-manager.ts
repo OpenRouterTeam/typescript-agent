@@ -1,7 +1,7 @@
 import type { $ZodType, infer as zodInfer } from 'zod/v4/core';
 import { safeParse } from 'zod/v4/core';
 import { executeHandlerChain } from './hooks-emit.js';
-import { BUILT_IN_HOOK_NAMES, BUILT_IN_HOOKS, VOID_RESULT_HOOKS } from './hooks-schemas.js';
+import { BUILT_IN_HOOK_NAMES, BUILT_IN_HOOKS } from './hooks-schemas.js';
 import type {
   BuiltInHookDefinitions,
   EmitResult,
@@ -74,9 +74,12 @@ export class HooksManager<Custom extends HookRegistry = Record<string, never>> {
   constructor(customHooks?: Custom, options?: HooksManagerOptions) {
     this.throwOnHandlerError = options?.throwOnHandlerError ?? false;
 
-    // Validate no collisions between custom and built-in hook names.
+    // Validate custom hook names: no empty names, no collisions with built-ins.
     if (customHooks) {
       for (const name of Object.keys(customHooks)) {
+        if (name === '') {
+          throw new Error('Custom hook names must be non-empty strings.');
+        }
         if (BUILT_IN_HOOK_NAMES.has(name)) {
           throw new Error(
             `Custom hook name "${name}" collides with a built-in hook. Choose a different name.`,
@@ -127,6 +130,9 @@ export class HooksManager<Custom extends HookRegistry = Record<string, never>> {
     }
 
     list.splice(idx, 1);
+    if (list.length === 0) {
+      this.entries.delete(hookName);
+    }
     return true;
   }
 
@@ -162,6 +168,13 @@ export class HooksManager<Custom extends HookRegistry = Record<string, never>> {
     // registered after this emit began.
     const list = (this.entries.get(hookName) ?? []).slice();
 
+    // Validate the payload and, on success, feed the PARSED value into the
+    // chain. For schemas with .transform() / .default() / .coerce (or that
+    // strip unknown keys) the parsed output differs from the raw input, and
+    // `zodInfer` types handler payloads as the schema OUTPUT -- so handlers
+    // must receive `parsed.data`, not the raw value, or the runtime shape
+    // silently diverges from the static types.
+    let chainPayload: PayloadOf<AllHooks<Custom>, K> = payload;
     const definition = this._definitionFor(hookName);
     if (definition) {
       const parsed = safeParse(definition.payload, payload);
@@ -178,8 +191,10 @@ export class HooksManager<Custom extends HookRegistry = Record<string, never>> {
           pending: [],
           finalPayload: payload,
           blocked: false,
+          mutated: false,
         };
       }
+      chainPayload = parsed.data as PayloadOf<AllHooks<Custom>, K>;
     }
 
     const controller = new AbortController();
@@ -196,36 +211,63 @@ export class HooksManager<Custom extends HookRegistry = Record<string, never>> {
       sessionId: contextSessionId,
     };
 
+    let hasDetachedWork = false;
     try {
+      // Result validation is skipped for hooks whose result schema is void --
+      // decided by SCHEMA SHAPE, not by a hard-coded name list, so custom
+      // hooks registered with `result: z.void()` behave exactly like the
+      // built-in void hooks (handlers may return arbitrary values that are
+      // collected as opaque results without complaint).
       const resultSchema =
-        definition && !VOID_RESULT_HOOKS.has(hookName) ? definition.result : undefined;
+        definition && !isVoidSchema(definition.result) ? definition.result : undefined;
 
       const result = await executeHandlerChain(
         list as ReadonlyArray<
           HookEntry<PayloadOf<AllHooks<Custom>, K>, ResultOf<AllHooks<Custom>, K>>
         >,
-        payload,
+        chainPayload,
         context,
         {
           hookName,
           throwOnHandlerError: this.throwOnHandlerError,
           toolName: emitContext?.toolName,
           resultSchema,
+          // When a handler's fire-and-forget work exceeds its asyncTimeout,
+          // abort this emit's signal so handlers observing context.signal can
+          // cancel the stale work cooperatively.
+          onAsyncTimeout: () => {
+            controller.abort(new Error('Hook async work timed out'));
+          },
         },
       );
 
       // Track pending async work for drain(); each promise self-removes once
       // it settles so the set can't grow unbounded across many emits.
-      for (const p of result.pending) {
-        this.pendingAsync.add(p);
-        p.finally(() => {
-          this.pendingAsync.delete(p);
-        });
+      hasDetachedWork = result.pending.length > 0;
+      if (hasDetachedWork) {
+        let remaining = result.pending.length;
+        for (const p of result.pending) {
+          this.pendingAsync.add(p);
+          p.finally(() => {
+            this.pendingAsync.delete(p);
+            // The emit's controller must stay registered until the detached
+            // work settles so abortInflight() can reach fire-and-forget
+            // handlers that outlive the emit call itself.
+            remaining--;
+            if (remaining === 0) {
+              this.inflightControllers.delete(controller);
+            }
+          });
+        }
       }
 
       return result;
     } finally {
-      this.inflightControllers.delete(controller);
+      // With detached work in flight the controller lives until that work
+      // settles (see above); otherwise it can be dropped now.
+      if (!hasDetachedWork) {
+        this.inflightControllers.delete(controller);
+      }
     }
   }
 
@@ -312,4 +354,22 @@ export class HooksManager<Custom extends HookRegistry = Record<string, never>> {
  */
 export function getInternalRegistrar(manager: HooksManager): InternalRegistrar {
   return manager[INTERNAL_REGISTRAR_KEY].bind(manager);
+}
+
+/**
+ * Detect a `z.void()` schema (zod v4 core). Result validation is skipped for
+ * void-result hooks so side-effect-only handlers can return arbitrary values
+ * without tripping validation -- for built-ins and custom hooks alike.
+ */
+function isVoidSchema(schema: $ZodType): boolean {
+  const def = (
+    schema as {
+      _zod?: {
+        def?: {
+          type?: string;
+        };
+      };
+    }
+  )._zod?.def;
+  return def?.type === 'void';
 }

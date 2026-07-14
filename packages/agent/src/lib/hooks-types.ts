@@ -110,6 +110,14 @@ export interface EmitResult<R, P> {
   readonly finalPayload: P;
   /** True if any handler triggered a block/reject short-circuit. */
   readonly blocked: boolean;
+  /**
+   * True if any handler's result actually piped a mutation into the payload
+   * (e.g. PreToolUse `mutatedInput`, UserPromptSubmit `mutatedPrompt`).
+   * Callers should use this rather than comparing `finalPayload` references,
+   * since payload validation may clone the object even when no handler
+   * mutated it.
+   */
+  readonly mutated: boolean;
 }
 
 //#endregion
@@ -303,23 +311,23 @@ export function isAsyncOutput(value: unknown): value is AsyncOutput {
  * Mutation field mapping for payload piping, per hook name.
  *
  * The outer key is the hook name; the inner map is from result field name to
- * the payload field it replaces. Only hooks listed here support mutation
- * piping. Custom hooks opt in by supplying their own entry on the manager
- * (currently only the built-in mapping is honored).
+ * the payload field it replaces. Only the built-in hooks listed here support
+ * mutation piping; custom hooks do not participate.
  */
-export const MUTATION_FIELD_MAP: Record<string, Record<string, string>> = {
-  PreToolUse: {
-    mutatedInput: 'toolInput',
-  },
-  UserPromptSubmit: {
-    mutatedPrompt: 'prompt',
-  },
-};
+export const MUTATION_FIELD_MAP: Readonly<Record<string, Readonly<Record<string, string>>>> =
+  Object.freeze({
+    PreToolUse: Object.freeze({
+      mutatedInput: 'toolInput',
+    }),
+    UserPromptSubmit: Object.freeze({
+      mutatedPrompt: 'prompt',
+    }),
+  });
 
 /**
  * Hook names that support short-circuit blocking.
  */
-export const BLOCK_HOOKS = new Set<string>([
+export const BLOCK_HOOKS: ReadonlySet<string> = new Set([
   'PreToolUse',
   'UserPromptSubmit',
 ]);
@@ -327,9 +335,9 @@ export const BLOCK_HOOKS = new Set<string>([
 /**
  * Result fields that trigger short-circuit.
  */
-export const BLOCK_FIELDS: Record<string, string> = {
+export const BLOCK_FIELDS: Readonly<Record<string, string>> = Object.freeze({
   PreToolUse: 'block',
   UserPromptSubmit: 'reject',
-};
+});
 
 //#endregion

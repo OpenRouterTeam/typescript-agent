@@ -1,6 +1,12 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { executeHandlerChain } from '../../src/lib/hooks-emit.js';
 import type { HookEntry, LifecycleHookContext } from '../../src/lib/hooks-types.js';
+
+// Spy hygiene: a failed assertion before an inline mockRestore() would
+// otherwise leak the console spy into subsequent tests in this file.
+afterEach(() => {
+  vi.restoreAllMocks();
+});
 
 function makeContext(hookName = 'TestHook'): LifecycleHookContext {
   return {
@@ -368,8 +374,9 @@ describe('executeHandlerChain (adversarial)', () => {
   });
 
   describe('filter edge cases', () => {
-    it('throwing filter is caught in non-strict mode', async () => {
+    it('throwing filter is caught in non-strict mode and later handlers still run', async () => {
       const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const laterHandler = vi.fn();
       const entries: HookEntry<unknown, void>[] = [
         {
           filter: () => {
@@ -377,18 +384,51 @@ describe('executeHandlerChain (adversarial)', () => {
           },
           handler: vi.fn(),
         },
+        {
+          handler: laterHandler,
+        },
       ];
 
-      // The filter throw happens inside the try block since filter is called
-      // before handler. Let's verify current behavior.
-      // Looking at the code: filter is called OUTSIDE the try block!
-      // This means a throwing filter will propagate.
-      await expect(
-        executeHandlerChain(entries, {}, makeContext(), {
-          hookName: 'Test',
-          throwOnHandlerError: false,
-        }),
-      ).rejects.toThrow('filter boom');
+      // Non-strict mode: a throwing filter is logged and the entry skipped;
+      // the chain continues to subsequent handlers instead of rejecting.
+      const result = await executeHandlerChain(entries, {}, makeContext(), {
+        hookName: 'Test',
+        throwOnHandlerError: false,
+      });
+
+      expect(result.blocked).toBe(false);
+      expect(laterHandler).toHaveBeenCalledOnce();
+      expect(warnSpy).toHaveBeenCalledWith(
+        expect.stringContaining('Matcher/filter for handler 0'),
+        expect.any(Error),
+      );
+
+      warnSpy.mockRestore();
+    });
+
+    it('throwing function matcher is caught in non-strict mode', async () => {
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const laterHandler = vi.fn();
+      const entries: HookEntry<unknown, void>[] = [
+        {
+          matcher: () => {
+            throw new Error('matcher boom');
+          },
+          handler: vi.fn(),
+        },
+        {
+          handler: laterHandler,
+        },
+      ];
+
+      await executeHandlerChain(entries, {}, makeContext(), {
+        hookName: 'Test',
+        throwOnHandlerError: false,
+        toolName: 'Bash',
+      });
+
+      expect(laterHandler).toHaveBeenCalledOnce();
+      expect(warnSpy).toHaveBeenCalled();
 
       warnSpy.mockRestore();
     });

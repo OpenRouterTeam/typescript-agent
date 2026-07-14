@@ -60,23 +60,21 @@ describe('matchesTool (adversarial)', () => {
       expect(() => matchesTool(throwingMatcher, 'Bash')).toThrow('matcher boom');
     });
 
-    it('function matcher returning truthy non-boolean is NOT coerced to true', () => {
-      // BUG: matchesTool returns raw value from function, not boolean-coerced.
-      // Callers that do strict === true checks will behave differently than truthiness checks.
+    it('function matcher returning truthy non-boolean is coerced to true', () => {
+      // Regression: matchesTool must coerce so its declared `boolean` return
+      // type holds at runtime and strict === comparisons behave.
       const truthyMatcher = () => 1 as unknown as boolean;
-      expect(matchesTool(truthyMatcher, 'Bash')).toBe(1);
+      expect(matchesTool(truthyMatcher, 'Bash')).toBe(true);
     });
 
-    it('function matcher returning 0 (falsy) is NOT coerced to false', () => {
-      // BUG: returns 0 instead of false — truthiness check works but strict equality fails
+    it('function matcher returning 0 (falsy) is coerced to false', () => {
       const falsyMatcher = () => 0 as unknown as boolean;
-      expect(matchesTool(falsyMatcher, 'Bash')).toBe(0);
+      expect(matchesTool(falsyMatcher, 'Bash')).toBe(false);
     });
 
-    it('function matcher returning null is NOT coerced to false', () => {
-      // BUG: returns null instead of false — truthiness check works but strict equality fails
+    it('function matcher returning null is coerced to false', () => {
       const nullMatcher = () => null as unknown as boolean;
-      expect(matchesTool(nullMatcher, 'Bash')).toBe(null);
+      expect(matchesTool(nullMatcher, 'Bash')).toBe(false);
     });
   });
 

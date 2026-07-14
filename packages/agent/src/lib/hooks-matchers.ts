@@ -6,7 +6,8 @@ import type { ToolMatcher } from './hooks-types.js';
  * - `undefined` -> wildcard, matches all tools
  * - `string` -> exact match
  * - `RegExp` -> `.test(toolName)`
- * - `function` -> arbitrary predicate
+ * - `function` -> arbitrary predicate (truthy/falsy returns are coerced to
+ *   boolean so the declared `boolean` return type holds at runtime)
  */
 export function matchesTool(matcher: ToolMatcher | undefined, toolName: string): boolean {
   if (matcher === undefined) {
@@ -22,5 +23,5 @@ export function matchesTool(matcher: ToolMatcher | undefined, toolName: string):
     matcher.lastIndex = 0;
     return matcher.test(toolName);
   }
-  return matcher(toolName);
+  return Boolean(matcher(toolName));
 }

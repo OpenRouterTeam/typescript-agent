@@ -13,7 +13,7 @@
  */
 import type { OpenRouterCore } from '@openrouter/sdk/core';
 import type { OpenResponsesResult } from '@openrouter/sdk/models';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { z } from 'zod/v4';
 import { HooksManager } from '../../src/lib/hooks-manager.js';
 import { ModelResult } from '../../src/lib/model-result.js';
@@ -26,6 +26,12 @@ import type {
   UnsentToolResult,
 } from '../../src/lib/tool-types.js';
 import { ToolType } from '../../src/lib/tool-types.js';
+
+// Spy hygiene: a failed assertion before an inline mockRestore() would
+// otherwise leak the console spy into subsequent tests in this file.
+afterEach(() => {
+  vi.restoreAllMocks();
+});
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -803,18 +809,27 @@ describe('ModelResult hooks integration', () => {
     });
 
     it('forceResume loop is capped so a misbehaving hook cannot spin forever', async () => {
-      // Simulate the core Stop-hook loop: if a handler returns forceResume
-      // repeatedly without any state progress, the guard must break after a
-      // small number of iterations. We exercise this by wiring up a minimal
-      // shouldStopExecution() stub + the Stop handler and driving the loop
-      // directly, then asserting the iteration count.
+      // Drive the REAL executeToolsIfNeeded loop: shouldStopExecution always
+      // fires, the Stop handler always returns forceResume, and no tool round
+      // ever runs (no progress). The engine must cap the overrides at
+      // MAX_FORCE_RESUME_OVERRIDES (3), warn, and terminate — rather than
+      // spinning forever.
       const hooks = new HooksManager();
+      let stopCalls = 0;
       hooks.on('Stop', {
-        handler: () => ({
-          forceResume: true,
-        }),
+        handler: () => {
+          stopCalls++;
+          return {
+            forceResume: true,
+          };
+        },
       });
+
+      const tool = makeAutoTool('t');
       const m = buildModelResult({
+        tools: [
+          tool,
+        ] as const,
         hooks,
       });
       const ent = internal(m);
@@ -825,37 +840,38 @@ describe('ModelResult hooks integration', () => {
         createdAt: 0,
         updatedAt: 0,
       } as ConversationState<readonly Tool[]>;
+      ent.initPromise = Promise.resolve();
 
-      // This simulation mirrors the loop structure in executeToolsIfNeeded():
-      // run until shouldStop (always true here), emit Stop, count forceResume
-      // overrides and break after MAX. The check is that a handler always
-      // returning forceResume:true is capped at MAX overrides — proving the
-      // guard works without letting the loop spin indefinitely.
-      const MAX = 3;
-      let iters = 0;
-      let overrides = 0;
-      while (iters < 10) {
-        iters++;
-        const stopEmit = await hooks.emit('Stop', {
-          reason: 'max_turns',
-          sessionId: 'conv_stop_cap',
-        });
-        const force = stopEmit.results.some(
-          (r) => r && typeof r === 'object' && 'forceResume' in r && r.forceResume === true,
-        );
-        if (!force) {
-          break;
-        }
-        if (overrides >= MAX) {
-          break;
-        }
-        overrides++;
-      }
-      // Use the `ent` reference in an assertion so the typecheck does not
-      // flag it as unused.
-      expect(ent.currentState?.id).toBe('conv_stop_cap');
-      expect(overrides).toBe(MAX);
-      expect(iters).toBe(MAX + 1); // MAX iterations + 1 final iteration that breaks
+      const toolCallResponse = {
+        ...makeResponse(),
+        output: [
+          {
+            type: 'function_call',
+            id: 'out_1',
+            callId: 'c1',
+            name: 't',
+            arguments: '{}',
+            status: 'completed',
+          },
+        ],
+      } as unknown as OpenResponsesResult;
+
+      const mProto = m as unknown as {
+        getInitialResponse: () => Promise<OpenResponsesResult>;
+        shouldStopExecution: () => Promise<boolean>;
+      };
+      mProto.getInitialResponse = async () => toolCallResponse;
+      // Stop condition fires on every iteration -- no progress is possible.
+      mProto.shouldStopExecution = async () => true;
+
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+      await ent.executeToolsIfNeeded();
+
+      // MAX overrides honored + 1 final Stop emit that hits the cap = 4.
+      expect(stopCalls).toBe(4);
+      expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('forceResume honored 3 times'));
+      warnSpy.mockRestore();
     });
   });
 
@@ -1074,80 +1090,11 @@ describe('ModelResult hooks integration', () => {
       // more overrides accumulate after that -- i.e. stopCallsAtCap >= 5.
       expect(stopCallsAtCap).toBeGreaterThanOrEqual(5);
     });
-
-    it('still caps when forceResume happens CONSECUTIVELY without progress', async () => {
-      const hooks = new HooksManager();
-      hooks.on('Stop', {
-        handler: () => ({
-          forceResume: true,
-        }),
-      });
-
-      const MAX = 3;
-      let overrides = 0;
-      // Mirror the executeToolsIfNeeded guard: each iteration emits Stop and,
-      // because no tool round runs in between, the counter never resets.
-      for (let iter = 0; iter < 10; iter++) {
-        const emit = await hooks.emit('Stop', {
-          reason: 'max_turns',
-          sessionId: 's',
-        });
-        const force = emit.results.some(
-          (r) => r && typeof r === 'object' && 'forceResume' in r && r.forceResume === true,
-        );
-        if (!force) {
-          break;
-        }
-        if (overrides >= MAX) {
-          break;
-        }
-        overrides++;
-      }
-      expect(overrides).toBe(MAX);
-    });
   });
 
-  describe('SessionStart config', () => {
-    it('passes a populated config object to handlers', async () => {
-      const hooks = new HooksManager();
-      const seen: Array<Record<string, unknown>> = [];
-      hooks.on('SessionStart', {
-        handler: (payload) => {
-          if (payload.config) {
-            seen.push(payload.config);
-          }
-        },
-      });
-      const tool = makeAutoTool('x');
-      const m = buildModelResult({
-        tools: [
-          tool,
-        ] as const,
-        hooks,
-      });
-      // Reach into the emit helper that initStream() would invoke to validate
-      // the shape without making an API call.
-      const sid = 'session_1';
-      hooks.setSessionId(sid);
-      await hooks.emit('SessionStart', {
-        sessionId: sid,
-        config: {
-          hasTools: !!(
-            m as unknown as {
-              options: {
-                tools?: unknown[];
-              };
-            }
-          ).options.tools?.length,
-          hasApproval: false,
-          hasState: false,
-        },
-      });
-      expect(seen[0]).toMatchObject({
-        hasTools: true,
-      });
-    });
-  });
+  // SessionStart end-to-end emission (via the real initStream) is covered in
+  // hooks-session-lifecycle.test.ts, which mocks betaResponsesSend at the
+  // module level.
 });
 
 // ---------------------------------------------------------------------------

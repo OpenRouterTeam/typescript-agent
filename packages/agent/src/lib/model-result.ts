@@ -369,6 +369,10 @@ export class ModelResult<
   // Without this, an exception in initStream before SessionStart would lead to
   // a dangling SessionEnd (breaking audit-log / resource-pair contracts).
   private sessionStartEmitted = false;
+  // Pairs with sessionStartEmitted: guards emitSessionEndOnce so the
+  // tool-execution path and the no-tools stream paths can both attempt the
+  // emit without double-firing.
+  private sessionEndEmitted = false;
   // Tool call ids the PermissionRequest hook denied without pausing. The
   // normal tool round consults this to synthesize rejected outputs instead of
   // executing the calls.
@@ -947,12 +951,10 @@ export class ModelResult<
 
     // Emit PreToolUse hook -- can block or mutate input.
     if (this.hooksManager) {
-      // Sentinel so downstream can tell "handler returned a replacement" apart
-      // from "handler didn't touch toolInput": a `??` fallback to `{}` when
-      // `toolCall.arguments` is null/undefined would otherwise defeat a
-      // reference-equality check against the original arguments, producing
-      // `{}` for tools that legitimately distinguish "no args" from "empty
-      // args". `mutationApplied` is the authoritative signal.
+      // The hook payload coerces null/undefined arguments to {} for schema
+      // validation, but `effectiveToolCall.arguments` only changes when the
+      // chain reports an actual mutation (`emit.mutated`), so tools that
+      // legitimately distinguish "no args" from "empty args" are unaffected.
       const originalToolInput = (toolCall.arguments ?? {}) as Record<string, unknown>;
       const preResult = await this.hooksManager.emit(
         'PreToolUse',
@@ -989,15 +991,14 @@ export class ModelResult<
         };
       }
 
-      // Apply mutated input when a handler actually piped a replacement.
-      // `mutationApplied` is derived from an explicit `mutatedInput` result
-      // in the handler chain; see executeHandlerChain / applyMutations.
-      const finalInput = preResult.finalPayload.toolInput;
-      const mutationApplied = finalInput !== originalToolInput;
-      if (mutationApplied) {
+      // Apply mutated input only when a handler actually piped a replacement
+      // (`emit.mutated`). Payload validation clones the object, so a
+      // reference comparison against the original would false-positive and
+      // coerce legitimately-null arguments to {}.
+      if (preResult.mutated) {
         effectiveToolCall = {
           ...toolCall,
-          arguments: finalInput,
+          arguments: preResult.finalPayload.toolInput,
         };
       }
     }
@@ -1058,6 +1059,41 @@ export class ModelResult<
   }
 
   /**
+   * Emit SessionEnd exactly once, and only when a matching SessionStart
+   * actually succeeded. Safe to call from multiple teardown paths.
+   */
+  private async emitSessionEndOnce(
+    reason: 'user' | 'error' | 'max_turns' | 'complete',
+  ): Promise<void> {
+    if (!this.hooksManager || !this.sessionStartEmitted || this.sessionEndEmitted) {
+      return;
+    }
+    this.sessionEndEmitted = true;
+    await this.hooksManager.emit('SessionEnd', {
+      sessionId: this.currentState?.id ?? '',
+      reason,
+    });
+  }
+
+  /**
+   * Session teardown for the no-tools stream paths, which bypass
+   * executeToolsIfNeeded (the normal SessionEnd site). Emits SessionEnd once
+   * and drains pending hook work. Never throws: teardown must not mask the
+   * stream's own outcome.
+   */
+  private async finishHooksSessionForStream(): Promise<void> {
+    if (!this.hooksManager) {
+      return;
+    }
+    try {
+      await this.emitSessionEndOnce('complete');
+      await this.hooksManager.drain();
+    } catch (teardownError) {
+      console.warn('[SessionEnd] error during stream teardown:', teardownError);
+    }
+  }
+
+  /**
    * Emit the PermissionRequest hook before the SDK blocks for user approval.
    *
    * Returns the hook's collective decision:
@@ -1077,14 +1113,29 @@ export class ModelResult<
       };
     }
 
-    // Derive risk level from the tool's requireApproval shape: function => 'high'
-    // (caller actively decides), blanket true => 'medium', otherwise 'low'.
+    // Raw-string arguments mean the model produced invalid JSON. Fail closed
+    // (fall through to the human approval flow) rather than emitting a
+    // malformed payload the schema would reject anyway -- mirrors the guard
+    // in runToolWithHooks.
+    if (typeof toolCall.arguments === 'string') {
+      return {
+        decision: 'ask_user',
+      };
+    }
+
+    // Derive risk level from the approval gate's shape: a callback (tool- or
+    // call-level requireApproval function) => 'high' (caller actively
+    // decides per call), blanket true => 'medium', otherwise 'low'.
     const tool = this.options.tools?.find(
       (t) => isClientTool(t) && t.function.name === toolCall.name,
     );
     const requireApproval = tool && isClientTool(tool) ? tool.function.requireApproval : undefined;
     const riskLevel: 'low' | 'medium' | 'high' =
-      typeof requireApproval === 'function' ? 'high' : requireApproval === true ? 'medium' : 'low';
+      typeof requireApproval === 'function' || this.requireApprovalFn
+        ? 'high'
+        : requireApproval === true
+          ? 'medium'
+          : 'low';
 
     const emit = await this.hooksManager.emit(
       'PermissionRequest',
@@ -1175,11 +1226,11 @@ export class ModelResult<
       throw new Error(reason);
     }
 
-    const mutated = emit.finalPayload.prompt;
-    if (mutated === prompt) {
+    if (!emit.mutated) {
       return undefined;
     }
 
+    const mutated = emit.finalPayload.prompt;
     return {
       applyTo: (original: models.InputsUnion | undefined) => applyMutated(mutated, original),
     };
@@ -3006,15 +3057,22 @@ export class ModelResult<
         sessionEndReason = 'error';
         throw error;
       } finally {
-        // Only emit SessionEnd if SessionStart actually succeeded. Otherwise
-        // initStream threw before emit, and a dangling SessionEnd would break
-        // handlers that pair Start/End (audit logs, acquired resources).
-        if (this.hooksManager && this.sessionStartEmitted) {
-          await this.hooksManager.emit('SessionEnd', {
-            sessionId: this.currentState?.id ?? '',
-            reason: sessionEndReason,
-          });
-          await this.hooksManager.drain();
+        // Session teardown must never mask the original error: a throw from
+        // a `finally` block replaces the in-flight exception, so a throwing
+        // SessionEnd handler (strict mode) would silently swallow the real
+        // root cause. Log teardown failures instead.
+        //
+        // drain() runs unconditionally (not gated on SessionStart) so
+        // fire-and-forget hook work from paths that skip SessionStart --
+        // e.g. approval resume, which runs Pre/PostToolUse in initStream --
+        // is still awaited before the run settles.
+        try {
+          await this.emitSessionEndOnce(sessionEndReason);
+          if (this.hooksManager) {
+            await this.hooksManager.drain();
+          }
+        } catch (teardownError) {
+          console.warn('[SessionEnd] error during session teardown:', teardownError);
         }
       }
     })();
@@ -3085,6 +3143,7 @@ export class ModelResult<
             yield event;
           }
         }
+        await this.finishHooksSessionForStream();
         return;
       }
 
@@ -3115,6 +3174,7 @@ export class ModelResult<
         if (this.reusableStream) {
           yield* extractTextDeltas(this.reusableStream);
         }
+        await this.finishHooksSessionForStream();
         return;
       }
 
@@ -3189,6 +3249,7 @@ export class ModelResult<
             }
           }
         }
+        await this.finishHooksSessionForStream();
         return;
       }
 
@@ -3421,6 +3482,7 @@ export class ModelResult<
         if (this.reusableStream) {
           yield* extractReasoningDeltas(this.reusableStream);
         }
+        await this.finishHooksSessionForStream();
         return;
       }
 
@@ -3459,6 +3521,7 @@ export class ModelResult<
             };
           }
         }
+        await this.finishHooksSessionForStream();
         return;
       }
 

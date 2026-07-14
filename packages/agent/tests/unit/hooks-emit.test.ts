@@ -1,7 +1,13 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import * as z4 from 'zod/v4';
 import { executeHandlerChain } from '../../src/lib/hooks-emit.js';
 import type { HookEntry, LifecycleHookContext } from '../../src/lib/hooks-types.js';
+
+// Spy hygiene: a failed assertion before an inline mockRestore() would
+// otherwise leak the console spy into subsequent tests in this file.
+afterEach(() => {
+  vi.restoreAllMocks();
+});
 
 function makeContext(hookName = 'TestHook'): LifecycleHookContext {
   return {

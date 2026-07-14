@@ -1,6 +1,12 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import * as z4 from 'zod/v4';
 import { HooksManager } from '../../src/lib/hooks-manager.js';
+
+// Spy hygiene: a failed assertion before an inline mockRestore() would
+// otherwise leak the console spy into subsequent tests in this file.
+afterEach(() => {
+  vi.restoreAllMocks();
+});
 
 describe('HooksManager (adversarial)', () => {
   describe('unsubscribe edge cases', () => {
@@ -135,14 +141,16 @@ describe('HooksManager (adversarial)', () => {
       }
     });
 
-    it('allows custom hook with empty string name', () => {
-      const manager = new HooksManager({
-        '': {
-          payload: z4.object({}),
-          result: z4.void(),
-        },
-      });
-      expect(manager).toBeInstanceOf(HooksManager);
+    it('rejects custom hook with empty string name', () => {
+      expect(
+        () =>
+          new HooksManager({
+            '': {
+              payload: z4.object({}),
+              result: z4.void(),
+            },
+          }),
+      ).toThrow('non-empty');
     });
   });
 
