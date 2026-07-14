@@ -1556,15 +1556,13 @@ export class ModelResult<
         // SDK input items with different nominal types, and BaseInputsUnion
         // already includes `any` in its element type, so the runtime shape
         // is preserved either way.
+        // Normalize (not just wrap): bare strings must become EasyInputMessage
+        // items, exactly as the no-history branch does via
+        // normalizeInputToArray. Passing a raw string through to the request
+        // input array is rejected by OpenResponses validation (400).
         const newInput = baseRequest.input;
-        let freshItems: models.BaseInputsUnion[] | undefined;
-        if (newInput !== undefined) {
-          freshItems = Array.isArray(newInput)
-            ? (newInput as models.BaseInputsUnion[])
-            : [
-                newInput,
-              ];
-        }
+        const freshItems: models.BaseInputsUnion[] | undefined =
+          newInput !== undefined ? normalizeInputToArray(newInput) : undefined;
 
         // Hook fresh items only (historical function_calls serve as
         // name-resolution context). Leave historical items untouched.
