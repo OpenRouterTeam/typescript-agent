@@ -2160,6 +2160,7 @@ export class ModelResult<
       onTurnEnd: _ote,
       allowFinalResponse: _afr,
       strictFinalResponse: _sfr,
+      hooks: _h,
       ...rest
     } = this.options.request;
     return rest as ResolvedCallModelInput;

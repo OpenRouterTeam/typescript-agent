@@ -22,6 +22,7 @@ vi.mock('@openrouter/sdk/funcs/betaResponsesSend', () => ({
 import type { OpenRouterCore } from '@openrouter/sdk/core';
 import { callModel } from '../../src/inner-loop/call-model.js';
 import { HooksManager } from '../../src/lib/hooks-manager.js';
+import { ModelResult } from '../../src/lib/model-result.js';
 import { stepCountIs } from '../../src/lib/stop-conditions.js';
 import type { ConversationState, StateAccessor, Tool } from '../../src/lib/tool-types.js';
 import { ToolType } from '../../src/lib/tool-types.js';
@@ -380,5 +381,56 @@ describe('session lifecycle end-to-end', () => {
       expect.stringContaining('session teardown'),
       expect.any(Error),
     );
+  });
+
+  it('strips hooks from the outgoing API request on both request-resolution paths', async () => {
+    // `hooks` is a client-only field. callModel destructures it before the
+    // request reaches ModelResult, but ModelResult is publicly exported and
+    // its constructor accepts a request that may still carry `hooks` (e.g.
+    // direct construction). Both resolveRequestForContext branches -- the
+    // non-async destructuring path and the async clientOnlyFields path --
+    // must strip it so a HooksManager object is never sent to the API.
+    mockBetaResponsesSend.mockResolvedValue({
+      ok: true,
+      value: textResponse(),
+    });
+
+    const hooks = new HooksManager();
+
+    // Path 1: non-async request (manual destructuring branch), constructed
+    // directly so `hooks` is still present on the request object.
+    const direct = new ModelResult({
+      client,
+      request: {
+        model: 'test-model',
+        input: 'hi',
+        hooks,
+      },
+      hooks,
+    } as unknown as ConstructorParameters<typeof ModelResult>[0]);
+    await direct.getText();
+
+    // Path 2: async request (clientOnlyFields branch in async-params).
+    const withAsync = new ModelResult({
+      client,
+      request: {
+        model: 'test-model',
+        input: 'hi',
+        temperature: async () => 0.5,
+        hooks,
+      },
+      hooks,
+    } as unknown as ConstructorParameters<typeof ModelResult>[0]);
+    await withAsync.getText();
+
+    expect(mockBetaResponsesSend).toHaveBeenCalledTimes(2);
+    for (const call of mockBetaResponsesSend.mock.calls) {
+      const sentRequest = (
+        call[1] as {
+          responsesRequest: Record<string, unknown>;
+        }
+      ).responsesRequest;
+      expect(sentRequest).not.toHaveProperty('hooks');
+    }
   });
 });
