@@ -112,7 +112,7 @@
     "test": "vitest --run --project unit",
     "test:e2e": "vitest --run --project e2e",
     "test:watch": "vitest --watch --project unit",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "tsc --noEmit -p tsconfig.typecheck.json",
     "compile": "tsc"
   },
   "dependencies": {

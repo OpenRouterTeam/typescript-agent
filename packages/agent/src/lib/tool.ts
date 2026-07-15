@@ -1,5 +1,6 @@
 import type { $ZodObject, $ZodShape, $ZodType, infer as zodInfer } from 'zod/v4/core';
 import type {
+  ContextFromSchema,
   HITLTool,
   ManualTool,
   McpBranded,
@@ -19,12 +20,14 @@ import { SHARED_CONTEXT_KEY, ToolType } from './tool-types.js';
 //#region Config Types
 
 /**
- * Configuration for a regular tool with outputSchema
+ * Configuration for a regular tool with outputSchema.
+ * `TCtx` preserves a concrete `contextSchema` through the overload boundary so
+ * execute's `ctx.local` and the returned tool's `function.contextSchema` stay typed.
  */
 type RegularToolConfigWithOutput<
   TInput extends $ZodObject<$ZodShape>,
   TOutput extends $ZodType,
-  TContext extends Record<string, unknown> = Record<string, unknown>,
+  TCtx extends $ZodObject<$ZodShape> = $ZodObject<$ZodShape>,
   TName extends string = string,
 > = {
   name: TName;
@@ -33,12 +36,12 @@ type RegularToolConfigWithOutput<
   outputSchema: TOutput;
   eventSchema?: undefined;
   /** Zod schema declaring the context data this tool needs */
-  contextSchema?: $ZodObject<$ZodShape>;
+  contextSchema?: TCtx;
   nextTurnParams?: NextTurnParamsFunctions<zodInfer<TInput>>;
   requireApproval?: boolean | ToolApprovalCheck<zodInfer<TInput>>;
   execute: (
     params: zodInfer<TInput>,
-    context?: ToolExecuteContext<TName, TContext>,
+    context?: ToolExecuteContext<TName, ContextFromSchema<TCtx>>,
   ) => Promise<zodInfer<TOutput>> | zodInfer<TOutput>;
   /** Convert tool execution output to model-facing output */
   toModelOutput?: ToModelOutputFunction<zodInfer<TInput>, zodInfer<TOutput>>;
@@ -50,7 +53,7 @@ type RegularToolConfigWithOutput<
 type RegularToolConfigWithoutOutput<
   TInput extends $ZodObject<$ZodShape>,
   TReturn,
-  TContext extends Record<string, unknown> = Record<string, unknown>,
+  TCtx extends $ZodObject<$ZodShape> = $ZodObject<$ZodShape>,
   TName extends string = string,
 > = {
   name: TName;
@@ -59,12 +62,12 @@ type RegularToolConfigWithoutOutput<
   outputSchema?: undefined;
   eventSchema?: undefined;
   /** Zod schema declaring the context data this tool needs */
-  contextSchema?: $ZodObject<$ZodShape>;
+  contextSchema?: TCtx;
   nextTurnParams?: NextTurnParamsFunctions<zodInfer<TInput>>;
   requireApproval?: boolean | ToolApprovalCheck<zodInfer<TInput>>;
   execute: (
     params: zodInfer<TInput>,
-    context?: ToolExecuteContext<TName, TContext>,
+    context?: ToolExecuteContext<TName, ContextFromSchema<TCtx>>,
   ) => Promise<TReturn> | TReturn;
   /** Convert tool execution output to model-facing output */
   toModelOutput?: ToModelOutputFunction<zodInfer<TInput>, TReturn>;
@@ -77,7 +80,7 @@ type GeneratorToolConfig<
   TInput extends $ZodObject<$ZodShape>,
   TEvent extends $ZodType,
   TOutput extends $ZodType,
-  TContext extends Record<string, unknown> = Record<string, unknown>,
+  TCtx extends $ZodObject<$ZodShape> = $ZodObject<$ZodShape>,
   TName extends string = string,
 > = {
   name: TName;
@@ -86,12 +89,12 @@ type GeneratorToolConfig<
   eventSchema: TEvent;
   outputSchema: TOutput;
   /** Zod schema declaring the context data this tool needs */
-  contextSchema?: $ZodObject<$ZodShape>;
+  contextSchema?: TCtx;
   nextTurnParams?: NextTurnParamsFunctions<zodInfer<TInput>>;
   requireApproval?: boolean | ToolApprovalCheck<zodInfer<TInput>>;
   execute: (
     params: zodInfer<TInput>,
-    context?: ToolExecuteContext<TName, TContext>,
+    context?: ToolExecuteContext<TName, ContextFromSchema<TCtx>>,
   ) => AsyncGenerator<zodInfer<TEvent> | zodInfer<TOutput>>;
   /** Convert tool execution output to model-facing output */
   toModelOutput?: ToModelOutputFunction<zodInfer<TInput>, zodInfer<TOutput>>;
@@ -100,12 +103,15 @@ type GeneratorToolConfig<
 /**
  * Configuration for a manual tool (execute: false, no eventSchema or outputSchema)
  */
-type ManualToolConfig<TInput extends $ZodObject<$ZodShape>> = {
+type ManualToolConfig<
+  TInput extends $ZodObject<$ZodShape>,
+  TCtx extends $ZodObject<$ZodShape> = $ZodObject<$ZodShape>,
+> = {
   name: string; // Manual tools don't use TName since they have no execute
   description?: string;
   inputSchema: TInput;
   /** Zod schema declaring the context data this tool needs */
-  contextSchema?: $ZodObject<$ZodShape>;
+  contextSchema?: TCtx;
   nextTurnParams?: NextTurnParamsFunctions<zodInfer<TInput>>;
   requireApproval?: boolean | ToolApprovalCheck<zodInfer<TInput>>;
   execute: false;
@@ -125,7 +131,7 @@ type ManualToolConfig<TInput extends $ZodObject<$ZodShape>> = {
 type HITLToolConfig<
   TInput extends $ZodObject<$ZodShape>,
   TOutput extends $ZodType,
-  TContext extends Record<string, unknown> = Record<string, unknown>,
+  TCtx extends $ZodObject<$ZodShape> = $ZodObject<$ZodShape>,
   TName extends string = string,
 > = {
   name: TName;
@@ -141,16 +147,16 @@ type HITLToolConfig<
   eventSchema?: undefined;
   execute?: undefined;
   /** Zod schema declaring the context data this tool needs */
-  contextSchema?: $ZodObject<$ZodShape>;
+  contextSchema?: TCtx;
   nextTurnParams?: NextTurnParamsFunctions<zodInfer<TInput>>;
   requireApproval?: boolean | ToolApprovalCheck<zodInfer<TInput>>;
   onToolCalled: (
     params: zodInfer<TInput>,
-    context?: ToolExecuteContext<TName, TContext>,
+    context?: ToolExecuteContext<TName, ContextFromSchema<TCtx>>,
   ) => Promise<zodInfer<TOutput> | null> | zodInfer<TOutput> | null;
   onResponseReceived?: (
     rawResult: unknown,
-    context?: ToolExecuteContext<TName, TContext>,
+    context?: ToolExecuteContext<TName, ContextFromSchema<TCtx>>,
   ) => Promise<zodInfer<TOutput>> | zodInfer<TOutput>;
   /** Convert tool execution output to model-facing output */
   toModelOutput?: ToModelOutputFunction<zodInfer<TInput>, zodInfer<TOutput>>;
@@ -160,23 +166,26 @@ type HITLToolConfig<
  * Loose config type for the `tool<TShared>()` overload.
  * Accepts any valid tool config while typing `ctx.shared` from TShared.
  */
-type ToolConfigWithSharedContext<TShared extends Record<string, unknown>> = {
+type ToolConfigWithSharedContext<
+  TShared extends Record<string, unknown>,
+  TCtx extends $ZodObject<$ZodShape> = $ZodObject<$ZodShape>,
+> = {
   name: string;
   description?: string;
   inputSchema: $ZodObject<$ZodShape>;
   outputSchema?: $ZodType;
   eventSchema?: $ZodType;
-  contextSchema?: $ZodObject<$ZodShape>;
+  contextSchema?: TCtx;
   nextTurnParams?: NextTurnParamsFunctions<Record<string, unknown>>;
   requireApproval?: boolean | ToolApprovalCheck<Record<string, unknown>>;
   execute:
     | ((
         params: Record<string, unknown>,
-        context?: ToolExecuteContext<string, Record<string, unknown>, TShared>,
+        context?: ToolExecuteContext<string, ContextFromSchema<TCtx>, TShared>,
       ) => unknown)
     | ((
         params: Record<string, unknown>,
-        context?: ToolExecuteContext<string, Record<string, unknown>, TShared>,
+        context?: ToolExecuteContext<string, ContextFromSchema<TCtx>, TShared>,
       ) => AsyncGenerator<unknown>)
     | false;
   /** Convert tool execution output to model-facing output */
@@ -194,11 +203,11 @@ type RegularToolConfig<
   TInput extends $ZodObject<$ZodShape>,
   TOutput extends $ZodType,
   TReturn,
-  TContext extends Record<string, unknown> = Record<string, unknown>,
+  TCtx extends $ZodObject<$ZodShape> = $ZodObject<$ZodShape>,
   TName extends string = string,
 > =
-  | RegularToolConfigWithOutput<TInput, TOutput, TContext, TName>
-  | RegularToolConfigWithoutOutput<TInput, TReturn, TContext, TName>;
+  | RegularToolConfigWithOutput<TInput, TOutput, TCtx, TName>
+  | RegularToolConfigWithoutOutput<TInput, TReturn, TCtx, TName>;
 
 //#endregion
 
@@ -230,49 +239,56 @@ type RegularToolConfig<
  * });
  * ```
  */
-// Overload for generator tools (when eventSchema is provided)
+// Overload for generator tools (when eventSchema is provided).
+// TContext on the *returned* tool stays the wide default so specific tools remain
+// assignable to `Tool` / `Tool[]` (function-parameter variance). Typed
+// `ctx.local` is provided by the *config* execute signature via ContextFromSchema;
+// the concrete schema is preserved on the return via TCtx + WithConcreteContextSchema.
 export function tool<
   TInput extends $ZodObject<$ZodShape>,
   TEvent extends $ZodType,
   TOutput extends $ZodType,
-  TContext extends Record<string, unknown> = Record<string, unknown>,
+  TCtx extends $ZodObject<$ZodShape> = $ZodObject<$ZodShape>,
   TName extends string = string,
 >(
-  config: GeneratorToolConfig<TInput, TEvent, TOutput, TContext, TName>,
-): ToolWithGenerator<TInput, TEvent, TOutput, TContext>;
+  config: GeneratorToolConfig<TInput, TEvent, TOutput, TCtx, TName>,
+): ToolWithGenerator<TInput, TEvent, TOutput, Record<string, unknown>, TCtx>;
 
 // Overload for HITL tools (when onToolCalled is provided)
 export function tool<
   TInput extends $ZodObject<$ZodShape>,
   TOutput extends $ZodType,
-  TContext extends Record<string, unknown> = Record<string, unknown>,
+  TCtx extends $ZodObject<$ZodShape> = $ZodObject<$ZodShape>,
   TName extends string = string,
->(config: HITLToolConfig<TInput, TOutput, TContext, TName>): HITLTool<TInput, TOutput, TContext>;
+>(
+  config: HITLToolConfig<TInput, TOutput, TCtx, TName>,
+): HITLTool<TInput, TOutput, Record<string, unknown>, TCtx>;
 
 // Overload for manual tools (execute: false)
-export function tool<TInput extends $ZodObject<$ZodShape>>(
-  config: ManualToolConfig<TInput>,
-): ManualTool<TInput>;
+export function tool<
+  TInput extends $ZodObject<$ZodShape>,
+  TCtx extends $ZodObject<$ZodShape> = $ZodObject<$ZodShape>,
+>(config: ManualToolConfig<TInput, TCtx>): ManualTool<TInput, $ZodType<unknown>, TCtx>;
 
 // Overload for regular tools with outputSchema
 export function tool<
   TInput extends $ZodObject<$ZodShape>,
   TOutput extends $ZodType,
-  TContext extends Record<string, unknown> = Record<string, unknown>,
+  TCtx extends $ZodObject<$ZodShape> = $ZodObject<$ZodShape>,
   TName extends string = string,
 >(
-  config: RegularToolConfigWithOutput<TInput, TOutput, TContext, TName>,
-): ToolWithExecute<TInput, TOutput, TContext>;
+  config: RegularToolConfigWithOutput<TInput, TOutput, TCtx, TName>,
+): ToolWithExecute<TInput, TOutput, Record<string, unknown>, TCtx>;
 
 // Overload for regular tools without outputSchema (infers return type)
 export function tool<
   TInput extends $ZodObject<$ZodShape>,
   TReturn,
-  TContext extends Record<string, unknown> = Record<string, unknown>,
+  TCtx extends $ZodObject<$ZodShape> = $ZodObject<$ZodShape>,
   TName extends string = string,
 >(
-  config: RegularToolConfigWithoutOutput<TInput, TReturn, TContext, TName>,
-): ToolWithExecute<TInput, $ZodType<TReturn>, TContext>;
+  config: RegularToolConfigWithoutOutput<TInput, TReturn, TCtx, TName>,
+): ToolWithExecute<TInput, $ZodType<TReturn>, Record<string, unknown>, TCtx>;
 
 // Overload for explicit TShared: tool<SharedContext>({...})
 // When a non-ZodObject type is provided as the first generic,
@@ -321,7 +337,13 @@ export function tool(
     }
 
     if (config.contextSchema !== undefined) {
-      fn.contextSchema = config.contextSchema;
+      // contextSchema is readonly on the type (covariance); assignment at
+      // construction time is the one sanctioned write.
+      (
+        fn as {
+          contextSchema?: unknown;
+        }
+      ).contextSchema = config.contextSchema;
     }
 
     if (config.nextTurnParams !== undefined) {
@@ -358,7 +380,13 @@ export function tool(
     }
 
     if (config.contextSchema !== undefined) {
-      fn.contextSchema = config.contextSchema;
+      // contextSchema is readonly on the type (covariance); assignment at
+      // construction time is the one sanctioned write.
+      (
+        fn as {
+          contextSchema?: unknown;
+        }
+      ).contextSchema = config.contextSchema;
     }
 
     if (config.nextTurnParams !== undefined) {
@@ -390,7 +418,13 @@ export function tool(
     }
 
     if (config.contextSchema !== undefined) {
-      fn.contextSchema = config.contextSchema;
+      // contextSchema is readonly on the type (covariance); assignment at
+      // construction time is the one sanctioned write.
+      (
+        fn as {
+          contextSchema?: unknown;
+        }
+      ).contextSchema = config.contextSchema;
     }
 
     if (config.nextTurnParams !== undefined) {
