@@ -1020,12 +1020,17 @@ export interface PartialResponse<TTools extends readonly Tool[] = readonly Tool[
  * - `awaiting_hitl`: one or more HITL tools returned `null` from `onToolCalled`,
  *   pausing execution so the caller can supply outputs for the paused calls
  *   before resuming
+ * - `awaiting_client_tools`: one or more manual (`execute: false` / no execute
+ *   fn) tool calls are unresolved; the loop stopped so the caller can execute
+ *   them client-side and continue. Distinct from `awaiting_hitl` — HITL tools
+ *   have an `onToolCalled` hook; manual tools do not.
  */
 export type ConversationStatus =
   | 'complete'
   | 'interrupted'
   | 'awaiting_approval'
   | 'awaiting_hitl'
+  | 'awaiting_client_tools'
   | 'in_progress';
 
 /**

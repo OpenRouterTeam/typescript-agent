@@ -230,6 +230,7 @@ export class ModelResult<
   private resolvedRequest: models.ResponsesRequest | null = null;
   // Fresh user items to persist atomically with the assistant response
   private pendingFreshItems: models.BaseInputsUnion[] | undefined;
+  private resumingFromClientTools = false;
 
   // State management for multi-turn conversations
   private stateAccessor: StateAccessor<TTools> | null = null;
@@ -525,10 +526,23 @@ export class ModelResult<
       this.pendingFreshItems = undefined;
     }
 
-    await this.saveStateSafely({
-      messages: appendToMessages(messages, outputItems as models.BaseInputsUnion[]),
-      previousResponseId: response.id,
-    });
+    const stateUpdates: Partial<Omit<ConversationState<TTools>, 'id' | 'createdAt' | 'updatedAt'>> =
+      {
+        messages: appendToMessages(messages, outputItems as models.BaseInputsUnion[]),
+        previousResponseId: response.id,
+      };
+    if (this.resumingFromClientTools) {
+      this.currentState = {
+        ...this.currentState,
+      };
+      this.clearOptionalStateProperties([
+        'pendingToolCalls',
+      ]);
+      this.resumingFromClientTools = false;
+      stateUpdates.status = 'in_progress';
+    }
+
+    await this.saveStateSafely(stateUpdates);
   }
 
   /**
@@ -839,6 +853,48 @@ export class ModelResult<
       {
         pendingToolCalls: pausedCalls as ParsedToolCall<TTools[number]>[],
         status: 'awaiting_hitl',
+      };
+    await this.saveStateSafely(stateUpdates);
+  }
+
+  /**
+   * Persist state when the loop stops due to unresolved manual (client-executed)
+   * tool calls — tools with neither `execute` nor `onToolCalled`.
+   *
+   * Mirrors `persistHitlPause` so callers can read the unresolved calls via
+   * `getPendingToolCalls()` / `getState()` after the loop ends. Uses the
+   * distinct status `awaiting_client_tools` so consumers can discriminate
+   * manual pauses from HITL pauses (`awaiting_hitl`).
+   *
+   * Resume behavior: `awaiting_client_tools` is intentionally NOT treated as a
+   * resumable status for `processApprovalDecisions` — manual tools are not
+   * approved/rejected via call IDs; the caller executes them externally and
+   * typically supplies `function_call_output` items as new input on the next
+   * `callModel`. The paused status and calls remain durable until that request
+   * produces a response; they are then cleared atomically with the response.
+   *
+   * Without a `StateAccessor` nothing is persisted (mirroring
+   * `persistHitlPause`): `getPendingToolCalls()` returns `[]` and the caller
+   * must read the unresolved `function_call` items off `getResponse().output`.
+   * Manual tools require a StateAccessor to be recoverable across processes.
+   *
+   * @param currentResponse - The response that produced the unresolved calls
+   * @param unresolvedCalls - Manual (or otherwise non-auto-resolvable) tool calls
+   */
+  private async persistClientToolsPause(
+    currentResponse: models.OpenResponsesResult,
+    unresolvedCalls: ParsedToolCall<Tool>[],
+  ): Promise<void> {
+    this.finalResponse = currentResponse;
+
+    if (!this.stateAccessor || unresolvedCalls.length === 0) {
+      return;
+    }
+
+    const stateUpdates: Partial<Omit<ConversationState<TTools>, 'id' | 'createdAt' | 'updatedAt'>> =
+      {
+        pendingToolCalls: unresolvedCalls as ParsedToolCall<TTools[number]>[],
+        status: 'awaiting_client_tools',
       };
     await this.saveStateSafely(stateUpdates);
   }
@@ -1581,14 +1637,20 @@ export class ModelResult<
             ]);
             await this.saveStateSafely();
           }
+
+          // Keep manual calls durable until the resumed request produces a
+          // response. Clearing before the API call would lose the only copy if
+          // that request failed.
+          this.resumingFromClientTools = loadedState.status === 'awaiting_client_tools';
         } else {
           this.currentState = createInitialState<TTools>();
         }
 
-        // Update status to in_progress
-        await this.saveStateSafely({
-          status: 'in_progress',
-        });
+        if (!this.resumingFromClientTools) {
+          await this.saveStateSafely({
+            status: 'in_progress',
+          });
+        }
       }
 
       // Resolve async functions before initial request
@@ -1985,10 +2047,11 @@ export class ModelResult<
         return; // Paused for approval
       }
 
+      // All tool calls are manual (no execute / no onToolCalled) or otherwise
+      // non-auto-resolvable — stop and surface them as pending client tools
+      // instead of marking the conversation complete with empty pendings.
       if (!this.hasExecutableToolCalls(toolCalls)) {
-        this.validateFinalResponse(currentResponse);
-        this.finalResponse = currentResponse;
-        await this.markStateComplete();
+        await this.persistClientToolsPause(currentResponse, toolCalls);
         return;
       }
 
@@ -2018,8 +2081,12 @@ export class ModelResult<
           return;
         }
 
+        // All-manual (or otherwise non-auto-resolvable) mid-loop round: stop
+        // and persist the unresolved calls the same way the first-round guard
+        // does above, so getPendingToolCalls() surfaces them after loop end.
         if (!this.hasExecutableToolCalls(currentToolCalls)) {
-          break;
+          await this.persistClientToolsPause(currentResponse, currentToolCalls);
+          return;
         }
 
         // Build turn context
@@ -2095,9 +2162,13 @@ export class ModelResult<
         // `hasExecutableToolCalls` guards. Also covers calls to tool names
         // not present in `options.tools` at all.
         const resolvedCallIds = new Set(toolResults.map((r) => r.callId));
-        const hasUnresolvedToolCalls = currentToolCalls.some((tc) => !resolvedCallIds.has(tc.id));
-        if (hasUnresolvedToolCalls) {
-          break;
+        const unresolvedToolCalls = currentToolCalls.filter((tc) => !resolvedCallIds.has(tc.id));
+        if (unresolvedToolCalls.length > 0) {
+          // Mixed auto + manual (or unknown-name) round — regular tool outputs
+          // were already persisted via saveToolResultsToState above; surface
+          // the unresolved calls on pendingToolCalls and stop.
+          await this.persistClientToolsPause(currentResponse, unresolvedToolCalls);
+          return;
         }
 
         // Apply nextTurnParams
@@ -2832,17 +2903,22 @@ export class ModelResult<
   // =========================================================================
 
   /**
-   * Check if the conversation requires human input to continue.
+   * Check if the conversation requires human/client input to continue.
    * Returns true when the conversation is paused waiting for caller-supplied
-   * decisions — either approval/rejection (`awaiting_approval`) or HITL tool
-   * resume (`awaiting_hitl`). Also returns true whenever `pendingToolCalls`
-   * is populated regardless of status.
+   * decisions — approval/rejection (`awaiting_approval`), HITL tool resume
+   * (`awaiting_hitl`), or client-executed manual tools (`awaiting_client_tools`).
+   * Also returns true whenever `pendingToolCalls` is populated regardless of
+   * status.
    */
   async requiresApproval(): Promise<boolean> {
     await this.initStream();
 
     const status = this.currentState?.status;
-    if (status === 'awaiting_approval' || status === 'awaiting_hitl') {
+    if (
+      status === 'awaiting_approval' ||
+      status === 'awaiting_hitl' ||
+      status === 'awaiting_client_tools'
+    ) {
       return true;
     }
 
