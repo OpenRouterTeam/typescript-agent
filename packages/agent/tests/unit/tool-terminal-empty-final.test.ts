@@ -189,6 +189,42 @@ describe('tool-terminal empty final response (PR-2)', () => {
     expect(mockBetaResponsesSend).toHaveBeenCalledTimes(3);
   });
 
+  it('strips tools from the empty-final retry so it cannot emit an unexecuted tool call', async () => {
+    mockBetaResponsesSend
+      .mockResolvedValueOnce({
+        ok: true,
+        value: toolCallResponse(),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        value: emptyOutputResponse('resp_empty'),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        value: textResponse('Done posting.', 'resp_retry_text'),
+      });
+
+    const text = await callModel(client, {
+      model: 'test-model',
+      input: 'Review and post a comment.',
+      tools: [
+        postCommentTool,
+      ] as const,
+    }).getText();
+
+    expect(text).toBe('Done posting.');
+    // The natural-loop follow-up request still carries tools…
+    const followupRequest = mockBetaResponsesSend.mock.calls[1]?.[1]?.responsesRequest;
+    expect(followupRequest).toHaveProperty('tools');
+    // …but the retry must not, so it coerces a text turn instead of a
+    // fresh function_call that would be silently dropped.
+    const retryRequest = mockBetaResponsesSend.mock.calls[2]?.[1]?.responsesRequest;
+    expect(retryRequest).not.toHaveProperty('tools');
+    expect(retryRequest).not.toHaveProperty('toolChoice');
+    expect(retryRequest).not.toHaveProperty('parallelToolCalls');
+    expect(retryRequest.input).toEqual(followupRequest.input);
+  });
+
   it('retries the same no-tools request when allowFinalResponse returns empty', async () => {
     mockBetaResponsesSend
       .mockResolvedValueOnce({

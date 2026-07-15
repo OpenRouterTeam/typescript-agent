@@ -1313,14 +1313,28 @@ export class ModelResult<
   /**
    * Re-send the current resolved request (same accumulated input) once.
    * Used when a follow-up after tool execution returned an empty `output`.
+   *
+   * `tools`, `toolChoice`, and `parallelToolCalls` are stripped (mirroring
+   * `makeFinalResponseRequest`) so the retry coerces a text turn: on the
+   * natural-loop-completion path the resolved request still carries tools,
+   * and a retry that emitted a fresh `function_call` would pass
+   * `validateFinalResponse` but never be executed — silently dropping a
+   * proposed tool call.
    */
   private async retryCurrentRequest(turnNumber: number): Promise<models.OpenResponsesResult> {
     if (!this.resolvedRequest) {
       throw new Error('Request not initialized');
     }
 
+    const {
+      tools: _tools,
+      toolChoice: _toolChoice,
+      parallelToolCalls: _parallelToolCalls,
+      ...rest
+    } = this.resolvedRequest;
+
     const newRequest: models.ResponsesRequest = {
-      ...this.resolvedRequest,
+      ...rest,
       stream: true,
     };
 
