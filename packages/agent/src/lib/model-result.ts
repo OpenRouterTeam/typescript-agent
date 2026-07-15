@@ -2906,6 +2906,13 @@ export class ModelResult<
           // A tool round with observable progress resets the consecutive
           // forceResume counter so a legitimate override earlier in the run
           // does not count against a later, independent one.
+          // Hook-blocked / rejected outputs deliberately count as progress:
+          // the model receives the block or denial as feedback and can change
+          // course on the next turn, which is observable forward motion even
+          // though no tool body executed. A PreToolUse hook that blocks every
+          // call therefore keeps resetting this counter -- acceptable,
+          // because each reset requires a full model round trip (the loop
+          // cannot spin hot) and stopWhen conditions still bound the run.
           if (toolResults.length > 0) {
             forceResumeCount = 0;
           }

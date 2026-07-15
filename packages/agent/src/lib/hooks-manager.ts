@@ -360,8 +360,21 @@ export function getInternalRegistrar(manager: HooksManager): InternalRegistrar {
  * Detect a `z.void()` schema (zod v4 core). Result validation is skipped for
  * void-result hooks so side-effect-only handlers can return arbitrary values
  * without tripping validation -- for built-ins and custom hooks alike.
+ *
+ * Implementation note: `schema._zod.def.type` is zod v4's designated
+ * introspection surface for library authors (every `$ZodType` carries a
+ * `_zod: $ZodTypeInternals` with a stable `def.type` discriminator). A string
+ * check is deliberately preferred over `instanceof $ZodVoid`, which breaks
+ * across duplicated zod module instances (dual-package hazard) and mixed
+ * zod/v4 vs zod/v4-mini usage. Behavior is pinned by tests in
+ * hooks-contract-fixes.test.ts ("void schema detection") so a zod upgrade
+ * that restructures the internals fails loudly instead of silently
+ * re-enabling result validation on void hooks.
+ *
+ * Exported for the pinning tests only; NOT re-exported from the package
+ * index and NOT part of the public API.
  */
-function isVoidSchema(schema: $ZodType): boolean {
+export function isVoidSchema(schema: $ZodType): boolean {
   const def = (
     schema as {
       _zod?: {

@@ -1090,6 +1090,118 @@ describe('ModelResult hooks integration', () => {
       // more overrides accumulate after that -- i.e. stopCallsAtCap >= 5.
       expect(stopCallsAtCap).toBeGreaterThanOrEqual(5);
     });
+
+    it('hook-blocked tool outputs count as progress and reset the counter (documented edge case)', async () => {
+      // A PreToolUse hook that blocks EVERY call still produces rejected
+      // function_call_output items, which the model receives as feedback.
+      // That deliberately counts as progress (toolResults.length > 0) and
+      // resets the forceResume counter -- each reset costs a full model
+      // round trip, so the loop cannot spin hot, and stopWhen conditions
+      // still bound the run. This test pins that choice: with a blocking
+      // PreToolUse hook interleaved (same shape as the reset test above),
+      // the cap fires only AFTER the reset window, exactly like a round of
+      // real executions would.
+      const hooks = new HooksManager();
+      let stopCalls = 0;
+      hooks.on('Stop', {
+        handler: () => {
+          stopCalls++;
+          return {
+            forceResume: true,
+          };
+        },
+      });
+      // Block every tool call -- no tool body ever executes.
+      const preToolUse = vi.fn(() => ({
+        block: 'blocked by policy',
+      }));
+      hooks.on('PreToolUse', {
+        handler: preToolUse,
+      });
+
+      const executed = vi.fn();
+      const tool = makeAutoTool('t', () => {
+        executed();
+        return {
+          ok: true,
+        };
+      });
+      const m = buildModelResult({
+        tools: [
+          tool,
+        ] as const,
+        hooks,
+      });
+      const ent = internal(m);
+      ent.currentState = {
+        id: 'conv_blocked_progress',
+        messages: [],
+        status: 'in_progress',
+        createdAt: 0,
+        updatedAt: 0,
+      } as ConversationState<readonly Tool[]>;
+      ent.initPromise = Promise.resolve();
+
+      const toolCallResponse = {
+        ...makeResponse(),
+        output: [
+          {
+            type: 'function_call',
+            id: 'out_1',
+            callId: 'c1',
+            name: 't',
+            arguments: '{}',
+            status: 'completed',
+          },
+        ],
+      } as unknown as OpenResponsesResult;
+
+      let shouldStopCalls = 0;
+      const mProto = m as unknown as {
+        getInitialResponse: () => Promise<OpenResponsesResult>;
+        shouldStopExecution: () => Promise<boolean>;
+        makeFollowupRequest: (...args: unknown[]) => Promise<OpenResponsesResult>;
+      };
+      mProto.getInitialResponse = async () => toolCallResponse;
+      mProto.shouldStopExecution = async () => {
+        shouldStopCalls++;
+        // Let the REAL executeToolRound run at iteration 3; the blocking
+        // PreToolUse hook produces a rejected output (no execution).
+        return shouldStopCalls !== 3;
+      };
+      mProto.makeFollowupRequest = async () => toolCallResponse;
+
+      let stopCallsAtCap = -1;
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation((msg: unknown) => {
+        if (
+          typeof msg === 'string' &&
+          msg.includes('forceResume honored') &&
+          stopCallsAtCap === -1
+        ) {
+          stopCallsAtCap = stopCalls;
+        }
+      });
+      const timeoutPromise = new Promise<void>((_, reject) => {
+        setTimeout(() => reject(new Error('loop took too long')), 2000);
+      });
+      try {
+        await Promise.race([
+          ent.executeToolsIfNeeded(),
+          timeoutPromise,
+        ]);
+      } catch {
+        // As in the reset test: only the cap timing matters.
+      }
+      warnSpy.mockRestore();
+
+      // The tool body never ran -- only the blocked output was produced.
+      expect(executed).not.toHaveBeenCalled();
+      expect(preToolUse).toHaveBeenCalled();
+      // The cap still fires eventually (sanity), but only after the blocked
+      // round reset the counter: >= 5 Stop emissions, same threshold as the
+      // real-execution reset test.
+      expect(stopCallsAtCap).toBeGreaterThanOrEqual(5);
+    });
   });
 
   // SessionStart end-to-end emission (via the real initStream) is covered in

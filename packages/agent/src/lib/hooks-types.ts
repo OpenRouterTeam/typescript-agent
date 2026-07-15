@@ -203,6 +203,30 @@ export interface PreToolUseResult {
   readonly block?: boolean | string;
 }
 
+/**
+ * Result of a Stop hook handler.
+ *
+ * `forceResume: true` alone does NOT change any state: the stop condition
+ * (e.g. `stepCountIs`) will typically fire again immediately on the next
+ * iteration, so a bare forceResume burns through the consecutive-override
+ * cap (3) in rapid succession and then stops. To make resumption useful,
+ * pair it with `appendPrompt` (which injects a user message, advancing the
+ * conversation) or use a stop condition whose predicate can change between
+ * iterations. This is by design: the engine caps rather than blocks bare
+ * forceResume so a handler that coordinates external state (e.g. waiting on
+ * an async gate that flips the stop condition) still has a few iterations
+ * to do so.
+ *
+ * `appendPrompt` is honored independently of `forceResume` — a handler can
+ * nudge the next turn without forcing a resume. Multiple handlers'
+ * appendPrompts are concatenated with newlines.
+ *
+ * The override counter resets when a tool round produces outputs or a fresh
+ * model response lands. Note that hook-blocked and rejected tool outputs
+ * count as progress: the model receives the block/denial feedback and can
+ * change course, which is observable forward motion even though no tool
+ * body executed.
+ */
 export interface StopResult {
   readonly forceResume?: boolean;
   readonly appendPrompt?: string;

@@ -17,7 +17,7 @@
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import * as z4 from 'zod/v4';
-import { HooksManager } from '../../src/lib/hooks-manager.js';
+import { HooksManager, isVoidSchema } from '../../src/lib/hooks-manager.js';
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -184,6 +184,40 @@ describe('emit.mutated is the authoritative mutation signal', () => {
     expect(result.finalPayload.toolInput).toEqual({
       scrubbed: true,
     });
+  });
+});
+
+describe('void schema detection (pins zod v4 internals against upgrades)', () => {
+  // isVoidSchema reads `schema._zod.def.type` -- zod v4's introspection
+  // surface for library authors, but still an internal shape. These tests
+  // pin the detection so a zod upgrade that restructures the internals
+  // fails loudly here instead of silently re-enabling result validation on
+  // void-result hooks.
+  it('returns true for z.void()', () => {
+    expect(isVoidSchema(z4.void())).toBe(true);
+  });
+
+  it('returns false for non-void schemas', () => {
+    expect(isVoidSchema(z4.object({}))).toBe(false);
+    expect(isVoidSchema(z4.string())).toBe(false);
+    expect(isVoidSchema(z4.undefined())).toBe(false);
+    expect(isVoidSchema(z4.unknown())).toBe(false);
+    expect(isVoidSchema(z4.null())).toBe(false);
+  });
+
+  it('the _zod.def.type introspection surface exists on v4 schemas', () => {
+    // Canary: if this fails after a zod upgrade, isVoidSchema needs a new
+    // detection strategy.
+    const internals = (
+      z4.void() as unknown as {
+        _zod?: {
+          def?: {
+            type?: string;
+          };
+        };
+      }
+    )._zod;
+    expect(internals?.def?.type).toBe('void');
   });
 });
 
