@@ -1170,10 +1170,15 @@ export class ModelResult<
    * dangling Start. Teardown is emit-once, so the tools path (which runs
    * its own teardown in executeToolsIfNeeded) is unaffected.
    */
-  private async initStreamGuarded(): Promise<void> {
+  private async initStreamGuarded(options?: { requireStream?: boolean }): Promise<void> {
+    // The not-initialized invariant applies to streaming getters only:
+    // state-inspection methods (getPendingToolCalls/getState/...) are valid
+    // on paused resumes (awaiting_hitl/awaiting_approval) where initStream
+    // returns early with neither a stream nor a finalResponse.
+    const requireStream = options?.requireStream ?? true;
     try {
       await this.initStream();
-      if (!this.reusableStream && !this.finalResponse) {
+      if (requireStream && !this.reusableStream && !this.finalResponse) {
         throw new Error('Stream not initialized');
       }
     } catch (error) {
@@ -3496,11 +3501,10 @@ export class ModelResult<
     models.OutputMessage | models.FunctionCallOutputItem | models.OutputFunctionCallItem
   > {
     return async function* (this: ModelResult<TTools, TShared>) {
-      await this.initStream();
-
-      if (!this.reusableStream && !this.finalResponse) {
-        throw new Error('Stream not initialized');
-      }
+      // Guarded: tears down the hook session (SessionEnd + drain) if
+      // initStream throws after SessionStart. Includes the not-initialized
+      // guard, so the manual check below is covered too.
+      await this.initStreamGuarded();
 
       // First yield messages from the stream in responses format
       if (this.reusableStream) {
@@ -3665,7 +3669,9 @@ export class ModelResult<
    * Returns structured tool calls with parsed arguments.
    */
   async getToolCalls(): Promise<ParsedToolCall<TTools[number]>[]> {
-    await this.initStream();
+    await this.initStreamGuarded({
+      requireStream: false,
+    });
 
     // Handle non-streaming response case - use finalResponse directly
     if (this.finalResponse) {
@@ -3686,11 +3692,8 @@ export class ModelResult<
    */
   getToolCallsStream(): AsyncIterableIterator<ParsedToolCall<TTools[number]>> {
     return async function* (this: ModelResult<TTools, TShared>) {
-      await this.initStream();
-
-      if (!this.reusableStream && !this.finalResponse) {
-        throw new Error('Stream not initialized');
-      }
+      // Guarded: hook-session teardown on init failure (see initStreamGuarded).
+      await this.initStreamGuarded();
 
       if (this.reusableStream) {
         yield* buildToolCallStream(this.reusableStream) as AsyncIterableIterator<
@@ -3713,8 +3716,11 @@ export class ModelResult<
    * ```
    */
   async *getContextUpdates(): AsyncGenerator<ToolContextMapWithShared<TTools, TShared>> {
-    // Ensure stream is initialized (which creates the context store)
-    await this.initStream();
+    // Ensure stream is initialized (which creates the context store).
+    // Guarded: hook-session teardown on init failure.
+    await this.initStreamGuarded({
+      requireStream: false,
+    });
 
     if (!this.contextStore) {
       return;
@@ -3794,7 +3800,9 @@ export class ModelResult<
    * status.
    */
   async requiresApproval(): Promise<boolean> {
-    await this.initStream();
+    await this.initStreamGuarded({
+      requireStream: false,
+    });
 
     const status = this.currentState?.status;
     if (
@@ -3814,7 +3822,9 @@ export class ModelResult<
    * Returns empty array if no approvals needed.
    */
   async getPendingToolCalls(): Promise<ParsedToolCall<TTools[number]>[]> {
-    await this.initStream();
+    await this.initStreamGuarded({
+      requireStream: false,
+    });
 
     // Try to trigger tool execution to populate pending calls
     if (!this.isResumingFromApproval) {
@@ -3831,7 +3841,9 @@ export class ModelResult<
    * To resume a conversation, use the StateAccessor pattern.
    */
   async getState(): Promise<ConversationState<TTools>> {
-    await this.initStream();
+    await this.initStreamGuarded({
+      requireStream: false,
+    });
 
     // Ensure tool execution has been attempted (to populate final state)
     if (!this.isResumingFromApproval) {

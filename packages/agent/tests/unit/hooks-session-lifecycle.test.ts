@@ -453,6 +453,101 @@ describe('session lifecycle end-to-end', () => {
     });
   });
 
+  it('emits SessionEnd(error) when initStream fails on secondary (non-streaming) entry points', async () => {
+    // getToolCalls / getState / getPendingToolCalls / requiresApproval /
+    // getContextUpdates / getNewMessagesStream / getToolCallsStream may be
+    // the FIRST method called on a ModelResult. If the initial API call
+    // fails after SessionStart, they must tear the session down too —
+    // same contract as the primary streaming getters.
+    const entryPoints: Array<{
+      name: string;
+      invoke: (result: ReturnType<typeof callModel>) => Promise<unknown>;
+    }> = [
+      {
+        name: 'getToolCalls',
+        invoke: (r) => r.getToolCalls(),
+      },
+      {
+        name: 'getState',
+        invoke: (r) => r.getState(),
+      },
+      {
+        name: 'getPendingToolCalls',
+        invoke: (r) => r.getPendingToolCalls(),
+      },
+      {
+        name: 'requiresApproval',
+        invoke: (r) => r.requiresApproval(),
+      },
+      {
+        name: 'getContextUpdates',
+        invoke: async (r) => {
+          for await (const _u of r.getContextUpdates()) {
+            // consume
+          }
+        },
+      },
+      {
+        name: 'getNewMessagesStream',
+        invoke: async (r) => {
+          for await (const _m of r.getNewMessagesStream()) {
+            // consume
+          }
+        },
+      },
+      {
+        name: 'getToolCallsStream',
+        invoke: async (r) => {
+          for await (const _c of r.getToolCallsStream()) {
+            // consume
+          }
+        },
+      },
+    ];
+
+    for (const entry of entryPoints) {
+      mockBetaResponsesSend.mockReset();
+      mockBetaResponsesSend.mockResolvedValue({
+        ok: false,
+        error: new Error(`api failed for ${entry.name}`),
+      });
+
+      const hooks = new HooksManager();
+      const starts: unknown[] = [];
+      const ends: {
+        reason?: string;
+      }[] = [];
+      hooks.on('SessionStart', {
+        handler: (payload) => {
+          starts.push(payload);
+        },
+      });
+      hooks.on('SessionEnd', {
+        handler: (payload) => {
+          ends.push(
+            payload as {
+              reason?: string;
+            },
+          );
+        },
+      });
+
+      const result = callModel(client, {
+        model: 'test-model',
+        input: 'hi',
+        hooks,
+      });
+
+      await expect(entry.invoke(result)).rejects.toThrow(`api failed for ${entry.name}`);
+
+      expect(starts, `${entry.name}: SessionStart count`).toHaveLength(1);
+      expect(ends, `${entry.name}: SessionEnd count`).toHaveLength(1);
+      expect(ends[0], `${entry.name}: SessionEnd reason`).toMatchObject({
+        reason: 'error',
+      });
+    }
+  });
+
   it('teardown does not mask the original error when a SessionEnd handler throws', async () => {
     mockBetaResponsesSend
       .mockResolvedValueOnce({
