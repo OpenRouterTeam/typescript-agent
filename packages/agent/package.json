@@ -32,6 +32,10 @@
       "types": "./esm/lib/model-result.d.ts",
       "default": "./esm/lib/model-result.js"
     },
+    "./hooks-manager": {
+      "types": "./esm/lib/hooks-manager.d.ts",
+      "default": "./esm/lib/hooks-manager.js"
+    },
     "./async-params": {
       "types": "./esm/lib/async-params.d.ts",
       "default": "./esm/lib/async-params.js"

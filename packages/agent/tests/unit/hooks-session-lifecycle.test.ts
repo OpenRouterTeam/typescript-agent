@@ -23,6 +23,7 @@ import type { OpenRouterCore } from '@openrouter/sdk/core';
 import { callModel } from '../../src/inner-loop/call-model.js';
 import { HooksManager } from '../../src/lib/hooks-manager.js';
 import { stepCountIs } from '../../src/lib/stop-conditions.js';
+import type { ConversationState, StateAccessor, Tool } from '../../src/lib/tool-types.js';
 import { ToolType } from '../../src/lib/tool-types.js';
 
 afterEach(() => {
@@ -280,6 +281,66 @@ describe('session lifecycle end-to-end', () => {
       toolName: 'echo',
     });
     expect(filteredOut).not.toHaveBeenCalled();
+  });
+
+  it('emits SessionEnd(user) when the run is interrupted via state', async () => {
+    // Every response carries a tool call so the loop keeps going until the
+    // interruption flag is observed at the top of an iteration.
+    mockBetaResponsesSend.mockResolvedValue({
+      ok: true,
+      value: toolCallResponse('r'),
+    });
+
+    // State accessor that reports interruptedBy on the SECOND load (the
+    // first happens during initStream; checkForInterruption loads fresh
+    // state at the top of each loop iteration).
+    let state: ConversationState<readonly Tool[]> = {
+      id: 'conv_interrupt',
+      messages: [],
+      status: 'in_progress',
+      createdAt: 0,
+      updatedAt: 0,
+    } as ConversationState<readonly Tool[]>;
+    let loads = 0;
+    const accessor: StateAccessor<readonly Tool[]> = {
+      load: async () => {
+        loads++;
+        if (loads >= 2) {
+          return {
+            ...state,
+            interruptedBy: 'user',
+          } as ConversationState<readonly Tool[]>;
+        }
+        return state;
+      },
+      save: async (s) => {
+        state = s;
+      },
+    };
+
+    const hooks = new HooksManager();
+    const ends: unknown[] = [];
+    hooks.on('SessionEnd', {
+      handler: (payload) => {
+        ends.push(payload);
+      },
+    });
+
+    const result = callModel(client, {
+      model: 'test-model',
+      input: 'hi',
+      tools: [
+        makeEchoTool(),
+      ],
+      state: accessor,
+      hooks,
+    });
+    await result.getResponse();
+
+    expect(ends).toHaveLength(1);
+    expect(ends[0]).toMatchObject({
+      reason: 'user',
+    });
   });
 
   it('teardown does not mask the original error when a SessionEnd handler throws', async () => {

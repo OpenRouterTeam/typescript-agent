@@ -151,6 +151,15 @@ export interface PostToolUsePayload {
   readonly sessionId: string;
 }
 
+/**
+ * Fired when a tool EXECUTION throws or returns an error.
+ *
+ * Deliberately NOT fired when a tool never ran: a PermissionRequest 'deny',
+ * a user rejection on approval resume, or a PreToolUse block all synthesize
+ * a rejected result without execution, so no failure event is emitted.
+ * Observe those outcomes via the PermissionRequest / PreToolUse hooks
+ * themselves.
+ */
 export interface PostToolUseFailurePayload {
   readonly toolName: string;
   readonly toolInput: Record<string, unknown>;
