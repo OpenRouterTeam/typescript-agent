@@ -58,13 +58,13 @@ export function generateConversationId(): string {
   return `conv_${Date.now()}_${Math.random().toString(36).substring(2, 15)}`;
 }
 
+/** Currently supported ConversationState serialization version. */
+export const CONVERSATION_STATE_VERSION = 1 as const;
+
 /**
  * Create an initial conversation state
  * @param id - Optional custom ID, generates one if not provided
  */
-/** Currently supported ConversationState serialization version. */
-export const CONVERSATION_STATE_VERSION = 1 as const;
-
 export function createInitialState<TTools extends readonly Tool[] = readonly Tool[]>(
   id?: string,
 ): ConversationState<TTools> {
@@ -175,6 +175,18 @@ export function deserializeConversationState<TTools extends readonly Tool[] = re
   if (typeof obj['status'] !== 'string') {
     throw new InvalidStateError(
       `ConversationState missing or invalid field "status" (expected string, got ${describeType(obj['status'])})`,
+    );
+  }
+
+  if (typeof obj['createdAt'] !== 'number') {
+    throw new InvalidStateError(
+      `ConversationState missing or invalid field "createdAt" (expected number, got ${describeType(obj['createdAt'])})`,
+    );
+  }
+
+  if (typeof obj['updatedAt'] !== 'number') {
+    throw new InvalidStateError(
+      `ConversationState missing or invalid field "updatedAt" (expected number, got ${describeType(obj['updatedAt'])})`,
     );
   }
 

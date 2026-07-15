@@ -194,6 +194,35 @@ describe('ConversationState serialization contract (PR-6)', () => {
       expect((error as InvalidStateError).message).toMatch(/"status"/);
     }
 
+    try {
+      deserializeConversationState(
+        JSON.stringify({
+          id: 'conv_x',
+          messages: [],
+          status: 'in_progress',
+          updatedAt: 1,
+        }),
+      );
+    } catch (error) {
+      expect(error).toBeInstanceOf(InvalidStateError);
+      expect((error as InvalidStateError).message).toMatch(/"createdAt"/);
+    }
+
+    try {
+      deserializeConversationState(
+        JSON.stringify({
+          id: 'conv_x',
+          messages: [],
+          status: 'in_progress',
+          createdAt: 1,
+          updatedAt: 'yesterday',
+        }),
+      );
+    } catch (error) {
+      expect(error).toBeInstanceOf(InvalidStateError);
+      expect((error as InvalidStateError).message).toMatch(/"updatedAt"/);
+    }
+
     expect(() => deserializeConversationState('not-json{')).toThrow(InvalidStateError);
   });
 
