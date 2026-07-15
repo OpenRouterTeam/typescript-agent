@@ -160,6 +160,13 @@ export interface GetResponseOptions<
    * a final user message.
    */
   allowFinalResponse?: boolean | string;
+  /**
+   * When true, always throw if the final response has an empty `output` array
+   * (legacy behavior). Default false: after at least one completed tool
+   * execution round, an empty final turn is retried once and then accepted
+   * so tool-terminal runs are not reported as failures.
+   */
+  strictFinalResponse?: boolean;
 }
 
 /**
@@ -1253,6 +1260,7 @@ export class ModelResult<
       input: newInput,
       stream: true,
     };
+    this.resolvedRequest = finalRequest;
 
     const result = await betaResponsesSend(
       this.options.client,
@@ -1284,15 +1292,78 @@ export class ModelResult<
    * Validate the final response has required fields.
    *
    * @param response - The response to validate
+   * @param allowEmptyOutput - When true, tolerate an empty (but present) output array
    * @throws Error if response is missing required fields or has invalid output
    */
-  private validateFinalResponse(response: models.OpenResponsesResult): void {
+  private validateFinalResponse(
+    response: models.OpenResponsesResult,
+    allowEmptyOutput = false,
+  ): void {
     if (!response?.id || !response?.output) {
       throw new Error('Invalid final response: missing required fields');
     }
     if (!Array.isArray(response.output) || response.output.length === 0) {
+      if (allowEmptyOutput) {
+        return;
+      }
       throw new Error('Invalid final response: empty or invalid output');
     }
+  }
+
+  /**
+   * Re-send the current resolved request (same accumulated input) once.
+   * Used when a follow-up after tool execution returned an empty `output`.
+   *
+   * `tools`, `toolChoice`, and `parallelToolCalls` are stripped (mirroring
+   * `makeFinalResponseRequest`) so the retry coerces a text turn: on the
+   * natural-loop-completion path the resolved request still carries tools,
+   * and a retry that emitted a fresh `function_call` would pass
+   * `validateFinalResponse` but never be executed — silently dropping a
+   * proposed tool call.
+   */
+  private async retryCurrentRequest(turnNumber: number): Promise<models.OpenResponsesResult> {
+    if (!this.resolvedRequest) {
+      throw new Error('Request not initialized');
+    }
+
+    const {
+      tools: _tools,
+      toolChoice: _toolChoice,
+      parallelToolCalls: _parallelToolCalls,
+      ...rest
+    } = this.resolvedRequest;
+
+    const newRequest: models.ResponsesRequest = {
+      ...rest,
+      stream: true,
+    };
+
+    const newResult = await betaResponsesSend(
+      this.options.client,
+      {
+        responsesRequest: newRequest,
+      },
+      this.options.options,
+    );
+
+    if (!newResult.ok) {
+      throw newResult.error;
+    }
+
+    const value = newResult.value;
+    if (isEventStream(value)) {
+      const followUpStream = new ReusableReadableStream(value);
+
+      if (this.turnBroadcaster) {
+        return this.pipeAndConsumeStream(followUpStream, turnNumber);
+      }
+
+      return consumeStreamForCompletion(followUpStream);
+    }
+    if (this.isNonStreamingResponse(value)) {
+      return value;
+    }
+    throw new Error('Unexpected response type from API');
   }
 
   /**
@@ -1306,8 +1377,11 @@ export class ModelResult<
     if (hasAsyncFunctions(this.options.request)) {
       return resolveAsyncFunctions(this.options.request, context);
     }
-    // Already resolved, extract non-function fields
-    // Filter out stopWhen and state-related fields that aren't part of the API request
+    // Already resolved, extract non-function fields.
+    // Strip ALL client-only fields — keep this list in sync with
+    // `clientOnlyFields` in async-params.ts, which handles the async path.
+    // (`sharedContextSchema` is absent here: call-model.ts destructures it
+    // before the request reaches ModelResult.)
     const {
       stopWhen: _,
       state: _s,
@@ -1315,6 +1389,10 @@ export class ModelResult<
       approveToolCalls: _a,
       rejectToolCalls: _rj,
       context: _c,
+      onTurnStart: _ots,
+      onTurnEnd: _ote,
+      allowFinalResponse: _afr,
+      strictFinalResponse: _sfr,
       ...rest
     } = this.options.request;
     return rest as ResolvedCallModelInput;
@@ -1892,6 +1970,8 @@ export class ModelResult<
       );
 
       if (!this.options.tools?.length || !hasToolCalls) {
+        // No tool work: keep hard throw on empty/invalid final output.
+        this.validateFinalResponse(currentResponse);
         this.finalResponse = currentResponse;
         await this.markStateComplete();
         return;
@@ -1906,6 +1986,7 @@ export class ModelResult<
       }
 
       if (!this.hasExecutableToolCalls(toolCalls)) {
+        this.validateFinalResponse(currentResponse);
         this.finalResponse = currentResponse;
         await this.markStateComplete();
         return;
@@ -2117,8 +2198,30 @@ export class ModelResult<
         await this.saveResponseToState(currentResponse);
       }
 
-      // Validate and finalize
-      this.validateFinalResponse(currentResponse);
+      // Validate and finalize. Mini-class models intermittently return an
+      // empty final turn after a successful tool round (the tool call was
+      // the answer). Retry once, then tolerate empty output so a completed
+      // run isn't reported as failure — unless `strictFinalResponse` is set.
+      const canTolerateEmptyFinal =
+        this.allToolExecutionRounds.length > 0 && this.options.strictFinalResponse !== true;
+      const isEmptyOutput =
+        Array.isArray(currentResponse.output) && currentResponse.output.length === 0;
+
+      if (canTolerateEmptyFinal && isEmptyOutput) {
+        const turnNumber = this.allToolExecutionRounds.length + 1;
+        currentResponse = await this.retryCurrentRequest(turnNumber);
+        // Persist the retried response like every other response in the
+        // loop — otherwise stateful conversations silently lose the final
+        // turn's content on resume.
+        await this.saveResponseToState(currentResponse);
+      }
+
+      const allowEmptyOutput =
+        canTolerateEmptyFinal &&
+        Array.isArray(currentResponse.output) &&
+        currentResponse.output.length === 0;
+
+      this.validateFinalResponse(currentResponse, allowEmptyOutput);
       this.finalResponse = currentResponse;
       await this.markStateComplete();
     })();
