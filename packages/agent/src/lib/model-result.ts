@@ -89,6 +89,12 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
+// Cap consecutive Stop-hook forceResume overrides so a misbehaving handler
+// cannot spin the loop forever. 3 is a conservative upper bound -- enough to
+// let a hook gather a couple of follow-up actions but small enough that a
+// buggy handler fails fast with a visible warning.
+const MAX_FORCE_RESUME_OVERRIDES = 3;
+
 /**
  * Human-readable label for a value that failed the `isRecord` check. Used
  * exclusively to make `toModelOutput` misuse errors specific.
@@ -1076,6 +1082,66 @@ export class ModelResult<
   }
 
   /**
+   * Emit the Stop hook when a stopWhen condition halts the loop, and decide
+   * whether the loop should resume.
+   *
+   * - `appendPrompt` values from all handlers are concatenated (newline
+   *   separated) and injected as a user message. Honored independently of
+   *   forceResume so a handler can nudge the next turn without resuming.
+   * - `forceResume` is honored if ANY handler returns it, capped at
+   *   MAX_FORCE_RESUME_OVERRIDES consecutive overrides without tool
+   *   progress (the caller resets its counter when a tool round or a fresh
+   *   response lands).
+   *
+   * Returns 'resume' when the loop should continue, 'stop' otherwise.
+   */
+  private async runStopHook(forceResumeCount: number): Promise<'resume' | 'stop'> {
+    if (!this.hooksManager) {
+      return 'stop';
+    }
+
+    // shouldStopExecution() is driven by stopWhen conditions (default
+    // stepCountIs), so 'max_turns' is the semantically accurate reason.
+    const stopResult = await this.hooksManager.emit('Stop', {
+      reason: 'max_turns' as const,
+      sessionId: this.currentState?.id ?? '',
+    });
+
+    const shouldForceResume = stopResult.results.some(
+      (r) => r && typeof r === 'object' && 'forceResume' in r && r.forceResume === true,
+    );
+
+    const appendParts: string[] = [];
+    for (const r of stopResult.results) {
+      if (
+        r &&
+        typeof r === 'object' &&
+        'appendPrompt' in r &&
+        typeof r.appendPrompt === 'string' &&
+        r.appendPrompt.length > 0
+      ) {
+        appendParts.push(r.appendPrompt);
+      }
+    }
+    const appendPrompt = appendParts.join('\n');
+    if (appendPrompt) {
+      await this.injectAppendPromptMessage(appendPrompt);
+    }
+
+    if (!shouldForceResume) {
+      return 'stop';
+    }
+    if (forceResumeCount >= MAX_FORCE_RESUME_OVERRIDES) {
+      // Don't let the hook loop the engine forever. Log and stop.
+      console.warn(
+        `[Stop hook] forceResume honored ${MAX_FORCE_RESUME_OVERRIDES} times without new progress; stopping to prevent an infinite loop.`,
+      );
+      return 'stop';
+    }
+    return 'resume';
+  }
+
+  /**
    * Session teardown for the no-tools stream paths, which bypass
    * executeToolsIfNeeded (the normal SessionEnd site). Emits SessionEnd once
    * and drains pending hook work. Never throws: teardown must not mask the
@@ -1565,6 +1631,110 @@ export class ModelResult<
    *   `pausedCalls` is non-empty rather than sending an incomplete set of
    *   outputs back to the model.
    */
+  /**
+   * Execute one tool call for a round: resolve the tool, honor any pending
+   * PermissionRequest denial, wire preliminary-result broadcasting, and run
+   * the tool through the full Pre/Post lifecycle hooks. Returns a tagged
+   * outcome consumed by `executeToolRound`'s aggregation loop.
+   */
+  private async executeSingleToolCall(
+    toolCall: ParsedToolCall<Tool>,
+    turnContext: TurnContext,
+  ): Promise<
+    | null
+    | {
+        type: 'parse_error';
+        output: models.FunctionCallOutputItem;
+      }
+    | {
+        type: 'hook_blocked';
+        output: models.FunctionCallOutputItem;
+      }
+    | {
+        type: 'paused';
+        toolCall: ParsedToolCall<Tool>;
+      }
+    | {
+        type: 'execution';
+        toolCall: ParsedToolCall<Tool>;
+        tool: Tool;
+        result: {
+          result: unknown;
+          error?: Error;
+        };
+        preliminaryResultsForCall: InferToolEventsUnion<TTools>[];
+      }
+  > {
+    const tool = this.options.tools?.find(
+      (t) => isClientTool(t) && t.function.name === toolCall.name,
+    );
+    if (!tool || !isAutoResolvableTool(tool)) {
+      return null;
+    }
+
+    // PermissionRequest hook denied this call without pausing: synthesize a
+    // rejection instead of executing. Consume the entry so a later round
+    // with a reused id is not affected.
+    const denialReason = this.hookDeniedCalls.get(toolCall.id);
+    if (denialReason !== undefined) {
+      this.hookDeniedCalls.delete(toolCall.id);
+      return {
+        type: 'hook_blocked' as const,
+        output: {
+          type: 'function_call_output' as const,
+          id: `output_${toolCall.id}`,
+          callId: toolCall.id,
+          output: JSON.stringify({
+            error: denialReason,
+          }),
+        },
+      };
+    }
+
+    const preliminaryResultsForCall: InferToolEventsUnion<TTools>[] = [];
+
+    const hasBroadcaster = this.toolEventBroadcaster || this.turnBroadcaster;
+    const onPreliminaryResult = hasBroadcaster
+      ? (callId: string, resultValue: unknown) => {
+          const typedResult = resultValue as InferToolEventsUnion<TTools>;
+          preliminaryResultsForCall.push(typedResult);
+          this.broadcastPreliminaryResult(callId, typedResult);
+        }
+      : undefined;
+
+    // Run the tool through the full Pre/Post lifecycle hooks. The helper
+    // fails closed on a JSON-parse failure in toolCall.arguments so hooks
+    // never see a malformed payload; the caller handles that case via the
+    // shared `parse_error` / `hook_blocked` branch.
+    const executed = await this.runToolWithHooks(tool, toolCall, turnContext, onPreliminaryResult);
+    if (executed.type === 'parse_error') {
+      this.broadcastToolResult(toolCall.id, isMcpTool(tool) ? 'mcp' : 'client', {
+        error: executed.errorMessage,
+      } as InferToolOutputsUnion<TTools>);
+      return executed;
+    }
+    if (executed.type === 'hook_blocked') {
+      return executed;
+    }
+
+    const result = executed.result;
+    if (result === null) {
+      // HITL tool paused — surface as manual (no output this round)
+      return {
+        type: 'paused' as const,
+        toolCall,
+      };
+    }
+
+    return {
+      type: 'execution' as const,
+      toolCall: executed.effectiveToolCall,
+      tool,
+      result,
+      preliminaryResultsForCall,
+    };
+  }
+
   private async executeToolRound(
     toolCalls: ParsedToolCall<Tool>[],
     turnContext: TurnContext,
@@ -1572,83 +1742,9 @@ export class ModelResult<
     toolResults: models.FunctionCallOutputItem[];
     pausedCalls: ParsedToolCall<Tool>[];
   }> {
-    const toolCallPromises = toolCalls.map(async (toolCall) => {
-      const tool = this.options.tools?.find(
-        (t) => isClientTool(t) && t.function.name === toolCall.name,
-      );
-      if (!tool || !isAutoResolvableTool(tool)) {
-        return null;
-      }
-
-      // PermissionRequest hook denied this call without pausing: synthesize a
-      // rejection instead of executing. Consume the entry so a later round
-      // with a reused id is not affected.
-      const denialReason = this.hookDeniedCalls.get(toolCall.id);
-      if (denialReason !== undefined) {
-        this.hookDeniedCalls.delete(toolCall.id);
-        return {
-          type: 'hook_blocked' as const,
-          toolCall,
-          reason: denialReason,
-          output: {
-            type: 'function_call_output' as const,
-            id: `output_${toolCall.id}`,
-            callId: toolCall.id,
-            output: JSON.stringify({
-              error: denialReason,
-            }),
-          },
-        };
-      }
-
-      const preliminaryResultsForCall: InferToolEventsUnion<TTools>[] = [];
-
-      const hasBroadcaster = this.toolEventBroadcaster || this.turnBroadcaster;
-      const onPreliminaryResult = hasBroadcaster
-        ? (callId: string, resultValue: unknown) => {
-            const typedResult = resultValue as InferToolEventsUnion<TTools>;
-            preliminaryResultsForCall.push(typedResult);
-            this.broadcastPreliminaryResult(callId, typedResult);
-          }
-        : undefined;
-
-      // Run the tool through the full Pre/Post lifecycle hooks. The helper
-      // fails closed on a JSON-parse failure in toolCall.arguments so hooks
-      // never see a malformed payload; the caller below handles that case
-      // via the shared `parse_error` / `hook_blocked` branch.
-      const executed = await this.runToolWithHooks(
-        tool,
-        toolCall,
-        turnContext,
-        onPreliminaryResult,
-      );
-      if (executed.type === 'parse_error') {
-        this.broadcastToolResult(toolCall.id, isMcpTool(tool) ? 'mcp' : 'client', {
-          error: executed.errorMessage,
-        } as InferToolOutputsUnion<TTools>);
-        return executed;
-      }
-      if (executed.type === 'hook_blocked') {
-        return executed;
-      }
-
-      const result = executed.result;
-      if (result === null) {
-        // HITL tool paused — surface as manual (no output this round)
-        return {
-          type: 'paused' as const,
-          toolCall,
-        };
-      }
-
-      return {
-        type: 'execution' as const,
-        toolCall: executed.effectiveToolCall,
-        tool,
-        result,
-        preliminaryResultsForCall,
-      };
-    });
+    const toolCallPromises = toolCalls.map((toolCall) =>
+      this.executeSingleToolCall(toolCall, turnContext),
+    );
 
     const settledResults = await Promise.allSettled(toolCallPromises);
     const toolResults: models.FunctionCallOutputItem[] = [];
@@ -2738,11 +2834,9 @@ export class ModelResult<
         // Main execution loop
         let currentRound = 0;
         let stoppedByStopWhen = false;
-        // Cap consecutive forceResume overrides so a misbehaving Stop hook
-        // cannot spin the loop forever. We pick 3 as a conservative upper bound
-        // -- it's enough to let a hook gather a couple of follow-up actions but
-        // small enough that a buggy handler fails fast with a visible warning.
-        const MAX_FORCE_RESUME_OVERRIDES = 3;
+        // Counts consecutive Stop-hook forceResume overrides without tool
+        // progress; reset when a tool round or fresh response lands. See
+        // runStopHook for the cap.
         let forceResumeCount = 0;
 
         while (true) {
@@ -2754,58 +2848,16 @@ export class ModelResult<
 
           // Check stop conditions
           if (await this.shouldStopExecution()) {
-            // Emit Stop hook -- can force resume or inject prompt.
-            // shouldStopExecution() is driven by stopWhen conditions (default
-            // stepCountIs), so 'max_turns' is the semantically accurate reason.
-            if (this.hooksManager) {
-              const stopResult = await this.hooksManager.emit('Stop', {
-                reason: 'max_turns' as const,
-                sessionId: this.currentState?.id ?? '',
-              });
-
-              // Honor forceResume if ANY handler returns it, not just the last.
-              const shouldForceResume = stopResult.results.some(
-                (r) => r && typeof r === 'object' && 'forceResume' in r && r.forceResume === true,
-              );
-
-              // Collect every appendPrompt the handlers supplied (concatenated
-              // with newlines). appendPrompt is honored independently of
-              // forceResume so a handler can nudge the next turn without
-              // forcing a resume.
-              const appendParts: string[] = [];
-              for (const r of stopResult.results) {
-                if (
-                  r &&
-                  typeof r === 'object' &&
-                  'appendPrompt' in r &&
-                  typeof r.appendPrompt === 'string' &&
-                  r.appendPrompt.length > 0
-                ) {
-                  appendParts.push(r.appendPrompt);
-                }
-              }
-              const appendPrompt = appendParts.join('\n');
-
-              if (appendPrompt) {
-                await this.injectAppendPromptMessage(appendPrompt);
-              }
-
-              if (shouldForceResume) {
-                if (forceResumeCount >= MAX_FORCE_RESUME_OVERRIDES) {
-                  // Don't let the hook loop the engine forever. Log and stop.
-                  console.warn(
-                    `[Stop hook] forceResume honored ${MAX_FORCE_RESUME_OVERRIDES} times without new progress; stopping to prevent an infinite loop.`,
-                  );
-                  sessionEndReason = 'max_turns';
-                  stoppedByStopWhen = true;
-                  break;
-                }
-                forceResumeCount++;
-                // Continue the loop. If appendPrompt was supplied we already
-                // injected it, which advances state so the stop condition may
-                // no longer fire on the next iteration.
-                continue;
-              }
+            // Emit the Stop hook -- handlers can force resume or inject a
+            // prompt. The helper enforces the consecutive-override cap so a
+            // misbehaving handler cannot spin the loop forever.
+            const stopDecision = await this.runStopHook(forceResumeCount);
+            if (stopDecision === 'resume') {
+              forceResumeCount++;
+              // Continue the loop. If appendPrompt was supplied it was
+              // already injected, which advances state so the stop condition
+              // may no longer fire on the next iteration.
+              continue;
             }
             // Stop condition fired and the hook (if any) did not force resume
             // -- this is a max_turns-style exit, not a natural completion.

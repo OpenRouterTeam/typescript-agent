@@ -119,71 +119,28 @@ export async function executeHandlerChain<P, R>(
     // Matcher and filter checks run under the same error policy as handlers:
     // in non-strict mode a throwing user-supplied matcher function or filter
     // is logged and the entry skipped, instead of crashing the whole chain.
-    //
-    // Matchers fail closed: if a matcher is registered and no toolName is
-    // available for this emit, we skip the handler rather than invoking it
-    // globally.
-    let shouldRun: boolean;
-    try {
-      shouldRun =
-        (entry.matcher === undefined ||
-          (options.toolName !== undefined && matchesTool(entry.matcher, options.toolName))) &&
-        (!entry.filter || Boolean(entry.filter(currentPayload)));
-    } catch (error) {
-      if (options.throwOnHandlerError) {
-        throw error;
-      }
-      console.warn(
-        `[HooksManager] Matcher/filter for handler ${i} of hook "${options.hookName}" threw:`,
-        error,
-      );
-      continue;
-    }
-    if (!shouldRun) {
+    const gate = evaluateEntryGate(entry, currentPayload, i, options);
+    if (gate === 'skip') {
       continue;
     }
 
     try {
       const returnValue = await entry.handler(currentPayload, context);
+      const outcome = classifyHandlerReturn<R>(returnValue, i, options);
 
-      // Async fire-and-forget: the handler has returned a signal describing
-      // detached work. Track the (optional) work promise for drain/timeout.
-      if (isAsyncOutput(returnValue)) {
-        const asyncOutput: AsyncOutput = returnValue;
-        const trackedWork = trackAsyncWork(asyncOutput, options.hookName, options.onAsyncTimeout);
-        if (trackedWork !== undefined) {
-          pending.push(trackedWork);
+      if (outcome.kind === 'async') {
+        // Fire-and-forget: track the (optional) work promise for drain/timeout.
+        if (outcome.trackedWork !== undefined) {
+          pending.push(outcome.trackedWork);
         }
         continue;
       }
-
-      // Void / undefined / null -- side-effect only, continue
-      if (returnValue === undefined || returnValue === null) {
+      if (outcome.kind === 'skip') {
+        // Void return, or result-schema validation failed in non-strict mode.
         continue;
       }
 
-      // Validate the result against the schema if one is supplied. A failure
-      // here is treated like any other handler error: propagated in strict
-      // mode, logged otherwise. On success, use the parsed output (which may
-      // differ from the input for schemas with .transform() / .default() /
-      // .catch() / .coerce) so downstream callers see transformed values.
-      let result: R;
-      if (options.resultSchema) {
-        const validation = safeParse(options.resultSchema, returnValue);
-        if (!validation.success) {
-          const err = new Error(
-            `[HooksManager] Handler ${i} for hook "${options.hookName}" returned an invalid result: ${validation.error.message}`,
-          );
-          if (options.throwOnHandlerError) {
-            throw err;
-          }
-          console.warn(err.message);
-          continue;
-        }
-        result = validation.data as R;
-      } else {
-        result = returnValue as R;
-      }
+      const result = outcome.result;
       results.push(result);
 
       // Apply mutation piping -- only hooks listed in MUTATION_FIELD_MAP participate.
@@ -214,6 +171,108 @@ export async function executeHandlerChain<P, R>(
     finalPayload: currentPayload,
     blocked,
     mutated,
+  };
+}
+
+/**
+ * Evaluate an entry's matcher and filter under the chain's error policy.
+ *
+ * Matchers fail closed: if a matcher is registered and no toolName is
+ * available for this emit, the handler is skipped rather than invoked
+ * globally. A throwing matcher function or filter is re-thrown in strict
+ * mode, or logged and treated as a skip otherwise.
+ */
+function evaluateEntryGate<P, R>(
+  entry: HookEntry<P, R>,
+  payload: P,
+  index: number,
+  options: ExecuteChainOptions,
+): 'run' | 'skip' {
+  try {
+    // Matcher first; the filter must not run when the matcher already
+    // rejected the entry (filters can be effectful or expensive).
+    const matcherPasses =
+      entry.matcher === undefined ||
+      (options.toolName !== undefined && matchesTool(entry.matcher, options.toolName));
+    if (!matcherPasses) {
+      return 'skip';
+    }
+    return !entry.filter || Boolean(entry.filter(payload)) ? 'run' : 'skip';
+  } catch (error) {
+    if (options.throwOnHandlerError) {
+      throw error;
+    }
+    console.warn(
+      `[HooksManager] Matcher/filter for handler ${index} of hook "${options.hookName}" threw:`,
+      error,
+    );
+    return 'skip';
+  }
+}
+
+type HandlerReturnOutcome<R> =
+  | {
+      kind: 'async';
+      trackedWork: Promise<void> | undefined;
+    }
+  | {
+      kind: 'skip';
+    }
+  | {
+      kind: 'result';
+      result: R;
+    };
+
+/**
+ * Classify a handler's return value into one of three outcomes:
+ *
+ * - `async`: an {@link AsyncOutput} fire-and-forget signal (with the tracked
+ *   work promise, if any)
+ * - `skip`: void/undefined/null (side-effect only), or a result that failed
+ *   schema validation in non-strict mode
+ * - `result`: a validated result. When a result schema is supplied, the
+ *   parsed output is returned -- which may differ from the input for schemas
+ *   with .transform() / .default() / .catch() / .coerce -- so downstream
+ *   callers see transformed values. Validation failure in strict mode throws.
+ */
+function classifyHandlerReturn<R>(
+  returnValue: unknown,
+  index: number,
+  options: ExecuteChainOptions,
+): HandlerReturnOutcome<R> {
+  if (isAsyncOutput(returnValue)) {
+    return {
+      kind: 'async',
+      trackedWork: trackAsyncWork(returnValue, options.hookName, options.onAsyncTimeout),
+    };
+  }
+  if (returnValue === undefined || returnValue === null) {
+    return {
+      kind: 'skip',
+    };
+  }
+  if (!options.resultSchema) {
+    return {
+      kind: 'result',
+      result: returnValue as R,
+    };
+  }
+  const validation = safeParse(options.resultSchema, returnValue);
+  if (!validation.success) {
+    const err = new Error(
+      `[HooksManager] Handler ${index} for hook "${options.hookName}" returned an invalid result: ${validation.error.message}`,
+    );
+    if (options.throwOnHandlerError) {
+      throw err;
+    }
+    console.warn(err.message);
+    return {
+      kind: 'skip',
+    };
+  }
+  return {
+    kind: 'result',
+    result: validation.data as R,
   };
 }
 
