@@ -391,7 +391,21 @@ describe('manual tool pending state (PR-4)', () => {
     };
     mockBetaResponsesSend.mockResolvedValueOnce({
       ok: true,
-      value: makeResponse('resp_done', []),
+      value: makeResponse('resp_done', [
+        {
+          id: 'msg_done',
+          type: 'message',
+          role: 'assistant',
+          status: 'completed',
+          content: [
+            {
+              type: 'output_text',
+              text: 'done',
+              annotations: [],
+            },
+          ],
+        },
+      ]),
     });
 
     await callModel(client, {
