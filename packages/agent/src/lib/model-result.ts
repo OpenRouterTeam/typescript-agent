@@ -873,6 +873,11 @@ export class ModelResult<
    * `callModel`. The paused status and calls remain durable until that request
    * produces a response; they are then cleared atomically with the response.
    *
+   * Without a `StateAccessor` nothing is persisted (mirroring
+   * `persistHitlPause`): `getPendingToolCalls()` returns `[]` and the caller
+   * must read the unresolved `function_call` items off `getResponse().output`.
+   * Manual tools require a StateAccessor to be recoverable across processes.
+   *
    * @param currentResponse - The response that produced the unresolved calls
    * @param unresolvedCalls - Manual (or otherwise non-auto-resolvable) tool calls
    */

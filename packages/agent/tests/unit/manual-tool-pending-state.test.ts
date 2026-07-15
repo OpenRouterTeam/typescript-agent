@@ -235,6 +235,37 @@ describe('manual tool pending state (PR-4)', () => {
     });
   });
 
+  it('no StateAccessor: nothing persisted, unresolved calls readable from the response', async () => {
+    mockBetaResponsesSend.mockResolvedValueOnce({
+      ok: true,
+      value: makeResponse('resp_manual', [
+        functionCallItem('call_manual_1', 'exec_command', '{"command":"ls"}'),
+      ]),
+    });
+
+    const result = callModel(client, {
+      model: 'test-model',
+      input: 'run ls',
+      tools: [
+        manualTool,
+      ] as const,
+      // no `state` accessor
+    });
+
+    // Loop still stops after the unresolved manual call — no follow-up
+    // request with an orphan function_call.
+    const response = await result.getResponse();
+    expect(response.id).toBe('resp_manual');
+    expect(mockBetaResponsesSend).toHaveBeenCalledTimes(1);
+
+    // Without an accessor there is no durable state, so pendings are empty;
+    // the caller reads the unresolved calls off the response output.
+    const pending = await result.getPendingToolCalls();
+    expect(pending).toEqual([]);
+    const calls = response.output.filter((item) => 'type' in item && item.type === 'function_call');
+    expect(calls).toHaveLength(1);
+  });
+
   it('clears pending manual calls only after a resume succeeds', async () => {
     const { accessor, get } = createMemoryAccessor();
     mockBetaResponsesSend
