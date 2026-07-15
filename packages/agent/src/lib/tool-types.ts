@@ -1038,6 +1038,15 @@ export type ConversationStatus =
  * @template TTools - The tools array type for proper type inference
  */
 export interface ConversationState<TTools extends readonly Tool[] = readonly Tool[]> {
+  /**
+   * Serialization-contract version for this state blob.
+   *
+   * Optional so legacy (pre-version-field) states remain assignable. Absence is
+   * treated as version `1` by {@link deserializeConversationState}. Consumers
+   * should treat serialized JSON as opaque: additive fields within a major
+   * version, migrations applied inside `deserializeConversationState` on bump.
+   */
+  version?: number;
   /** Unique identifier for this conversation */
   id: string;
   /** Full message history */

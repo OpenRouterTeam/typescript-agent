@@ -95,12 +95,17 @@ export { isClaudeStyleMessages } from './lib/claude-type-guards.js';
 // Conversation state helpers
 export {
   appendToMessages,
+  CONVERSATION_STATE_VERSION,
   createInitialState,
   createRejectedResult,
   createUnsentResult,
+  deserializeConversationState,
   generateConversationId,
+  InvalidStateError,
   partitionToolCalls,
+  serializeConversationState,
   toolRequiresApproval,
+  UnsupportedStateVersionError,
   updateState,
 } from './lib/conversation-state.js';
 export type { GetResponseOptions } from './lib/model-result.js';
