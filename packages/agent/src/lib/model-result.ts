@@ -1147,15 +1147,38 @@ export class ModelResult<
    * and drains pending hook work. Never throws: teardown must not mask the
    * stream's own outcome.
    */
-  private async finishHooksSessionForStream(): Promise<void> {
+  private async finishHooksSessionForStream(
+    reason: 'complete' | 'error' = 'complete',
+  ): Promise<void> {
     if (!this.hooksManager) {
       return;
     }
     try {
-      await this.emitSessionEndOnce('complete');
+      await this.emitSessionEndOnce(reason);
       await this.hooksManager.drain();
     } catch (teardownError) {
       console.warn('[SessionEnd] error during stream teardown:', teardownError);
+    }
+  }
+
+  /**
+   * initStream wrapper for the streaming getters. initStream can throw
+   * after SessionStart was emitted (e.g. the initial API call fails), and
+   * the "Stream not initialized" guard can throw right after it — on both
+   * paths the hook session must still be torn down (SessionEnd + drain),
+   * otherwise Start/End handlers that treat the pair as a contract see a
+   * dangling Start. Teardown is emit-once, so the tools path (which runs
+   * its own teardown in executeToolsIfNeeded) is unaffected.
+   */
+  private async initStreamGuarded(): Promise<void> {
+    try {
+      await this.initStream();
+      if (!this.reusableStream && !this.finalResponse) {
+        throw new Error('Stream not initialized');
+      }
+    } catch (error) {
+      await this.finishHooksSessionForStream('error');
+      throw error;
     }
   }
 
@@ -3190,20 +3213,23 @@ export class ModelResult<
     ResponseStreamEvent<InferToolEventsUnion<TTools>, InferToolOutputsUnion<TTools>>
   > {
     return async function* (this: ModelResult<TTools, TShared>) {
-      await this.initStream();
-
-      if (!this.reusableStream && !this.finalResponse) {
-        throw new Error('Stream not initialized');
-      }
+      await this.initStreamGuarded();
 
       if (!this.options.tools?.length) {
-        if (this.reusableStream) {
-          const consumer = this.reusableStream.createConsumer();
-          for await (const event of consumer) {
-            yield event;
+        let streamFailed = false;
+        try {
+          if (this.reusableStream) {
+            const consumer = this.reusableStream.createConsumer();
+            for await (const event of consumer) {
+              yield event;
+            }
           }
+        } catch (error) {
+          streamFailed = true;
+          throw error;
+        } finally {
+          await this.finishHooksSessionForStream(streamFailed ? 'error' : 'complete');
         }
-        await this.finishHooksSessionForStream();
         return;
       }
 
@@ -3224,17 +3250,20 @@ export class ModelResult<
    */
   getTextStream(): AsyncIterableIterator<string> {
     return async function* (this: ModelResult<TTools, TShared>) {
-      await this.initStream();
-
-      if (!this.reusableStream && !this.finalResponse) {
-        throw new Error('Stream not initialized');
-      }
+      await this.initStreamGuarded();
 
       if (!this.options.tools?.length) {
-        if (this.reusableStream) {
-          yield* extractTextDeltas(this.reusableStream);
+        let streamFailed = false;
+        try {
+          if (this.reusableStream) {
+            yield* extractTextDeltas(this.reusableStream);
+          }
+        } catch (error) {
+          streamFailed = true;
+          throw error;
+        } finally {
+          await this.finishHooksSessionForStream(streamFailed ? 'error' : 'complete');
         }
-        await this.finishHooksSessionForStream();
         return;
       }
 
@@ -3294,22 +3323,25 @@ export class ModelResult<
     };
 
     return async function* (this: ModelResult<TTools, TShared>) {
-      await this.initStream();
-
-      if (!this.reusableStream && !this.finalResponse) {
-        throw new Error('Stream not initialized');
-      }
+      await this.initStreamGuarded();
 
       // No tools — stream single turn directly (no broadcaster needed)
       if (!this.options.tools?.length) {
-        if (this.reusableStream) {
-          for await (const item of buildItemsStream(this.reusableStream)) {
-            if (isInScope(item)) {
-              yield item;
+        let streamFailed = false;
+        try {
+          if (this.reusableStream) {
+            for await (const item of buildItemsStream(this.reusableStream)) {
+              if (isInScope(item)) {
+                yield item;
+              }
             }
           }
+        } catch (error) {
+          streamFailed = true;
+          throw error;
+        } finally {
+          await this.finishHooksSessionForStream(streamFailed ? 'error' : 'complete');
         }
-        await this.finishHooksSessionForStream();
         return;
       }
 
@@ -3532,17 +3564,20 @@ export class ModelResult<
    */
   getReasoningStream(): AsyncIterableIterator<string> {
     return async function* (this: ModelResult<TTools, TShared>) {
-      await this.initStream();
-
-      if (!this.reusableStream && !this.finalResponse) {
-        throw new Error('Stream not initialized');
-      }
+      await this.initStreamGuarded();
 
       if (!this.options.tools?.length) {
-        if (this.reusableStream) {
-          yield* extractReasoningDeltas(this.reusableStream);
+        let streamFailed = false;
+        try {
+          if (this.reusableStream) {
+            yield* extractReasoningDeltas(this.reusableStream);
+          }
+        } catch (error) {
+          streamFailed = true;
+          throw error;
+        } finally {
+          await this.finishHooksSessionForStream(streamFailed ? 'error' : 'complete');
         }
-        await this.finishHooksSessionForStream();
         return;
       }
 
@@ -3566,22 +3601,25 @@ export class ModelResult<
    */
   getToolStream(): AsyncIterableIterator<ToolStreamEvent<InferToolEventsUnion<TTools>>> {
     return async function* (this: ModelResult<TTools, TShared>) {
-      await this.initStream();
-
-      if (!this.reusableStream && !this.finalResponse) {
-        throw new Error('Stream not initialized');
-      }
+      await this.initStreamGuarded();
 
       if (!this.options.tools?.length) {
-        if (this.reusableStream) {
-          for await (const delta of extractToolDeltas(this.reusableStream)) {
-            yield {
-              type: 'delta' as const,
-              content: delta,
-            };
+        let streamFailed = false;
+        try {
+          if (this.reusableStream) {
+            for await (const delta of extractToolDeltas(this.reusableStream)) {
+              yield {
+                type: 'delta' as const,
+                content: delta,
+              };
+            }
           }
+        } catch (error) {
+          streamFailed = true;
+          throw error;
+        } finally {
+          await this.finishHooksSessionForStream(streamFailed ? 'error' : 'complete');
         }
-        await this.finishHooksSessionForStream();
         return;
       }
 

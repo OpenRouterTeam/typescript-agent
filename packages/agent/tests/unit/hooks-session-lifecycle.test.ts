@@ -344,6 +344,115 @@ describe('session lifecycle end-to-end', () => {
     });
   });
 
+  it('emits SessionEnd(error) when initStream fails after SessionStart on the no-tools stream path', async () => {
+    // The initial API call fails AFTER SessionStart was emitted inside
+    // initStream. The streaming getters must still tear the session down
+    // (SessionEnd + drain) instead of leaving a dangling SessionStart.
+    mockBetaResponsesSend.mockResolvedValue({
+      ok: false,
+      error: new Error('initial api call failed'),
+    });
+
+    const hooks = new HooksManager();
+    const starts: unknown[] = [];
+    const ends: {
+      reason?: string;
+    }[] = [];
+    hooks.on('SessionStart', {
+      handler: (payload) => {
+        starts.push(payload);
+      },
+    });
+    hooks.on('SessionEnd', {
+      handler: (payload) => {
+        ends.push(
+          payload as {
+            reason?: string;
+          },
+        );
+      },
+    });
+
+    const result = callModel(client, {
+      model: 'test-model',
+      input: 'hi',
+      hooks,
+    });
+
+    await expect(async () => {
+      for await (const _chunk of result.getTextStream()) {
+        // no-op: the stream should throw before yielding
+      }
+    }).rejects.toThrow('initial api call failed');
+
+    expect(starts).toHaveLength(1);
+    expect(ends).toHaveLength(1);
+    expect(ends[0]).toMatchObject({
+      reason: 'error',
+    });
+  });
+
+  it('emits SessionEnd(error) when the no-tools stream errors mid-iteration', async () => {
+    // Stream delivers one event then errors (network drop mid-stream). The
+    // no-tools streaming path must still fire SessionEnd with reason 'error'
+    // and drain pending hook work.
+    const erroringStream = new ReadableStream<models.StreamEvents>({
+      start(controller) {
+        controller.enqueue({
+          type: 'response.output_text.delta',
+          delta: 'partial',
+          sequenceNumber: 0,
+        } as unknown as models.StreamEvents);
+        controller.error(new Error('network dropped mid-stream'));
+      },
+    });
+    mockBetaResponsesSend.mockResolvedValue({
+      ok: true,
+      value: erroringStream,
+    });
+
+    const hooks = new HooksManager();
+    const events: string[] = [];
+    const ends: {
+      reason?: string;
+    }[] = [];
+    hooks.on('SessionStart', {
+      handler: () => {
+        events.push('start');
+      },
+    });
+    hooks.on('SessionEnd', {
+      handler: (payload) => {
+        events.push('end');
+        ends.push(
+          payload as {
+            reason?: string;
+          },
+        );
+      },
+    });
+
+    const result = callModel(client, {
+      model: 'test-model',
+      input: 'hi',
+      hooks,
+    });
+
+    await expect(async () => {
+      for await (const _chunk of result.getTextStream()) {
+        // consume until the mid-stream error propagates
+      }
+    }).rejects.toThrow('network dropped mid-stream');
+
+    expect(events).toEqual([
+      'start',
+      'end',
+    ]);
+    expect(ends[0]).toMatchObject({
+      reason: 'error',
+    });
+  });
+
   it('teardown does not mask the original error when a SessionEnd handler throws', async () => {
     mockBetaResponsesSend
       .mockResolvedValueOnce({
