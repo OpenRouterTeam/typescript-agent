@@ -17,6 +17,7 @@ import {
   updateState,
 } from './conversation-state.js';
 import type { HooksManager } from './hooks-manager.js';
+import type { ModelCallUsage, PostModelCallPayload } from './hooks-types.js';
 import {
   applyNextTurnParamsToRequest,
   executeNextTurnParamsFunctions,
@@ -126,6 +127,27 @@ function isEventStream(value: unknown): value is EventStream<models.StreamEvents
     getReader?: unknown;
   };
   return typeof maybeStream.getReader === 'function';
+}
+
+/**
+ * Map the server's usage block onto the hook-facing ModelCallUsage shape.
+ * Returns undefined when the response carried no usage accounting.
+ */
+function extractModelCallUsage(usage: models.Usage | null | undefined): ModelCallUsage | undefined {
+  if (!usage) {
+    return undefined;
+  }
+  return {
+    inputTokens: usage.inputTokens,
+    outputTokens: usage.outputTokens,
+    totalTokens: usage.totalTokens,
+    cachedTokens: usage.inputTokensDetails?.cachedTokens ?? 0,
+    reasoningTokens: usage.outputTokensDetails?.reasoningTokens ?? 0,
+    ...(usage.cost !== null &&
+      usage.cost !== undefined && {
+        cost: usage.cost,
+      }),
+  };
 }
 
 /**
@@ -383,6 +405,29 @@ export class ModelResult<
   // normal tool round consults this to synthesize rejected outputs instead of
   // executing the calls.
   private readonly hookDeniedCalls = new Map<string, string>();
+  // Telemetry for the PostModelCall hook: the initial/resume request is
+  // dispatched in initStream but its response is materialized later (stream
+  // consumption), so the dispatch time and turn labeling are parked here
+  // until a completed response is available. Cleared on emit.
+  private pendingModelCall:
+    | {
+        startedAt: number;
+        turnType: 'initial' | 'resume';
+        turnNumber: number;
+      }
+    | undefined;
+  // Running aggregate across every PostModelCall emit; surfaced as
+  // SessionEnd.totalUsage.
+  private readonly sessionUsage = {
+    modelCalls: 0,
+    inputTokens: 0,
+    outputTokens: 0,
+    totalTokens: 0,
+    cachedTokens: 0,
+    reasoningTokens: 0,
+    cost: 0,
+    hasCost: false,
+  };
 
   constructor(options: GetResponseOptions<TTools, TShared>) {
     this.options = options;
@@ -609,6 +654,28 @@ export class ModelResult<
     );
   }
 
+  /**
+   * Materialize a betaResponsesSend result value into a completed response:
+   * streaming values are consumed to completion (through the turn
+   * broadcaster when one is attached), non-streaming values pass through.
+   */
+  private async materializeResponse(
+    value: unknown,
+    turnNumber: number,
+  ): Promise<models.OpenResponsesResult> {
+    if (isEventStream(value)) {
+      const stream = new ReusableReadableStream(value);
+      if (this.turnBroadcaster) {
+        return this.pipeAndConsumeStream(stream, turnNumber);
+      }
+      return consumeStreamForCompletion(stream);
+    }
+    if (this.isNonStreamingResponse(value)) {
+      return value;
+    }
+    throw new Error('Unexpected response type from API');
+  }
+
   // =========================================================================
   // Extracted Helper Methods for executeToolsIfNeeded
   // =========================================================================
@@ -625,7 +692,9 @@ export class ModelResult<
       return this.finalResponse;
     }
     if (this.reusableStream) {
-      return consumeStreamForCompletion(this.reusableStream);
+      const response = await consumeStreamForCompletion(this.reusableStream);
+      await this.emitPendingModelCallOnce(response);
+      return response;
     }
     throw new Error('Neither stream nor response initialized');
   }
@@ -1078,7 +1147,74 @@ export class ModelResult<
     await this.hooksManager.emit('SessionEnd', {
       sessionId: this.currentState?.id ?? '',
       reason,
+      ...(this.sessionUsage.modelCalls > 0 && {
+        totalUsage: {
+          modelCalls: this.sessionUsage.modelCalls,
+          inputTokens: this.sessionUsage.inputTokens,
+          outputTokens: this.sessionUsage.outputTokens,
+          totalTokens: this.sessionUsage.totalTokens,
+          cachedTokens: this.sessionUsage.cachedTokens,
+          reasoningTokens: this.sessionUsage.reasoningTokens,
+          ...(this.sessionUsage.hasCost && {
+            cost: this.sessionUsage.cost,
+          }),
+        },
+      }),
     });
+  }
+
+  /**
+   * Emit PostModelCall for a completed model response and fold its usage
+   * into the session aggregate. One emit per materialized response.
+   */
+  private async emitPostModelCall(
+    response: models.OpenResponsesResult,
+    startedAt: number,
+    turnType: PostModelCallPayload['turnType'],
+    turnNumber: number,
+  ): Promise<void> {
+    if (!this.hooksManager) {
+      return;
+    }
+    const usage = extractModelCallUsage(response.usage);
+    this.sessionUsage.modelCalls++;
+    if (usage) {
+      this.sessionUsage.inputTokens += usage.inputTokens;
+      this.sessionUsage.outputTokens += usage.outputTokens;
+      this.sessionUsage.totalTokens += usage.totalTokens;
+      this.sessionUsage.cachedTokens += usage.cachedTokens;
+      this.sessionUsage.reasoningTokens += usage.reasoningTokens;
+      if (usage.cost !== undefined) {
+        this.sessionUsage.cost += usage.cost;
+        this.sessionUsage.hasCost = true;
+      }
+    }
+    await this.hooksManager.emit('PostModelCall', {
+      sessionId: this.currentState?.id ?? '',
+      responseId: response.id,
+      model: response.model ?? '',
+      durationMs: performance.now() - startedAt,
+      turnType,
+      turnNumber,
+      ...(usage && {
+        usage,
+      }),
+    });
+  }
+
+  /**
+   * Emit the parked initial/resume PostModelCall once its response has been
+   * materialized. No-ops when nothing is parked (e.g. the non-streaming
+   * branch already emitted). Safe to call from multiple materialization
+   * sites; the first wins.
+   */
+  private async emitPendingModelCallOnce(response: models.OpenResponsesResult): Promise<void> {
+    const pending = this.pendingModelCall;
+    if (!pending) {
+      return;
+    }
+    this.pendingModelCall = undefined;
+    await this.emitPostModelCall(response, pending.startedAt, pending.turnType, pending.turnNumber);
   }
 
   /**
@@ -1154,6 +1290,18 @@ export class ModelResult<
       return;
     }
     try {
+      // Materialize the parked initial-call telemetry when the stream fully
+      // completed (the retained buffer replays without touching the source).
+      // A failed/incomplete stream skips it: no completed response exists.
+      if (this.pendingModelCall) {
+        if (this.finalResponse) {
+          await this.emitPendingModelCallOnce(this.finalResponse);
+        } else if (this.reusableStream?.isComplete) {
+          await this.emitPendingModelCallOnce(
+            await consumeStreamForCompletion(this.reusableStream),
+          );
+        }
+      }
       await this.emitSessionEndOnce(reason);
       await this.hooksManager.drain();
     } catch (teardownError) {
@@ -1960,6 +2108,7 @@ export class ModelResult<
       stream: true,
     };
 
+    const startedAt = performance.now();
     const newResult = await betaResponsesSend(
       this.options.client,
       {
@@ -1972,21 +2121,9 @@ export class ModelResult<
       throw newResult.error;
     }
 
-    // Handle streaming or non-streaming response
-    const value = newResult.value;
-    if (isEventStream(value)) {
-      const followUpStream = new ReusableReadableStream(value);
-
-      if (this.turnBroadcaster) {
-        return this.pipeAndConsumeStream(followUpStream, turnNumber);
-      }
-
-      return consumeStreamForCompletion(followUpStream);
-    }
-    if (this.isNonStreamingResponse(value)) {
-      return value;
-    }
-    throw new Error('Unexpected response type from API');
+    const response = await this.materializeResponse(newResult.value, turnNumber);
+    await this.emitPostModelCall(response, startedAt, 'tool_round', turnNumber);
+    return response;
   }
 
   /**
@@ -2052,6 +2189,7 @@ export class ModelResult<
     };
     this.resolvedRequest = finalRequest;
 
+    const startedAt = performance.now();
     const result = await betaResponsesSend(
       this.options.client,
       {
@@ -2064,18 +2202,9 @@ export class ModelResult<
       throw result.error;
     }
 
-    const value = result.value;
-    if (isEventStream(value)) {
-      const stream = new ReusableReadableStream(value);
-      if (this.turnBroadcaster) {
-        return this.pipeAndConsumeStream(stream, turnNumber);
-      }
-      return consumeStreamForCompletion(stream);
-    }
-    if (this.isNonStreamingResponse(value)) {
-      return value;
-    }
-    throw new Error('Unexpected response type from API');
+    const response = await this.materializeResponse(result.value, turnNumber);
+    await this.emitPostModelCall(response, startedAt, 'final', turnNumber);
+    return response;
   }
 
   /**
@@ -2128,6 +2257,7 @@ export class ModelResult<
       stream: true,
     };
 
+    const startedAt = performance.now();
     const newResult = await betaResponsesSend(
       this.options.client,
       {
@@ -2140,20 +2270,9 @@ export class ModelResult<
       throw newResult.error;
     }
 
-    const value = newResult.value;
-    if (isEventStream(value)) {
-      const followUpStream = new ReusableReadableStream(value);
-
-      if (this.turnBroadcaster) {
-        return this.pipeAndConsumeStream(followUpStream, turnNumber);
-      }
-
-      return consumeStreamForCompletion(followUpStream);
-    }
-    if (this.isNonStreamingResponse(value)) {
-      return value;
-    }
-    throw new Error('Unexpected response type from API');
+    const response = await this.materializeResponse(newResult.value, turnNumber);
+    await this.emitPostModelCall(response, startedAt, 'retry', turnNumber);
+    return response;
   }
 
   /**
@@ -2524,6 +2643,15 @@ export class ModelResult<
       // Force stream mode for initial request
       const request = this.resolvedRequest;
 
+      // Park PostModelCall telemetry for this dispatch: the response is
+      // materialized later (getInitialResponse or the no-tools stream
+      // teardown), which completes the emit with the true duration.
+      this.pendingModelCall = {
+        startedAt: performance.now(),
+        turnType: 'initial',
+        turnNumber: 0,
+      };
+
       // Make the API request
       const apiResult = await betaResponsesSend(
         this.options.client,
@@ -2552,6 +2680,7 @@ export class ModelResult<
       } else if (this.isNonStreamingResponse(apiResult.value)) {
         // API returned a complete response directly - use it as the final response
         this.finalResponse = apiResult.value;
+        await this.emitPendingModelCallOnce(this.finalResponse);
       } else {
         throw new Error('Unexpected response type from API');
       }
@@ -2765,6 +2894,13 @@ export class ModelResult<
 
     this.resolvedRequest = request;
 
+    // Park PostModelCall telemetry for the resume dispatch (see initStream).
+    this.pendingModelCall = {
+      startedAt: performance.now(),
+      turnType: 'resume',
+      turnNumber: turnContext.numberOfTurns,
+    };
+
     // Make the API request
     const apiResult = await betaResponsesSend(
       this.options.client,
@@ -2783,6 +2919,7 @@ export class ModelResult<
       this.reusableStream = new ReusableReadableStream(apiResult.value);
     } else if (this.isNonStreamingResponse(apiResult.value)) {
       this.finalResponse = apiResult.value;
+      await this.emitPendingModelCallOnce(this.finalResponse);
     } else {
       throw new Error('Unexpected response type from API');
     }
@@ -3677,6 +3814,7 @@ export class ModelResult<
     }
 
     const completedResponse = await consumeStreamForCompletion(this.reusableStream);
+    await this.emitPendingModelCallOnce(completedResponse);
     return extractToolCallsFromResponse(completedResponse) as ParsedToolCall<TTools[number]>[];
   }
 

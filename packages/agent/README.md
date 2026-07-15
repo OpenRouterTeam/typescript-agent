@@ -310,13 +310,20 @@ const result = callModel(client, { model, input, tools, hooks });
 | `PermissionRequest` | When a tool requires approval, before pausing for the human gate | `decision: 'allow'` skips the gate (the tool runs once via the normal round), `'deny'` synthesizes a rejected result without executing, `'ask_user'` (default) falls through to the approval flow. Last handler wins. Payload includes a `riskLevel` derived from the approval gate's shape (`'high'` for tool- or call-level functions, `'medium'` for blanket `true`) |
 | `Stop` | When a `stopWhen` condition halts the loop (`reason: 'max_turns'`) | `forceResume: true` continues the loop (capped at 3 consecutive overrides without tool progress — a bare `forceResume` that changes no state will typically re-trigger the stop condition immediately and burn through the cap, so pair it with `appendPrompt` or external state the stop condition observes); `appendPrompt` injects a user message for the next turn (honored independently of `forceResume`). Blocked/rejected tool outputs count as progress for the cap: the model receives that feedback, and each round costs a full request, so the loop cannot spin hot |
 | `SessionStart` | Once per run, before the initial request. `config` summarizes the session (`hasTools`, `hasApproval`, `hasState`) | none (void) |
-| `SessionEnd` | Once per run, on every exit path — completion, approval pause, interruption, error, and the no-tools streaming paths. `reason` is `'complete' \| 'error' \| 'max_turns' \| 'user'` | none (void) |
+| `SessionEnd` | Once per run, on every exit path — completion, approval pause, interruption, error, and the no-tools streaming paths. `reason` is `'complete' \| 'error' \| 'max_turns' \| 'user'`. When at least one model call completed, `totalUsage` aggregates tokens/cost across all of them (`modelCalls`, `inputTokens`, `outputTokens`, `totalTokens`, `cachedTokens`, `reasoningTokens`, and `cost` when the server reported it) | none (void) |
+| `PostModelCall` | Once per completed model response, on **every** request the loop makes — initial, each tool-round follow-up, the empty-final retry, the `allowFinalResponse` final turn, and approval-resume requests. Payload: `responseId` (the OpenRouter generation id), `model`, `durationMs` (dispatch → fully materialized response, including stream consumption), `turnType` (`'initial' \| 'resume' \| 'tool_round' \| 'final' \| 'retry'`), `turnNumber`, and `usage` (`inputTokens`, `outputTokens`, `totalTokens`, `cachedTokens`, `reasoningTokens`, `cost?`) when the server reported usage accounting. Purely observational — the telemetry primitive for tracing/benchmark consumers: one span per model call | none (void) |
 
 Notes on lifecycle pairing: `SessionEnd` only fires when a matching
 `SessionStart` succeeded, and at most once per run. Pending async hook work is
 always drained on teardown — including on paths that skip `SessionStart`,
 such as resuming from a tool approval. A throwing `SessionEnd` handler never
 masks the run's original error (teardown failures are logged as warnings).
+
+On no-tools streaming paths the initial response is only materialized when the
+stream is consumed, so `PostModelCall` for that response fires during session
+teardown (before `SessionEnd`). A stream that errors before completion emits no
+`PostModelCall` — there is no completed response to report. Note `usage.cost`
+is only present when the request had usage accounting enabled server-side.
 
 **Handler chain semantics**
 

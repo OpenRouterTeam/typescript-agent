@@ -20,6 +20,15 @@ export class ReusableReadableStream<T> {
   constructor(private sourceStream: ReadableStream<T>) {}
 
   /**
+   * True once the source stream has been fully read into the buffer.
+   * A fresh consumer created after this point replays the retained buffer
+   * without waiting on the source.
+   */
+  get isComplete(): boolean {
+    return this.sourceComplete;
+  }
+
+  /**
    * Create a new consumer that can independently iterate over the stream.
    * Multiple consumers can be created and will all receive the same data.
    */

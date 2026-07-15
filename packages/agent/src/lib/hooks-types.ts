@@ -11,6 +11,7 @@ export const HookName = {
   PermissionRequest: 'PermissionRequest',
   SessionStart: 'SessionStart',
   SessionEnd: 'SessionEnd',
+  PostModelCall: 'PostModelCall',
 } as const;
 
 export type HookName = (typeof HookName)[keyof typeof HookName];
@@ -189,9 +190,60 @@ export interface SessionStartPayload {
   readonly config: Record<string, unknown> | undefined;
 }
 
+/**
+ * Normalized token/cost accounting for a single model call, extracted from
+ * the OpenRouter response's `usage` block. `cost` is present only when the
+ * server reported one (usage accounting enabled on the request).
+ */
+export interface ModelCallUsage {
+  readonly inputTokens: number;
+  readonly outputTokens: number;
+  readonly totalTokens: number;
+  readonly cachedTokens: number;
+  readonly reasoningTokens: number;
+  readonly cost?: number;
+}
+
+/**
+ * Aggregate usage across every model call observed during a run.
+ */
+export interface SessionUsageTotals extends ModelCallUsage {
+  /** Number of completed model responses observed. */
+  readonly modelCalls: number;
+}
+
+/**
+ * Fired once per completed model response, on every request the agent loop
+ * makes: the initial request, each tool-round follow-up, the empty-final
+ * retry, the `allowFinalResponse` final turn, and approval-resume requests.
+ *
+ * `responseId` is the OpenRouter generation id (deep-linkable). `durationMs`
+ * spans from request dispatch to the response being fully materialized
+ * (for streaming responses this includes stream consumption). `usage` is
+ * present when the server reported usage accounting for the call.
+ *
+ * Purely observational: handlers cannot mutate or block. This is the
+ * telemetry primitive for benchmark/tracing consumers — one span per call.
+ */
+export interface PostModelCallPayload {
+  readonly sessionId: string;
+  readonly responseId: string;
+  readonly model: string;
+  readonly durationMs: number;
+  readonly turnType: 'initial' | 'resume' | 'tool_round' | 'final' | 'retry';
+  /** 0 for the run's first materialized response, then the loop turn number. */
+  readonly turnNumber: number;
+  readonly usage?: ModelCallUsage;
+}
+
 export interface SessionEndPayload {
   readonly sessionId: string;
   readonly reason: 'user' | 'error' | 'max_turns' | 'complete';
+  /**
+   * Aggregate usage across every model call observed during the run.
+   * Present when at least one completed model response was observed.
+   */
+  readonly totalUsage?: SessionUsageTotals;
 }
 
 //#endregion
@@ -280,6 +332,11 @@ export interface BuiltInHookDefinitions {
   };
   SessionEnd: {
     payload: SessionEndPayload;
+    // biome-ignore lint/suspicious/noConfusingVoidType: void signals no meaningful result
+    result: void;
+  };
+  PostModelCall: {
+    payload: PostModelCallPayload;
     // biome-ignore lint/suspicious/noConfusingVoidType: void signals no meaningful result
     result: void;
   };

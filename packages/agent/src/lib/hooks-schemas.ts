@@ -52,6 +52,15 @@ export const SessionStartPayloadSchema = z4.object({
   config: z4.record(z4.string(), z4.unknown()).optional(),
 });
 
+const ModelCallUsageSchema = z4.object({
+  inputTokens: z4.number(),
+  outputTokens: z4.number(),
+  totalTokens: z4.number(),
+  cachedTokens: z4.number(),
+  reasoningTokens: z4.number(),
+  cost: z4.number().optional(),
+});
+
 export const SessionEndPayloadSchema = z4.object({
   sessionId: z4.string(),
   reason: z4.enum([
@@ -60,6 +69,25 @@ export const SessionEndPayloadSchema = z4.object({
     'max_turns',
     'complete',
   ]),
+  totalUsage: ModelCallUsageSchema.extend({
+    modelCalls: z4.number(),
+  }).optional(),
+});
+
+export const PostModelCallPayloadSchema = z4.object({
+  sessionId: z4.string(),
+  responseId: z4.string(),
+  model: z4.string(),
+  durationMs: z4.number(),
+  turnType: z4.enum([
+    'initial',
+    'resume',
+    'tool_round',
+    'final',
+    'retry',
+  ]),
+  turnNumber: z4.number(),
+  usage: ModelCallUsageSchema.optional(),
 });
 
 //#endregion
@@ -139,6 +167,10 @@ export const BUILT_IN_HOOKS: Record<string, HookDefinition> = {
     payload: SessionEndPayloadSchema,
     result: VoidResultSchema,
   },
+  PostModelCall: {
+    payload: PostModelCallPayloadSchema,
+    result: VoidResultSchema,
+  },
 };
 
 export const BUILT_IN_HOOK_NAMES = new Set(Object.keys(BUILT_IN_HOOKS));
@@ -154,6 +186,7 @@ export const VOID_RESULT_HOOKS = new Set<string>([
   'PostToolUseFailure',
   'SessionStart',
   'SessionEnd',
+  'PostModelCall',
 ]);
 
 //#endregion
