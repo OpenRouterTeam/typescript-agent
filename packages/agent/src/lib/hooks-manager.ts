@@ -1,10 +1,11 @@
-import type { $ZodType, infer as zodInfer } from 'zod/v4/core';
+import type { $ZodType, infer as zodInfer, input as zodInput } from 'zod/v4/core';
 import { safeParse } from 'zod/v4/core';
 import { executeHandlerChain } from './hooks-emit.js';
 import { BUILT_IN_HOOK_NAMES, BUILT_IN_HOOKS } from './hooks-schemas.js';
 import type {
   BuiltInHookDefinitions,
   EmitResult,
+  HookDefinition,
   HookEntry,
   HookHandler,
   HookRegistry,
@@ -18,6 +19,20 @@ import type {
 type AllHooks<Custom extends HookRegistry> = BuiltInHookDefinitions & {
   [K in keyof Custom]: {
     payload: zodInfer<Custom[K]['payload']>;
+    result: zodInfer<Custom[K]['result']>;
+  };
+};
+
+/**
+ * Like {@link AllHooks} but with payloads typed as the schema INPUT.
+ * `emit()` accepts the input type (what callers hand to `safeParse`), while
+ * handlers and `finalPayload` see the schema OUTPUT — so custom hooks with
+ * `.transform()` / `.default()` are correctly typed on both sides of
+ * validation. Built-in schemas have no transforms, so input == output there.
+ */
+type AllHooksIn<Custom extends HookRegistry> = BuiltInHookDefinitions & {
+  [K in keyof Custom]: {
+    payload: zodInput<Custom[K]['payload']>;
     result: zodInfer<Custom[K]['result']>;
   };
 };
@@ -157,7 +172,7 @@ export class HooksManager<Custom extends HookRegistry = Record<string, never>> {
    */
   async emit<K extends keyof AllHooks<Custom> & string>(
     hookName: K,
-    payload: PayloadOf<AllHooks<Custom>, K>,
+    payload: PayloadOf<AllHooksIn<Custom>, K & keyof AllHooksIn<Custom>>,
     emitContext?: {
       toolName?: string;
     },
@@ -170,11 +185,12 @@ export class HooksManager<Custom extends HookRegistry = Record<string, never>> {
 
     // Validate the payload and, on success, feed the PARSED value into the
     // chain. For schemas with .transform() / .default() / .coerce (or that
-    // strip unknown keys) the parsed output differs from the raw input, and
-    // `zodInfer` types handler payloads as the schema OUTPUT -- so handlers
-    // must receive `parsed.data`, not the raw value, or the runtime shape
-    // silently diverges from the static types.
-    let chainPayload: PayloadOf<AllHooks<Custom>, K> = payload;
+    // strip unknown keys) the parsed output differs from the raw input: emit
+    // accepts the schema INPUT type (AllHooksIn) while handlers and
+    // finalPayload carry the schema OUTPUT (AllHooks) -- so handlers must
+    // receive `parsed.data`, not the raw value, or the runtime shape silently
+    // diverges from the static types.
+    let chainPayload = payload as unknown as PayloadOf<AllHooks<Custom>, K>;
     const definition = this._definitionFor(hookName);
     if (definition) {
       const parsed = safeParse(definition.payload, payload);
@@ -189,7 +205,7 @@ export class HooksManager<Custom extends HookRegistry = Record<string, never>> {
         return {
           results: [],
           pending: [],
-          finalPayload: payload,
+          finalPayload: chainPayload,
           blocked: false,
           mutated: false,
         };
@@ -333,7 +349,7 @@ export class HooksManager<Custom extends HookRegistry = Record<string, never>> {
         result: $ZodType;
       }
     | undefined {
-    const builtIn = BUILT_IN_HOOKS[hookName];
+    const builtIn = (BUILT_IN_HOOKS as Record<string, HookDefinition | undefined>)[hookName];
     if (builtIn) {
       return builtIn;
     }

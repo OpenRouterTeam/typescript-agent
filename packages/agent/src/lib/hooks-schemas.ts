@@ -1,5 +1,6 @@
 import * as z4 from 'zod/v4';
 import type { HookDefinition } from './hooks-types.js';
+import { HookName } from './hooks-types.js';
 
 //#region Payload Schemas
 
@@ -106,54 +107,47 @@ const VoidResultSchema = z4.void();
 
 //#region Built-in Hook Registry
 
-export const BUILT_IN_HOOKS: Record<string, HookDefinition> = {
-  PreToolUse: {
+// Keyed by the HookName enum object (not string literals) and typed as
+// Record<HookName, ...> so adding a name to HookName without registering
+// schemas here is a compile error.
+export const BUILT_IN_HOOKS: Record<HookName, HookDefinition> = {
+  [HookName.PreToolUse]: {
     payload: PreToolUsePayloadSchema,
     result: PreToolUseResultSchema,
   },
-  PostToolUse: {
+  [HookName.PostToolUse]: {
     payload: PostToolUsePayloadSchema,
     result: VoidResultSchema,
   },
-  PostToolUseFailure: {
+  [HookName.PostToolUseFailure]: {
     payload: PostToolUseFailurePayloadSchema,
     result: VoidResultSchema,
   },
-  UserPromptSubmit: {
+  [HookName.UserPromptSubmit]: {
     payload: UserPromptSubmitPayloadSchema,
     result: UserPromptSubmitResultSchema,
   },
-  Stop: {
+  [HookName.Stop]: {
     payload: StopPayloadSchema,
     result: StopResultSchema,
   },
-  PermissionRequest: {
+  [HookName.PermissionRequest]: {
     payload: PermissionRequestPayloadSchema,
     result: PermissionRequestResultSchema,
   },
-  SessionStart: {
+  [HookName.SessionStart]: {
     payload: SessionStartPayloadSchema,
     result: VoidResultSchema,
   },
-  SessionEnd: {
+  [HookName.SessionEnd]: {
     payload: SessionEndPayloadSchema,
     result: VoidResultSchema,
   },
 };
 
 export const BUILT_IN_HOOK_NAMES = new Set(Object.keys(BUILT_IN_HOOKS));
-
-/**
- * Set of built-in hook names whose result schema is `z4.void()`. These hooks
- * have no meaningful result object, so the emit pipeline skips result
- * validation for them (allowing handlers to return arbitrary values that are
- * then collected as opaque results without complaint).
- */
-export const VOID_RESULT_HOOKS = new Set<string>([
-  'PostToolUse',
-  'PostToolUseFailure',
-  'SessionStart',
-  'SessionEnd',
-]);
+// NOTE: void-result hooks are detected by schema shape (`isVoidSchema` in
+// hooks-manager.ts), not by a name list, so custom hooks with `result:
+// z.void()` behave identically to the built-in void hooks.
 
 //#endregion

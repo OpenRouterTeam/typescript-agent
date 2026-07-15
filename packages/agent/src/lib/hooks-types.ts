@@ -1,3 +1,4 @@
+import * as z4 from 'zod/v4';
 import type { $ZodType } from 'zod/v4/core';
 
 //#region Hook Names
@@ -253,13 +254,13 @@ export interface BuiltInHookDefinitions {
   };
   PostToolUse: {
     payload: PostToolUsePayload;
-    // biome-ignore lint/suspicious/noConfusingVoidType: void signals no meaningful result
-    result: void;
+    /** Observation-only hook: handlers have no meaningful result. */
+    result: undefined;
   };
   PostToolUseFailure: {
     payload: PostToolUseFailurePayload;
-    // biome-ignore lint/suspicious/noConfusingVoidType: void signals no meaningful result
-    result: void;
+    /** Observation-only hook: handlers have no meaningful result. */
+    result: undefined;
   };
   UserPromptSubmit: {
     payload: UserPromptSubmitPayload;
@@ -275,13 +276,13 @@ export interface BuiltInHookDefinitions {
   };
   SessionStart: {
     payload: SessionStartPayload;
-    // biome-ignore lint/suspicious/noConfusingVoidType: void signals no meaningful result
-    result: void;
+    /** Observation-only hook: handlers have no meaningful result. */
+    result: undefined;
   };
   SessionEnd: {
     payload: SessionEndPayload;
-    // biome-ignore lint/suspicious/noConfusingVoidType: void signals no meaningful result
-    result: void;
+    /** Observation-only hook: handlers have no meaningful result. */
+    result: undefined;
   };
 }
 
@@ -296,7 +297,7 @@ export interface BuiltInHookDefinitions {
 export type InlineHookConfig = {
   [K in keyof BuiltInHookDefinitions]?: HookEntry<
     BuiltInHookDefinitions[K]['payload'],
-    BuiltInHookDefinitions[K]['result'] extends void ? void : BuiltInHookDefinitions[K]['result']
+    BuiltInHookDefinitions[K]['result']
   >[];
 };
 
@@ -305,39 +306,23 @@ export type InlineHookConfig = {
 //#region Helper Types
 
 /**
- * Keys recognized on an {@link AsyncOutput} signal. Used by {@link isAsyncOutput}
- * to distinguish a true fire-and-forget marker from a result object that
- * happens to carry an `async` field.
+ * Strict schema for an {@link AsyncOutput} signal: `async` must be literally
+ * `true`, `work`/`asyncTimeout` must match their declared types, and any
+ * foreign key fails the parse. A handler that accidentally returns
+ * `{ async: true, mutatedInput: {...} }` is therefore treated as a result
+ * (so the mutation is not silently discarded), not as fire-and-forget.
  */
-const ASYNC_OUTPUT_KEYS = new Set<string>([
-  'async',
-  'work',
-  'asyncTimeout',
-]);
+const AsyncOutputSchema = z4.strictObject({
+  async: z4.literal(true),
+  work: z4.instanceof(Promise).optional(),
+  asyncTimeout: z4.number().optional(),
+});
 
 /**
- * Checks if a value is an AsyncOutput signal.
- *
- * Requires `async === true` AND no foreign keys. A handler that accidentally
- * returns `{ async: true, mutatedInput: {...} }` is treated as a result (so
- * the mutation is not silently discarded), not as fire-and-forget.
+ * Checks if a value is an AsyncOutput signal (see {@link AsyncOutputSchema}).
  */
 export function isAsyncOutput(value: unknown): value is AsyncOutput {
-  if (typeof value !== 'object' || value === null || !('async' in value)) {
-    return false;
-  }
-  const candidate = value as {
-    async: unknown;
-  };
-  if (candidate.async !== true) {
-    return false;
-  }
-  for (const key of Object.keys(value)) {
-    if (!ASYNC_OUTPUT_KEYS.has(key)) {
-      return false;
-    }
-  }
-  return true;
+  return AsyncOutputSchema.safeParse(value).success;
 }
 
 /**

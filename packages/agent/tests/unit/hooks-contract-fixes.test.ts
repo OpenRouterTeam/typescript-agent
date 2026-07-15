@@ -5,19 +5,20 @@
  *    defaults / key-stripping apply).
  * 2. `emit.mutated` is the authoritative mutation signal (payload cloning by
  *    validation no longer false-positives reference comparisons).
- * 3. Custom hooks with `result: z.void()` skip result validation exactly like
- *    the built-in void hooks (decided by schema shape, not name list).
- * 4. Non-plain payloads (Date, Map, class instances) pass through the chain
+ * 3. Non-plain payloads (Date, Map, class instances) pass through the chain
  *    un-cloned and un-mangled.
- * 5. `asyncTimeout` bounds how long drain() waits and aborts the emit signal
+ * 4. `asyncTimeout` bounds how long drain() waits and aborts the emit signal
  *    so handlers can cancel cooperatively.
- * 6. `abortInflight()` reaches fire-and-forget work that outlives the emit.
- * 7. drain() runs on session teardown even when SessionStart never fired
+ * 5. `abortInflight()` reaches fire-and-forget work that outlives the emit.
+ * 6. drain() runs on session teardown even when SessionStart never fired
  *    (approval-resume path).
+ *
+ * Void-result schema handling (isVoidSchema pinning, custom void hooks) is
+ * covered separately in hooks-void-schema.test.ts.
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import * as z4 from 'zod/v4';
-import { HooksManager, isVoidSchema } from '../../src/lib/hooks-manager.js';
+import { HooksManager } from '../../src/lib/hooks-manager.js';
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -42,10 +43,10 @@ describe('payload validation uses parsed.data', () => {
       },
     });
 
+    // emit() is typed with the schema INPUT (`{ n: string }`), while the
+    // handler above sees the OUTPUT (`{ n: number }`) — no casting needed.
     await manager.emit('Numify', {
       n: '42',
-    } as unknown as {
-      n: number;
     });
 
     expect(seen).toBe(42);
@@ -68,12 +69,9 @@ describe('payload validation uses parsed.data', () => {
       },
     });
 
-    await manager.emit(
-      'Defaulted',
-      {} as {
-        level: string;
-      },
-    );
+    // `.default()` makes the field optional on the INPUT side, so `{}` is a
+    // valid payload without casting.
+    await manager.emit('Defaulted', {});
 
     expect(seen).toBe('info');
   });
@@ -91,12 +89,11 @@ describe('payload validation uses parsed.data', () => {
       handler: () => {},
     });
 
-    const result = await manager.emit('Stripped', {
+    const rawPayload = {
       keep: 'yes',
       extra: 'stripped-by-zod-object-default',
-    } as {
-      keep: string;
-    });
+    };
+    const result = await manager.emit('Stripped', rawPayload);
 
     expect(result.finalPayload).toEqual({
       keep: 'yes',
@@ -184,74 +181,6 @@ describe('emit.mutated is the authoritative mutation signal', () => {
     expect(result.finalPayload.toolInput).toEqual({
       scrubbed: true,
     });
-  });
-});
-
-describe('void schema detection (pins zod v4 internals against upgrades)', () => {
-  // isVoidSchema reads `schema._zod.def.type` -- zod v4's introspection
-  // surface for library authors, but still an internal shape. These tests
-  // pin the detection so a zod upgrade that restructures the internals
-  // fails loudly here instead of silently re-enabling result validation on
-  // void-result hooks.
-  it('returns true for z.void()', () => {
-    expect(isVoidSchema(z4.void())).toBe(true);
-  });
-
-  it('returns false for non-void schemas', () => {
-    expect(isVoidSchema(z4.object({}))).toBe(false);
-    expect(isVoidSchema(z4.string())).toBe(false);
-    expect(isVoidSchema(z4.undefined())).toBe(false);
-    expect(isVoidSchema(z4.unknown())).toBe(false);
-    expect(isVoidSchema(z4.null())).toBe(false);
-  });
-
-  it('the _zod.def.type introspection surface exists on v4 schemas', () => {
-    // Canary: if this fails after a zod upgrade, isVoidSchema needs a new
-    // detection strategy.
-    const internals = (
-      z4.void() as unknown as {
-        _zod?: {
-          def?: {
-            type?: string;
-          };
-        };
-      }
-    )._zod;
-    expect(internals?.def?.type).toBe('void');
-  });
-});
-
-describe('custom void-result hooks skip result validation (schema shape, not name list)', () => {
-  it('handler returning an arbitrary value does not warn or throw', async () => {
-    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    const manager = new HooksManager(
-      {
-        Audit: {
-          payload: z4.object({}),
-          result: z4.void(),
-        },
-      },
-      {
-        throwOnHandlerError: true,
-      },
-    );
-    // The handler intentionally returns a value from a void-result hook; the
-    // double cast on the function type sidesteps the compile-time void check
-    // the same way real-world JS callers would.
-    const returnsValue = () => ({
-      logged: true,
-    });
-    manager.on('Audit', {
-      handler: returnsValue as unknown as () => undefined,
-    });
-
-    const result = await manager.emit('Audit', {});
-    expect(result.results).toEqual([
-      {
-        logged: true,
-      },
-    ]);
-    expect(warnSpy).not.toHaveBeenCalled();
   });
 });
 
