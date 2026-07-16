@@ -287,11 +287,14 @@ const hooks = new HooksManager();
 
 const unsubscribe = hooks.on('PreToolUse', {
   matcher: /^db_/,
-  filter: (payload) => payload.sessionId !== '', // optional predicate on the payload
-  handler: ({ toolInput }) => ({
-    // Replace the tool's input before execution (mutation piping)
-    mutatedInput: { ...toolInput, dryRun: true },
-  }),
+  filter: (payload) => Object.keys(payload.toolInput).length > 0, // optional predicate on the payload
+  handler: ({ toolInput }, ctx) => {
+    console.log(`[${ctx.sessionId}] intercepting db tool`); // session id lives on the context
+    return {
+      // Replace the tool's input before execution (mutation piping)
+      mutatedInput: { ...toolInput, dryRun: true },
+    };
+  },
 });
 
 const result = callModel(client, { model, input, tools, hooks });
@@ -317,6 +320,10 @@ Notes on lifecycle pairing: `SessionEnd` only fires when a matching
 always drained on teardown — including on paths that skip `SessionStart`,
 such as resuming from a tool approval. A throwing `SessionEnd` handler never
 masks the run's original error (teardown failures are logged as warnings).
+
+Every handler receives `(payload, context)` — `context` carries the
+`sessionId` (the single source of session identity; payloads do not repeat
+it), the `hookName`, and an `AbortSignal` for cooperative cancellation.
 
 **Handler chain semantics**
 

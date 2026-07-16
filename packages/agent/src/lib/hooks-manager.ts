@@ -11,55 +11,34 @@ import type {
   HookRegistry,
   HooksManagerOptions,
   LifecycleHookContext,
-  ToolMatcher,
 } from './hooks-types.js';
 
 //#region Types
 
-type AllHooks<Custom extends HookRegistry> = BuiltInHookDefinitions & {
+/**
+ * Type-level registry of every hook this manager knows: built-ins plus the
+ * instance's custom hooks. Each entry carries:
+ *
+ * - `payload`: the schema OUTPUT -- what handlers receive and `finalPayload`
+ *   holds (post-validation, transforms/defaults applied)
+ * - `payloadIn`: the schema INPUT -- what `emit()` accepts (differs from
+ *   `payload` for schemas with .transform()/.default()/.coerce). Built-in
+ *   schemas have no transforms, so input == output there.
+ * - `result`: the validated handler result
+ */
+type AllHooks<Custom extends HookRegistry> = {
+  [K in keyof BuiltInHookDefinitions]: {
+    payload: BuiltInHookDefinitions[K]['payload'];
+    payloadIn: BuiltInHookDefinitions[K]['payload'];
+    result: BuiltInHookDefinitions[K]['result'];
+  };
+} & {
   [K in keyof Custom]: {
     payload: zodInfer<Custom[K]['payload']>;
+    payloadIn: zodInput<Custom[K]['payload']>;
     result: zodInfer<Custom[K]['result']>;
   };
 };
-
-/**
- * Like {@link AllHooks} but with payloads typed as the schema INPUT.
- * `emit()` accepts the input type (what callers hand to `safeParse`), while
- * handlers and `finalPayload` see the schema OUTPUT — so custom hooks with
- * `.transform()` / `.default()` are correctly typed on both sides of
- * validation. Built-in schemas have no transforms, so input == output there.
- */
-type AllHooksIn<Custom extends HookRegistry> = BuiltInHookDefinitions & {
-  [K in keyof Custom]: {
-    payload: zodInput<Custom[K]['payload']>;
-    result: zodInfer<Custom[K]['result']>;
-  };
-};
-
-type PayloadOf<H extends AllHooks<HookRegistry>, K extends keyof H> = H[K]['payload'];
-type ResultOf<H extends AllHooks<HookRegistry>, K extends keyof H> = H[K]['result'];
-
-interface EntryRegistration<P, R> {
-  readonly handler: HookHandler<P, R>;
-  readonly matcher?: ToolMatcher;
-  readonly filter?: (payload: P) => boolean;
-}
-
-/**
- * Typeguard: does the payload carry a string `sessionId` field?
- *
- * Used by `emit()` to prefer the payload's sessionId over the manager's
- * stored value when they disagree (e.g., mid-session id changes).
- */
-function payloadHasSessionId(payload: unknown): payload is {
-  sessionId: string;
-} {
-  if (typeof payload !== 'object' || payload === null || !('sessionId' in payload)) {
-    return false;
-  }
-  return typeof payload.sessionId === 'string';
-}
 
 //#endregion
 
@@ -110,7 +89,9 @@ export class HooksManager<Custom extends HookRegistry = Record<string, never>> {
   }
 
   /**
-   * Set the session ID used in LifecycleHookContext for all handler invocations.
+   * Set the session ID exposed as `context.sessionId` to all handler
+   * invocations. The single source of session identity for hooks -- payloads
+   * deliberately do not carry it.
    */
   setSessionId(sessionId: string): void {
     this.sessionId = sessionId;
@@ -121,7 +102,7 @@ export class HooksManager<Custom extends HookRegistry = Record<string, never>> {
    */
   on<K extends keyof AllHooks<Custom> & string>(
     hookName: K,
-    entry: EntryRegistration<PayloadOf<AllHooks<Custom>, K>, ResultOf<AllHooks<Custom>, K>>,
+    entry: HookEntry<AllHooks<Custom>[K]['payload'], AllHooks<Custom>[K]['result']>,
   ): () => void {
     return this._register(hookName, entry as HookEntry<unknown, unknown>);
   }
@@ -132,7 +113,7 @@ export class HooksManager<Custom extends HookRegistry = Record<string, never>> {
    */
   off<K extends keyof AllHooks<Custom> & string>(
     hookName: K,
-    handler: HookHandler<PayloadOf<AllHooks<Custom>, K>, ResultOf<AllHooks<Custom>, K>>,
+    handler: HookHandler<AllHooks<Custom>[K]['payload'], AllHooks<Custom>[K]['result']>,
   ): boolean {
     const list = this.entries.get(hookName);
     if (!list) {
@@ -172,11 +153,11 @@ export class HooksManager<Custom extends HookRegistry = Record<string, never>> {
    */
   async emit<K extends keyof AllHooks<Custom> & string>(
     hookName: K,
-    payload: PayloadOf<AllHooksIn<Custom>, K & keyof AllHooksIn<Custom>>,
+    payload: AllHooks<Custom>[K]['payloadIn'],
     emitContext?: {
       toolName?: string;
     },
-  ): Promise<EmitResult<ResultOf<AllHooks<Custom>, K>, PayloadOf<AllHooks<Custom>, K>>> {
+  ): Promise<EmitResult<AllHooks<Custom>[K]['result'], AllHooks<Custom>[K]['payload']>> {
     // Snapshot the entries list so mutations (on()/off()/unsubscribe) triggered
     // by a handler during the chain can't shift indices mid-iteration and
     // silently skip the next handler, or splice in new handlers that were
@@ -186,11 +167,11 @@ export class HooksManager<Custom extends HookRegistry = Record<string, never>> {
     // Validate the payload and, on success, feed the PARSED value into the
     // chain. For schemas with .transform() / .default() / .coerce (or that
     // strip unknown keys) the parsed output differs from the raw input: emit
-    // accepts the schema INPUT type (AllHooksIn) while handlers and
-    // finalPayload carry the schema OUTPUT (AllHooks) -- so handlers must
+    // accepts the schema INPUT type (`payloadIn`) while handlers and
+    // finalPayload carry the schema OUTPUT (`payload`) -- so handlers must
     // receive `parsed.data`, not the raw value, or the runtime shape silently
     // diverges from the static types.
-    let chainPayload = payload as unknown as PayloadOf<AllHooks<Custom>, K>;
+    let chainPayload = payload as unknown as AllHooks<Custom>[K]['payload'];
     const definition = this._definitionFor(hookName);
     if (definition) {
       const parsed = safeParse(definition.payload, payload);
@@ -210,21 +191,16 @@ export class HooksManager<Custom extends HookRegistry = Record<string, never>> {
           mutated: false,
         };
       }
-      chainPayload = parsed.data as PayloadOf<AllHooks<Custom>, K>;
+      chainPayload = parsed.data as AllHooks<Custom>[K]['payload'];
     }
 
     const controller = new AbortController();
     this.inflightControllers.add(controller);
 
-    // Payload sessionId takes precedence over the manager's stored value when
-    // available, keeping `payload.sessionId` and `ctx.sessionId` in sync even
-    // if the state's id changes mid-session.
-    const contextSessionId = payloadHasSessionId(payload) ? payload.sessionId : this.sessionId;
-
     const context: LifecycleHookContext = {
       signal: controller.signal,
       hookName,
-      sessionId: contextSessionId,
+      sessionId: this.sessionId,
     };
 
     let hasDetachedWork = false;
@@ -239,7 +215,7 @@ export class HooksManager<Custom extends HookRegistry = Record<string, never>> {
 
       const result = await executeHandlerChain(
         list as ReadonlyArray<
-          HookEntry<PayloadOf<AllHooks<Custom>, K>, ResultOf<AllHooks<Custom>, K>>
+          HookEntry<AllHooks<Custom>[K]['payload'], AllHooks<Custom>[K]['result']>
         >,
         chainPayload,
         context,

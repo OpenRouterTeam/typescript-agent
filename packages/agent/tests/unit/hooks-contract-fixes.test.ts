@@ -113,7 +113,6 @@ describe('emit.mutated is the authoritative mutation signal', () => {
       {
         toolName: 't',
         toolInput: {},
-        sessionId: 's',
       },
       {
         toolName: 't',
@@ -138,7 +137,6 @@ describe('emit.mutated is the authoritative mutation signal', () => {
       {
         toolName: 't',
         toolInput: {},
-        sessionId: 's',
       },
       {
         toolName: 't',
@@ -169,7 +167,6 @@ describe('emit.mutated is the authoritative mutation signal', () => {
         toolInput: {
           secret: 'x',
         },
-        sessionId: 's',
       },
       {
         toolName: 't',
@@ -256,7 +253,6 @@ describe('asyncTimeout and abortInflight semantics', () => {
         toolInput: {},
         toolOutput: null,
         durationMs: 1,
-        sessionId: 's',
       },
       {
         toolName: 't',
@@ -301,7 +297,6 @@ describe('asyncTimeout and abortInflight semantics', () => {
         toolInput: {},
         toolOutput: null,
         durationMs: 1,
-        sessionId: 's',
       },
       {
         toolName: 't',
@@ -338,7 +333,6 @@ describe('asyncTimeout and abortInflight semantics', () => {
         toolInput: {},
         toolOutput: null,
         durationMs: 1,
-        sessionId: 's',
       },
       {
         toolName: 't',
@@ -376,7 +370,6 @@ describe('asyncTimeout and abortInflight semantics', () => {
         toolInput: {},
         toolOutput: null,
         durationMs: 1,
-        sessionId: 's',
       },
       {
         toolName: 't',
