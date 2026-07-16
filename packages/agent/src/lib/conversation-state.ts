@@ -87,7 +87,12 @@ export class UnsupportedStateVersionError extends Error {
   readonly found: number;
   readonly supported: readonly number[];
 
-  constructor(found: number, supported: readonly number[] = [CONVERSATION_STATE_VERSION]) {
+  constructor(
+    found: number,
+    supported: readonly number[] = [
+      CONVERSATION_STATE_VERSION,
+    ],
+  ) {
     super(
       `Unsupported ConversationState version ${found}; supported version(s): ${supported.join(', ')}`,
     );
@@ -197,7 +202,9 @@ export function deserializeConversationState<TTools extends readonly Tool[] = re
         `ConversationState field "version" must be a number when present (got ${describeType(version)})`,
       );
     }
-    throw new UnsupportedStateVersionError(version, [CONVERSATION_STATE_VERSION]);
+    throw new UnsupportedStateVersionError(version, [
+      CONVERSATION_STATE_VERSION,
+    ]);
   }
 
   return {

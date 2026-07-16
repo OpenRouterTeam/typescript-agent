@@ -24,7 +24,7 @@ describe('ConversationState serialization contract (PR-6)', () => {
     expect(restored.version).toBe(1);
   });
 
-  it("round-trips a rich awaiting_client_tools state with pendingToolCalls", () => {
+  it('round-trips a rich awaiting_client_tools state with pendingToolCalls', () => {
     // Shape mirrors the frozen pending state produced after a manual-tool
     // pause (see manual-tool-pending-state.test.ts / PR-4).
     const rich: ConversationState = {
@@ -142,7 +142,9 @@ describe('ConversationState serialization contract (PR-6)', () => {
       expect(error).toBeInstanceOf(UnsupportedStateVersionError);
       const typed = error as UnsupportedStateVersionError;
       expect(typed.found).toBe(2);
-      expect(typed.supported).toEqual([1]);
+      expect(typed.supported).toEqual([
+        1,
+      ]);
       expect(typed.name).toBe('UnsupportedStateVersionError');
     }
   });
