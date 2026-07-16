@@ -437,6 +437,61 @@ describe('ModelResult hooks integration', () => {
         injected: true,
       });
     });
+
+    it('threads each run session id per emit when two runs share one HooksManager', async () => {
+      // Devin finding: the manager-level setSessionId default is a single
+      // mutable field, so two concurrent runs sharing one manager would
+      // clobber each other. The engine now passes sessionId in the per-emit
+      // context; simulate the clobber by priming the manager with run B's id
+      // and asserting run A's tool hooks still see run A's state id.
+      const hooks = new HooksManager();
+      const seen: string[] = [];
+      hooks.on('PreToolUse', {
+        handler: (_p, ctx) => {
+          seen.push(ctx.sessionId);
+        },
+      });
+      hooks.on('PostToolUse', {
+        handler: (_p, ctx) => {
+          seen.push(ctx.sessionId);
+        },
+      });
+
+      const tool = makeAutoTool('shared');
+      const runA = buildModelResult({
+        tools: [
+          tool,
+        ] as const,
+        hooks,
+      });
+      internal(runA).currentState = {
+        id: 'conv_run_a',
+        messages: [],
+        status: 'in_progress',
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      } as unknown as ConversationState<readonly Tool[]>;
+
+      // Run B starts later and overwrites the manager-level default.
+      hooks.setSessionId('conv_run_b');
+
+      await internal(runA).runToolWithHooks(
+        tool,
+        {
+          id: 'call_shared',
+          name: 'shared',
+          arguments: {},
+        },
+        {
+          numberOfTurns: 1,
+        },
+      );
+
+      expect(seen).toEqual([
+        'conv_run_a',
+        'conv_run_a',
+      ]);
+    });
   });
 
   describe('executeAutoApproveTools', () => {

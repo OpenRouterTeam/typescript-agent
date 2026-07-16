@@ -39,8 +39,10 @@ export interface LifecycleHookContext {
   readonly hookName: string;
   /**
    * The current session id. This is the single source for session identity in
-   * handlers -- payloads deliberately do not repeat it. The manager populates
-   * it via `setSessionId()` before any lifecycle emit.
+   * handlers -- payloads deliberately do not repeat it. The engine threads it
+   * per emit (safe for a manager shared across concurrent runs); direct
+   * `emit()` callers get the manager-level default from `setSessionId()`
+   * unless they pass a per-emit override.
    */
   readonly sessionId: string;
 }

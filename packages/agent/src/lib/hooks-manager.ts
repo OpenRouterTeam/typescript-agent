@@ -89,9 +89,14 @@ export class HooksManager<Custom extends HookRegistry = Record<string, never>> {
   }
 
   /**
-   * Set the session ID exposed as `context.sessionId` to all handler
-   * invocations. The single source of session identity for hooks -- payloads
-   * deliberately do not carry it.
+   * Set the manager-level default session ID exposed as `context.sessionId`
+   * to handler invocations. Payloads deliberately do not carry session
+   * identity.
+   *
+   * This is a single mutable default on the manager instance: when one
+   * manager is shared by concurrent runs, callers MUST pass `sessionId` in
+   * the per-emit context instead (as the engine does), otherwise the last
+   * `setSessionId()` wins and concurrent emits observe the wrong id.
    */
   setSessionId(sessionId: string): void {
     this.sessionId = sessionId;
@@ -156,6 +161,12 @@ export class HooksManager<Custom extends HookRegistry = Record<string, never>> {
     payload: AllHooks<Custom>[K]['payloadIn'],
     emitContext?: {
       toolName?: string;
+      /**
+       * Session identity for THIS emit's `context.sessionId`, overriding the
+       * manager-level default from `setSessionId()`. Pass it whenever the
+       * manager instance may be shared across concurrent runs.
+       */
+      sessionId?: string;
     },
   ): Promise<EmitResult<AllHooks<Custom>[K]['result'], AllHooks<Custom>[K]['payload']>> {
     // Snapshot the entries list so mutations (on()/off()/unsubscribe) triggered
@@ -200,7 +211,7 @@ export class HooksManager<Custom extends HookRegistry = Record<string, never>> {
     const context: LifecycleHookContext = {
       signal: controller.signal,
       hookName,
-      sessionId: this.sessionId,
+      sessionId: emitContext?.sessionId ?? this.sessionId,
     };
 
     let hasDetachedWork = false;

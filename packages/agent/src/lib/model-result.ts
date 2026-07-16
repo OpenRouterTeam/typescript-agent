@@ -1037,9 +1037,7 @@ export class ModelResult<
           toolName: toolCall.name,
           toolInput: originalToolInput,
         },
-        {
-          toolName: toolCall.name,
-        },
+        this.hookEmitContext(toolCall.name),
       );
 
       if (preResult.blocked) {
@@ -1100,9 +1098,7 @@ export class ModelResult<
             toolInput: (effectiveToolCall.arguments ?? {}) as Record<string, unknown>,
             error: result.error,
           },
-          {
-            toolName: effectiveToolCall.name,
-          },
+          this.hookEmitContext(effectiveToolCall.name),
         );
       } else {
         await this.hooksManager.emit(
@@ -1113,9 +1109,7 @@ export class ModelResult<
             toolOutput: result.result,
             durationMs,
           },
-          {
-            toolName: effectiveToolCall.name,
-          },
+          this.hookEmitContext(effectiveToolCall.name),
         );
       }
     }
@@ -1124,6 +1118,26 @@ export class ModelResult<
       type: 'execution',
       effectiveToolCall,
       result,
+    };
+  }
+
+  /**
+   * Build the per-emit context for lifecycle hook emits. Threads this run's
+   * session identity into `context.sessionId` on every emit, so a
+   * `HooksManager` instance shared across concurrent runs never leaks one
+   * run's id into another's handlers (the manager-level `setSessionId`
+   * default is a single mutable field and would be clobbered by the last
+   * run to start).
+   */
+  private hookEmitContext(toolName?: string): {
+    toolName?: string;
+    sessionId?: string;
+  } {
+    return {
+      ...(toolName !== undefined && {
+        toolName,
+      }),
+      sessionId: this.currentState?.id ?? '',
     };
   }
 
@@ -1138,22 +1152,26 @@ export class ModelResult<
       return;
     }
     this.sessionEndEmitted = true;
-    await this.hooksManager.emit('SessionEnd', {
-      reason,
-      ...(this.sessionUsage.modelCalls > 0 && {
-        totalUsage: {
-          modelCalls: this.sessionUsage.modelCalls,
-          inputTokens: this.sessionUsage.inputTokens,
-          outputTokens: this.sessionUsage.outputTokens,
-          totalTokens: this.sessionUsage.totalTokens,
-          cachedTokens: this.sessionUsage.cachedTokens,
-          reasoningTokens: this.sessionUsage.reasoningTokens,
-          ...(this.sessionUsage.hasCost && {
-            cost: this.sessionUsage.cost,
-          }),
-        },
-      }),
-    });
+    await this.hooksManager.emit(
+      'SessionEnd',
+      {
+        reason,
+        ...(this.sessionUsage.modelCalls > 0 && {
+          totalUsage: {
+            modelCalls: this.sessionUsage.modelCalls,
+            inputTokens: this.sessionUsage.inputTokens,
+            outputTokens: this.sessionUsage.outputTokens,
+            totalTokens: this.sessionUsage.totalTokens,
+            cachedTokens: this.sessionUsage.cachedTokens,
+            reasoningTokens: this.sessionUsage.reasoningTokens,
+            ...(this.sessionUsage.hasCost && {
+              cost: this.sessionUsage.cost,
+            }),
+          },
+        }),
+      },
+      this.hookEmitContext(),
+    );
   }
 
   /**
@@ -1182,17 +1200,21 @@ export class ModelResult<
         this.sessionUsage.hasCost = true;
       }
     }
-    await this.hooksManager.emit('PostModelCall', {
-      sessionId: this.currentState?.id ?? '',
-      responseId: response.id,
-      model: response.model ?? '',
-      durationMs: performance.now() - startedAt,
-      turnType,
-      turnNumber,
-      ...(usage && {
-        usage,
-      }),
-    });
+    await this.hooksManager.emit(
+      'PostModelCall',
+      {
+        sessionId: this.currentState?.id ?? '',
+        responseId: response.id,
+        model: response.model ?? '',
+        durationMs: performance.now() - startedAt,
+        turnType,
+        turnNumber,
+        ...(usage && {
+          usage,
+        }),
+      },
+      this.hookEmitContext(),
+    );
   }
 
   /**
@@ -1231,9 +1253,13 @@ export class ModelResult<
 
     // shouldStopExecution() is driven by stopWhen conditions (default
     // stepCountIs), so 'max_turns' is the semantically accurate reason.
-    const stopResult = await this.hooksManager.emit('Stop', {
-      reason: 'max_turns' as const,
-    });
+    const stopResult = await this.hooksManager.emit(
+      'Stop',
+      {
+        reason: 'max_turns' as const,
+      },
+      this.hookEmitContext(),
+    );
 
     // Every entry in `results` passed the StopResult schema (see
     // EmitResult.results invariant), so the fields can be read directly.
@@ -1369,9 +1395,7 @@ export class ModelResult<
         toolInput: (toolCall.arguments ?? {}) as Record<string, unknown>,
         riskLevel,
       },
-      {
-        toolName: toolCall.name,
-      },
+      this.hookEmitContext(toolCall.name),
     );
 
     // Last-wins: if multiple handlers disagree, the most recently registered
@@ -1427,9 +1451,13 @@ export class ModelResult<
       return undefined;
     }
 
-    const emit = await this.hooksManager.emit('UserPromptSubmit', {
-      prompt,
-    });
+    const emit = await this.hooksManager.emit(
+      'UserPromptSubmit',
+      {
+        prompt,
+      },
+      this.hookEmitContext(),
+    );
 
     if (emit.blocked) {
       // Every entry in `results` passed the UserPromptSubmitResult schema.
@@ -2451,8 +2479,10 @@ export class ModelResult<
 
             this.isResumingFromApproval = true;
             // This path bypasses the SessionStart block below but still fires
-            // tool hooks (PreToolUse/PostToolUse) during the resume — prime
-            // the manager's session id so context.sessionId is populated.
+            // tool hooks (PreToolUse/PostToolUse) during the resume. Those
+            // emits thread the session id per emit via hookEmitContext();
+            // priming the manager-level default here covers direct emit()
+            // callers on a shared manager.
             this.hooksManager?.setSessionId(loadedState.id);
             await this.processApprovalDecisions();
             return; // Skip normal initialization, we're resuming
@@ -2506,22 +2536,29 @@ export class ModelResult<
       // If future session config becomes available, extend this object rather
       // than introducing a new payload field.
       if (this.hooksManager) {
-        // Single source of session identity for handlers: context.sessionId.
+        // Prime the manager-level default for callers that emit custom hooks
+        // on a shared manager; the engine's own emits thread the session id
+        // per emit via hookEmitContext() so concurrent runs sharing one
+        // manager can't clobber each other's context.sessionId.
         this.hooksManager.setSessionId(this.currentState?.id ?? '');
-        await this.hooksManager.emit('SessionStart', {
-          config: {
-            hasTools: !!this.options.tools?.length,
-            hasApproval:
-              !!this.requireApprovalFn ||
-              !!(this.options.tools ?? []).some(
-                (t) =>
-                  isClientTool(t) &&
-                  (t.function.requireApproval === true ||
-                    typeof t.function.requireApproval === 'function'),
-              ),
-            hasState: !!this.stateAccessor,
+        await this.hooksManager.emit(
+          'SessionStart',
+          {
+            config: {
+              hasTools: !!this.options.tools?.length,
+              hasApproval:
+                !!this.requireApprovalFn ||
+                !!(this.options.tools ?? []).some(
+                  (t) =>
+                    isClientTool(t) &&
+                    (t.function.requireApproval === true ||
+                      typeof t.function.requireApproval === 'function'),
+                ),
+              hasState: !!this.stateAccessor,
+            },
           },
-        });
+          this.hookEmitContext(),
+        );
         this.sessionStartEmitted = true;
       }
 

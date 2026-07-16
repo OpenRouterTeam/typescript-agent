@@ -293,6 +293,47 @@ describe('HooksManager', () => {
 
       expect(receivedSessionId).toBe('manager-session');
     });
+
+    it('per-emit sessionId overrides the manager default (shared-manager safety)', async () => {
+      const manager = new HooksManager();
+      manager.setSessionId('run-b'); // last run to start clobbers the default
+
+      const seen: string[] = [];
+      manager.on('PostToolUse', {
+        handler: (_payload, context) => {
+          seen.push(context.sessionId);
+        },
+      });
+
+      // A concurrent run that threads its own id per emit is unaffected by
+      // the manager-level default.
+      await manager.emit(
+        'PostToolUse',
+        {
+          toolName: 'Bash',
+          toolInput: {},
+          toolOutput: 'ok',
+          durationMs: 1,
+        },
+        {
+          toolName: 'Bash',
+          sessionId: 'run-a',
+        },
+      );
+
+      // An emit without an override still gets the manager default.
+      await manager.emit('PostToolUse', {
+        toolName: 'Bash',
+        toolInput: {},
+        toolOutput: 'ok',
+        durationMs: 1,
+      });
+
+      expect(seen).toEqual([
+        'run-a',
+        'run-b',
+      ]);
+    });
   });
 
   describe('schema validation', () => {

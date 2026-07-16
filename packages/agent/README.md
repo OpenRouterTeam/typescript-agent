@@ -330,7 +330,12 @@ is only present when the request had usage accounting enabled server-side.
 
 Every handler receives `(payload, context)` — `context` carries the
 `sessionId` (the single source of session identity; payloads do not repeat
-it), the `hookName`, and an `AbortSignal` for cooperative cancellation.
+it), the `hookName`, and an `AbortSignal` for cooperative cancellation. The
+engine threads the session id into each emit's context, so a single
+`HooksManager` instance can be shared safely across concurrent `callModel`
+runs — each run's handlers see that run's id. (If you call `emit()` yourself
+on a shared manager, pass `{ sessionId }` in the emit context; the
+`setSessionId()` default is a single mutable field and is last-writer-wins.)
 
 **Handler chain semantics**
 
