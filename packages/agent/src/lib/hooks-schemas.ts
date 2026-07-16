@@ -1,6 +1,41 @@
 import * as z4 from 'zod/v4';
-import type { HookDefinition } from './hooks-types.js';
-import { HookName } from './hooks-types.js';
+import type { $ZodType } from 'zod/v4/core';
+
+//#region Hook Names & Definition Shape
+//
+// HookName, HookDefinition, and HookRegistry live HERE (with the schemas
+// they key/describe) rather than in hooks-types.ts, so the dependency
+// between the two modules stays one-directional (hooks-types -> hooks-
+// schemas) and no import cycle exists. hooks-types re-exports them, so the
+// public import surface is unchanged.
+
+export const HookName = {
+  PreToolUse: 'PreToolUse',
+  PostToolUse: 'PostToolUse',
+  PostToolUseFailure: 'PostToolUseFailure',
+  UserPromptSubmit: 'UserPromptSubmit',
+  Stop: 'Stop',
+  PermissionRequest: 'PermissionRequest',
+  SessionStart: 'SessionStart',
+  SessionEnd: 'SessionEnd',
+} as const;
+
+export type HookName = (typeof HookName)[keyof typeof HookName];
+
+/**
+ * A hook definition is a pair of Zod schemas: one for the payload and one for the result.
+ */
+export interface HookDefinition {
+  readonly payload: $ZodType;
+  readonly result: $ZodType;
+}
+
+/**
+ * A registry maps hook names to their definitions.
+ */
+export type HookRegistry = Record<string, HookDefinition>;
+
+//#endregion
 
 //#region Payload Schemas + Derived Types
 //

@@ -1,5 +1,4 @@
 import * as z4 from 'zod/v4';
-import type { $ZodType } from 'zod/v4/core';
 import type {
   PermissionRequestPayload,
   PermissionRequestResult,
@@ -14,38 +13,18 @@ import type {
   UserPromptSubmitPayload,
   UserPromptSubmitResult,
 } from './hooks-schemas.js';
+import { HookName } from './hooks-schemas.js';
 
-//#region Hook Names
+//#region Hook Names & Core Registry Types (re-exported from hooks-schemas)
 
-export const HookName = {
-  PreToolUse: 'PreToolUse',
-  PostToolUse: 'PostToolUse',
-  PostToolUseFailure: 'PostToolUseFailure',
-  UserPromptSubmit: 'UserPromptSubmit',
-  Stop: 'Stop',
-  PermissionRequest: 'PermissionRequest',
-  SessionStart: 'SessionStart',
-  SessionEnd: 'SessionEnd',
-} as const;
-
-export type HookName = (typeof HookName)[keyof typeof HookName];
+export type { HookDefinition, HookRegistry } from './hooks-schemas.js';
+// HookName / HookDefinition / HookRegistry are declared in hooks-schemas.ts
+// next to the schemas they describe; re-exported here so the public import
+// surface is unchanged and the module dependency stays one-directional
+// (hooks-types -> hooks-schemas, no cycle).
+export { HookName } from './hooks-schemas.js';
 
 //#endregion
-
-//#region Core Types
-
-/**
- * A hook definition is a pair of Zod schemas: one for the payload and one for the result.
- */
-export interface HookDefinition {
-  readonly payload: $ZodType;
-  readonly result: $ZodType;
-}
-
-/**
- * A registry maps hook names to their definitions.
- */
-export type HookRegistry = Record<string, HookDefinition>;
 
 /**
  * Context provided to every lifecycle-hook handler invocation.
@@ -168,9 +147,7 @@ export interface HooksManagerOptions {
 // Payload and result types are DERIVED from the Zod schemas in
 // hooks-schemas.ts (single source of truth; drift between the static type
 // and the runtime validation is structurally impossible). Re-exported here
-// so the public import surface is unchanged. The reverse import
-// (hooks-schemas imports the HookName value from this module) is safe: this
-// direction is type-only and erased at compile time.
+// so the public import surface is unchanged.
 export type {
   PermissionRequestPayload,
   PermissionRequestResult,
