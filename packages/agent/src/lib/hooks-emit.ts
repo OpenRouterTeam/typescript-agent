@@ -1,14 +1,14 @@
 import type { $ZodType } from 'zod/v4/core';
 import { safeParse } from 'zod/v4/core';
 import { matchesTool } from './hooks-matchers.js';
-import type { AsyncOutput, EmitResult, HookEntry, LifecycleHookContext } from './hooks-types.js';
-import {
-  BLOCK_FIELDS,
-  BLOCK_HOOKS,
-  DEFAULT_ASYNC_TIMEOUT,
-  isAsyncOutput,
-  MUTATION_FIELD_MAP,
+import type {
+  AsyncOutput,
+  EmitResult,
+  HookBehavior,
+  HookEntry,
+  LifecycleHookContext,
 } from './hooks-types.js';
+import { DEFAULT_ASYNC_TIMEOUT, HOOK_BEHAVIOR, isAsyncOutput } from './hooks-types.js';
 
 export interface ExecuteChainOptions {
   readonly hookName: string;
@@ -60,7 +60,7 @@ function isPlainMutableObject(value: unknown): value is Record<string, unknown> 
  * - Async fire-and-forget via a returned {@link AsyncOutput} -- the handler's
  *   `work` promise is pushed to `pending` without being awaited; the manager is
  *   responsible for draining/timing out that work
- * - Per-hook mutation piping (driven by {@link MUTATION_FIELD_MAP})
+ * - Per-hook mutation piping (driven by {@link HOOK_BEHAVIOR})
  * - Short-circuit on block/reject fields (non-empty string or `true`)
  * - Cooperative abort via `context.signal`: the chain checks
  *   `signal.aborted` between handlers and bails out when set so
@@ -68,7 +68,7 @@ function isPlainMutableObject(value: unknown): value is Record<string, unknown> 
  *   on handlers that happen to consult the signal).
  *
  * Payload isolation: the initial payload is shallow-cloned before entering the
- * chain so mutation piping (via {@link MUTATION_FIELD_MAP}) doesn't mutate the
+ * chain so mutation piping (via {@link HOOK_BEHAVIOR}) doesn't mutate the
  * caller's payload at the top level. This is a top-level-only guarantee:
  * handlers that directly mutate a nested object (e.g.
  * `payload.toolInput.foo = 'bar'`) still reach the caller's original nested
@@ -99,9 +99,10 @@ export async function executeHandlerChain<P, R>(
   let blocked = false;
   let mutated = false;
 
-  const blockField = BLOCK_FIELDS[options.hookName];
-  const canBlock = BLOCK_HOOKS.has(options.hookName);
-  const mutationMap = MUTATION_FIELD_MAP[options.hookName];
+  // Per-hook mutation/block behavior. Hooks absent from the table (all
+  // observation-only hooks and every custom hook) collect results without
+  // altering the payload or short-circuiting.
+  const behavior = (HOOK_BEHAVIOR as Partial<Record<string, HookBehavior>>)[options.hookName];
 
   for (let i = 0; i < entries.length; i++) {
     // Cooperative abort: bail out of the chain when abortInflight() has fired.
@@ -143,17 +144,17 @@ export async function executeHandlerChain<P, R>(
       const result = outcome.result;
       results.push(result);
 
-      // Apply mutation piping -- only hooks listed in MUTATION_FIELD_MAP participate.
-      if (mutationMap) {
-        const applied = applyMutations(currentPayload, result, mutationMap);
+      // Apply mutation piping -- only hooks with declared mutations participate.
+      if (behavior?.mutations) {
+        const applied = applyMutations(currentPayload, result, behavior.mutations);
         if (applied !== currentPayload) {
           currentPayload = applied;
           mutated = true;
         }
       }
 
-      // Short-circuit on block
-      if (canBlock && blockField && isBlockTriggered(result, blockField)) {
+      // Short-circuit on the hook's declared block field.
+      if (behavior?.blockField && isBlockTriggered(result, behavior.blockField)) {
         blocked = true;
         break;
       }

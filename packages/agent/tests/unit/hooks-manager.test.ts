@@ -121,7 +121,6 @@ describe('HooksManager', () => {
         toolInput: {},
         toolOutput: 'ok',
         durationMs: 100,
-        sessionId: 'test',
       });
 
       expect(handler).toHaveBeenCalledOnce();
@@ -142,7 +141,6 @@ describe('HooksManager', () => {
         toolInput: {},
         toolOutput: 'ok',
         durationMs: 100,
-        sessionId: 'test',
       });
 
       expect(result.results).toEqual([]);
@@ -168,7 +166,6 @@ describe('HooksManager', () => {
         {
           toolName: 'Bash',
           toolInput: {},
-          sessionId: 'test',
         },
         {
           toolName: 'Bash',
@@ -233,7 +230,6 @@ describe('HooksManager', () => {
         toolInput: {},
         toolOutput: 'ok',
         durationMs: 100,
-        sessionId: 'test',
       });
 
       const drainPromise = manager.drain().then(() => {
@@ -252,7 +248,7 @@ describe('HooksManager', () => {
   });
 
   describe('setSessionId', () => {
-    it('sets session ID used in hook context', async () => {
+    it('sets session ID used in hook context (single source: payloads do not carry it)', async () => {
       const manager = new HooksManager();
       manager.setSessionId('my-session');
 
@@ -268,35 +264,12 @@ describe('HooksManager', () => {
         toolInput: {},
         toolOutput: 'ok',
         durationMs: 100,
-        sessionId: 'my-session',
       });
 
       expect(receivedSessionId).toBe('my-session');
     });
 
-    it('payload sessionId overrides manager sessionId in hook context', async () => {
-      const manager = new HooksManager();
-      manager.setSessionId('stale-session');
-
-      let receivedSessionId = '';
-      manager.on('PostToolUse', {
-        handler: (_payload, context) => {
-          receivedSessionId = context.sessionId;
-        },
-      });
-
-      await manager.emit('PostToolUse', {
-        toolName: 'Bash',
-        toolInput: {},
-        toolOutput: 'ok',
-        durationMs: 100,
-        sessionId: 'fresh-session',
-      });
-
-      expect(receivedSessionId).toBe('fresh-session');
-    });
-
-    it('falls back to manager sessionId for custom hooks without sessionId in payload', async () => {
+    it('custom hooks receive the manager sessionId via context', async () => {
       const manager = new HooksManager({
         AgentThinking: {
           payload: z4.object({
@@ -343,7 +316,6 @@ describe('HooksManager', () => {
         manager.emit('PreToolUse', {
           toolName: 'Bash',
           toolInput: asTyped<Record<string, unknown>>('not an object'),
-          sessionId: 's',
         }),
       ).rejects.toThrow('Invalid payload for hook "PreToolUse"');
     });
@@ -359,7 +331,6 @@ describe('HooksManager', () => {
       const result = await manager.emit('PreToolUse', {
         toolName: 'Bash',
         toolInput: asTyped<Record<string, unknown>>(42),
-        sessionId: 's',
       });
 
       expect(warnSpy).toHaveBeenCalled();
@@ -384,7 +355,6 @@ describe('HooksManager', () => {
         manager.emit('PreToolUse', {
           toolName: 'Bash',
           toolInput: {},
-          sessionId: 's',
         }),
       ).rejects.toThrow('invalid result');
     });
@@ -438,7 +408,6 @@ describe('HooksManager', () => {
         toolInput: {},
         toolOutput: 'ok',
         durationMs: 10,
-        sessionId: 's',
       });
 
       expect(result.results).toEqual([
@@ -475,7 +444,6 @@ describe('HooksManager', () => {
         toolInput: {},
         toolOutput: 'ok',
         durationMs: 0,
-        sessionId: 's',
       });
 
       // Give the handler a microtask tick to register the listener, then abort.
@@ -503,7 +471,6 @@ describe('HooksManager', () => {
           toolInput: {},
           toolOutput: null,
           durationMs: 0,
-          sessionId: 's',
         });
       }
 
@@ -518,7 +485,6 @@ describe('HooksManager', () => {
         toolInput: {},
         toolOutput: null,
         durationMs: 0,
-        sessionId: 's',
       });
       await manager.drain();
     });

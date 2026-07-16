@@ -8,15 +8,22 @@
  * executeToolsIfNeeded loop end-to-end and pin the exactly-once contract.
  */
 import type { OpenRouterCore } from '@openrouter/sdk/core';
-import type { OpenResponsesResult } from '@openrouter/sdk/models';
+import type { OpenResponsesResult, OutputItems } from '@openrouter/sdk/models';
 import { describe, expect, it } from 'vitest';
 import { z } from 'zod/v4';
 import { HooksManager } from '../../src/lib/hooks-manager.js';
+import type { GetResponseOptions } from '../../src/lib/model-result.js';
 import { ModelResult } from '../../src/lib/model-result.js';
 import type { ConversationState, Tool } from '../../src/lib/tool-types.js';
 import { ToolType } from '../../src/lib/tool-types.js';
 
-function makeCountingTool(name: string, onExec: () => void): Tool {
+function makeCountingTool(
+  name: string,
+  onExec: () => void,
+  opts?: {
+    requireApproval?: boolean;
+  },
+): Tool {
   return {
     type: ToolType.Function,
     function: {
@@ -24,6 +31,7 @@ function makeCountingTool(name: string, onExec: () => void): Tool {
       description: `tool ${name}`,
       inputSchema: z.object({}).loose(),
       outputSchema: z.unknown(),
+      requireApproval: opts?.requireApproval ?? false,
       execute: async () => {
         onExec();
         return {
@@ -31,45 +39,73 @@ function makeCountingTool(name: string, onExec: () => void): Tool {
         };
       },
     },
-  } as unknown as Tool;
+  };
+}
+
+/**
+ * Fully-typed OpenResponsesResult fixture. Every required field is populated
+ * with a neutral value so the mocks need no `as unknown as` casts and stay
+ * compile-checked against SDK type changes.
+ */
+function makeResponse(id: string, output: OutputItems[]): OpenResponsesResult {
+  return {
+    id,
+    object: 'response',
+    createdAt: 0,
+    completedAt: 0,
+    status: 'completed',
+    model: 'test-model',
+    output,
+    error: null,
+    incompleteDetails: null,
+    instructions: null,
+    metadata: null,
+    frequencyPenalty: null,
+    presencePenalty: null,
+    temperature: null,
+    topP: null,
+    toolChoice: 'auto',
+    tools: [],
+    parallelToolCalls: false,
+  };
 }
 
 function makeToolCallResponse(name: string): OpenResponsesResult {
-  return {
-    id: 'resp_tool',
-    output: [
-      {
-        type: 'function_call',
-        id: 'out_1',
-        callId: 'c1',
-        name,
-        arguments: '{}',
-        status: 'completed',
-      },
-    ],
-  } as unknown as OpenResponsesResult;
+  return makeResponse('resp_tool', [
+    {
+      type: 'function_call',
+      id: 'out_1',
+      callId: 'c1',
+      name,
+      arguments: '{}',
+      status: 'completed',
+    },
+  ]);
 }
 
 function makeFinalResponse(): OpenResponsesResult {
-  return {
-    id: 'resp_final',
-    output: [
-      {
-        type: 'message',
-        id: 'msg_1',
-        role: 'assistant',
-        content: [
-          {
-            type: 'output_text',
-            text: 'done',
-          },
-        ],
-        status: 'completed',
-      },
-    ],
-  } as unknown as OpenResponsesResult;
+  return makeResponse('resp_final', [
+    {
+      type: 'message',
+      id: 'msg_1',
+      role: 'assistant',
+      content: [
+        {
+          type: 'output_text',
+          text: 'done',
+        },
+      ],
+      status: 'completed',
+    },
+  ]);
 }
 
+/**
+ * The private ModelResult internals the loop tests drive directly. The only
+ * cast in this file is `ModelResult -> Internal` below: these members are
+ * private by design, and the tests deliberately stub the network-facing ones
+ * (getInitialResponse / makeFollowupRequest) to stay hermetic.
+ */
 type Internal = {
   currentState: ConversationState<readonly Tool[]> | null;
   initPromise: Promise<void> | null;
@@ -84,28 +120,27 @@ function buildLoopedModelResult(opts: {
   hooks?: HooksManager;
   toolName: string;
 }): Internal {
-  const config: Record<string, unknown> = {
+  const config: GetResponseOptions<readonly Tool[]> = {
     request: {
       model: 'test-model',
       input: 'hello',
     },
-    client: {} as unknown as OpenRouterCore,
+    client: {} as OpenRouterCore,
     tools: opts.tools,
   };
   if (opts.hooks) {
-    config['hooks'] = opts.hooks;
+    config.hooks = opts.hooks;
   }
-  const m = new ModelResult<readonly Tool[]>(
-    config as unknown as ConstructorParameters<typeof ModelResult<readonly Tool[]>>[0],
-  );
+  const m = new ModelResult<readonly Tool[]>(config);
   const ent = m as unknown as Internal;
-  ent.currentState = {
+  const state: ConversationState<readonly Tool[]> = {
     id: 'conv_once',
     messages: [],
     status: 'in_progress',
     createdAt: 0,
     updatedAt: 0,
-  } as ConversationState<readonly Tool[]>;
+  };
+  ent.currentState = state;
   ent.initPromise = Promise.resolve();
   ent.getInitialResponse = async () => makeToolCallResponse(opts.toolName);
   ent.makeFollowupRequest = async () => makeFinalResponse();
@@ -166,20 +201,15 @@ describe('exactly-once tool execution through executeToolsIfNeeded', () => {
         decision: 'allow' as const,
       }),
     });
-    const base = makeCountingTool('guarded', () => {
-      execCount++;
-    });
-    const gated = {
-      ...base,
-      function: {
-        ...(
-          base as unknown as {
-            function: Record<string, unknown>;
-          }
-        ).function,
+    const gated = makeCountingTool(
+      'guarded',
+      () => {
+        execCount++;
+      },
+      {
         requireApproval: true,
       },
-    } as Tool;
+    );
     const ent = buildLoopedModelResult({
       tools: [
         gated,
@@ -202,20 +232,15 @@ describe('exactly-once tool execution through executeToolsIfNeeded', () => {
         reason: 'policy',
       }),
     });
-    const base = makeCountingTool('guarded', () => {
-      execCount++;
-    });
-    const gated = {
-      ...base,
-      function: {
-        ...(
-          base as unknown as {
-            function: Record<string, unknown>;
-          }
-        ).function,
+    const gated = makeCountingTool(
+      'guarded',
+      () => {
+        execCount++;
+      },
+      {
         requireApproval: true,
       },
-    } as Tool;
+    );
     const ent = buildLoopedModelResult({
       tools: [
         gated,

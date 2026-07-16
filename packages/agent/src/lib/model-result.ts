@@ -1036,7 +1036,6 @@ export class ModelResult<
         {
           toolName: toolCall.name,
           toolInput: originalToolInput,
-          sessionId: this.currentState?.id ?? '',
         },
         {
           toolName: toolCall.name,
@@ -1044,13 +1043,10 @@ export class ModelResult<
       );
 
       if (preResult.blocked) {
-        const blockResult = preResult.results.find(
-          (r) => r && typeof r === 'object' && 'block' in r && r.block,
-        );
-        const reason =
-          blockResult && typeof blockResult.block === 'string'
-            ? blockResult.block
-            : 'Blocked by PreToolUse hook';
+        // Every entry in `results` passed the PreToolUseResult schema (see
+        // EmitResult.results invariant), so no structural re-narrowing needed.
+        const block = preResult.results.find((r) => r.block)?.block;
+        const reason = typeof block === 'string' ? block : 'Blocked by PreToolUse hook';
         return {
           type: 'hook_blocked',
           toolCall,
@@ -1103,7 +1099,6 @@ export class ModelResult<
             toolName: effectiveToolCall.name,
             toolInput: (effectiveToolCall.arguments ?? {}) as Record<string, unknown>,
             error: result.error,
-            sessionId: this.currentState?.id ?? '',
           },
           {
             toolName: effectiveToolCall.name,
@@ -1117,7 +1112,6 @@ export class ModelResult<
             toolInput: (effectiveToolCall.arguments ?? {}) as Record<string, unknown>,
             toolOutput: result.result,
             durationMs,
-            sessionId: this.currentState?.id ?? '',
           },
           {
             toolName: effectiveToolCall.name,
@@ -1145,7 +1139,6 @@ export class ModelResult<
     }
     this.sessionEndEmitted = true;
     await this.hooksManager.emit('SessionEnd', {
-      sessionId: this.currentState?.id ?? '',
       reason,
       ...(this.sessionUsage.modelCalls > 0 && {
         totalUsage: {
@@ -1240,26 +1233,16 @@ export class ModelResult<
     // stepCountIs), so 'max_turns' is the semantically accurate reason.
     const stopResult = await this.hooksManager.emit('Stop', {
       reason: 'max_turns' as const,
-      sessionId: this.currentState?.id ?? '',
     });
 
-    const shouldForceResume = stopResult.results.some(
-      (r) => r && typeof r === 'object' && 'forceResume' in r && r.forceResume === true,
-    );
+    // Every entry in `results` passed the StopResult schema (see
+    // EmitResult.results invariant), so the fields can be read directly.
+    const shouldForceResume = stopResult.results.some((r) => r.forceResume === true);
 
-    const appendParts: string[] = [];
-    for (const r of stopResult.results) {
-      if (
-        r &&
-        typeof r === 'object' &&
-        'appendPrompt' in r &&
-        typeof r.appendPrompt === 'string' &&
-        r.appendPrompt.length > 0
-      ) {
-        appendParts.push(r.appendPrompt);
-      }
-    }
-    const appendPrompt = appendParts.join('\n');
+    const appendPrompt = stopResult.results
+      .map((r) => r.appendPrompt)
+      .filter((p): p is string => typeof p === 'string' && p.length > 0)
+      .join('\n');
     if (appendPrompt) {
       await this.injectAppendPromptMessage(appendPrompt);
     }
@@ -1318,10 +1301,15 @@ export class ModelResult<
    * dangling Start. Teardown is emit-once, so the tools path (which runs
    * its own teardown in executeToolsIfNeeded) is unaffected.
    */
-  private async initStreamGuarded(): Promise<void> {
+  private async initStreamGuarded(options?: { requireStream?: boolean }): Promise<void> {
+    // The not-initialized invariant applies to streaming getters only:
+    // state-inspection methods (getPendingToolCalls/getState/...) are valid
+    // on paused resumes (awaiting_hitl/awaiting_approval) where initStream
+    // returns early with neither a stream nor a finalResponse.
+    const requireStream = options?.requireStream ?? true;
     try {
       await this.initStream();
-      if (!this.reusableStream && !this.finalResponse) {
+      if (requireStream && !this.reusableStream && !this.finalResponse) {
         throw new Error('Stream not initialized');
       }
     } catch (error) {
@@ -1380,7 +1368,6 @@ export class ModelResult<
         toolName: toolCall.name,
         toolInput: (toolCall.arguments ?? {}) as Record<string, unknown>,
         riskLevel,
-        sessionId: this.currentState?.id ?? '',
       },
       {
         toolName: toolCall.name,
@@ -1391,26 +1378,19 @@ export class ModelResult<
     // handler dictates the outcome. This is documented and intentional —
     // callers that want stricter semantics should register a single final
     // handler (or use `throwOnHandlerError` to surface conflicts in tests).
+    // Every entry in `results` passed the PermissionRequestResult schema
+    // (`decision` is a required enum), so it can be read directly.
     const last = emit.results.at(-1);
-    if (
-      last &&
-      typeof last === 'object' &&
-      'decision' in last &&
-      (last.decision === 'allow' || last.decision === 'deny' || last.decision === 'ask_user')
-    ) {
-      const out: {
-        decision: 'allow' | 'deny' | 'ask_user';
-        reason?: string;
-      } = {
-        decision: last.decision,
+    if (!last) {
+      return {
+        decision: 'ask_user',
       };
-      if ('reason' in last && typeof last.reason === 'string') {
-        out.reason = last.reason;
-      }
-      return out;
     }
     return {
-      decision: 'ask_user',
+      decision: last.decision,
+      ...(last.reason !== undefined && {
+        reason: last.reason,
+      }),
     };
   }
 
@@ -1449,18 +1429,12 @@ export class ModelResult<
 
     const emit = await this.hooksManager.emit('UserPromptSubmit', {
       prompt,
-      sessionId: this.currentState?.id ?? '',
     });
 
     if (emit.blocked) {
-      const rejectResult = emit.results.find(
-        (r) => r && typeof r === 'object' && 'reject' in r && r.reject,
-      );
-      const reason =
-        rejectResult && typeof rejectResult.reject === 'string'
-          ? rejectResult.reject
-          : 'Prompt rejected by hook';
-      throw new Error(reason);
+      // Every entry in `results` passed the UserPromptSubmitResult schema.
+      const reject = emit.results.find((r) => r.reject)?.reject;
+      throw new Error(typeof reject === 'string' ? reject : 'Prompt rejected by hook');
     }
 
     if (!emit.mutated) {
@@ -2476,6 +2450,10 @@ export class ModelResult<
             }
 
             this.isResumingFromApproval = true;
+            // This path bypasses the SessionStart block below but still fires
+            // tool hooks (PreToolUse/PostToolUse) during the resume — prime
+            // the manager's session id so context.sessionId is populated.
+            this.hooksManager?.setSessionId(loadedState.id);
             await this.processApprovalDecisions();
             return; // Skip normal initialization, we're resuming
           }
@@ -2528,10 +2506,9 @@ export class ModelResult<
       // If future session config becomes available, extend this object rather
       // than introducing a new payload field.
       if (this.hooksManager) {
-        const sessionId = this.currentState?.id ?? '';
-        this.hooksManager.setSessionId(sessionId);
+        // Single source of session identity for handlers: context.sessionId.
+        this.hooksManager.setSessionId(this.currentState?.id ?? '');
         await this.hooksManager.emit('SessionStart', {
-          sessionId,
           config: {
             hasTools: !!this.options.tools?.length,
             hasApproval:
@@ -3633,11 +3610,10 @@ export class ModelResult<
     models.OutputMessage | models.FunctionCallOutputItem | models.OutputFunctionCallItem
   > {
     return async function* (this: ModelResult<TTools, TShared>) {
-      await this.initStream();
-
-      if (!this.reusableStream && !this.finalResponse) {
-        throw new Error('Stream not initialized');
-      }
+      // Guarded: tears down the hook session (SessionEnd + drain) if
+      // initStream throws after SessionStart. Includes the not-initialized
+      // guard, so the manual check below is covered too.
+      await this.initStreamGuarded();
 
       // First yield messages from the stream in responses format
       if (this.reusableStream) {
@@ -3802,7 +3778,9 @@ export class ModelResult<
    * Returns structured tool calls with parsed arguments.
    */
   async getToolCalls(): Promise<ParsedToolCall<TTools[number]>[]> {
-    await this.initStream();
+    await this.initStreamGuarded({
+      requireStream: false,
+    });
 
     // Handle non-streaming response case - use finalResponse directly
     if (this.finalResponse) {
@@ -3824,11 +3802,8 @@ export class ModelResult<
    */
   getToolCallsStream(): AsyncIterableIterator<ParsedToolCall<TTools[number]>> {
     return async function* (this: ModelResult<TTools, TShared>) {
-      await this.initStream();
-
-      if (!this.reusableStream && !this.finalResponse) {
-        throw new Error('Stream not initialized');
-      }
+      // Guarded: hook-session teardown on init failure (see initStreamGuarded).
+      await this.initStreamGuarded();
 
       if (this.reusableStream) {
         yield* buildToolCallStream(this.reusableStream) as AsyncIterableIterator<
@@ -3851,8 +3826,11 @@ export class ModelResult<
    * ```
    */
   async *getContextUpdates(): AsyncGenerator<ToolContextMapWithShared<TTools, TShared>> {
-    // Ensure stream is initialized (which creates the context store)
-    await this.initStream();
+    // Ensure stream is initialized (which creates the context store).
+    // Guarded: hook-session teardown on init failure.
+    await this.initStreamGuarded({
+      requireStream: false,
+    });
 
     if (!this.contextStore) {
       return;
@@ -3932,7 +3910,9 @@ export class ModelResult<
    * status.
    */
   async requiresApproval(): Promise<boolean> {
-    await this.initStream();
+    await this.initStreamGuarded({
+      requireStream: false,
+    });
 
     const status = this.currentState?.status;
     if (
@@ -3952,7 +3932,9 @@ export class ModelResult<
    * Returns empty array if no approvals needed.
    */
   async getPendingToolCalls(): Promise<ParsedToolCall<TTools[number]>[]> {
-    await this.initStream();
+    await this.initStreamGuarded({
+      requireStream: false,
+    });
 
     // Try to trigger tool execution to populate pending calls
     if (!this.isResumingFromApproval) {
@@ -3969,7 +3951,9 @@ export class ModelResult<
    * To resume a conversation, use the StateAccessor pattern.
    */
   async getState(): Promise<ConversationState<TTools>> {
-    await this.initStream();
+    await this.initStreamGuarded({
+      requireStream: false,
+    });
 
     // Ensure tool execution has been attempted (to populate final state)
     if (!this.isResumingFromApproval) {

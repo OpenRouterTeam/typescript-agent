@@ -287,11 +287,14 @@ const hooks = new HooksManager();
 
 const unsubscribe = hooks.on('PreToolUse', {
   matcher: /^db_/,
-  filter: (payload) => payload.sessionId !== '', // optional predicate on the payload
-  handler: ({ toolInput }) => ({
-    // Replace the tool's input before execution (mutation piping)
-    mutatedInput: { ...toolInput, dryRun: true },
-  }),
+  filter: (payload) => Object.keys(payload.toolInput).length > 0, // optional predicate on the payload
+  handler: ({ toolInput }, ctx) => {
+    console.log(`[${ctx.sessionId}] intercepting db tool`); // session id lives on the context
+    return {
+      // Replace the tool's input before execution (mutation piping)
+      mutatedInput: { ...toolInput, dryRun: true },
+    };
+  },
 });
 
 const result = callModel(client, { model, input, tools, hooks });
@@ -324,6 +327,10 @@ stream is consumed, so `PostModelCall` for that response fires during session
 teardown (before `SessionEnd`). A stream that errors before completion emits no
 `PostModelCall` — there is no completed response to report. Note `usage.cost`
 is only present when the request had usage accounting enabled server-side.
+
+Every handler receives `(payload, context)` — `context` carries the
+`sessionId` (the single source of session identity; payloads do not repeat
+it), the `hookName`, and an `AbortSignal` for cooperative cancellation.
 
 **Handler chain semantics**
 

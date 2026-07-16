@@ -1,37 +1,31 @@
-import type { $ZodType } from 'zod/v4/core';
+import * as z4 from 'zod/v4';
+import type {
+  PermissionRequestPayload,
+  PermissionRequestResult,
+  PostModelCallPayload,
+  PostToolUseFailurePayload,
+  PostToolUsePayload,
+  PreToolUsePayload,
+  PreToolUseResult,
+  SessionEndPayload,
+  SessionStartPayload,
+  StopPayload,
+  StopResult,
+  UserPromptSubmitPayload,
+  UserPromptSubmitResult,
+} from './hooks-schemas.js';
+import { HookName } from './hooks-schemas.js';
 
-//#region Hook Names
+//#region Hook Names & Core Registry Types (re-exported from hooks-schemas)
 
-export const HookName = {
-  PreToolUse: 'PreToolUse',
-  PostToolUse: 'PostToolUse',
-  PostToolUseFailure: 'PostToolUseFailure',
-  UserPromptSubmit: 'UserPromptSubmit',
-  Stop: 'Stop',
-  PermissionRequest: 'PermissionRequest',
-  SessionStart: 'SessionStart',
-  SessionEnd: 'SessionEnd',
-  PostModelCall: 'PostModelCall',
-} as const;
-
-export type HookName = (typeof HookName)[keyof typeof HookName];
+export type { HookDefinition, HookRegistry } from './hooks-schemas.js';
+// HookName / HookDefinition / HookRegistry are declared in hooks-schemas.ts
+// next to the schemas they describe; re-exported here so the public import
+// surface is unchanged and the module dependency stays one-directional
+// (hooks-types -> hooks-schemas, no cycle).
+export { HookName } from './hooks-schemas.js';
 
 //#endregion
-
-//#region Core Types
-
-/**
- * A hook definition is a pair of Zod schemas: one for the payload and one for the result.
- */
-export interface HookDefinition {
-  readonly payload: $ZodType;
-  readonly result: $ZodType;
-}
-
-/**
- * A registry maps hook names to their definitions.
- */
-export type HookRegistry = Record<string, HookDefinition>;
 
 /**
  * Context provided to every lifecycle-hook handler invocation.
@@ -43,6 +37,11 @@ export type HookRegistry = Record<string, HookDefinition>;
 export interface LifecycleHookContext {
   readonly signal: AbortSignal;
   readonly hookName: string;
+  /**
+   * The current session id. This is the single source for session identity in
+   * handlers -- payloads deliberately do not repeat it. The manager populates
+   * it via `setSessionId()` before any lifecycle emit.
+   */
   readonly sessionId: string;
 }
 
@@ -103,7 +102,15 @@ export interface HookEntry<P, R> {
  * Result of emitting a hook through the handler chain.
  */
 export interface EmitResult<R, P> {
-  /** Sync results from handlers that returned a hook-specific value. */
+  /**
+   * Sync results from handlers that returned a hook-specific value.
+   *
+   * INVARIANT: every entry passed the hook's result schema (invalid results
+   * are skipped or thrown per the error policy, never collected), so
+   * consumers can rely on the static type `R` without re-narrowing. For
+   * void-result hooks (no schema) entries are opaque and `R` is `undefined`
+   * -- treat them accordingly.
+   */
   readonly results: R[];
   /** Handles to detached async handler work. */
   readonly pending: Promise<void>[];
@@ -136,163 +143,29 @@ export interface HooksManagerOptions {
 
 //#endregion
 
-//#region Payload Types
+//#region Payload & Result Types (derived from schemas)
 
-export interface PreToolUsePayload {
-  readonly toolName: string;
-  readonly toolInput: Record<string, unknown>;
-  readonly sessionId: string;
-}
-
-export interface PostToolUsePayload {
-  readonly toolName: string;
-  readonly toolInput: Record<string, unknown>;
-  readonly toolOutput: unknown;
-  readonly durationMs: number;
-  readonly sessionId: string;
-}
-
-/**
- * Fired when a tool EXECUTION throws or returns an error.
- *
- * Deliberately NOT fired when a tool never ran: a PermissionRequest 'deny',
- * a user rejection on approval resume, or a PreToolUse block all synthesize
- * a rejected result without execution, so no failure event is emitted.
- * Observe those outcomes via the PermissionRequest / PreToolUse hooks
- * themselves.
- */
-export interface PostToolUseFailurePayload {
-  readonly toolName: string;
-  readonly toolInput: Record<string, unknown>;
-  readonly error: unknown;
-  readonly sessionId: string;
-}
-
-export interface StopPayload {
-  readonly reason: 'max_turns';
-  readonly sessionId: string;
-}
-
-export interface PermissionRequestPayload {
-  readonly toolName: string;
-  readonly toolInput: Record<string, unknown>;
-  readonly riskLevel: 'low' | 'medium' | 'high';
-  readonly sessionId: string;
-}
-
-export interface UserPromptSubmitPayload {
-  readonly prompt: string;
-  readonly sessionId: string;
-}
-
-export interface SessionStartPayload {
-  readonly sessionId: string;
-  readonly config: Record<string, unknown> | undefined;
-}
-
-/**
- * Normalized token/cost accounting for a single model call, extracted from
- * the OpenRouter response's `usage` block. `cost` is present only when the
- * server reported one (usage accounting enabled on the request).
- */
-export interface ModelCallUsage {
-  readonly inputTokens: number;
-  readonly outputTokens: number;
-  readonly totalTokens: number;
-  readonly cachedTokens: number;
-  readonly reasoningTokens: number;
-  readonly cost?: number;
-}
-
-/**
- * Aggregate usage across every model call observed during a run.
- */
-export interface SessionUsageTotals extends ModelCallUsage {
-  /** Number of completed model responses observed. */
-  readonly modelCalls: number;
-}
-
-/**
- * Fired once per completed model response, on every request the agent loop
- * makes: the initial request, each tool-round follow-up, the empty-final
- * retry, the `allowFinalResponse` final turn, and approval-resume requests.
- *
- * `responseId` is the OpenRouter generation id (deep-linkable). `durationMs`
- * spans from request dispatch to the response being fully materialized
- * (for streaming responses this includes stream consumption). `usage` is
- * present when the server reported usage accounting for the call.
- *
- * Purely observational: handlers cannot mutate or block. This is the
- * telemetry primitive for benchmark/tracing consumers — one span per call.
- */
-export interface PostModelCallPayload {
-  readonly sessionId: string;
-  readonly responseId: string;
-  readonly model: string;
-  readonly durationMs: number;
-  readonly turnType: 'initial' | 'resume' | 'tool_round' | 'final' | 'retry';
-  /** 0 for the run's first materialized response, then the loop turn number. */
-  readonly turnNumber: number;
-  readonly usage?: ModelCallUsage;
-}
-
-export interface SessionEndPayload {
-  readonly sessionId: string;
-  readonly reason: 'user' | 'error' | 'max_turns' | 'complete';
-  /**
-   * Aggregate usage across every model call observed during the run.
-   * Present when at least one completed model response was observed.
-   */
-  readonly totalUsage?: SessionUsageTotals;
-}
-
-//#endregion
-
-//#region Result Types
-
-export interface PreToolUseResult {
-  readonly mutatedInput?: Record<string, unknown>;
-  readonly block?: boolean | string;
-}
-
-/**
- * Result of a Stop hook handler.
- *
- * `forceResume: true` alone does NOT change any state: the stop condition
- * (e.g. `stepCountIs`) will typically fire again immediately on the next
- * iteration, so a bare forceResume burns through the consecutive-override
- * cap (3) in rapid succession and then stops. To make resumption useful,
- * pair it with `appendPrompt` (which injects a user message, advancing the
- * conversation) or use a stop condition whose predicate can change between
- * iterations. This is by design: the engine caps rather than blocks bare
- * forceResume so a handler that coordinates external state (e.g. waiting on
- * an async gate that flips the stop condition) still has a few iterations
- * to do so.
- *
- * `appendPrompt` is honored independently of `forceResume` — a handler can
- * nudge the next turn without forcing a resume. Multiple handlers'
- * appendPrompts are concatenated with newlines.
- *
- * The override counter resets when a tool round produces outputs or a fresh
- * model response lands. Note that hook-blocked and rejected tool outputs
- * count as progress: the model receives the block/denial feedback and can
- * change course, which is observable forward motion even though no tool
- * body executed.
- */
-export interface StopResult {
-  readonly forceResume?: boolean;
-  readonly appendPrompt?: string;
-}
-
-export interface PermissionRequestResult {
-  readonly decision: 'allow' | 'deny' | 'ask_user';
-  readonly reason?: string;
-}
-
-export interface UserPromptSubmitResult {
-  readonly mutatedPrompt?: string;
-  readonly reject?: boolean | string;
-}
+// Payload and result types are DERIVED from the Zod schemas in
+// hooks-schemas.ts (single source of truth; drift between the static type
+// and the runtime validation is structurally impossible). Re-exported here
+// so the public import surface is unchanged.
+export type {
+  ModelCallUsage,
+  PermissionRequestPayload,
+  PermissionRequestResult,
+  PostModelCallPayload,
+  PostToolUseFailurePayload,
+  PostToolUsePayload,
+  PreToolUsePayload,
+  PreToolUseResult,
+  SessionEndPayload,
+  SessionStartPayload,
+  SessionUsageTotals,
+  StopPayload,
+  StopResult,
+  UserPromptSubmitPayload,
+  UserPromptSubmitResult,
+} from './hooks-schemas.js';
 
 //#endregion
 
@@ -305,13 +178,13 @@ export interface BuiltInHookDefinitions {
   };
   PostToolUse: {
     payload: PostToolUsePayload;
-    // biome-ignore lint/suspicious/noConfusingVoidType: void signals no meaningful result
-    result: void;
+    /** Observation-only hook: handlers have no meaningful result. */
+    result: undefined;
   };
   PostToolUseFailure: {
     payload: PostToolUseFailurePayload;
-    // biome-ignore lint/suspicious/noConfusingVoidType: void signals no meaningful result
-    result: void;
+    /** Observation-only hook: handlers have no meaningful result. */
+    result: undefined;
   };
   UserPromptSubmit: {
     payload: UserPromptSubmitPayload;
@@ -327,18 +200,18 @@ export interface BuiltInHookDefinitions {
   };
   SessionStart: {
     payload: SessionStartPayload;
-    // biome-ignore lint/suspicious/noConfusingVoidType: void signals no meaningful result
-    result: void;
+    /** Observation-only hook: handlers have no meaningful result. */
+    result: undefined;
   };
   SessionEnd: {
     payload: SessionEndPayload;
-    // biome-ignore lint/suspicious/noConfusingVoidType: void signals no meaningful result
-    result: void;
+    /** Observation-only hook: handlers have no meaningful result. */
+    result: undefined;
   };
   PostModelCall: {
     payload: PostModelCallPayload;
-    // biome-ignore lint/suspicious/noConfusingVoidType: void signals no meaningful result
-    result: void;
+    /** Observation-only hook: handlers have no meaningful result. */
+    result: undefined;
   };
 }
 
@@ -353,7 +226,7 @@ export interface BuiltInHookDefinitions {
 export type InlineHookConfig = {
   [K in keyof BuiltInHookDefinitions]?: HookEntry<
     BuiltInHookDefinitions[K]['payload'],
-    BuiltInHookDefinitions[K]['result'] extends void ? void : BuiltInHookDefinitions[K]['result']
+    BuiltInHookDefinitions[K]['result']
   >[];
 };
 
@@ -362,72 +235,54 @@ export type InlineHookConfig = {
 //#region Helper Types
 
 /**
- * Keys recognized on an {@link AsyncOutput} signal. Used by {@link isAsyncOutput}
- * to distinguish a true fire-and-forget marker from a result object that
- * happens to carry an `async` field.
+ * Strict schema for an {@link AsyncOutput} signal: `async` must be literally
+ * `true`, `work`/`asyncTimeout` must match their declared types, and any
+ * foreign key fails the parse. A handler that accidentally returns
+ * `{ async: true, mutatedInput: {...} }` is therefore treated as a result
+ * (so the mutation is not silently discarded), not as fire-and-forget.
  */
-const ASYNC_OUTPUT_KEYS = new Set<string>([
-  'async',
-  'work',
-  'asyncTimeout',
-]);
+const AsyncOutputSchema = z4.strictObject({
+  async: z4.literal(true),
+  work: z4.instanceof(Promise).optional(),
+  asyncTimeout: z4.number().optional(),
+});
 
 /**
- * Checks if a value is an AsyncOutput signal.
- *
- * Requires `async === true` AND no foreign keys. A handler that accidentally
- * returns `{ async: true, mutatedInput: {...} }` is treated as a result (so
- * the mutation is not silently discarded), not as fire-and-forget.
+ * Checks if a value is an AsyncOutput signal (see {@link AsyncOutputSchema}).
  */
 export function isAsyncOutput(value: unknown): value is AsyncOutput {
-  if (typeof value !== 'object' || value === null || !('async' in value)) {
-    return false;
-  }
-  const candidate = value as {
-    async: unknown;
-  };
-  if (candidate.async !== true) {
-    return false;
-  }
-  for (const key of Object.keys(value)) {
-    if (!ASYNC_OUTPUT_KEYS.has(key)) {
-      return false;
-    }
-  }
-  return true;
+  return AsyncOutputSchema.safeParse(value).success;
 }
 
 /**
- * Mutation field mapping for payload piping, per hook name.
+ * Per-hook chain behavior: which result fields pipe mutations back into the
+ * payload, and which result field short-circuits the chain.
  *
- * The outer key is the hook name; the inner map is from result field name to
- * the payload field it replaces. Only the built-in hooks listed here support
- * mutation piping; custom hooks do not participate.
+ * Keyed by {@link HookName} so a typo'd hook name is a compile error rather
+ * than a silent no-behavior lookup. Hooks absent from this table are
+ * observation-only: their handlers' results are collected but never alter
+ * the payload or stop the chain. Custom hooks never participate.
  */
-export const MUTATION_FIELD_MAP: Readonly<Record<string, Readonly<Record<string, string>>>> =
-  Object.freeze({
-    PreToolUse: Object.freeze({
+export interface HookBehavior {
+  /** result field name -> payload field it replaces (mutation piping) */
+  readonly mutations?: Readonly<Record<string, string>>;
+  /** result field that short-circuits the chain when `true` or a non-empty string */
+  readonly blockField?: string;
+}
+
+export const HOOK_BEHAVIOR: Readonly<Partial<Record<HookName, HookBehavior>>> = Object.freeze({
+  [HookName.PreToolUse]: Object.freeze({
+    mutations: Object.freeze({
       mutatedInput: 'toolInput',
     }),
-    UserPromptSubmit: Object.freeze({
+    blockField: 'block',
+  }),
+  [HookName.UserPromptSubmit]: Object.freeze({
+    mutations: Object.freeze({
       mutatedPrompt: 'prompt',
     }),
-  });
-
-/**
- * Hook names that support short-circuit blocking.
- */
-export const BLOCK_HOOKS: ReadonlySet<string> = new Set([
-  'PreToolUse',
-  'UserPromptSubmit',
-]);
-
-/**
- * Result fields that trigger short-circuit.
- */
-export const BLOCK_FIELDS: Readonly<Record<string, string>> = Object.freeze({
-  PreToolUse: 'block',
-  UserPromptSubmit: 'reject',
+    blockField: 'reject',
+  }),
 });
 
 //#endregion

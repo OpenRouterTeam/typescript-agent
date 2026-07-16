@@ -6,19 +6,23 @@ import type { InlineHookConfig } from '../../src/lib/hooks-types.js';
 describe('resolveHooks (adversarial)', () => {
   describe('falsy inputs', () => {
     it('returns undefined for null', () => {
-      expect(resolveHooks(null as unknown as undefined)).toBeUndefined();
+      // @ts-expect-error deliberate misuse: null is not a valid hooks option
+      expect(resolveHooks(null)).toBeUndefined();
     });
 
     it('returns undefined for false', () => {
-      expect(resolveHooks(false as unknown as undefined)).toBeUndefined();
+      // @ts-expect-error deliberate misuse: false is not a valid hooks option
+      expect(resolveHooks(false)).toBeUndefined();
     });
 
     it('returns undefined for 0', () => {
-      expect(resolveHooks(0 as unknown as undefined)).toBeUndefined();
+      // @ts-expect-error deliberate misuse: 0 is not a valid hooks option
+      expect(resolveHooks(0)).toBeUndefined();
     });
 
     it('returns undefined for empty string', () => {
-      expect(resolveHooks('' as unknown as undefined)).toBeUndefined();
+      // @ts-expect-error deliberate misuse: '' is not a valid hooks option
+      expect(resolveHooks('')).toBeUndefined();
     });
   });
 
@@ -44,31 +48,28 @@ describe('resolveHooks (adversarial)', () => {
 
   describe('malformed config values', () => {
     it('non-array value for a hook key is skipped', () => {
-      const config = {
+      const result = resolveHooks({
+        // @ts-expect-error deliberate misuse: hook entries must be an array
         PreToolUse: 'not-an-array',
-      } as unknown as InlineHookConfig;
-
-      const result = resolveHooks(config);
+      });
       expect(result).toBeInstanceOf(HooksManager);
       expect(result!.hasHandlers('PreToolUse')).toBe(false);
     });
 
     it('null value for a hook key is skipped', () => {
-      const config = {
+      const result = resolveHooks({
+        // @ts-expect-error deliberate misuse: hook entries must be an array
         PreToolUse: null,
-      } as unknown as InlineHookConfig;
-
-      const result = resolveHooks(config);
+      });
       expect(result).toBeInstanceOf(HooksManager);
       expect(result!.hasHandlers('PreToolUse')).toBe(false);
     });
 
     it('number value for a hook key is skipped', () => {
-      const config = {
+      const result = resolveHooks({
+        // @ts-expect-error deliberate misuse: hook entries must be an array
         PreToolUse: 42,
-      } as unknown as InlineHookConfig;
-
-      const result = resolveHooks(config);
+      });
       expect(result).toBeInstanceOf(HooksManager);
       expect(result!.hasHandlers('PreToolUse')).toBe(false);
     });
@@ -85,16 +86,15 @@ describe('resolveHooks (adversarial)', () => {
     });
 
     it('constructor key in config does not crash', () => {
-      const config = {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const result = resolveHooks({
+        // @ts-expect-error deliberate misuse: 'constructor' is not a built-in hook name
         constructor: [
           {
             handler: vi.fn(),
           },
         ],
-      } as unknown as InlineHookConfig;
-
-      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
-      const result = resolveHooks(config);
+      });
       expect(result).toBeInstanceOf(HooksManager);
       // 'constructor' is not a built-in hook name — it is warned and skipped.
       expect(result!.hasHandlers('constructor')).toBe(false);
@@ -117,16 +117,15 @@ describe('resolveHooks (adversarial)', () => {
 
   describe('non-standard hook names in inline config', () => {
     it('warns and skips non-built-in hook names (custom hooks require HooksManager)', () => {
-      const config = {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const result = resolveHooks({
+        // @ts-expect-error deliberate misuse: inline config only accepts built-in hook names
         CustomHook: [
           {
             handler: vi.fn(),
           },
         ],
-      } as unknown as InlineHookConfig;
-
-      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
-      const result = resolveHooks(config);
+      });
       expect(result).toBeInstanceOf(HooksManager);
       expect(result!.hasHandlers('CustomHook')).toBe(false);
       expect(warn).toHaveBeenCalledWith(expect.stringContaining('CustomHook'));

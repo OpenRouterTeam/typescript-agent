@@ -79,7 +79,6 @@ describe('HooksManager (adversarial)', () => {
         toolInput: {},
         toolOutput: 'ok',
         durationMs: 100,
-        sessionId: 'test',
       });
 
       // emit() snapshots the entries list before iterating the chain, so
@@ -99,7 +98,6 @@ describe('HooksManager (adversarial)', () => {
           depth++;
           if (depth < 3) {
             await manager.emit('SessionStart', {
-              sessionId: `depth-${depth}`,
               config: undefined,
             });
           }
@@ -107,7 +105,6 @@ describe('HooksManager (adversarial)', () => {
       });
 
       await manager.emit('SessionStart', {
-        sessionId: 'root',
         config: undefined,
       });
 
@@ -160,7 +157,6 @@ describe('HooksManager (adversarial)', () => {
       const result = await manager.emit('PreToolUse', {
         toolName: 'Test',
         toolInput: {},
-        sessionId: 's1',
       });
 
       expect(result.results).toEqual([]);
@@ -176,7 +172,6 @@ describe('HooksManager (adversarial)', () => {
         toolInput: {},
         toolOutput: null,
         durationMs: 0,
-        sessionId: 's',
       });
 
       expect(result.results).toEqual([]);
@@ -199,7 +194,6 @@ describe('HooksManager (adversarial)', () => {
           toolInput: {},
           toolOutput: null,
           durationMs: 0,
-          sessionId: 's',
         }),
       ).rejects.toThrow('handler explosion');
     });
@@ -219,7 +213,6 @@ describe('HooksManager (adversarial)', () => {
         toolInput: {},
         toolOutput: null,
         durationMs: 0,
-        sessionId: 's',
       });
 
       expect(result.results).toEqual([]);
@@ -249,7 +242,6 @@ describe('HooksManager (adversarial)', () => {
           toolInput: {
             path: '/',
           },
-          sessionId: 's',
         },
         {
           toolName: 'rm',
@@ -288,7 +280,6 @@ describe('HooksManager (adversarial)', () => {
         toolInput: {},
         toolOutput: null,
         durationMs: 0,
-        sessionId: 's',
       });
 
       manager.removeAll();
@@ -307,7 +298,6 @@ describe('HooksManager (adversarial)', () => {
       });
 
       await manager.emit('SessionStart', {
-        sessionId: 's',
         config: undefined,
       });
 
@@ -343,7 +333,6 @@ describe('HooksManager (adversarial)', () => {
         toolInput: {},
         toolOutput: null,
         durationMs: 0,
-        sessionId: 'session-1',
       });
 
       manager.setSessionId('session-2');
@@ -352,7 +341,6 @@ describe('HooksManager (adversarial)', () => {
         toolInput: {},
         toolOutput: null,
         durationMs: 0,
-        sessionId: 'session-2',
       });
 
       expect(sessionIds).toEqual([
@@ -361,28 +349,35 @@ describe('HooksManager (adversarial)', () => {
       ]);
     });
 
-    it('payload sessionId overrides the manager sessionId when they disagree', async () => {
+    it('a stray sessionId field in the payload is stripped, not honored', async () => {
+      // context.sessionId is the single source of session identity; payloads
+      // do not carry it. A caller smuggling one in sees it stripped by schema
+      // validation and the manager's value used for the context.
       const manager = new HooksManager();
       const sessionIds: string[] = [];
+      let seenPayload: unknown;
 
       manager.on('PostToolUse', {
-        handler: (_p, ctx) => {
+        handler: (p, ctx) => {
+          seenPayload = p;
           sessionIds.push(ctx.sessionId);
         },
       });
 
-      manager.setSessionId('stale-manager-id');
+      manager.setSessionId('manager-id');
       await manager.emit('PostToolUse', {
         toolName: 'T',
         toolInput: {},
         toolOutput: null,
         durationMs: 0,
-        sessionId: 'fresh-payload-id',
+        // @ts-expect-error deliberate misuse: payloads no longer carry sessionId
+        sessionId: 'smuggled-id',
       });
 
       expect(sessionIds).toEqual([
-        'fresh-payload-id',
+        'manager-id',
       ]);
+      expect(seenPayload).not.toHaveProperty('sessionId');
     });
   });
 });
