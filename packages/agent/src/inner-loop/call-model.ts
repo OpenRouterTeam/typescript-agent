@@ -2,6 +2,7 @@ import type { OpenRouterCore } from '@openrouter/sdk/core';
 import type { RequestOptions } from '@openrouter/sdk/lib/sdks';
 import type { $ZodObject, $ZodShape, infer as zodInfer } from 'zod/v4/core';
 import type { CallModelInput } from '../lib/async-params.js';
+import { resolveHooks } from '../lib/hooks-resolve.js';
 import type { GetResponseOptions } from '../lib/model-result.js';
 import { ModelResult } from '../lib/model-result.js';
 import { convertToolsToAPIFormat } from '../lib/tool-executor.js';
@@ -102,6 +103,7 @@ export function callModel<
     onTurnEnd,
     allowFinalResponse,
     strictFinalResponse,
+    hooks,
     ...apiRequest
   } = request;
 
@@ -168,6 +170,9 @@ export function callModel<
     }),
     ...(strictFinalResponse !== undefined && {
       strictFinalResponse,
+    }),
+    ...(hooks !== undefined && {
+      hooks: resolveHooks(hooks),
     }),
   } as GetResponseOptions<TTools, TShared>);
 }
