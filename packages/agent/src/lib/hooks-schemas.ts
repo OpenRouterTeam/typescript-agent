@@ -18,6 +18,7 @@ export const HookName = {
   PermissionRequest: 'PermissionRequest',
   SessionStart: 'SessionStart',
   SessionEnd: 'SessionEnd',
+  PostModelCall: 'PostModelCall',
 } as const;
 
 export type HookName = (typeof HookName)[keyof typeof HookName];
@@ -113,8 +114,22 @@ export const SessionStartPayloadSchema = z4.object({
   config: z4.record(z4.string(), z4.unknown()).optional(),
 });
 
+const ModelCallUsageSchema = z4.object({
+  inputTokens: z4.number(),
+  outputTokens: z4.number(),
+  totalTokens: z4.number(),
+  cachedTokens: z4.number(),
+  reasoningTokens: z4.number(),
+  cost: z4.number().optional(),
+});
+
+export type ModelCallUsage = Readonly<z4.infer<typeof ModelCallUsageSchema>>;
+
 export type SessionStartPayload = Readonly<z4.infer<typeof SessionStartPayloadSchema>>;
 
+const SessionUsageTotalsSchema = ModelCallUsageSchema.extend({
+  modelCalls: z4.number(),
+});
 export const SessionEndPayloadSchema = z4.object({
   reason: z4.enum([
     'user',
@@ -122,9 +137,28 @@ export const SessionEndPayloadSchema = z4.object({
     'max_turns',
     'complete',
   ]),
+  totalUsage: SessionUsageTotalsSchema.optional(),
+});
+
+export const PostModelCallPayloadSchema = z4.object({
+  sessionId: z4.string(),
+  responseId: z4.string(),
+  model: z4.string(),
+  durationMs: z4.number(),
+  turnType: z4.enum([
+    'initial',
+    'resume',
+    'tool_round',
+    'final',
+    'retry',
+  ]),
+  turnNumber: z4.number(),
+  usage: ModelCallUsageSchema.optional(),
 });
 
 export type SessionEndPayload = Readonly<z4.infer<typeof SessionEndPayloadSchema>>;
+export type PostModelCallPayload = Readonly<z4.infer<typeof PostModelCallPayloadSchema>>;
+export type SessionUsageTotals = Readonly<z4.infer<typeof SessionUsageTotalsSchema>>;
 
 //#endregion
 
@@ -236,6 +270,10 @@ export const BUILT_IN_HOOKS: Record<HookName, HookDefinition> = {
   },
   [HookName.SessionEnd]: {
     payload: SessionEndPayloadSchema,
+    result: VoidResultSchema,
+  },
+  PostModelCall: {
+    payload: PostModelCallPayloadSchema,
     result: VoidResultSchema,
   },
 };

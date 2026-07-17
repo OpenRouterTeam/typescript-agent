@@ -2,6 +2,7 @@ import * as z4 from 'zod/v4';
 import type {
   PermissionRequestPayload,
   PermissionRequestResult,
+  PostModelCallPayload,
   PostToolUseFailurePayload,
   PostToolUsePayload,
   PreToolUsePayload,
@@ -151,14 +152,17 @@ export interface HooksManagerOptions {
 // and the runtime validation is structurally impossible). Re-exported here
 // so the public import surface is unchanged.
 export type {
+  ModelCallUsage,
   PermissionRequestPayload,
   PermissionRequestResult,
+  PostModelCallPayload,
   PostToolUseFailurePayload,
   PostToolUsePayload,
   PreToolUsePayload,
   PreToolUseResult,
   SessionEndPayload,
   SessionStartPayload,
+  SessionUsageTotals,
   StopPayload,
   StopResult,
   UserPromptSubmitPayload,
@@ -203,6 +207,11 @@ export interface BuiltInHookDefinitions {
   };
   SessionEnd: {
     payload: SessionEndPayload;
+    /** Observation-only hook: handlers have no meaningful result. */
+    result: undefined;
+  };
+  PostModelCall: {
+    payload: PostModelCallPayload;
     /** Observation-only hook: handlers have no meaningful result. */
     result: undefined;
   };
