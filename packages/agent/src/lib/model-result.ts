@@ -1301,15 +1301,24 @@ export class ModelResult<
     try {
       // Materialize the parked initial-call telemetry when the stream fully
       // completed (the retained buffer replays without touching the source).
-      // A failed/incomplete stream skips it: no completed response exists.
-      if (this.pendingModelCall) {
-        if (this.finalResponse) {
-          await this.emitPendingModelCallOnce(this.finalResponse);
-        } else if (this.reusableStream?.isComplete) {
-          await this.emitPendingModelCallOnce(
-            await consumeStreamForCompletion(this.reusableStream),
-          );
+      // A failed/errored stream skips it: no materialized response exists.
+      // (`response.incomplete` responses DO emit — they are materialized, have
+      // a generation id, and consumed tokens.)
+      // Isolated try: a telemetry failure (e.g. a buffer without a completion
+      // event, or a throwing strict-mode handler) must not skip SessionEnd or
+      // the drain below — those are contractual on every exit path.
+      try {
+        if (this.pendingModelCall) {
+          if (this.finalResponse) {
+            await this.emitPendingModelCallOnce(this.finalResponse);
+          } else if (this.reusableStream?.isComplete) {
+            await this.emitPendingModelCallOnce(
+              await consumeStreamForCompletion(this.reusableStream),
+            );
+          }
         }
+      } catch (telemetryError) {
+        console.warn('[PostModelCall] error during stream teardown:', telemetryError);
       }
       await this.emitSessionEndOnce(reason);
       await this.hooksManager.drain();

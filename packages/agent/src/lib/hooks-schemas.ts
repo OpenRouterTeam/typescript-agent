@@ -130,7 +130,6 @@ export type SessionStartPayload = Readonly<z4.infer<typeof SessionStartPayloadSc
 const SessionUsageTotalsSchema = ModelCallUsageSchema.extend({
   modelCalls: z4.number(),
 });
-
 export const SessionEndPayloadSchema = z4.object({
   reason: z4.enum([
     'user',

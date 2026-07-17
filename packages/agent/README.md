@@ -324,10 +324,11 @@ masks the run's original error (teardown failures are logged as warnings).
 
 On no-tools streaming paths the initial response is only materialized when the
 stream is consumed, so `PostModelCall` for that response fires during session
-teardown (before `SessionEnd`). A stream that errors before completion emits no
-`PostModelCall` — there is no completed response to report. Note `usage.cost`
-is only present when the request had usage accounting enabled server-side.
-
+teardown (before `SessionEnd`). A stream that fails or errors before producing
+a materialized response emits no `PostModelCall`; a `response.incomplete`
+response (e.g. truncated at `max_output_tokens`) **does** emit — it carries a
+real generation id and consumed tokens. Note `usage.cost` is only present when
+the request had usage accounting enabled server-side.
 Every handler receives `(payload, context)` — `context` carries the
 `sessionId` (the single source of session identity; payloads do not repeat
 it), the `hookName`, and an `AbortSignal` for cooperative cancellation. The

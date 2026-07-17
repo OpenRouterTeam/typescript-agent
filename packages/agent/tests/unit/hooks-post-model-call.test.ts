@@ -336,4 +336,60 @@ describe('PostModelCall hook', () => {
       },
     });
   });
+
+  it('still emits SessionEnd and drains when teardown telemetry cannot materialize', async () => {
+    // A stream that ends without a completion event (deltas only, then close)
+    // makes the parked-telemetry materialization in teardown throw
+    // ("Stream ended without completion event"). That failure must be
+    // contained: SessionEnd still fires and no PostModelCall is emitted.
+    const readable = new ReadableStream({
+      start(controller) {
+        controller.enqueue({
+          type: 'response.output_item.added',
+          item: {
+            type: 'message',
+            id: 'msg_partial',
+            role: 'assistant',
+            content: [],
+            status: 'in_progress',
+          },
+          outputIndex: 0,
+          sequenceNumber: 0,
+        });
+        controller.enqueue({
+          type: 'response.output_text.delta',
+          itemId: 'msg_partial',
+          outputIndex: 0,
+          contentIndex: 0,
+          delta: 'partial',
+          sequenceNumber: 1,
+        });
+        controller.close();
+      },
+    });
+    mockBetaResponsesSend.mockResolvedValue({
+      ok: true,
+      value: readable,
+    });
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    const { hooks, calls, ends } = collectHooks();
+    const result = callModel(client, {
+      model: 'test-model',
+      input: 'hi',
+      hooks,
+    });
+    for await (const _chunk of result.getTextStream()) {
+      // drain
+    }
+
+    expect(calls).toHaveLength(0);
+    expect(ends).toHaveLength(1);
+    expect(warnSpy).toHaveBeenCalledWith(
+      '[PostModelCall] error during stream teardown:',
+      expect.objectContaining({
+        message: expect.stringContaining('without completion event'),
+      }),
+    );
+  });
 });
