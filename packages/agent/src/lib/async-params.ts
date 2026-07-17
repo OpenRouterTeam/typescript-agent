@@ -1,5 +1,7 @@
 import type * as models from '@openrouter/sdk/models';
 import type { OpenResponsesResult } from '@openrouter/sdk/models';
+import type { HooksManager } from './hooks-manager.js';
+import type { InlineHookConfig } from './hooks-types.js';
 import type { Item } from './item-types.js';
 import type { ContextInput } from './tool-context.js';
 import type {
@@ -104,6 +106,8 @@ type BaseCallModelInput<
    * finals after tool work are retried once, then accepted with empty text.
    */
   strictFinalResponse?: boolean;
+  /** Hook system for lifecycle events. Accepts inline config or a HooksManager instance. */
+  hooks?: InlineHookConfig | HooksManager;
 };
 
 /**
@@ -206,6 +210,7 @@ export async function resolveAsyncFunctions<TTools extends readonly Tool[] = rea
     'onTurnEnd', // Client-side turn end callback
     'allowFinalResponse', // Client-side: triggers no-tools final turn when stopWhen breaks the loop
     'strictFinalResponse', // Client-side: restore throw on empty final after tool rounds
+    'hooks', // Client-side hook system
   ]);
 
   // Iterate over all keys in the input

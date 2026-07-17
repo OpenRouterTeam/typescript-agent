@@ -108,6 +108,40 @@ export {
   UnsupportedStateVersionError,
   updateState,
 } from './lib/conversation-state.js';
+// Lifecycle hooks system (PreToolUse, PostToolUse, Stop, SessionStart, ...).
+// Distinct from the SDK transport hooks re-exported above (SDKHooks,
+// BeforeRequestHook, HookContext, ...), which intercept HTTP requests.
+// Internals (matchesTool, resolveHooks, BUILT_IN_HOOKS, raw Zod schemas) are
+// deliberately NOT exported: everything here is semver surface, and the raw
+// schema objects are mutable.
+export { HooksManager } from './lib/hooks-manager.js';
+export type {
+  AsyncOutput,
+  BuiltInHookDefinitions,
+  EmitResult,
+  HookDefinition,
+  HookEntry,
+  HookHandler,
+  HookRegistry,
+  HookReturn,
+  HooksManagerOptions,
+  InlineHookConfig,
+  LifecycleHookContext,
+  PermissionRequestPayload,
+  PermissionRequestResult,
+  PostToolUseFailurePayload,
+  PostToolUsePayload,
+  PreToolUsePayload,
+  PreToolUseResult,
+  SessionEndPayload,
+  SessionStartPayload,
+  StopPayload,
+  StopResult,
+  ToolMatcher,
+  UserPromptSubmitPayload,
+  UserPromptSubmitResult,
+} from './lib/hooks-types.js';
+export { HookName, isAsyncOutput } from './lib/hooks-types.js';
 export type { GetResponseOptions } from './lib/model-result.js';
 export { ModelResult } from './lib/model-result.js';
 // Next turn params helpers
