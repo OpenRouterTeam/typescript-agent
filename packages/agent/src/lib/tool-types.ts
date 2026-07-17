@@ -64,16 +64,6 @@ export type ContextFromSchema<TCtx extends $ZodObject<$ZodShape>> =
       : zodInfer<TCtx> & Record<string, unknown>;
 
 /**
- * @deprecated no longer used — the concrete schema type is carried directly
- * on `BaseToolFunction.contextSchema` (readonly ⇒ covariant TCtx), and
- * `InferToolContext` distinguishes the wide default from concrete schemas.
- * Kept as an alias for source compatibility.
- */
-export type WithConcreteContextSchema<_TCtx extends $ZodObject<$ZodShape>> =
-  // biome-ignore lint/complexity/noBannedTypes: intentional empty type
-  {};
-
-/**
  * Extract tool name from a tool definition
  */
 type InferToolName<T> = T extends {
@@ -385,8 +375,7 @@ export type ToolWithExecute<
   TCtx extends $ZodObject<$ZodShape> = $ZodObject<$ZodShape>,
 > = {
   type: ToolType.Function;
-  function: ToolFunctionWithExecute<TInput, TOutput, TContext, string, TCtx> &
-    WithConcreteContextSchema<TCtx>;
+  function: ToolFunctionWithExecute<TInput, TOutput, TContext, string, TCtx>;
 };
 
 /**
@@ -401,8 +390,7 @@ export type ToolWithGenerator<
   TCtx extends $ZodObject<$ZodShape> = $ZodObject<$ZodShape>,
 > = {
   type: ToolType.Function;
-  function: ToolFunctionWithGenerator<TInput, TEvent, TOutput, TContext, string, TCtx> &
-    WithConcreteContextSchema<TCtx>;
+  function: ToolFunctionWithGenerator<TInput, TEvent, TOutput, TContext, string, TCtx>;
 };
 
 /**
@@ -415,7 +403,7 @@ export type ManualTool<
   TCtx extends $ZodObject<$ZodShape> = $ZodObject<$ZodShape>,
 > = {
   type: ToolType.Function;
-  function: ManualToolFunction<TInput, TOutput, TCtx> & WithConcreteContextSchema<TCtx>;
+  function: ManualToolFunction<TInput, TOutput, TCtx>;
 };
 
 /**
@@ -429,8 +417,7 @@ export type HITLTool<
   TCtx extends $ZodObject<$ZodShape> = $ZodObject<$ZodShape>,
 > = {
   type: ToolType.Function;
-  function: HITLToolFunction<TInput, TOutput, TContext, string, TCtx> &
-    WithConcreteContextSchema<TCtx>;
+  function: HITLToolFunction<TInput, TOutput, TContext, string, TCtx>;
 };
 
 /**

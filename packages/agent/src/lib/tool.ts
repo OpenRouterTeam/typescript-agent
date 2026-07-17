@@ -243,7 +243,7 @@ type RegularToolConfig<
 // TContext on the *returned* tool stays the wide default so specific tools remain
 // assignable to `Tool` / `Tool[]` (function-parameter variance). Typed
 // `ctx.local` is provided by the *config* execute signature via ContextFromSchema;
-// the concrete schema is preserved on the return via TCtx + WithConcreteContextSchema.
+// the concrete schema is preserved on the return via TCtx on `BaseToolFunction.contextSchema`.
 export function tool<
   TInput extends $ZodObject<$ZodShape>,
   TEvent extends $ZodType,
