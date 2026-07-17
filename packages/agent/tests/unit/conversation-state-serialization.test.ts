@@ -149,6 +149,21 @@ describe('ConversationState serialization contract (PR-6)', () => {
     }
   });
 
+  it('throws UnsupportedStateVersionError for version 2 even when the shape changed', () => {
+    // A version bump may rename/remove v1 fields; the version guard must run
+    // before structural validation so consumers get the version signal, not a
+    // misleading corruption error.
+    const reshapedFutureJson = JSON.stringify({
+      version: 2,
+      conversationId: 'conv_future',
+      history: [],
+    });
+
+    expect(() => deserializeConversationState(reshapedFutureJson)).toThrow(
+      UnsupportedStateVersionError,
+    );
+  });
+
   it('throws InvalidStateError for malformed shapes', () => {
     expect(() =>
       deserializeConversationState(

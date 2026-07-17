@@ -163,6 +163,21 @@ export function deserializeConversationState<TTools extends readonly Tool[] = re
 
   const obj = parsed as Record<string, unknown>;
 
+  // Version check runs before structural validation: a future-version blob may
+  // have a different shape, and it must fail with UnsupportedStateVersionError
+  // rather than a misleading InvalidStateError about v1 fields.
+  const version = obj['version'];
+  if (version !== undefined && version !== CONVERSATION_STATE_VERSION) {
+    if (typeof version !== 'number') {
+      throw new InvalidStateError(
+        `ConversationState field "version" must be a number when present (got ${describeType(version)})`,
+      );
+    }
+    throw new UnsupportedStateVersionError(version, [
+      CONVERSATION_STATE_VERSION,
+    ]);
+  }
+
   if (typeof obj['id'] !== 'string') {
     throw new InvalidStateError(
       `ConversationState missing or invalid field "id" (expected string, got ${describeType(obj['id'])})`,
@@ -195,18 +210,6 @@ export function deserializeConversationState<TTools extends readonly Tool[] = re
     );
   }
 
-  const version = obj['version'];
-  if (version !== undefined && version !== CONVERSATION_STATE_VERSION) {
-    if (typeof version !== 'number') {
-      throw new InvalidStateError(
-        `ConversationState field "version" must be a number when present (got ${describeType(version)})`,
-      );
-    }
-    throw new UnsupportedStateVersionError(version, [
-      CONVERSATION_STATE_VERSION,
-    ]);
-  }
-
   return {
     ...(obj as unknown as ConversationState<TTools>),
     version: CONVERSATION_STATE_VERSION,
@@ -229,7 +232,7 @@ function describeType(value: unknown): string {
  */
 export function updateState<TTools extends readonly Tool[] = readonly Tool[]>(
   state: ConversationState<TTools>,
-  updates: Partial<Omit<ConversationState<TTools>, 'id' | 'createdAt' | 'updatedAt'>>,
+  updates: Partial<Omit<ConversationState<TTools>, 'id' | 'createdAt' | 'updatedAt' | 'version'>>,
 ): ConversationState<TTools> {
   return {
     ...state,
