@@ -58,6 +58,9 @@ export function generateConversationId(): string {
   return `conv_${Date.now()}_${Math.random().toString(36).substring(2, 15)}`;
 }
 
+/** Currently supported ConversationState serialization version. */
+export const CONVERSATION_STATE_VERSION = 1 as const;
+
 /**
  * Create an initial conversation state
  * @param id - Optional custom ID, generates one if not provided
@@ -67,6 +70,7 @@ export function createInitialState<TTools extends readonly Tool[] = readonly Too
 ): ConversationState<TTools> {
   const now = Date.now();
   return {
+    version: CONVERSATION_STATE_VERSION,
     id: id ?? generateConversationId(),
     messages: [],
     status: 'in_progress',
@@ -76,12 +80,159 @@ export function createInitialState<TTools extends readonly Tool[] = readonly Too
 }
 
 /**
+ * Thrown when {@link deserializeConversationState} encounters a state blob whose
+ * `version` is not supported by this SDK build.
+ */
+export class UnsupportedStateVersionError extends Error {
+  readonly found: number;
+  readonly supported: readonly number[];
+
+  constructor(
+    found: number,
+    supported: readonly number[] = [
+      CONVERSATION_STATE_VERSION,
+    ],
+  ) {
+    super(
+      `Unsupported ConversationState version ${found}; supported version(s): ${supported.join(', ')}`,
+    );
+    this.name = 'UnsupportedStateVersionError';
+    this.found = found;
+    this.supported = supported;
+  }
+}
+
+/**
+ * Thrown when {@link deserializeConversationState} receives JSON that is not a
+ * well-formed ConversationState (missing/wrong required fields, or invalid JSON).
+ */
+export class InvalidStateError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'InvalidStateError';
+  }
+}
+
+/**
+ * Serialize a {@link ConversationState} to a stable JSON string for durable storage.
+ *
+ * Guarantees the `version` field is present (injects `1` when the input state
+ * lacks it). Treat the returned JSON as **opaque**: consumers should round-trip
+ * via these helpers rather than introspecting item shapes.
+ *
+ * **Compat policy:** additive field changes within a major version. On version
+ * bumps, migrations run inside {@link deserializeConversationState}. The
+ * StateAccessor load/save contract is unchanged — these helpers are opt-in.
+ */
+export function serializeConversationState<TTools extends readonly Tool[] = readonly Tool[]>(
+  state: ConversationState<TTools>,
+): string {
+  return JSON.stringify({
+    ...state,
+    version: state.version ?? CONVERSATION_STATE_VERSION,
+  });
+}
+
+/**
+ * Parse and validate a previously serialized {@link ConversationState}.
+ *
+ * Accepts version-less legacy blobs and states with `version: 1`, normalizing
+ * both to `version: 1`. Throws {@link UnsupportedStateVersionError} for any
+ * other version (fail loudly so stores don't silently misinterpret future
+ * shapes). Throws {@link InvalidStateError} for malformed JSON or missing
+ * required fields (`id`, `messages`, `status`).
+ *
+ * **Compat policy:** absence of `version` means v1. Migrations for future
+ * versions happen here; callers should treat the JSON as opaque.
+ */
+export function deserializeConversationState<TTools extends readonly Tool[] = readonly Tool[]>(
+  json: string,
+): ConversationState<TTools> {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(json);
+  } catch (error) {
+    throw new InvalidStateError(
+      `Invalid ConversationState JSON: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+
+  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+    throw new InvalidStateError('ConversationState must be a JSON object');
+  }
+
+  const obj = parsed as Record<string, unknown>;
+
+  // Version check runs before structural validation: a future-version blob may
+  // have a different shape, and it must fail with UnsupportedStateVersionError
+  // rather than a misleading InvalidStateError about v1 fields.
+  const version = obj['version'];
+  if (version !== undefined && version !== CONVERSATION_STATE_VERSION) {
+    if (typeof version !== 'number') {
+      throw new InvalidStateError(
+        `ConversationState field "version" must be a number when present (got ${describeType(version)})`,
+      );
+    }
+    throw new UnsupportedStateVersionError(version, [
+      CONVERSATION_STATE_VERSION,
+    ]);
+  }
+
+  if (typeof obj['id'] !== 'string') {
+    throw new InvalidStateError(
+      `ConversationState missing or invalid field "id" (expected string, got ${describeType(obj['id'])})`,
+    );
+  }
+
+  // messages is models.InputsUnion — typically an array of items, but the type
+  // also allows a single item / string; require array for durable store blobs.
+  if (!Array.isArray(obj['messages'])) {
+    throw new InvalidStateError(
+      `ConversationState missing or invalid field "messages" (expected array, got ${describeType(obj['messages'])})`,
+    );
+  }
+
+  if (typeof obj['status'] !== 'string') {
+    throw new InvalidStateError(
+      `ConversationState missing or invalid field "status" (expected string, got ${describeType(obj['status'])})`,
+    );
+  }
+
+  if (typeof obj['createdAt'] !== 'number') {
+    throw new InvalidStateError(
+      `ConversationState missing or invalid field "createdAt" (expected number, got ${describeType(obj['createdAt'])})`,
+    );
+  }
+
+  if (typeof obj['updatedAt'] !== 'number') {
+    throw new InvalidStateError(
+      `ConversationState missing or invalid field "updatedAt" (expected number, got ${describeType(obj['updatedAt'])})`,
+    );
+  }
+
+  return {
+    ...(obj as unknown as ConversationState<TTools>),
+    version: CONVERSATION_STATE_VERSION,
+  };
+}
+
+function describeType(value: unknown): string {
+  if (value === null) {
+    return 'null';
+  }
+  if (Array.isArray(value)) {
+    return 'array';
+  }
+  return typeof value;
+}
+
+/**
  * Update a conversation state with new values
  * Automatically updates the updatedAt timestamp
  */
 export function updateState<TTools extends readonly Tool[] = readonly Tool[]>(
   state: ConversationState<TTools>,
-  updates: Partial<Omit<ConversationState<TTools>, 'id' | 'createdAt' | 'updatedAt'>>,
+  updates: Partial<Omit<ConversationState<TTools>, 'id' | 'createdAt' | 'updatedAt' | 'version'>>,
 ): ConversationState<TTools> {
   return {
     ...state,
