@@ -1,6 +1,6 @@
 {
   "name": "@openrouter/agent",
-  "version": "0.4.0",
+  "version": "0.7.2",
   "author": "OpenRouter",
   "description": "Agent toolkit for building AI applications with OpenRouter — tool orchestration, streaming, multi-turn conversations, and format compatibility.",
   "keywords": [
@@ -31,6 +31,10 @@
     "./model-result": {
       "types": "./esm/lib/model-result.d.ts",
       "default": "./esm/lib/model-result.js"
+    },
+    "./hooks-manager": {
+      "types": "./esm/lib/hooks-manager.d.ts",
+      "default": "./esm/lib/hooks-manager.js"
     },
     "./async-params": {
       "types": "./esm/lib/async-params.d.ts",
@@ -112,11 +116,11 @@
     "test": "vitest --run --project unit",
     "test:e2e": "vitest --run --project e2e",
     "test:watch": "vitest --watch --project unit",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "tsc --noEmit -p tsconfig.typecheck.json",
     "compile": "tsc"
   },
   "dependencies": {
-    "@openrouter/sdk": "^0.12.12",
+    "@openrouter/sdk": "^0.13.7",
     "zod": "^4.0.0"
   }
 }

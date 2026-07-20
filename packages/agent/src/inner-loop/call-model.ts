@@ -2,6 +2,7 @@ import type { OpenRouterCore } from '@openrouter/sdk/core';
 import type { RequestOptions } from '@openrouter/sdk/lib/sdks';
 import type { $ZodObject, $ZodShape, infer as zodInfer } from 'zod/v4/core';
 import type { CallModelInput } from '../lib/async-params.js';
+import { resolveHooks } from '../lib/hooks-resolve.js';
 import type { GetResponseOptions } from '../lib/model-result.js';
 import { ModelResult } from '../lib/model-result.js';
 import { convertToolsToAPIFormat } from '../lib/tool-executor.js';
@@ -64,7 +65,16 @@ export type { CallModelInput } from '../lib/async-params.js';
  * stopWhen: [stepCountIs(10), maxCost(0.50), hasToolCall('finalize')]
  * ```
  *
- * Default: `stepCountIs(5)` if not specified
+ * If `stopWhen` is omitted, the loop runs until the model produces a turn
+ * with no tool calls. Pass `stopWhen` to bound iterations, cost, or tokens.
+ *
+ * **Final Response After Stop:**
+ *
+ * When `stopWhen` fires while the model is still emitting tool calls, set
+ * `allowFinalResponse: true` (or a string) to force one final model turn
+ * with no tools so the loop ends with a natural-language summary rather
+ * than a half-finished tool call. A string value is appended as a final
+ * user message.
  */
 export function callModel<
   TTools extends readonly Tool[],
@@ -91,6 +101,9 @@ export function callModel<
     sharedContextSchema,
     onTurnStart,
     onTurnEnd,
+    allowFinalResponse,
+    strictFinalResponse,
+    hooks,
     ...apiRequest
   } = request;
 
@@ -151,6 +164,15 @@ export function callModel<
     }),
     ...(onTurnEnd !== undefined && {
       onTurnEnd,
+    }),
+    ...(allowFinalResponse !== undefined && {
+      allowFinalResponse,
+    }),
+    ...(strictFinalResponse !== undefined && {
+      strictFinalResponse,
+    }),
+    ...(hooks !== undefined && {
+      hooks: resolveHooks(hooks),
     }),
   } as GetResponseOptions<TTools, TShared>);
 }

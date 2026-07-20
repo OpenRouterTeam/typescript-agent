@@ -90,3 +90,23 @@ jobs:
             exit 0
           fi
           pnpm run test:e2e
+
+  structural-gate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - name: Install sentrux
+        env:
+          SENTRUX_VERSION: v0.5.7
+        run: |
+          curl -fsSL \
+            "https://github.com/sentrux/sentrux/releases/download/${SENTRUX_VERSION}/sentrux-linux-x86_64" \
+            -o /usr/local/bin/sentrux
+          chmod +x /usr/local/bin/sentrux
+          sentrux --version
+
+      - name: Structural regression gate
+        run: sentrux gate

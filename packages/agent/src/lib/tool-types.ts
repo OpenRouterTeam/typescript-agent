@@ -1,7 +1,6 @@
 import type * as models from '@openrouter/sdk/models';
 import type { StreamEvents } from '@openrouter/sdk/models';
 import type { $ZodObject, $ZodShape, $ZodType, infer as zodInfer } from 'zod/v4/core';
-import type { ModelResult } from './model-result.js';
 
 /**
  * Tool type enum for enhanced tools
@@ -26,18 +25,43 @@ export interface TurnContext {
 //#region Context Types
 
 /**
- * Extract context schema type from a tool definition
- * Returns the inferred type of the tool's contextSchema, or empty object if none
+ * Extract context schema type from a tool definition.
+ * Returns the inferred type of the tool's `contextSchema`, or
+ * `Record<string, never>` when the tool has no (required) contextSchema.
+ *
+ * Note: optional `contextSchema?: ...` does not match; tools produced by
+ * `tool()` only mark `contextSchema` as required when one was provided, so
+ * tools without a schema keep `Record<string, never>` map slots.
  */
 export type InferToolContext<T> = T extends {
   function: {
-    contextSchema: infer S;
+    readonly contextSchema?: infer S;
   };
 }
-  ? S extends $ZodType
-    ? zodInfer<S>
+  ? [
+      S,
+    ] extends [
+      $ZodObject<$ZodShape>,
+    ]
+    ? $ZodObject<$ZodShape> extends S
+      ? Record<string, never> // wide/default schema type ⇒ tool declared no context
+      : zodInfer<S> extends Record<string, unknown>
+        ? zodInfer<S>
+        : zodInfer<S> & Record<string, unknown>
     : Record<string, never>
   : Record<string, never>;
+
+/**
+ * Resolve execute-context shape from a contextSchema generic.
+ * - Wide/default `$ZodObject<$ZodShape>` (no schema provided) → `Record<string, unknown>`
+ * - Concrete schema → its Zod-inferred shape
+ */
+export type ContextFromSchema<TCtx extends $ZodObject<$ZodShape>> =
+  $ZodObject<$ZodShape> extends TCtx
+    ? Record<string, unknown>
+    : zodInfer<TCtx> extends Record<string, unknown>
+      ? zodInfer<TCtx>
+      : zodInfer<TCtx> & Record<string, unknown>;
 
 /**
  * Extract tool name from a tool definition
@@ -135,10 +159,14 @@ export type NextTurnParamsContext = {
  * Each function receives the tool's input params and current request context
  */
 export type NextTurnParamsFunctions<TInput> = {
-  [K in keyof NextTurnParamsContext]?: (
-    params: TInput,
-    context: NextTurnParamsContext,
-  ) => NextTurnParamsContext[K] | Promise<NextTurnParamsContext[K]>;
+  // Method syntax via mapped object for bivariant `params` — keeps tools
+  // with concrete TInput assignable to the wide `Tool` union (see execute()).
+  [K in keyof NextTurnParamsContext]?: {
+    bivarianceHack(
+      params: TInput,
+      context: NextTurnParamsContext,
+    ): NextTurnParamsContext[K] | Promise<NextTurnParamsContext[K]>;
+  }['bivarianceHack'];
 };
 
 /**
@@ -146,10 +174,10 @@ export type NextTurnParamsFunctions<TInput> = {
  * Receives the tool's input params and turn context
  * Returns true if approval is required, false otherwise
  */
-export type ToolApprovalCheck<TInput> = (
-  params: TInput,
-  context: TurnContext,
-) => boolean | Promise<boolean>;
+export type ToolApprovalCheck<TInput> = {
+  // Bivariant params — see NextTurnParamsFunctions.
+  bivarianceHack(params: TInput, context: TurnContext): boolean | Promise<boolean>;
+}['bivarianceHack'];
 
 /**
  * Content item types for tool output to model.
@@ -186,21 +214,34 @@ export type ToModelOutputResult = {
  * @template TInput - The tool's input type
  * @template TOutput - The tool's output type
  */
-export type ToModelOutputFunction<TInput, TOutput> = (params: {
-  output: TOutput;
-  input: TInput;
-}) => ToModelOutputResult | Promise<ToModelOutputResult>;
+// Object-with-method form (not a bare function type) so the params position
+// is checked bivariantly — concrete TInput/TOutput tools stay assignable to
+// the wide `Tool` union. See the execute() members for the same pattern.
+export type ToModelOutputFunction<TInput, TOutput> = {
+  bivarianceHack(params: {
+    output: TOutput;
+    input: TInput;
+  }): ToModelOutputResult | Promise<ToModelOutputResult>;
+}['bivarianceHack'];
 
 /**
  * Base tool function interface with inputSchema
  * @template TInput - Zod schema for tool input
+ * @template TCtx - Zod schema for tool context (optional; default = erased wide type)
  */
-export interface BaseToolFunction<TInput extends $ZodObject<$ZodShape>> {
+export interface BaseToolFunction<
+  TInput extends $ZodObject<$ZodShape>,
+  TCtx extends $ZodObject<$ZodShape> = $ZodObject<$ZodShape>,
+> {
   name: string;
   description?: string;
   inputSchema: TInput;
-  /** Zod schema declaring the context data this tool needs */
-  contextSchema?: $ZodObject<$ZodShape>;
+  /**
+   * Zod schema declaring the context data this tool needs.
+   * `readonly` keeps TCtx covariant so tools carrying a concrete schema stay
+   * assignable to the wide `Tool` union.
+   */
+  readonly contextSchema?: TCtx;
   nextTurnParams?: NextTurnParamsFunctions<zodInfer<TInput>>;
   /**
    * Whether this tool requires human approval before execution
@@ -219,12 +260,16 @@ export interface ToolFunctionWithExecute<
   TOutput extends $ZodType = $ZodType<unknown>,
   TContext extends Record<string, unknown> = Record<string, unknown>,
   TName extends string = string,
-> extends BaseToolFunction<TInput> {
+  TCtx extends $ZodObject<$ZodShape> = $ZodObject<$ZodShape>,
+> extends BaseToolFunction<TInput, TCtx> {
   outputSchema?: TOutput;
-  execute: (
+  // Method syntax (not property syntax) is deliberate: methods are checked
+  // bivariantly, so tools carrying concrete TInput/TContext types remain
+  // assignable to the wide `Tool` union despite contravariant params.
+  execute(
     params: zodInfer<TInput>,
     context?: ToolExecuteContext<TName, TContext>,
-  ) => Promise<zodInfer<TOutput>> | zodInfer<TOutput>;
+  ): Promise<zodInfer<TOutput>> | zodInfer<TOutput>;
   /** Convert tool execution output to model-facing output */
   toModelOutput?: ToModelOutputFunction<zodInfer<TInput>, zodInfer<TOutput>>;
 }
@@ -257,13 +302,15 @@ export interface ToolFunctionWithGenerator<
   TOutput extends $ZodType = $ZodType<unknown>,
   TContext extends Record<string, unknown> = Record<string, unknown>,
   TName extends string = string,
-> extends BaseToolFunction<TInput> {
+  TCtx extends $ZodObject<$ZodShape> = $ZodObject<$ZodShape>,
+> extends BaseToolFunction<TInput, TCtx> {
   eventSchema: TEvent;
   outputSchema: TOutput;
-  execute: (
+  // Method syntax for bivariant param checking — see ToolFunctionWithExecute.
+  execute(
     params: zodInfer<TInput>,
     context?: ToolExecuteContext<TName, TContext>,
-  ) => AsyncGenerator<zodInfer<TEvent> | zodInfer<TOutput>, zodInfer<TOutput> | undefined>;
+  ): AsyncGenerator<zodInfer<TEvent> | zodInfer<TOutput>, zodInfer<TOutput> | undefined>;
   /** Convert tool execution output to model-facing output */
   toModelOutput?: ToModelOutputFunction<zodInfer<TInput>, zodInfer<TOutput>>;
 }
@@ -274,54 +321,114 @@ export interface ToolFunctionWithGenerator<
 export interface ManualToolFunction<
   TInput extends $ZodObject<$ZodShape>,
   TOutput extends $ZodType = $ZodType<unknown>,
-> extends BaseToolFunction<TInput> {
+  TCtx extends $ZodObject<$ZodShape> = $ZodObject<$ZodShape>,
+> extends BaseToolFunction<TInput, TCtx> {
   outputSchema?: TOutput;
 }
 
 /**
+ * Human-in-the-loop tool. Extends manual-tool semantics with two async hooks.
+ *
+ * `onToolCalled` fires when the model invokes the tool. Returning a value feeds
+ * the model directly (like regular `execute`); returning `null` pauses the loop
+ * like a manual tool, letting the caller resume later with a FunctionCallOutputItem.
+ *
+ * `onResponseReceived` fires on the next turn when an incoming FunctionCallOutputItem
+ * corresponds to a prior call of this tool (matched by callId → function_call.name).
+ * It receives the caller-supplied raw result and returns the value sent to the model.
+ * Throwing surfaces as a tool error to the model.
+ */
+export interface HITLToolFunction<
+  TInput extends $ZodObject<$ZodShape>,
+  TOutput extends $ZodType = $ZodType<unknown>,
+  TContext extends Record<string, unknown> = Record<string, unknown>,
+  TName extends string = string,
+  TCtx extends $ZodObject<$ZodShape> = $ZodObject<$ZodShape>,
+> extends BaseToolFunction<TInput, TCtx> {
+  /**
+   * Required for HITL tools. Used to validate both the `onToolCalled` return
+   * value (when non-null) and the caller-supplied response that comes back via
+   * a matching `function_call_output` — whether transformed by
+   * `onResponseReceived` or passed through directly when no hook is defined.
+   */
+  outputSchema: TOutput;
+  // Method syntax for bivariant param checking — see ToolFunctionWithExecute.
+  onToolCalled(
+    params: zodInfer<TInput>,
+    context?: ToolExecuteContext<TName, TContext>,
+  ): Promise<zodInfer<TOutput> | null> | zodInfer<TOutput> | null;
+  onResponseReceived?(
+    rawResult: unknown,
+    context?: ToolExecuteContext<TName, TContext>,
+  ): Promise<zodInfer<TOutput>> | zodInfer<TOutput>;
+  toModelOutput?: ToModelOutputFunction<zodInfer<TInput>, zodInfer<TOutput>>;
+}
+
+/**
  * Tool with execute function (regular or generator)
+ * @template TCtx - The concrete contextSchema type when one was provided to `tool()`
  */
 export type ToolWithExecute<
   TInput extends $ZodObject<$ZodShape> = $ZodObject<$ZodShape>,
   TOutput extends $ZodType = $ZodType<unknown>,
   TContext extends Record<string, unknown> = Record<string, unknown>,
+  TCtx extends $ZodObject<$ZodShape> = $ZodObject<$ZodShape>,
 > = {
   type: ToolType.Function;
-  function: ToolFunctionWithExecute<TInput, TOutput, TContext>;
+  function: ToolFunctionWithExecute<TInput, TOutput, TContext, string, TCtx>;
 };
 
 /**
  * Tool with generator execute function
+ * @template TCtx - The concrete contextSchema type when one was provided to `tool()`
  */
 export type ToolWithGenerator<
   TInput extends $ZodObject<$ZodShape> = $ZodObject<$ZodShape>,
   TEvent extends $ZodType = $ZodType<unknown>,
   TOutput extends $ZodType = $ZodType<unknown>,
   TContext extends Record<string, unknown> = Record<string, unknown>,
+  TCtx extends $ZodObject<$ZodShape> = $ZodObject<$ZodShape>,
 > = {
   type: ToolType.Function;
-  function: ToolFunctionWithGenerator<TInput, TEvent, TOutput, TContext>;
+  function: ToolFunctionWithGenerator<TInput, TEvent, TOutput, TContext, string, TCtx>;
 };
 
 /**
  * Tool without execute function (manual handling)
+ * @template TCtx - The concrete contextSchema type when one was provided to `tool()`
  */
 export type ManualTool<
   TInput extends $ZodObject<$ZodShape> = $ZodObject<$ZodShape>,
   TOutput extends $ZodType = $ZodType<unknown>,
+  TCtx extends $ZodObject<$ZodShape> = $ZodObject<$ZodShape>,
 > = {
   type: ToolType.Function;
-  function: ManualToolFunction<TInput, TOutput>;
+  function: ManualToolFunction<TInput, TOutput, TCtx>;
 };
 
 /**
- * Union type of all client-executed tool shapes (function, generator, manual).
+ * Human-in-the-loop tool (with onToolCalled / onResponseReceived hooks)
+ * @template TCtx - The concrete contextSchema type when one was provided to `tool()`
+ */
+export type HITLTool<
+  TInput extends $ZodObject<$ZodShape> = $ZodObject<$ZodShape>,
+  TOutput extends $ZodType = $ZodType<unknown>,
+  TContext extends Record<string, unknown> = Record<string, unknown>,
+  TCtx extends $ZodObject<$ZodShape> = $ZodObject<$ZodShape>,
+> = {
+  type: ToolType.Function;
+  function: HITLToolFunction<TInput, TOutput, TContext, string, TCtx>;
+};
+
+/**
+ * Union type of all client-executed tool shapes (function, generator, manual, HITL).
  * These run in the user's process via the agent SDK's tool execution loop.
  */
 export type ClientTool =
   | ToolWithExecute<$ZodObject<$ZodShape>, $ZodType<unknown>>
   | ToolWithGenerator<$ZodObject<$ZodShape>, $ZodType<unknown>, $ZodType<unknown>>
-  | ManualTool<$ZodObject<$ZodShape>, $ZodType<unknown>>;
+  | ManualTool<$ZodObject<$ZodShape>, $ZodType<unknown>>
+  | HITLTool<$ZodObject<$ZodShape>, $ZodType<unknown>>;
 
 /**
  * Config payload for an OpenRouter server-executed tool. Derived directly
@@ -517,6 +624,33 @@ export function isServerTool(tool: Tool): tool is ServerTool {
 }
 
 /**
+ * A client tool additionally branded as originating from an MCP server. The
+ * `_mcp` marker is purely informational: it does NOT change how the tool is
+ * executed (MCP tools keep their local `execute` fn and run through the normal
+ * client-tool path) or serialized (they go on the wire as `type: 'function'`).
+ * It exists only so result types can discriminate MCP results — whose output
+ * schema is `unknown` at compile time — from precisely-typed client tools,
+ * preventing a single MCP tool from collapsing the whole result union.
+ */
+export type McpBranded<T extends Tool = Tool> = T & {
+  readonly _mcp: true;
+};
+
+/**
+ * Type guard: true if the tool carries the additive MCP brand (see
+ * {@link McpBranded}). Structural check on `_mcp`, so no cast is needed.
+ */
+export function isMcpTool(tool: Tool): tool is McpBranded {
+  if (typeof tool !== 'object' || tool === null) {
+    return false;
+  }
+  if (!('_mcp' in tool)) {
+    return false;
+  }
+  return tool._mcp === true;
+}
+
+/**
  * Type guard: true if the tool is a client-executed tool (function, generator, or manual).
  */
 export function isClientTool(tool: Tool): tool is ClientTool {
@@ -551,13 +685,34 @@ export function isRegularExecuteTool(tool: Tool): tool is ToolWithExecute {
 }
 
 /**
- * Type guard to check if a tool is a manual tool (no execute function)
+ * Type guard to check if a tool is a manual tool (no execute and no onToolCalled)
  */
 export function isManualTool(tool: Tool): tool is ManualTool {
   if (isServerTool(tool)) {
     return false;
   }
-  return !('execute' in tool.function);
+  return !('execute' in tool.function) && !('onToolCalled' in tool.function);
+}
+
+/**
+ * Type guard to check if a tool is a human-in-the-loop tool (has onToolCalled)
+ */
+export function isHITLTool(tool: Tool): tool is HITLTool {
+  if (isServerTool(tool)) {
+    return false;
+  }
+  return 'onToolCalled' in tool.function && typeof tool.function.onToolCalled === 'function';
+}
+
+/**
+ * Type guard: true if the tool can be auto-resolved within a turn — either
+ * through a client execute/generator function or through a HITL onToolCalled hook.
+ * Returns false for manual tools (which always pause) and server tools.
+ */
+export function isAutoResolvableTool(
+  tool: Tool,
+): tool is ToolWithExecute | ToolWithGenerator | HITLTool {
+  return hasExecuteFunction(tool) || isHITLTool(tool);
 }
 
 /**
@@ -577,22 +732,70 @@ export interface ParsedToolCall<T extends Tool> {
 }
 
 /**
- * Result of tool execution
+ * Result of tool execution.
+ *
+ * The `_mcp` brand is tested BEFORE the execute/generator branch: an MCP tool
+ * is structurally also a `ToolWithExecute`, so checking the brand last would let
+ * its `unknown` output flow through and collapse the result union. Brand-first
+ * isolates MCP results as `unknown` under `source: 'mcp'` while every other tool
+ * keeps its precise, schema-derived result under `source: 'client'`. Consumers
+ * narrow on `source` (narrowing on the `toolName` literal alone does not exclude
+ * the MCP branch, whose `toolName` is `string`).
+ *
  * @template T - The tool type to infer result types from
  */
 export interface ToolExecutionResult<T extends Tool> {
   toolCallId: string;
-  toolName: string;
-  result: T extends
-    | ToolWithExecute<$ZodObject<$ZodShape>, infer O>
-    | ToolWithGenerator<$ZodObject<$ZodShape>, $ZodType<unknown>, infer O>
-    ? zodInfer<O>
-    : unknown; // Final result (sent to model)
+  toolName: T extends {
+    function: {
+      name: infer N extends string;
+    };
+  }
+    ? N
+    : string;
+  source: ToolSource<T>;
+  result: T extends {
+    readonly _mcp: true;
+  }
+    ? unknown
+    : [
+          Tool,
+        ] extends [
+          T,
+        ]
+      ? unknown // wide `Tool`: result not statically known
+      : T extends
+            | ToolWithExecute<$ZodObject<$ZodShape>, infer O>
+            | ToolWithGenerator<$ZodObject<$ZodShape>, $ZodType<unknown>, infer O>
+        ? zodInfer<O>
+        : unknown; // Final result (sent to model)
   preliminaryResults?: T extends ToolWithGenerator<$ZodObject<$ZodShape>, infer E>
     ? zodInfer<E>[]
     : undefined; // All yielded values from generator
   error?: Error;
 }
+
+/**
+ * The `source` discriminant for a tool result. A specific MCP-branded tool is
+ * `'mcp'`; a specific client tool is `'client'`; the wide `Tool` (used by the
+ * internal executor before the concrete tool type is known) is the full union,
+ * so a runtime-computed `'client' | 'mcp'` assigns into it.
+ */
+export type ToolSource<T extends Tool> = [
+  Tool,
+] extends [
+  T,
+]
+  ? 'client' | 'mcp' // wide `Tool`: source not statically known
+  : [
+        T,
+      ] extends [
+        {
+          readonly _mcp: true;
+        },
+      ]
+    ? 'mcp'
+    : 'client';
 
 /**
  * Warning from step execution
@@ -658,21 +861,6 @@ export type StopWhen<TTools extends readonly Tool[] = readonly Tool[]> =
   | ReadonlyArray<StopCondition<TTools>>;
 
 /**
- * Result of executeTools operation
- */
-export interface ExecuteToolsResult<TTools extends readonly Tool[]> {
-  finalResponse: ModelResult<TTools>;
-  allResponses: ModelResult<TTools>[];
-  toolResults: Map<
-    string,
-    {
-      result: unknown;
-      preliminaryResults?: unknown[];
-    }
-  >;
-}
-
-/**
  * Standard tool format for OpenRouter API (JSON Schema based)
  * Matches ResponsesRequestToolFunction structure
  */
@@ -706,6 +894,13 @@ export type ToolPreliminaryResultEvent<TEvent = unknown> = {
 export type ToolResultEvent<TResult = unknown, TPreliminaryResults = unknown> = {
   type: 'tool.result';
   toolCallId: string;
+  /**
+   * Origin of the tool: `'mcp'` for tools wrapped from a remote MCP server
+   * (whose `result` is `unknown`), `'client'` for locally-defined tools. Lets
+   * consumers discriminate so an MCP result's `unknown` doesn't force callers to
+   * treat every tool result as untyped.
+   */
+  source: 'client' | 'mcp';
   result: TResult;
   timestamp: number;
   preliminaryResults?: TPreliminaryResults[];
@@ -875,15 +1070,42 @@ export interface PartialResponse<TTools extends readonly Tool[] = readonly Tool[
 }
 
 /**
- * Status of a conversation state
+ * Status of a conversation state.
+ *
+ * - `in_progress`: conversation is actively executing
+ * - `complete`: conversation finished successfully
+ * - `interrupted`: execution was externally interrupted
+ * - `awaiting_approval`: tool calls are waiting for caller to approve/reject
+ * - `awaiting_hitl`: one or more HITL tools returned `null` from `onToolCalled`,
+ *   pausing execution so the caller can supply outputs for the paused calls
+ *   before resuming
+ * - `awaiting_client_tools`: one or more manual (`execute: false` / no execute
+ *   fn) tool calls are unresolved; the loop stopped so the caller can execute
+ *   them client-side and continue. Distinct from `awaiting_hitl` — HITL tools
+ *   have an `onToolCalled` hook; manual tools do not.
  */
-export type ConversationStatus = 'complete' | 'interrupted' | 'awaiting_approval' | 'in_progress';
+export type ConversationStatus =
+  | 'complete'
+  | 'interrupted'
+  | 'awaiting_approval'
+  | 'awaiting_hitl'
+  | 'awaiting_client_tools'
+  | 'in_progress';
 
 /**
  * State for multi-turn conversations with persistence and approval gates
  * @template TTools - The tools array type for proper type inference
  */
 export interface ConversationState<TTools extends readonly Tool[] = readonly Tool[]> {
+  /**
+   * Serialization-contract version for this state blob.
+   *
+   * Optional so legacy (pre-version-field) states remain assignable. Absence is
+   * treated as version `1` by {@link deserializeConversationState}. Consumers
+   * should treat serialized JSON as opaque: additive fields within a major
+   * version, migrations applied inside `deserializeConversationState` on bump.
+   */
+  version?: number;
   /** Unique identifier for this conversation */
   id: string;
   /** Full message history */

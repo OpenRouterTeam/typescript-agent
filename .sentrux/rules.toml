@@ -1,0 +1,45 @@
+# Architectural rules enforced by `sentrux check` and `sentrux gate`.
+# Run from repo root: `sentrux check`
+
+[constraints]
+max_cycles = 0
+max_coupling = "B"
+max_cc = 15
+no_god_files = true
+
+# Layers: lower `order` = higher in the stack (may depend on higher-order
+# layers but not the other way around). Verified empirically — sentrux
+# flags "order N must not depend on order N+M" regardless of docs.
+
+[[layers]]
+name = "inner-loop"
+paths = ["packages/agent/src/inner-loop/*"]
+order = 0
+
+[[layers]]
+name = "lib"
+paths = ["packages/agent/src/lib/*"]
+order = 1
+
+[[layers]]
+name = "api-shape-helpers"
+paths = ["packages/agent/src/api-shape-helpers/*"]
+order = 2
+
+# Boundaries: explicit bans backing up the layer ordering.
+# `from` must not depend on `to`.
+
+[[boundaries]]
+from = "packages/agent/src/api-shape-helpers/*"
+to = "packages/agent/src/lib/*"
+reason = "api-shape-helpers holds leaf type definitions; it must not depend on lib."
+
+[[boundaries]]
+from = "packages/agent/src/api-shape-helpers/*"
+to = "packages/agent/src/inner-loop/*"
+reason = "api-shape-helpers is a leaf layer; it must not depend on anything above it."
+
+[[boundaries]]
+from = "packages/agent/src/lib/*"
+to = "packages/agent/src/inner-loop/*"
+reason = "lib is a utility layer; it must not depend on the inner-loop entry point."
