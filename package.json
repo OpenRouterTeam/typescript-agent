@@ -19,7 +19,7 @@
     "@changesets/changelog-github": "^0.6.0",
     "@changesets/cli": "^2.30.0",
     "@types/node": "^22.13.12",
-    "@vitest/coverage-v8": "4.1.5",
+    "@vitest/coverage-v8": "^4.1.5",
     "dotenv": "^16.4.7",
     "husky": "^9.1.7",
     "turbo": "2.9.6",

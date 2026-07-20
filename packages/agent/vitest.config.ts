@@ -10,7 +10,7 @@ export default defineConfig({
     coverage: {
       enabled: true,
       provider: 'v8',
-      include: ['packages/**/src/**.{js,jsx,ts,tsx}']
+      include: ['src/**/*.ts'],
     },
     globals: true,
     environment: 'node',
