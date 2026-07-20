@@ -1,5 +1,61 @@
 # @openrouter/agent
 
+## 0.7.2
+
+### Patch Changes
+
+- [#53](https://github.com/OpenRouterTeam/typescript-agent/pull/53) [`a5341f2`](https://github.com/OpenRouterTeam/typescript-agent/commit/a5341f21555b5d2d982484c199d7d9c3093eabe6) Thanks [@Cybourgeoisie](https://github.com/Cybourgeoisie)! - Bump @openrouter/sdk to 0.13.7
+
+## 0.7.0
+
+### Minor Changes
+
+- Add `allowFinalResponse` option to `callModel`, sibling of `stopWhen`. When the agent loop is halted by `stopWhen` while the last model response still contains tool calls, the pending tool calls are executed (so they have matching outputs) and one more model request is made with no tools so the loop ends with a natural-language summary instead of an unfinished tool call. Passing a string instead of `true` additionally appends that string as a final `user` message (e.g. `allowFinalResponse: 'Please summarize what you found.'`). The full accumulated input array and the original `instructions` are sent.
+
+## 0.6.0
+
+### Minor Changes
+
+- [#42](https://github.com/OpenRouterTeam/typescript-agent/pull/42) [`8e71f06`](https://github.com/OpenRouterTeam/typescript-agent/commit/8e71f06024f41e60ccdc68577016637a31912779) Thanks [@mattapperson](https://github.com/mattapperson)! - Remove implicit 5-step cap in `callModel`. When `stopWhen` is omitted, the tool-execution loop now runs until the model produces a turn with no tool calls instead of stopping at 5 steps. Pass an explicit `stopWhen` (e.g. `stepCountIs(n)`, `maxCost(...)`, `maxTokensUsed(...)`) to bound iterations.
+
+## 0.5.0
+
+### Minor Changes
+
+- Add human-in-the-loop (HITL) tool type, a new `ClientTool` variant that sits
+  between regular `execute` tools and `manual` tools. HITL tools define two
+  async hooks:
+
+  - `onToolCalled(input, context)` runs when the model invokes the tool.
+    Return a value to feed the model directly (like a regular `execute` tool),
+    or return `null` to pause the conversation so the caller can supply the
+    output later — the same flow used by manual tools.
+  - `onResponseReceived(rawResult, context)` runs on the next turn when an
+    incoming `function_call_output` matches a prior call of this tool. It lets
+    the caller transform or validate the raw response before it reaches the
+    model. Throwing surfaces as a tool error to the model.
+
+  HITL tools require an `outputSchema`, which is used to validate both the
+  `onToolCalled` return value (when non-null) and caller-supplied responses
+  (after any `onResponseReceived` transform, or as-is when no hook is defined).
+
+  New `ConversationStatus` value `'awaiting_hitl'` is emitted when one or more
+  HITL tools return `null` from `onToolCalled`, signaling that the caller
+  should resume with outputs for the paused calls.
+
+  New public exports:
+
+  - Types: `HITLTool`, `HITLToolFunction`
+  - Guards: `isHITLTool`, `isAutoResolvableTool` (true for execute / generator
+    / HITL tools — i.e. anything that can resolve within a turn)
+
+  `isManualTool` now returns `false` for HITL tools, so existing manual-tool
+  branches continue to behave correctly.
+
+### Patch Changes
+
+- [#34](https://github.com/OpenRouterTeam/typescript-agent/pull/34) [`61aca10`](https://github.com/OpenRouterTeam/typescript-agent/commit/61aca10fd9434fe69fbe1e069e4b1858613a7da7) Thanks [@w0nche0l](https://github.com/w0nche0l)! - Detect streamed Responses API results by readable stream behavior instead of constructor names or unsupported adapters.
+
 ## 0.4.0
 
 ### Minor Changes

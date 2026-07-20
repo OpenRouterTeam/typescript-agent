@@ -44,8 +44,9 @@ export type {
   // Output item types (StreamableOutputItem members)
   OutputFileSearchCallItem,
   OutputFunctionCallItem,
+  OutputImage,
+  OutputImage as OutputInputImage,
   OutputImageGenerationCallItem,
-  OutputInputImage,
   OutputItems,
   OutputMessage,
   OutputReasoningItem,
@@ -94,14 +95,56 @@ export { isClaudeStyleMessages } from './lib/claude-type-guards.js';
 // Conversation state helpers
 export {
   appendToMessages,
+  CONVERSATION_STATE_VERSION,
   createInitialState,
   createRejectedResult,
   createUnsentResult,
+  deserializeConversationState,
   generateConversationId,
+  InvalidStateError,
   partitionToolCalls,
+  serializeConversationState,
   toolRequiresApproval,
+  UnsupportedStateVersionError,
   updateState,
 } from './lib/conversation-state.js';
+// Lifecycle hooks system (PreToolUse, PostToolUse, Stop, SessionStart, ...).
+// Distinct from the SDK transport hooks re-exported above (SDKHooks,
+// BeforeRequestHook, HookContext, ...), which intercept HTTP requests.
+// Internals (matchesTool, resolveHooks, BUILT_IN_HOOKS, raw Zod schemas) are
+// deliberately NOT exported: everything here is semver surface, and the raw
+// schema objects are mutable.
+export { HooksManager } from './lib/hooks-manager.js';
+export type {
+  AsyncOutput,
+  BuiltInHookDefinitions,
+  EmitResult,
+  HookDefinition,
+  HookEntry,
+  HookHandler,
+  HookRegistry,
+  HookReturn,
+  HooksManagerOptions,
+  InlineHookConfig,
+  LifecycleHookContext,
+  ModelCallUsage,
+  PermissionRequestPayload,
+  PermissionRequestResult,
+  PostModelCallPayload,
+  PostToolUseFailurePayload,
+  PostToolUsePayload,
+  PreToolUsePayload,
+  PreToolUseResult,
+  SessionEndPayload,
+  SessionStartPayload,
+  SessionUsageTotals,
+  StopPayload,
+  StopResult,
+  ToolMatcher,
+  UserPromptSubmitPayload,
+  UserPromptSubmitResult,
+} from './lib/hooks-types.js';
+export { HookName, isAsyncOutput } from './lib/hooks-types.js';
 export type { GetResponseOptions } from './lib/model-result.js';
 export { ModelResult } from './lib/model-result.js';
 // Next turn params helpers
@@ -126,7 +169,7 @@ export {
   hasUnsupportedContent,
 } from './lib/stream-transformers.js';
 // Tool creation helpers
-export { serverTool, tool } from './lib/tool.js';
+export { markMcp, serverTool, tool } from './lib/tool.js';
 export type { ContextInput } from './lib/tool-context.js';
 // Tool context helpers
 export { buildToolExecuteContext, ToolContextStore } from './lib/tool-context.js';
@@ -138,12 +181,15 @@ export type {
   ConversationState,
   ConversationStatus,
   HasApprovalTools,
+  HITLTool,
+  HITLToolFunction,
   InferToolEvent,
   InferToolEventsUnion,
   InferToolInput,
   InferToolOutput,
   InferToolOutputsUnion,
   ManualTool,
+  McpBranded,
   NextTurnParamsContext,
   NextTurnParamsFunctions,
   ParsedToolCall,
@@ -184,8 +230,12 @@ export type {
 export {
   hasApprovalRequiredTools,
   hasExecuteFunction,
+  isAutoResolvableTool,
   isClientTool,
   isGeneratorTool,
+  isHITLTool,
+  isManualTool,
+  isMcpTool,
   isRegularExecuteTool,
   isServerTool,
   isToolCallOutputEvent,

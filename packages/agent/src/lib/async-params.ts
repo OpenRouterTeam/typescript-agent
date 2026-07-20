@@ -1,5 +1,7 @@
 import type * as models from '@openrouter/sdk/models';
 import type { OpenResponsesResult } from '@openrouter/sdk/models';
+import type { HooksManager } from './hooks-manager.js';
+import type { InlineHookConfig } from './hooks-types.js';
 import type { Item } from './item-types.js';
 import type { ContextInput } from './tool-context.js';
 import type {
@@ -80,6 +82,32 @@ type BaseCallModelInput<
    * Receives the turn context and the completed response for that turn
    */
   onTurnEnd?: (context: TurnContext, response: OpenResponsesResult) => void | Promise<void>;
+  /**
+   * When the loop exits because `stopWhen` was met and the last response
+   * still contained tool calls, execute those pending tool calls (so they
+   * have matching outputs) and then make one more model request with no
+   * tools so the model produces a final text response.
+   *
+   * - `true` (or `''`) — re-prompt with the accumulated conversation and no
+   *   tools.
+   * - non-empty string — additionally append that string as a final user
+   *   message (e.g. `"Please summarize what you've learned"`).
+   *
+   * The full accumulated input array and the original `instructions` are
+   * sent. Manual (non-executable) tool calls in the halted turn are paired
+   * with synthesized stub `function_call_output` items so the input is
+   * well-formed. Has no effect when the loop exits for any other reason
+   * (HITL pause, approval pause, interruption, or natural completion).
+   */
+  allowFinalResponse?: boolean | string;
+  /**
+   * When true, throw if the final response has an empty `output` array even
+   * after completed tool rounds (legacy behavior). Default false: empty
+   * finals after tool work are retried once, then accepted with empty text.
+   */
+  strictFinalResponse?: boolean;
+  /** Hook system for lifecycle events. Accepts inline config or a HooksManager instance. */
+  hooks?: InlineHookConfig | HooksManager;
 };
 
 /**
@@ -180,6 +208,9 @@ export async function resolveAsyncFunctions<TTools extends readonly Tool[] = rea
     'sharedContextSchema', // Client-side schema for shared context validation
     'onTurnStart', // Client-side turn start callback
     'onTurnEnd', // Client-side turn end callback
+    'allowFinalResponse', // Client-side: triggers no-tools final turn when stopWhen breaks the loop
+    'strictFinalResponse', // Client-side: restore throw on empty final after tool rounds
+    'hooks', // Client-side hook system
   ]);
 
   // Iterate over all keys in the input

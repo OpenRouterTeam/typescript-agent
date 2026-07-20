@@ -1847,4 +1847,96 @@ describe('callModel E2E Tests', () => {
       expect(fullResponse.model).toBeDefined();
     });
   });
+
+  describe('allowFinalResponse', () => {
+    const weatherTool = {
+      type: ToolType.Function,
+      function: {
+        name: 'get_weather',
+        description: 'Get the weather for a location.',
+        inputSchema: z.object({
+          location: z.string().describe('City name'),
+        }),
+        outputSchema: z.object({
+          temperature: z.number(),
+          condition: z.string(),
+        }),
+        execute: async (params: { location: string }) => ({
+          temperature: 22,
+          condition: `Sunny in ${params.location}`,
+        }),
+      },
+    } as const;
+
+    it('should coerce a text response when stopWhen halts mid-tool-call (true)', async () => {
+      const response = client.callModel({
+        model: 'anthropic/claude-haiku-4.5',
+        instructions: 'You are a weather assistant. Always call get_weather when asked.',
+        input: fromChatMessages([
+          {
+            role: 'user',
+            content: "What's the weather in Tokyo?",
+          },
+        ]),
+        toolChoice: 'required',
+        stopWhen: stepCountIs(1),
+        allowFinalResponse: true,
+        tools: [
+          weatherTool,
+        ] as const,
+      });
+
+      const text = await response.getText();
+
+      expect(typeof text).toBe('string');
+      expect(text.length).toBeGreaterThan(0);
+    }, 30000);
+
+    it('should append string allowFinalResponse as a user message', async () => {
+      const response = client.callModel({
+        model: 'anthropic/claude-haiku-4.5',
+        instructions: 'You are a weather assistant. Always call get_weather when asked.',
+        input: fromChatMessages([
+          {
+            role: 'user',
+            content: "What's the weather in Tokyo?",
+          },
+        ]),
+        toolChoice: 'required',
+        stopWhen: stepCountIs(1),
+        allowFinalResponse:
+          'Stop calling tools. Reply with exactly the word "FINAL" and nothing else.',
+        tools: [
+          weatherTool,
+        ] as const,
+      });
+
+      const text = await response.getText();
+
+      expect(typeof text).toBe('string');
+      expect(text.length).toBeGreaterThan(0);
+      expect(text.toUpperCase()).toContain('FINAL');
+    }, 30000);
+
+    it('should be a no-op when the loop exits naturally without tool calls', async () => {
+      const response = client.callModel({
+        model: 'anthropic/claude-haiku-4.5',
+        input: fromChatMessages([
+          {
+            role: 'user',
+            content: "Say 'no-op test' and nothing else.",
+          },
+        ]),
+        allowFinalResponse: 'This should never be appended.',
+      });
+
+      const text = await response.getText();
+
+      expect(typeof text).toBe('string');
+      expect(text.length).toBeGreaterThan(0);
+      // Final response should be the model's normal answer, not a follow-up
+      // triggered by allowFinalResponse.
+      expect(text.toLowerCase()).toContain('no-op test');
+    }, 15000);
+  });
 });
