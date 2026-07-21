@@ -1,3 +1,5 @@
+![hero illustration](./assets/banner.png)
+
 # typescript-agent
 
 Monorepo for the OpenRouter TypeScript agent ecosystem.
