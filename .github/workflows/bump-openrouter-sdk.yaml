@@ -39,14 +39,14 @@ jobs:
     steps:
       # GH_TOKEN is a PAT (not the Actions GITHUB_TOKEN) so the opened PR
       # triggers Perry + CI — GITHUB_TOKEN would suppress those downstream runs.
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           token: ${{ secrets.GH_TOKEN }}
           fetch-depth: 0
 
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@v6
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v6
         with:
           node-version: 22
           cache: pnpm
@@ -103,7 +103,7 @@ jobs:
       contents: write
       pull-requests: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Wait for Perry + CI, then merge or alert
         env:
