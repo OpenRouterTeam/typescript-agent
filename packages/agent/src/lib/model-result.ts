@@ -84,6 +84,18 @@ import {
 import { normalizeInputToArray } from './turn-context.js';
 
 /**
+ * Default directive appended as a final user message when
+ * `allowFinalResponse: true` forces the no-tools final turn. Stripping tools
+ * alone is not enough: models that emit tool-call syntax as text (e.g. GLM)
+ * will attempt another call and leak it into `content` as unparsed
+ * `<tool_call>…` text unless they are told this is the final turn.
+ * Pass a non-empty string to `allowFinalResponse` to override the wording,
+ * or `''` to append no message at all (legacy behavior).
+ */
+export const DEFAULT_FINAL_RESPONSE_DIRECTIVE =
+  'You have reached the tool-use limit, and tools are no longer available. Do not attempt to call any more tools. Using the information you already have, write your final answer now.';
+
+/**
  * Typeguard for plain-object records (non-null, non-array).
  */
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -2168,6 +2180,11 @@ export class ModelResult<
           ]
         : [];
 
+    // Bare `true` gets the built-in directive; a non-empty string overrides
+    // the wording; `''` appends nothing (explicit opt-out).
+    const finalDirective =
+      allowFinalResponse === true ? DEFAULT_FINAL_RESPONSE_DIRECTIVE : allowFinalResponse;
+
     const newInput: models.InputsUnion = [
       ...normalizedOriginalInput,
       ...(Array.isArray(currentResponse.output)
@@ -2176,11 +2193,11 @@ export class ModelResult<
             currentResponse.output,
           ]),
       ...toolOutputs,
-      ...(typeof allowFinalResponse === 'string' && allowFinalResponse.length > 0
+      ...(typeof finalDirective === 'string' && finalDirective.length > 0
         ? [
             {
               role: 'user' as const,
-              content: allowFinalResponse,
+              content: finalDirective,
             },
           ]
         : []),

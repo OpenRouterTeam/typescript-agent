@@ -10,6 +10,7 @@ vi.mock('@openrouter/sdk/funcs/betaResponsesSend', () => ({
 }));
 
 import { callModel } from '../../src/inner-loop/call-model.js';
+import { DEFAULT_FINAL_RESPONSE_DIRECTIVE } from '../../src/lib/model-result.js';
 import { stepCountIs } from '../../src/lib/stop-conditions.js';
 import { ToolType } from '../../src/lib/tool-types.js';
 
@@ -184,6 +185,15 @@ describe('allowFinalResponse', () => {
     // The tool's execute fn returned { temperature: 22 } — that's the real
     // output, NOT a stub.
     expect(fnCallOutput?.output).toContain('"temperature":22');
+    // Bare `true` appends the built-in final-answer directive as the last
+    // user message so tool-syntax-emitting models don't leak an unparsed
+    // tool call into content (DEV-658).
+    const lastItem = input[input.length - 1] as {
+      role?: string;
+      content?: string;
+    };
+    expect(lastItem.role).toBe('user');
+    expect(lastItem.content).toBe(DEFAULT_FINAL_RESPONSE_DIRECTIVE);
   });
 
   it('appends a non-empty string allowFinalResponse as a user message', async () => {

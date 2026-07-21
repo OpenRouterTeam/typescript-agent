@@ -196,15 +196,19 @@ callModel(client, {
   input: 'Research this topic',
   tools: [searchTool] as const,
   stopWhen: stepCountIs(5),
-  allowFinalResponse: 'Please summarize what you found.',
-  // or just: allowFinalResponse: true
+  allowFinalResponse: true,
+  // or override the default directive:
+  // allowFinalResponse: 'Please summarize what you found.',
 });
 ```
 
 The pending tool calls from the halted turn are executed first so they
 have real outputs in the input, then the full conversation and the
-original `instructions` are sent to the model with no tools defined. A
-non-empty string value is appended as a final `user` message. Any
+original `instructions` are sent to the model with no tools defined.
+`true` appends a built-in final-answer directive as a `user` message
+(exported as `DEFAULT_FINAL_RESPONSE_DIRECTIVE`) so the model writes an
+answer instead of attempting another tool call; a non-empty string
+replaces the default wording; `''` appends no message. Any
 non-executable (manual) tool calls in the halted turn are paired with
 synthesized stub `function_call_output` items so the input is well-formed.
 

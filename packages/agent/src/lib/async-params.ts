@@ -88,10 +88,14 @@ type BaseCallModelInput<
    * have matching outputs) and then make one more model request with no
    * tools so the model produces a final text response.
    *
-   * - `true` (or `''`) — re-prompt with the accumulated conversation and no
-   *   tools.
-   * - non-empty string — additionally append that string as a final user
-   *   message (e.g. `"Please summarize what you've learned"`).
+   * - `true` — re-prompt with the accumulated conversation, no tools, and a
+   *   default final-answer directive appended as a user message
+   *   (`DEFAULT_FINAL_RESPONSE_DIRECTIVE`). Without the directive, models
+   *   that emit tool-call syntax as text may leak an unparsed tool call
+   *   into the final content.
+   * - non-empty string — append that string as the final user message
+   *   instead of the default (e.g. `"Please summarize what you've learned"`).
+   * - `''` — no final user message; tools are still stripped.
    *
    * The full accumulated input array and the original `instructions` are
    * sent. Manual (non-executable) tool calls in the halted turn are paired

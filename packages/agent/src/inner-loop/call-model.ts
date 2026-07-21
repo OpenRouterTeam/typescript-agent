@@ -73,8 +73,9 @@ export type { CallModelInput } from '../lib/async-params.js';
  * When `stopWhen` fires while the model is still emitting tool calls, set
  * `allowFinalResponse: true` (or a string) to force one final model turn
  * with no tools so the loop ends with a natural-language summary rather
- * than a half-finished tool call. A string value is appended as a final
- * user message.
+ * than a half-finished tool call. `true` appends a default final-answer
+ * directive as a user message; a non-empty string replaces the default
+ * wording; `''` appends nothing.
  */
 export function callModel<
   TTools extends readonly Tool[],
