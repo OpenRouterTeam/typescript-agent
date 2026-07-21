@@ -16,6 +16,8 @@ import {
   unsentResultsToAPIFormat,
   updateState,
 } from './conversation-state.js';
+import type { DoomLoopOption, DoomLoopVerdict } from './doom-loop.js';
+import { DoomLoopMonitor, resolveDoomLoopOption } from './doom-loop.js';
 import type { HooksManager } from './hooks-manager.js';
 import type { ModelCallUsage, PostModelCallPayload } from './hooks-types.js';
 import {
@@ -315,6 +317,14 @@ export interface GetResponseOptions<
   strictFinalResponse?: boolean;
   /** Hook system for lifecycle events */
   hooks?: HooksManager;
+  /**
+   * Doom-loop detection: catch runs that repeat the same tool call with
+   * identical arguments (including repeated empty or unparseable calls) or
+   * emit the same text over and over, and respond with a graduated ladder
+   * (observe → steer → block → stop). `true` enables recommended defaults;
+   * an object tunes thresholds. Off by default.
+   */
+  doomLoop?: DoomLoopOption;
 }
 
 /**
@@ -441,10 +451,23 @@ export class ModelResult<
     cost: 0,
     hasCost: false,
   };
+  // Doom-loop detection (null when the `doomLoop` option is off). The
+  // monitor is a pure, serializable state machine; this class owns the
+  // engine-side consequences (hook emission, block synthesis, steer
+  // injection, stopping the loop).
+  private readonly doomLoopMonitor: DoomLoopMonitor | null;
+  // Set when a verdict resolves to 'stop'; checked at the top of the
+  // execution loop beside stopWhen.
+  private doomLoopStop: DoomLoopVerdict | null = null;
+  // Steer messages queued by 'steer' verdicts, injected before the next
+  // follow-up request (same mechanism as the Stop hook's appendPrompt).
+  private pendingDoomLoopSteer: string[] = [];
 
   constructor(options: GetResponseOptions<TTools, TShared>) {
     this.options = options;
     this.hooksManager = options.hooks;
+    const doomLoopConfig = resolveDoomLoopOption(options.doomLoop);
+    this.doomLoopMonitor = doomLoopConfig ? new DoomLoopMonitor(doomLoopConfig) : null;
 
     // Runtime validation: approval decisions require state
     const hasApprovalDecisions =
@@ -1016,6 +1039,23 @@ export class ModelResult<
     // synthetic error without running the tool or firing hooks.
     const rawArgs: unknown = toolCall.arguments;
     if (typeof rawArgs === 'string') {
+      // Malformed calls are classic doom-loop fuel: a model stuck emitting
+      // the same invalid JSON re-triggers this parse error forever. Record
+      // the raw string as the call's identity so the streak trips the
+      // detector instead of bouncing off the parse error unbounded. The
+      // parse-error output below already prevents execution, so a 'block'
+      // action needs no extra handling here.
+      if (this.doomLoopMonitor) {
+        const verdict = this.doomLoopMonitor.recordToolCall(String(toolCall.name), rawArgs);
+        if (verdict) {
+          const action = await this.applyDoomLoopVerdict(verdict);
+          if (action === 'steer') {
+            this.pendingDoomLoopSteer.push(verdict.message);
+          } else if (action === 'stop') {
+            this.doomLoopStop = verdict;
+          }
+        }
+      }
       const errorMessage =
         `Failed to parse tool call arguments for "${toolCall.name}": The model provided invalid JSON. ` +
         `Raw arguments received: "${rawArgs}". ` +
@@ -1030,6 +1070,30 @@ export class ModelResult<
           callId: toolCall.id,
           output: JSON.stringify({
             error: errorMessage,
+          }),
+        },
+      };
+    }
+
+    // Doom-loop checkpoint — BEFORE PreToolUse, on the arguments the MODEL
+    // issued (pre-mutation): the loop evidence is the model repeating
+    // itself, and a PreToolUse hook that rewrites input each call (e.g.
+    // injecting a nonce) must not mask that repetition. A 'block' verdict
+    // returns the same `hook_blocked` shape as a PreToolUse block, so every
+    // caller handles it identically; PreToolUse deliberately does not fire
+    // for doom-blocked calls (nothing will execute — mirrors parse_error).
+    const doomOutcome = await this.checkDoomLoopBeforeExecution(tool, toolCall);
+    if (doomOutcome.blocked) {
+      return {
+        type: 'hook_blocked',
+        toolCall,
+        reason: doomOutcome.reason,
+        output: {
+          type: 'function_call_output' as const,
+          id: `output_${toolCall.id}`,
+          callId: toolCall.id,
+          output: JSON.stringify({
+            error: doomOutcome.reason,
           }),
         },
       };
@@ -1135,6 +1199,180 @@ export class ModelResult<
   }
 
   /**
+   * Doom-loop checkpoint for one tool call, run before PreToolUse/execution.
+   *
+   * Records the call with the monitor (identity = the tool's `loopKey`
+   * result when declared, else the full arguments; `loopKey` returning null
+   * exempts the call) and applies the resolved ladder action:
+   *
+   * - `observe` — hook already emitted, nothing else.
+   * - `steer`   — queue a corrective user message for the next model turn.
+   * - `block`   — return `blocked` so the caller synthesizes an error output
+   *   without executing. The model sees the explanation in the tool result.
+   * - `stop`    — arm `doomLoopStop`; ALSO blocks this call (executing a
+   *   call the detector just condemned, then stopping, would be
+   *   incoherent). The loop halts before the next model request.
+   */
+  private async checkDoomLoopBeforeExecution(
+    tool: Tool,
+    toolCall: ParsedToolCall<Tool>,
+  ): Promise<
+    | {
+        blocked: false;
+      }
+    | {
+        blocked: true;
+        reason: string;
+      }
+  > {
+    if (!this.doomLoopMonitor) {
+      return {
+        blocked: false,
+      };
+    }
+
+    // The parse-error guard in runToolWithHooks already rejected raw-string
+    // arguments, so what remains is the parsed record (or null/undefined for
+    // no-args calls — coerced to {} the same way the PreToolUse payload is).
+    const callArguments = (toolCall.arguments ?? {}) as Record<string, unknown>;
+    let keyMaterial: unknown = callArguments;
+    const loopKeyFn = isClientTool(tool) ? tool.function.loopKey : undefined;
+    if (loopKeyFn) {
+      try {
+        keyMaterial = loopKeyFn(callArguments);
+      } catch (error) {
+        // A throwing loopKey must never take down the run; fall back to the
+        // full-arguments identity (still deterministic).
+        console.warn(
+          `[DoomLoop] loopKey for tool "${toolCall.name}" threw; falling back to full arguments:`,
+          error,
+        );
+        keyMaterial = callArguments;
+      }
+      if (keyMaterial === null) {
+        // Tool-declared exemption (legitimate repetition, e.g. polling).
+        return {
+          blocked: false,
+        };
+      }
+    }
+
+    const verdict = this.doomLoopMonitor.recordToolCall(String(toolCall.name), keyMaterial);
+    if (!verdict) {
+      return {
+        blocked: false,
+      };
+    }
+
+    const action = await this.applyDoomLoopVerdict(verdict, toolCall);
+    switch (action) {
+      case 'stop':
+        this.doomLoopStop = verdict;
+        return {
+          blocked: true,
+          reason: verdict.message,
+        };
+      case 'block':
+        return {
+          blocked: true,
+          reason: verdict.message,
+        };
+      case 'steer':
+        this.pendingDoomLoopSteer.push(verdict.message);
+        return {
+          blocked: false,
+        };
+      default:
+        return {
+          blocked: false,
+        };
+    }
+  }
+
+  /**
+   * Emit the DoomLoopDetected hook for a verdict and resolve the final
+   * action. Handlers may override per event (`overrideAction`), letting
+   * userland escalate or de-escalate without reconfiguring the ladder;
+   * the LAST override in the chain wins (matching PermissionRequest's
+   * last-wins convention). Text verdicts cannot be blocked — the tokens
+   * are already emitted — so a 'block' override on them downgrades to
+   * 'observe'.
+   */
+  private async applyDoomLoopVerdict(
+    verdict: DoomLoopVerdict,
+    toolCall?: ParsedToolCall<Tool>,
+  ): Promise<DoomLoopVerdict['action']> {
+    let action = verdict.action;
+    if (this.hooksManager) {
+      const emit = await this.hooksManager.emit(
+        'DoomLoopDetected',
+        {
+          detector: verdict.detector,
+          action: verdict.action,
+          streak: verdict.streak,
+          fingerprint: verdict.fingerprint,
+          ...(verdict.toolName !== undefined && {
+            toolName: verdict.toolName,
+          }),
+          ...(toolCall !== undefined &&
+            isRecord(toolCall.arguments) && {
+              toolInput: toolCall.arguments as Record<string, unknown>,
+            }),
+          message: verdict.message,
+        },
+        this.hookEmitContext(verdict.toolName),
+      );
+      for (const result of emit.results) {
+        if (result?.overrideAction) {
+          action = result.overrideAction;
+        }
+      }
+    }
+    if (verdict.detector !== 'tool-fingerprint' && action === 'block') {
+      // Nothing to block for text verdicts; observe instead of silently
+      // acting stronger/weaker than the handler intended.
+      action = 'observe';
+    }
+    return action;
+  }
+
+  /**
+   * Step-level doom-loop checkpoint: feed the response's assistant text to
+   * the text detectors and apply the verdict. Runs where the loop already
+   * inspects each fresh response, so scripted transcripts exercise it
+   * deterministically.
+   */
+  private async checkDoomLoopForResponse(response: models.OpenResponsesResult): Promise<void> {
+    if (!this.doomLoopMonitor) {
+      return;
+    }
+    const verdict = this.doomLoopMonitor.recordAssistantText(extractTextFromResponse(response));
+    if (!verdict) {
+      return;
+    }
+    const action = await this.applyDoomLoopVerdict(verdict);
+    if (action === 'steer') {
+      this.pendingDoomLoopSteer.push(verdict.message);
+    } else if (action === 'stop') {
+      this.doomLoopStop = verdict;
+    }
+  }
+
+  /**
+   * Inject any queued doom-loop steer messages as a user message before the
+   * next model turn. Reuses the Stop-hook appendPrompt injection path, so
+   * state/messages advance observably.
+   */
+  private async flushDoomLoopSteer(): Promise<void> {
+    if (this.pendingDoomLoopSteer.length === 0) {
+      return;
+    }
+    const prompt = this.pendingDoomLoopSteer.join('\n');
+    this.pendingDoomLoopSteer = [];
+    await this.injectAppendPromptMessage(prompt);
+  }
+
+  /**
    * Build the per-emit context for lifecycle hook emits. Threads this run's
    * session identity into `context.sessionId` on every emit, so a
    * `HooksManager` instance shared across concurrent runs never leaks one
@@ -1159,7 +1397,7 @@ export class ModelResult<
    * actually succeeded. Safe to call from multiple teardown paths.
    */
   private async emitSessionEndOnce(
-    reason: 'user' | 'error' | 'max_turns' | 'complete',
+    reason: 'user' | 'error' | 'max_turns' | 'complete' | 'doom_loop',
   ): Promise<void> {
     if (!this.hooksManager || !this.sessionStartEmitted || this.sessionEndEmitted) {
       return;
@@ -2331,6 +2569,7 @@ export class ModelResult<
       allowFinalResponse: _afr,
       strictFinalResponse: _sfr,
       hooks: _h,
+      doomLoop: _dl,
       ...rest
     } = this.options.request;
     return rest as ResolvedCallModelInput;
@@ -2436,6 +2675,16 @@ export class ModelResult<
       this.currentState = updateState(this.currentState, updates);
     }
 
+    // Piggyback the doom-loop detector snapshot on every persist so loop
+    // memory survives serialize → resume (a resumed doom loop is still a
+    // doom loop). Plain bounded JSON; absent when detection is off.
+    if (this.doomLoopMonitor) {
+      this.currentState = {
+        ...this.currentState,
+        doomLoop: this.doomLoopMonitor.getState(),
+      };
+    }
+
     try {
       await this.stateAccessor.save(this.currentState);
     } catch (error) {
@@ -2481,6 +2730,12 @@ export class ModelResult<
         const loadedState = await this.stateAccessor.load();
         if (loadedState) {
           this.currentState = loadedState;
+
+          // Rehydrate doom-loop streaks from the persisted state so a
+          // resumed run continues counting where it left off.
+          if (this.doomLoopMonitor && loadedState.doomLoop !== undefined) {
+            this.doomLoopMonitor.restore(loadedState.doomLoop);
+          }
 
           // Check if we're resuming from awaiting_approval or awaiting_hitl
           // with decisions. `awaiting_hitl` reuses `processApprovalDecisions`
@@ -2981,7 +3236,7 @@ export class ModelResult<
       // try/catch/finally and track the session-end reason as we go.
       // Approval pauses keep reason='complete' because the run hasn't failed —
       // it's simply paused awaiting user decisions.
-      let sessionEndReason: 'user' | 'error' | 'max_turns' | 'complete' = 'complete';
+      let sessionEndReason: 'user' | 'error' | 'max_turns' | 'complete' | 'doom_loop' = 'complete';
       try {
         await this.initStream();
 
@@ -3001,6 +3256,10 @@ export class ModelResult<
 
         // Save initial response to state
         await this.saveResponseToState(currentResponse);
+
+        // Doom-loop text checkpoint for the initial response (within-response
+        // token repetition + cross-step streak seed).
+        await this.checkDoomLoopForResponse(currentResponse);
 
         // Check if tools should be executed
         const hasToolCalls = currentResponse.output.some(
@@ -3045,6 +3304,13 @@ export class ModelResult<
           if (await this.checkForInterruption(currentResponse)) {
             sessionEndReason = 'user';
             return;
+          }
+
+          // A doom-loop 'stop' verdict from the previous response's text
+          // halts the run before any further spend.
+          if (this.doomLoopStop) {
+            sessionEndReason = 'doom_loop';
+            break;
           }
 
           // Check stop conditions
@@ -3182,6 +3448,24 @@ export class ModelResult<
             return;
           }
 
+          // A doom-loop 'stop' verdict armed during this round halts the run
+          // before the next model request. This round's calls all have
+          // outputs (the condemned call got a blocked error output), so the
+          // persisted history stays well-formed. No final text-coercion
+          // request is made: the point of 'stop' is to cut spend on a run
+          // that is demonstrably not progressing.
+          if (this.doomLoopStop) {
+            sessionEndReason = 'doom_loop';
+            break;
+          }
+
+          // Inject any queued doom-loop steer guidance so the very next
+          // request carries it. It lands in the input before this round's
+          // call/output items (the injection point predates the follow-up
+          // accumulation) — semantically fine, the guidance names the
+          // repeated pattern explicitly.
+          await this.flushDoomLoopSteer();
+
           // Apply nextTurnParams
           await this.applyNextTurnParams(currentToolCalls);
 
@@ -3198,6 +3482,9 @@ export class ModelResult<
 
           // Save new response to state
           await this.saveResponseToState(currentResponse);
+
+          // Doom-loop text checkpoint for the fresh response.
+          await this.checkDoomLoopForResponse(currentResponse);
 
           currentRound++;
         }
@@ -4029,5 +4316,21 @@ export class ModelResult<
     }
 
     return this.currentState;
+  }
+
+  /**
+   * The doom-loop verdict that stopped this run, or null when the run was
+   * not stopped by doom-loop detection (including when detection is off).
+   * Resolves after the tool loop settles. For per-event observation use the
+   * `DoomLoopDetected` hook.
+   */
+  async getDoomLoopVerdict(): Promise<DoomLoopVerdict | null> {
+    await this.initStreamGuarded({
+      requireStream: false,
+    });
+    if (!this.isResumingFromApproval) {
+      await this.executeToolsIfNeeded();
+    }
+    return this.doomLoopStop;
   }
 }

@@ -1,6 +1,7 @@
 import type * as models from '@openrouter/sdk/models';
 import type { StreamEvents } from '@openrouter/sdk/models';
 import type { $ZodObject, $ZodShape, $ZodType, infer as zodInfer } from 'zod/v4/core';
+import type { DoomLoopSerializedState } from './doom-loop.js';
 
 /**
  * Tool type enum for enhanced tools
@@ -180,6 +181,29 @@ export type ToolApprovalCheck<TInput> = {
 }['bivarianceHack'];
 
 /**
+ * Selects the key material that identifies a call of this tool for doom-loop
+ * detection (see the `doomLoop` option on `callModel`).
+ *
+ * The returned value is canonicalized (recursive key sort) and hashed by the
+ * engine — tools declare *what identifies a call*, the engine owns *how it is
+ * fingerprinted*. Two calls whose key material canonicalizes identically count
+ * as the same call.
+ *
+ * - Return a focused subset for precise identity: a web-search tool returns
+ *   its normalized query; a bash tool returns `{ command, cwd, env }`.
+ * - Return `null` to exempt the call from detection entirely (e.g. a status
+ *   poller whose repetition is legitimate).
+ * - When absent, the engine fingerprints the full validated arguments object.
+ *
+ * Must be pure and deterministic. A throwing `loopKey` falls back to the
+ * full-arguments fingerprint (detection must never take down a run).
+ */
+export type ToolLoopKeyFn<TInput> = {
+  // Bivariant params — see NextTurnParamsFunctions.
+  bivarianceHack(params: TInput): unknown;
+}['bivarianceHack'];
+
+/**
  * Content item types for tool output to model.
  * These match the Responses API format for multimodal tool outputs.
  */
@@ -248,6 +272,11 @@ export interface BaseToolFunction<
    * Can be a boolean or an async function that receives the tool's input params and context
    */
   requireApproval?: boolean | ToolApprovalCheck<zodInfer<TInput>>;
+  /**
+   * Doom-loop identity for this tool's calls — see {@link ToolLoopKeyFn}.
+   * Absent: the full validated arguments object is the identity.
+   */
+  loopKey?: ToolLoopKeyFn<zodInfer<TInput>>;
 }
 
 /**
@@ -1120,6 +1149,13 @@ export interface ConversationState<TTools extends readonly Tool[] = readonly Too
   partialResponse?: PartialResponse<TTools>;
   /** Signal from a new request to interrupt this conversation */
   interruptedBy?: string;
+  /**
+   * Doom-loop detector state (see the `doomLoop` option on `callModel`).
+   * Bounded plain JSON, persisted so repetition streaks survive
+   * serialize → resume. Absent when detection is off. Additive within
+   * ConversationState version 1.
+   */
+  doomLoop?: DoomLoopSerializedState;
   /** Current status of the conversation */
   status: ConversationStatus;
   /** Creation timestamp (Unix ms) */

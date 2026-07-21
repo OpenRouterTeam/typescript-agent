@@ -107,6 +107,7 @@ export function callModel<
     allowFinalResponse,
     strictFinalResponse,
     hooks,
+    doomLoop,
     ...apiRequest
   } = request;
 
@@ -176,6 +177,9 @@ export function callModel<
     }),
     ...(hooks !== undefined && {
       hooks: resolveHooks(hooks),
+    }),
+    ...(doomLoop !== undefined && {
+      doomLoop,
     }),
   } as GetResponseOptions<TTools, TShared>);
 }

@@ -12,6 +12,7 @@ import type {
   Tool,
   ToolApprovalCheck,
   ToolExecuteContext,
+  ToolLoopKeyFn,
   ToolWithExecute,
   ToolWithGenerator,
 } from './tool-types.js';
@@ -39,6 +40,8 @@ type RegularToolConfigWithOutput<
   contextSchema?: TCtx;
   nextTurnParams?: NextTurnParamsFunctions<zodInfer<TInput>>;
   requireApproval?: boolean | ToolApprovalCheck<zodInfer<TInput>>;
+  /** Doom-loop identity for this tool's calls — see {@link ToolLoopKeyFn} */
+  loopKey?: ToolLoopKeyFn<zodInfer<TInput>>;
   execute: (
     params: zodInfer<TInput>,
     context?: ToolExecuteContext<TName, ContextFromSchema<TCtx>>,
@@ -65,6 +68,8 @@ type RegularToolConfigWithoutOutput<
   contextSchema?: TCtx;
   nextTurnParams?: NextTurnParamsFunctions<zodInfer<TInput>>;
   requireApproval?: boolean | ToolApprovalCheck<zodInfer<TInput>>;
+  /** Doom-loop identity for this tool's calls — see {@link ToolLoopKeyFn} */
+  loopKey?: ToolLoopKeyFn<zodInfer<TInput>>;
   execute: (
     params: zodInfer<TInput>,
     context?: ToolExecuteContext<TName, ContextFromSchema<TCtx>>,
@@ -92,6 +97,8 @@ type GeneratorToolConfig<
   contextSchema?: TCtx;
   nextTurnParams?: NextTurnParamsFunctions<zodInfer<TInput>>;
   requireApproval?: boolean | ToolApprovalCheck<zodInfer<TInput>>;
+  /** Doom-loop identity for this tool's calls — see {@link ToolLoopKeyFn} */
+  loopKey?: ToolLoopKeyFn<zodInfer<TInput>>;
   execute: (
     params: zodInfer<TInput>,
     context?: ToolExecuteContext<TName, ContextFromSchema<TCtx>>,
@@ -114,6 +121,8 @@ type ManualToolConfig<
   contextSchema?: TCtx;
   nextTurnParams?: NextTurnParamsFunctions<zodInfer<TInput>>;
   requireApproval?: boolean | ToolApprovalCheck<zodInfer<TInput>>;
+  /** Doom-loop identity for this tool's calls — see {@link ToolLoopKeyFn} */
+  loopKey?: ToolLoopKeyFn<zodInfer<TInput>>;
   execute: false;
 };
 
@@ -150,6 +159,8 @@ type HITLToolConfig<
   contextSchema?: TCtx;
   nextTurnParams?: NextTurnParamsFunctions<zodInfer<TInput>>;
   requireApproval?: boolean | ToolApprovalCheck<zodInfer<TInput>>;
+  /** Doom-loop identity for this tool's calls — see {@link ToolLoopKeyFn} */
+  loopKey?: ToolLoopKeyFn<zodInfer<TInput>>;
   onToolCalled: (
     params: zodInfer<TInput>,
     context?: ToolExecuteContext<TName, ContextFromSchema<TCtx>>,
@@ -178,6 +189,8 @@ type ToolConfigWithSharedContext<
   contextSchema?: TCtx;
   nextTurnParams?: NextTurnParamsFunctions<Record<string, unknown>>;
   requireApproval?: boolean | ToolApprovalCheck<Record<string, unknown>>;
+  /** Doom-loop identity for this tool's calls — see {@link ToolLoopKeyFn} */
+  loopKey?: ToolLoopKeyFn<Record<string, unknown>>;
   execute:
     | ((
         params: Record<string, unknown>,
@@ -354,6 +367,10 @@ export function tool(
       fn.requireApproval = config.requireApproval;
     }
 
+    if (config.loopKey !== undefined) {
+      fn.loopKey = config.loopKey;
+    }
+
     if (config.onResponseReceived !== undefined) {
       fn.onResponseReceived = config.onResponseReceived;
     }
@@ -397,6 +414,10 @@ export function tool(
       fn.requireApproval = config.requireApproval;
     }
 
+    if (config.loopKey !== undefined) {
+      fn.loopKey = config.loopKey;
+    }
+
     return {
       type: ToolType.Function,
       function: fn,
@@ -435,6 +456,10 @@ export function tool(
       fn.requireApproval = config.requireApproval;
     }
 
+    if (config.loopKey !== undefined) {
+      fn.loopKey = config.loopKey;
+    }
+
     if ('toModelOutput' in config && config.toModelOutput !== undefined) {
       fn.toModelOutput = config.toModelOutput;
     }
@@ -464,6 +489,9 @@ export function tool(
     }),
     ...(config.requireApproval !== undefined && {
       requireApproval: config.requireApproval,
+    }),
+    ...(config.loopKey !== undefined && {
+      loopKey: config.loopKey,
     }),
     ...('toModelOutput' in config &&
       config.toModelOutput !== undefined && {
