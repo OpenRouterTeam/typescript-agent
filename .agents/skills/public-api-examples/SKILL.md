@@ -32,7 +32,9 @@ const result = client.callModel({
   input: 'Research the topic step by step.',
   tools: [searchTool],
   stopWhen: stepCountIs(3),
-  allowFinalResponse: true, // new: appends DEFAULT_FINAL_RESPONSE_DIRECTIVE on the final no-tools turn
+  // new: default-on final turn with toolChoice:'none' appends
+  // DEFAULT_FINAL_RESPONSE_DIRECTIVE; `false` opts out
+  // allowFinalResponse: false,
 });
 ```
 
