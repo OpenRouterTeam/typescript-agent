@@ -84,11 +84,12 @@ import {
 import { normalizeInputToArray } from './turn-context.js';
 
 /**
- * Default directive appended as a final user message when
- * `allowFinalResponse: true` forces the no-tools final turn. Stripping tools
- * alone is not enough: models that emit tool-call syntax as text (e.g. GLM)
- * will attempt another call and leak it into `content` as unparsed
- * `<tool_call>…` text unless they are told this is the final turn.
+ * Default directive appended as a final user message on the forced final
+ * turn (`allowFinalResponse` defaulting to on, or explicitly `true`).
+ * Forbidding tools via `toolChoice: 'none'` alone is not enough: models
+ * that emit tool-call syntax as text (e.g. GLM) will attempt another call
+ * and leak it into `content` as unparsed `<tool_call>…` text unless they
+ * are told this is the final turn.
  * Pass a non-empty string to `allowFinalResponse` to override the wording,
  * or `''` to append no message at all (legacy behavior).
  */
@@ -2150,18 +2151,19 @@ export class ModelResult<
   }
 
   /**
-   * Make a final no-tools request to coerce a text response after the loop
-   * was halted by `stopWhen` mid-tool-call. Reuses the resolved request so
-   * `instructions`, `model`, and other API fields ride along unchanged.
-   * `tools`, `toolChoice`, and `parallelToolCalls` are stripped — the whole
-   * point is to force a text turn. The caller is expected to have already
+   * Make a final no-tool-calls request to coerce a text response after the
+   * loop was halted by `stopWhen` mid-tool-call. Reuses the resolved request
+   * so `instructions`, `model`, and other API fields ride along unchanged.
+   * `tools` stays in the request with `toolChoice: 'none'` — forbidding
+   * calls while keeping the prompt-cache prefix intact (stripping the tools
+   * block would bust the cache). The caller is expected to have already
    * executed the pending tool calls and to pass their outputs in
    * `toolOutputs` so every function_call in the input has a matching output.
    */
   private async makeFinalResponseRequest(
     currentResponse: models.OpenResponsesResult,
     toolOutputs: models.FunctionCallOutputItem[],
-    allowFinalResponse: boolean | string,
+    allowFinalResponse: boolean | string | undefined,
     turnNumber: number,
   ): Promise<models.OpenResponsesResult> {
     if (!this.resolvedRequest) {
@@ -2180,10 +2182,13 @@ export class ModelResult<
           ]
         : [];
 
-    // Bare `true` gets the built-in directive; a non-empty string overrides
-    // the wording; `''` appends nothing (explicit opt-out).
+    // Default-on (`undefined`) and bare `true` get the built-in directive;
+    // a non-empty string overrides the wording; `''` appends nothing
+    // (explicit opt-out).
     const finalDirective =
-      allowFinalResponse === true ? DEFAULT_FINAL_RESPONSE_DIRECTIVE : allowFinalResponse;
+      allowFinalResponse === true || allowFinalResponse === undefined
+        ? DEFAULT_FINAL_RESPONSE_DIRECTIVE
+        : allowFinalResponse;
 
     const newInput: models.InputsUnion = [
       ...normalizedOriginalInput,
@@ -2203,15 +2208,13 @@ export class ModelResult<
         : []),
     ];
 
-    const {
-      tools: _tools,
-      toolChoice: _toolChoice,
-      parallelToolCalls: _parallelToolCalls,
-      ...rest
-    } = this.resolvedRequest;
-
     const finalRequest: models.ResponsesRequest = {
-      ...rest,
+      ...this.resolvedRequest,
+      // Forbid tool calls without dropping the tools block: removing
+      // `tools` would invalidate the prompt-cache prefix.
+      ...(this.resolvedRequest.tools !== undefined && {
+        toolChoice: 'none' as const,
+      }),
       input: newInput,
       stream: true,
     };
@@ -2261,27 +2264,24 @@ export class ModelResult<
    * Re-send the current resolved request (same accumulated input) once.
    * Used when a follow-up after tool execution returned an empty `output`.
    *
-   * `tools`, `toolChoice`, and `parallelToolCalls` are stripped (mirroring
+   * `toolChoice` is forced to `'none'` when tools are present (mirroring
    * `makeFinalResponseRequest`) so the retry coerces a text turn: on the
    * natural-loop-completion path the resolved request still carries tools,
    * and a retry that emitted a fresh `function_call` would pass
    * `validateFinalResponse` but never be executed — silently dropping a
-   * proposed tool call.
+   * proposed tool call. Tools stay in the request to keep the prompt-cache
+   * prefix intact.
    */
   private async retryCurrentRequest(turnNumber: number): Promise<models.OpenResponsesResult> {
     if (!this.resolvedRequest) {
       throw new Error('Request not initialized');
     }
 
-    const {
-      tools: _tools,
-      toolChoice: _toolChoice,
-      parallelToolCalls: _parallelToolCalls,
-      ...rest
-    } = this.resolvedRequest;
-
     const newRequest: models.ResponsesRequest = {
-      ...rest,
+      ...this.resolvedRequest,
+      ...(this.resolvedRequest.tools !== undefined && {
+        toolChoice: 'none' as const,
+      }),
       stream: true,
     };
 
@@ -3204,12 +3204,11 @@ export class ModelResult<
 
         // If stopWhen broke the loop while the model was still emitting tool
         // calls, execute those tool calls so they have matching outputs, then
-        // make one more no-tools request to coerce a final text response. An
-        // empty string still counts as "on" — it just means "don't append a
-        // user message."
+        // make one more `toolChoice: 'none'` request to coerce a final text
+        // response. Default-on: `undefined`, `true`, and any string enable
+        // it (`''` means "don't append a user message"); `false` opts out.
         const allowFinalResponse = this.options.allowFinalResponse;
-        const finalResponseEnabled =
-          allowFinalResponse === true || typeof allowFinalResponse === 'string';
+        const finalResponseEnabled = allowFinalResponse !== false;
         const pendingToolCalls = stoppedByStopWhen
           ? extractToolCallsFromResponse(currentResponse)
           : [];
@@ -3247,15 +3246,15 @@ export class ModelResult<
           await this.saveToolResultsToState(toolResults);
 
           if (pausedCalls.length > 0) {
-            // HITL paused — persist and exit without making the final no-tools
-            // request. The conversation will resume via the normal awaiting_hitl
-            // flow.
+            // HITL paused — persist and exit without making the final
+            // text-coercion request. The conversation will resume via the
+            // normal awaiting_hitl flow.
             await this.persistHitlPause(currentResponse, pausedCalls);
             return;
           }
 
           // Apply any nextTurnParams from the executed tools so they affect the
-          // final no-tools request (mirrors the in-loop behavior).
+          // final text-coercion request (mirrors the in-loop behavior).
           await this.applyNextTurnParams(pendingToolCalls);
 
           // Pair any manual tool calls (no execute fn) with stub outputs so

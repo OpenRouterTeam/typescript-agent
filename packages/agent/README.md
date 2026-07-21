@@ -187,8 +187,12 @@ Built-in stop conditions:
 
 **Final response after stop**
 
-When `stopWhen` fires while the model is still emitting tool calls, pass
-`allowFinalResponse` to force one more model turn with no tools:
+When `stopWhen` fires while the model is still emitting tool calls, the
+loop makes one more model turn with `toolChoice: 'none'` so the run ends
+with a natural-language answer instead of a half-finished tool call.
+Tools stay in the request — only calling is forbidden — which preserves
+the prompt-cache prefix. **This is on by default**; `allowFinalResponse`
+tunes it:
 
 ```typescript
 callModel(client, {
@@ -196,19 +200,22 @@ callModel(client, {
   input: 'Research this topic',
   tools: [searchTool] as const,
   stopWhen: stepCountIs(5),
-  allowFinalResponse: true,
-  // or override the default directive:
+  // default (omitted or `true`): appends DEFAULT_FINAL_RESPONSE_DIRECTIVE
+  // as a final user message so the model writes an answer instead of
+  // attempting another tool call
+
+  // override the directive wording:
   // allowFinalResponse: 'Please summarize what you found.',
+  // append no message (turn still happens, calls still forbidden):
+  // allowFinalResponse: '',
+  // disable the final turn entirely:
+  // allowFinalResponse: false,
 });
 ```
 
 The pending tool calls from the halted turn are executed first so they
 have real outputs in the input, then the full conversation and the
-original `instructions` are sent to the model with no tools defined.
-`true` appends a built-in final-answer directive as a `user` message
-(exported as `DEFAULT_FINAL_RESPONSE_DIRECTIVE`) so the model writes an
-answer instead of attempting another tool call; a non-empty string
-replaces the default wording; `''` appends no message. Any
+original `instructions` are sent with `toolChoice: 'none'`. Any
 non-executable (manual) tool calls in the halted turn are paired with
 synthesized stub `function_call_output` items so the input is well-formed.
 

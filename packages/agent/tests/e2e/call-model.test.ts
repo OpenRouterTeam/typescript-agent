@@ -1892,13 +1892,14 @@ describe('callModel E2E Tests', () => {
       expect(text.length).toBeGreaterThan(0);
     }, 30000);
 
-    // Regression: DEV-658. Bare `allowFinalResponse: true` used to strip
-    // tools on the forced final turn without telling the model it was the
-    // last turn. Models that emit tool-call syntax as text (GLM) would
-    // attempt another call and leak unparsed `<tool_call>…` into content.
-    // Reproduced 3/3 on the legacy path (`allowFinalResponse: ''`) and 0/3
-    // with the default directive — this test discriminates the fix.
-    it('DEV-658: bare true must not leak raw tool-call syntax on GLM', {
+    // Regression: DEV-658. The forced final turn used to strip tools and
+    // append no directive, so models that emit tool-call syntax as text
+    // (GLM) would attempt another call and leak unparsed `<tool_call>…`
+    // into content. Reproduced 3/3 on the legacy path (no directive) and
+    // 0/3 with the directive — this test discriminates the fix. The final
+    // turn now keeps tools with `toolChoice: 'none'` and is on by default,
+    // so the option is deliberately omitted here.
+    it('DEV-658: default final turn must not leak raw tool-call syntax on GLM', {
       retry: 1,
       timeout: 120000,
     }, async () => {
@@ -1930,7 +1931,7 @@ describe('callModel E2E Tests', () => {
           searchTool,
         ] as const,
         stopWhen: stepCountIs(1),
-        allowFinalResponse: true,
+        // allowFinalResponse omitted — default-on path under test
       });
 
       const finalResponse = await response.getResponse();
