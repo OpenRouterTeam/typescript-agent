@@ -189,7 +189,7 @@ describe('tool-terminal empty final response (PR-2)', () => {
     expect(mockBetaResponsesSend).toHaveBeenCalledTimes(3);
   });
 
-  it('strips tools from the empty-final retry so it cannot emit an unexecuted tool call', async () => {
+  it("forces toolChoice:'none' on the empty-final retry so it cannot emit an unexecuted tool call", async () => {
     mockBetaResponsesSend
       .mockResolvedValueOnce({
         ok: true,
@@ -213,15 +213,17 @@ describe('tool-terminal empty final response (PR-2)', () => {
     }).getText();
 
     expect(text).toBe('Done posting.');
-    // The natural-loop follow-up request still carries tools…
+    // The natural-loop follow-up request carries tools with the caller's
+    // toolChoice…
     const followupRequest = mockBetaResponsesSend.mock.calls[1]?.[1]?.responsesRequest;
     expect(followupRequest).toHaveProperty('tools');
-    // …but the retry must not, so it coerces a text turn instead of a
-    // fresh function_call that would be silently dropped.
+    expect(followupRequest.toolChoice).not.toBe('none');
+    // …the retry keeps tools (prompt-cache prefix) but forbids calling, so
+    // it coerces a text turn instead of a fresh function_call that would be
+    // silently dropped.
     const retryRequest = mockBetaResponsesSend.mock.calls[2]?.[1]?.responsesRequest;
-    expect(retryRequest).not.toHaveProperty('tools');
-    expect(retryRequest).not.toHaveProperty('toolChoice');
-    expect(retryRequest).not.toHaveProperty('parallelToolCalls');
+    expect(retryRequest).toHaveProperty('tools');
+    expect(retryRequest.toolChoice).toBe('none');
     expect(retryRequest.input).toEqual(followupRequest.input);
   });
 
@@ -254,7 +256,8 @@ describe('tool-terminal empty final response (PR-2)', () => {
     const finalRequest = mockBetaResponsesSend.mock.calls[1]?.[1]?.responsesRequest;
     const retryRequest = mockBetaResponsesSend.mock.calls[2]?.[1]?.responsesRequest;
     expect(retryRequest).toEqual(finalRequest);
-    expect(retryRequest).not.toHaveProperty('tools');
+    expect(retryRequest).toHaveProperty('tools');
+    expect(retryRequest.toolChoice).toBe('none');
     expect(retryRequest.input).toEqual(
       expect.arrayContaining([
         expect.objectContaining({

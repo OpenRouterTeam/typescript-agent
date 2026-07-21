@@ -149,6 +149,7 @@ function buildModelResult<T extends readonly Tool[]>(opts: {
   hooks?: HooksManager;
   state?: StateAccessor<T>;
   requireApproval?: (tc: ParsedToolCall<T[number]>, ctx: TurnContext) => boolean | Promise<boolean>;
+  allowFinalResponse?: boolean | string;
 }): ModelResult<T> {
   const config: Record<string, unknown> = {
     request: {
@@ -168,6 +169,9 @@ function buildModelResult<T extends readonly Tool[]>(opts: {
   }
   if (opts.requireApproval) {
     config['requireApproval'] = opts.requireApproval;
+  }
+  if (opts.allowFinalResponse !== undefined) {
+    config['allowFinalResponse'] = opts.allowFinalResponse;
   }
   return new ModelResult<T>(config as unknown as ConstructorParameters<typeof ModelResult<T>>[0]);
 }
@@ -886,6 +890,10 @@ describe('ModelResult hooks integration', () => {
           tool,
         ] as const,
         hooks,
+        // This test drives executeToolsIfNeeded directly without initStream,
+        // so the default-on final-response turn (which needs resolvedRequest)
+        // must be disabled; the subject here is the forceResume cap.
+        allowFinalResponse: false,
       });
       const ent = internal(m);
       ent.currentState = {
