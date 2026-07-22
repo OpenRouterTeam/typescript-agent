@@ -58,6 +58,14 @@ const manual = tool({
   execute: false,
 });
 
+const shared = tool<{
+  userId: string;
+}>({
+  name: 'shared_tool',
+  inputSchema: z.object({}),
+  execute: async (_params, ctx) => ctx?.shared.userId ?? '',
+});
+
 const hitl = tool({
   name: 'hitl_tool',
   inputSchema: z.object({
@@ -73,17 +81,20 @@ const hitl = tool({
 expectTypeOf(weather.function.name).toEqualTypeOf<'weather'>();
 expectTypeOf(progress.function.name).toEqualTypeOf<'progress_tool'>();
 expectTypeOf(manual.function.name).toEqualTypeOf<'manual_tool'>();
+expectTypeOf(shared.function.name).toEqualTypeOf<'shared_tool'>();
 expectTypeOf(hitl.function.name).toEqualTypeOf<'hitl_tool'>();
 
 expectTypeOf<InferToolName<typeof weather>>().toEqualTypeOf<'weather'>();
 expectTypeOf<InferToolName<typeof progress>>().toEqualTypeOf<'progress_tool'>();
 expectTypeOf<InferToolName<typeof manual>>().toEqualTypeOf<'manual_tool'>();
+expectTypeOf<InferToolName<typeof shared>>().toEqualTypeOf<'shared_tool'>();
 expectTypeOf<InferToolName<typeof hitl>>().toEqualTypeOf<'hitl_tool'>();
 
 // Wide defaults still assign to Tool
 expectTypeOf(weather).toExtend<Tool>();
 expectTypeOf(progress).toExtend<Tool>();
 expectTypeOf(manual).toExtend<Tool>();
+expectTypeOf(shared).toExtend<Tool>();
 expectTypeOf(hitl).toExtend<Tool>();
 expectTypeOf<ToolWithExecute>().toExtend<Tool>();
 
