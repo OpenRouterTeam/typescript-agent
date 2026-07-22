@@ -486,6 +486,18 @@ export function tool(
 //#region serverTool() Factory
 
 /**
+ * Options for {@link serverTool}.
+ * @template TId Stable tool-set identity used by `@openrouter/agent-tool-set`.
+ */
+export type ServerToolOptions<TId extends string = string> = {
+  /**
+   * Override the default tool-set ID (`server:${config.type}`).
+   * Useful when two server tools of the same type need distinct activation IDs.
+   */
+  id?: TId;
+};
+
+/**
  * Creates an OpenRouter server-executed tool. OpenRouter runs the tool (web
  * search, datetime, image generation, etc.) and returns the output item in
  * the response — no client-side execute function is needed.
@@ -496,26 +508,33 @@ export function tool(
  * in this SDK. Provide the `type` literal and the remaining fields narrow
  * to match the chosen tool.
  *
+ * Each server tool carries a stable tool-set `id` (default `server:${type}`)
+ * so activation APIs can address it. Override via the optional second argument.
+ *
  * @example
  * ```typescript
  * const tools = [
  *   serverTool({ type: 'web_search_2025_08_26', engine: 'exa', maxResults: 10 }),
  *   serverTool({ type: 'openrouter:datetime', parameters: { timezone: 'UTC' } }),
  *   serverTool({ type: 'image_generation', size: '1024x1024', quality: 'high' }),
+ *   serverTool({ type: 'web_search_2025_08_26' }, { id: 'server:public_search' }),
  * ];
  * ```
  */
-export function serverTool<T extends ServerToolType>(
+export function serverTool<T extends ServerToolType, TId extends string = `server:${T}`>(
   config: Extract<
     ServerToolConfig,
     {
       type: T;
     }
   >,
-): ServerTool<T> {
+  options?: ServerToolOptions<TId>,
+): ServerTool<T, TId> {
+  const id = (options?.id ?? (`server:${config.type}` as const)) as TId;
   return {
     _brand: 'server-tool',
     config,
+    id,
   };
 }
 

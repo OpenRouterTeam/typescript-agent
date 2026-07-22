@@ -471,6 +471,11 @@ export type ServerToolType = ServerToolConfig['type'];
 export interface ServerToolBase {
   readonly _brand: 'server-tool';
   readonly config: ServerToolConfig;
+  /**
+   * Stable tool-set identity used by `@openrouter/agent-tool-set` activation.
+   * Defaults to `server:${config.type}` when constructed via {@link serverTool}.
+   */
+  readonly id: string;
 }
 
 /**
@@ -482,14 +487,19 @@ export interface ServerToolBase {
  * (and hence to `Tool`) regardless of `T`.
  *
  * @template T The specific server-tool type literal (narrows `config`).
+ * @template TId Stable tool-set ID (defaults to `server:${T}`).
  */
-export interface ServerTool<T extends ServerToolType = ServerToolType> extends ServerToolBase {
+export interface ServerTool<
+  T extends ServerToolType = ServerToolType,
+  TId extends string = `server:${T}`,
+> extends ServerToolBase {
   readonly config: Extract<
     ServerToolConfig,
     {
       type: T;
     }
   >;
+  readonly id: TId;
 }
 
 /**
@@ -621,7 +631,7 @@ export type InferToolEventsUnion<T extends readonly Tool[]> = {
  * `ClientTool` lacks. `'_brand' in tool` narrows the union to the server
  * branch structurally, so `tool._brand` is reachable without a cast.
  */
-export function isServerTool(tool: Tool): tool is ServerTool {
+export function isServerTool(tool: Tool): tool is ServerToolBase {
   if (typeof tool !== 'object' || tool === null) {
     return false;
   }

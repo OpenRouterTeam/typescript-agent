@@ -168,6 +168,7 @@ export {
   getUnsupportedContentSummary,
   hasUnsupportedContent,
 } from './lib/stream-transformers.js';
+export type { ServerToolOptions } from './lib/tool.js';
 // Tool creation helpers
 export { markMcp, serverTool, tool } from './lib/tool.js';
 export type { ContextInput } from './lib/tool-context.js';
@@ -204,6 +205,7 @@ export type {
   ResponseStreamEvent,
   ResponseStreamEvent as EnhancedResponseStreamEvent,
   ServerTool,
+  ServerToolBase,
   ServerToolConfig,
   ServerToolResultItem,
   ServerToolType,
