@@ -298,9 +298,19 @@ export function tool<
 // When a non-ZodObject type is provided as the first generic,
 // the specific overloads above won't match (constraint mismatch),
 // so TypeScript falls through to this catch-all.
-export function tool<TShared extends Record<string, unknown>>(
-  config: ToolConfigWithSharedContext<TShared>,
-): Tool;
+export function tool<
+  TShared extends Record<string, unknown>,
+  TName extends string = string,
+  TCtx extends $ZodObject<$ZodShape> = $ZodObject<$ZodShape>,
+>(
+  config: ToolConfigWithSharedContext<TShared, TCtx> & {
+    name: TName;
+  },
+): Tool & {
+  function: {
+    name: TName;
+  };
+};
 
 // Implementation
 export function tool(
@@ -530,6 +540,9 @@ export function serverTool<T extends ServerToolType, TId extends string = `serve
   >,
   options?: ServerToolOptions<TId>,
 ): ServerTool<T, TId> {
+  if (options?.id === '') {
+    throw new Error('Server tool ID must not be empty');
+  }
   const id = (options?.id ?? (`server:${config.type}` as const)) as TId;
   return {
     _brand: 'server-tool',

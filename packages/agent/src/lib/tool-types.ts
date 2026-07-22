@@ -975,7 +975,7 @@ export type CorrelatedToolResultEvent<T extends Tool> = ToolResultEvent<
  * Checking `event.toolName === 'my_tool'` narrows `result` to that tool's output.
  */
 export type CorrelatedToolEventUnion<T extends readonly Tool[]> = {
-  [K in keyof T]: T[K] extends Tool
+  [K in keyof T]: T[K] extends ClientTool
     ? CorrelatedToolPreliminaryResultEvent<T[K]> | CorrelatedToolResultEvent<T[K]>
     : never;
 }[number];
@@ -985,7 +985,7 @@ export type CorrelatedToolEventUnion<T extends readonly Tool[]> = {
  * (legacy `getToolStream` shape) across a tools tuple.
  */
 export type CorrelatedToolStreamPreliminaryUnion<T extends readonly Tool[]> = {
-  [K in keyof T]: T[K] extends Tool
+  [K in keyof T]: T[K] extends ClientTool
     ? {
         type: 'preliminary_result';
         toolCallId: string;

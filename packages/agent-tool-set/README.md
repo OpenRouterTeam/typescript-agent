@@ -12,7 +12,7 @@ Port of [`ai-tool-set`](https://github.com/zirkelc/ai-tool-set) (MIT © Chris Co
 - A **typed three-way partition** of those IDs: definitely enabled, definitely disabled, conditional.
 - **Exhaustive runtime snapshots** from `resolve()` / `resolveSituation()` — every ID appears in `statusByTool`.
 - **Named declarative situations** with compile-time exact tool tuples when the situation is fully static.
-- Integration with `callModel`'s `activeTools` option (spread `resolve()` directly).
+- Integration with `callModel`'s `activeTools` option via the snapshot's spread-safe `.callModel` input.
 
 ## Install
 
@@ -92,12 +92,14 @@ const guest = toolSet.resolveSituation('guest');
 // guest.tools is exactly [login, webSearch]
 // guest.enabled / guest.disabled / guest.statusByTool are exhaustive
 
+const authenticated = toolSet.resolveSituation('authenticated', {
+  context: { isAuthenticated: true, isAdmin: false },
+});
+
 const result = callModel(client, {
   model: 'openai/gpt-4o-mini',
   input: 'List my orders.',
-  ...toolSet.resolveSituation('authenticated', {
-    context: { isAuthenticated: true, isAdmin: false },
-  }),
+  ...authenticated.callModel,
 });
 ```
 
@@ -162,6 +164,7 @@ Situation overlays the base partition for every ID it mentions; unmentioned IDs 
 {
   tools: /* active tools, construction order, concrete types */;
   activeTools: /* active *client* names for callModel */;
+  callModel: { tools, activeTools }; // safe to spread into callModel()
   enabled: /* every active ID (client + server) */;
   disabled: /* every inactive ID */;
   statusByTool: {

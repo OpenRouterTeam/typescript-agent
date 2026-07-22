@@ -746,6 +746,22 @@ describe('defineSituations / resolveSituation', () => {
     >();
   });
 
+  it('keeps situation names literal at compile time', () => {
+    const ts = createToolSet({
+      tools: [
+        a,
+      ] as const,
+    }).defineSituations({
+      guest: {
+        enabled: [
+          'a',
+        ],
+      },
+    });
+
+    expectTypeOf(ts.resolveSituation).parameter(0).toEqualTypeOf<'guest'>();
+  });
+
   it('supports conditional situation rules with runtime-exact status', () => {
     const ts = createToolSet({
       tools: [
@@ -802,6 +818,41 @@ describe('defineSituations / resolveSituation', () => {
       'a',
       'c',
     ]);
+  });
+
+  it('supports deactivateWhen situation rules', () => {
+    const ts = createToolSet({
+      tools: [
+        a,
+      ] as const,
+    }).defineSituations({
+      guarded: {
+        conditional: {
+          a: {
+            mode: 'deactivateWhen',
+            predicate: ({ context }) => context?.['blocked'] === true,
+          },
+        },
+      },
+    });
+
+    expect(ts.resolveSituation('guarded').enabled).toEqual([
+      'a',
+    ]);
+    const blocked = ts.resolveSituation('guarded', {
+      context: {
+        blocked: true,
+      },
+    });
+    expect(blocked.disabled).toEqual([
+      'a',
+    ]);
+    expect(blocked.statusByTool.a).toEqual({
+      enabled: false,
+      reason: 'situation',
+      directive: 'deactivateWhen',
+      predicate: true,
+    });
   });
 
   it('validates unknown / duplicate / conflicting IDs in a situation', () => {
@@ -980,6 +1031,22 @@ describe('InferToolSet / event narrowing', () => {
     type FromCore = CorrelatedToolEventUnion<typeof tools>;
     expectTypeOf<FromHelper>().toEqualTypeOf<FromCore>();
 
+    const mixedTools = [
+      weather,
+      serverTool({
+        type: 'openrouter:datetime',
+      }),
+    ] as const;
+    type MixedEvent = InferToolSet<typeof mixedTools>;
+    const assertMixedEvent = (mixedEvent: MixedEvent): void => {
+      if (mixedEvent.type === 'tool.result' && mixedEvent.toolName === 'weather') {
+        expectTypeOf(mixedEvent.result).toEqualTypeOf<{
+          temp: number;
+        }>();
+      }
+    };
+    void assertMixedEvent;
+
     const ts = createToolSet({
       tools,
     });
@@ -1004,17 +1071,14 @@ describe('callModel-oriented spread shape', () => {
     }).deactivate('b');
     const snapshot = ts.resolve();
 
-    // Structural match for BaseCallModelInput's tools/activeTools fields
+    // Snapshot metadata stays available without leaking into the API request.
     const forCallModel: {
       tools: readonly [
         typeof a,
         typeof c,
       ];
       activeTools: readonly ('a' | 'c')[];
-    } = {
-      tools: snapshot.tools,
-      activeTools: snapshot.activeTools,
-    };
+    } = snapshot.callModel;
     expect(forCallModel.tools).toEqual([
       a,
       c,

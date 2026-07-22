@@ -34,6 +34,19 @@ describe('serverTool()', () => {
     expectTypeOf(t.id).toEqualTypeOf<'server:public_search'>();
   });
 
+  it('rejects an empty stable tool-set id', () => {
+    expect(() =>
+      serverTool(
+        {
+          type: 'openrouter:datetime',
+        },
+        {
+          id: '',
+        },
+      ),
+    ).toThrow(/must not be empty/);
+  });
+
   it('narrows config shape based on the chosen type literal', () => {
     const dt = serverTool({
       type: 'openrouter:datetime',

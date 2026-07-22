@@ -280,6 +280,11 @@ export type ResolvedToolSnapshot<
   readonly tools: FilterToolsByIds<TTools, TActive & ToolIdsOfTuple<TTools>>;
   /** Active client names only (`callModel.activeTools` wire format). Server ids omitted. */
   readonly activeTools: readonly Extract<TActive, ClientToolNamesOfTuple<TTools>>[];
+  /** Spread-safe input for `callModel`; snapshot metadata is intentionally excluded. */
+  readonly callModel: {
+    readonly tools: FilterToolsByIds<TTools, TActive & ToolIdsOfTuple<TTools>>;
+    readonly activeTools: readonly Extract<TActive, ClientToolNamesOfTuple<TTools>>[];
+  };
   /** IDs that resolved active (client + server). */
   readonly enabled: readonly (TActive & ToolIdsOfTuple<TTools>)[];
   /** IDs that resolved inactive. */

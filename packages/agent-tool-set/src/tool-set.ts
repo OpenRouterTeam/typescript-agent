@@ -375,7 +375,7 @@ export class ToolSet<
     const M extends {
       readonly [K in string]: SituationConfig<ToolIdsOfTuple<TTools>, TShared>;
     },
-  >(situations: M): ToolSet<TTools, TShared, P, InferSituationMap<M> & SituationMap> {
+  >(situations: M): ToolSet<TTools, TShared, P, InferSituationMap<M>> {
     const next = new Map<string, SituationRuntime<TShared>>();
 
     for (const [name, config] of Object.entries(situations) as Array<
@@ -438,10 +438,10 @@ export class ToolSet<
       for (const [k, v] of next) {
         this.#situations.set(k, v);
       }
-      return this as unknown as ToolSet<TTools, TShared, P, InferSituationMap<M> & SituationMap>;
+      return this as unknown as ToolSet<TTools, TShared, P, InferSituationMap<M>>;
     }
 
-    return new ToolSet<TTools, TShared, P, InferSituationMap<M> & SituationMap>(
+    return new ToolSet<TTools, TShared, P, InferSituationMap<M>>(
       this.#index,
       cloneActivationMap(this.#activation),
       next,
@@ -573,6 +573,10 @@ export class ToolSet<
   ): {
     tools: Tool[];
     activeTools: string[];
+    callModel: {
+      tools: Tool[];
+      activeTools: string[];
+    };
     enabled: string[];
     disabled: string[];
     statusByTool: Record<string, ToolStatusEntry>;
@@ -608,6 +612,10 @@ export class ToolSet<
     return {
       tools,
       activeTools,
+      callModel: {
+        tools,
+        activeTools,
+      },
       enabled,
       disabled,
       statusByTool,
