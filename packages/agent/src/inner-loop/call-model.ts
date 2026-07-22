@@ -137,53 +137,36 @@ export function callModel<
     },
   };
 
-  return new ModelResult<TTools, TShared>({
+  // Assemble engine options, then drop undefined entries so optional keys
+  // are ABSENT (not present-as-undefined) — same semantics as the previous
+  // per-key conditional spreads without a branch per option.
+  const engineOptions: Record<string, unknown> = {
     client,
     request: finalRequest,
     options: callModelOptions,
     tools,
-    ...(stopWhen !== undefined && {
-      stopWhen,
-    }),
-    // Pass state management options
-    ...(state !== undefined && {
-      state,
-    }),
-    ...(requireApproval !== undefined && {
-      requireApproval,
-    }),
-    ...(approveToolCalls !== undefined && {
-      approveToolCalls,
-    }),
-    ...(rejectToolCalls !== undefined && {
-      rejectToolCalls,
-    }),
-    ...(context !== undefined && {
-      context,
-    }),
-    ...(sharedContextSchema !== undefined && {
-      sharedContextSchema,
-    }),
-    ...(onTurnStart !== undefined && {
-      onTurnStart,
-    }),
-    ...(onTurnEnd !== undefined && {
-      onTurnEnd,
-    }),
-    ...(allowFinalResponse !== undefined && {
-      allowFinalResponse,
-    }),
-    ...(strictFinalResponse !== undefined && {
-      strictFinalResponse,
-    }),
-    ...(hooks !== undefined && {
-      hooks: resolveHooks(hooks),
-    }),
-    ...(doomLoop !== undefined && {
-      doomLoop,
-    }),
-    ...(signal !== undefined && {
-      signal,
-    }),
-  } as GetResponseOptions<TTools, TShared>);
+    stopWhen,
+    state,
+    requireApproval,
+    approveToolCalls,
+    rejectToolCalls,
+    context,
+    sharedContextSchema,
+    onTurnStart,
+    onTurnEnd,
+    allowFinalResponse,
+    strictFinalResponse,
+    hooks: hooks !== undefined ? resolveHooks(hooks) : undefined,
+    doomLoop,
+    signal,
+  };
+  for (const key of Object.keys(engineOptions)) {
+    if (engineOptions[key] === undefined) {
+      delete engineOptions[key];
+    }
+  }
+
+  return new ModelResult<TTools, TShared>(
+    engineOptions as unknown as GetResponseOptions<TTools, TShared>,
+  );
 }
