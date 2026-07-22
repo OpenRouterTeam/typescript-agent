@@ -491,8 +491,11 @@ export function canonicalizeKeyMaterial(value: unknown): string {
 }
 
 /**
- * SHA-256 over UTF-8 bytes via WebCrypto — available in Node ≥18, Bun,
- * Deno, workers, and browsers, so no dependency and no `node:` builtin.
+ * SHA-256 over UTF-8 bytes via WebCrypto — no dependency, no `node:`
+ * builtin, so the module stays edge/browser-safe. `globalThis.crypto` is
+ * available unflagged in Node ≥19 (Node 18 required
+ * `--experimental-global-webcrypto` and is EOL), Bun, Deno, workers, and
+ * browsers; the supported floor is the active Node LTS (CI runs 22).
  * Lone surrogates never reach the encoder: `JSON.stringify` escapes them as
  * `\udXXX` (ASCII) inside the canonical string.
  */
@@ -681,7 +684,12 @@ interface StreakEntry extends DoomLoopStreak {
  */
 export class DoomLoopMonitor {
   private readonly config: ResolvedDoomLoopConfig;
-  private tools: Record<string, StreakEntry> = {};
+  // Map, not Record: tool names are dynamic runtime keys, and on restore
+  // they come from persisted (caller-writable) JSON — a Record's bracket
+  // setter would let a crafted "__proto__" key reassign the map's
+  // prototype and corrupt streak bookkeeping. Map keys are inert data, so
+  // hostile names (and legitimate tools named "__proto__") just work.
+  private tools = new Map<string, StreakEntry>();
   private text: StreakEntry | undefined;
 
   constructor(config: ResolvedDoomLoopConfig, initialState?: unknown) {
@@ -699,8 +707,10 @@ export class DoomLoopMonitor {
    */
   getState(): DoomLoopSerializedState {
     return {
+      // Object.fromEntries defines OWN properties (CreateDataProperty), so
+      // even a tool named "__proto__" lands as plain data, not a setter hit.
       tools: Object.fromEntries(
-        Object.entries(this.tools).map(([name, entry]) => [
+        Array.from(this.tools, ([name, entry]) => [
           name,
           {
             fingerprint: entry.fingerprint,
@@ -729,15 +739,15 @@ export class DoomLoopMonitor {
       return;
     }
     const candidate = state as Partial<DoomLoopSerializedState>;
-    const tools: Record<string, StreakEntry> = {};
+    const tools = new Map<string, StreakEntry>();
     if (typeof candidate.tools === 'object' && candidate.tools !== null) {
       for (const [name, entry] of Object.entries(candidate.tools)) {
         if (isValidStreak(entry)) {
-          tools[name] = {
+          tools.set(name, {
             fingerprint: entry.fingerprint,
             streak: entry.streak,
             // round intentionally absent: first resumed record increments.
-          };
+          });
         }
       }
     }
@@ -784,7 +794,7 @@ export class DoomLoopMonitor {
     },
   ): Promise<DoomLoopCallRecord> {
     const fingerprint = await fingerprintToolCall(toolName, keyMaterial);
-    const previous = this.tools[toolName];
+    const previous = this.tools.get(toolName);
     let streak: number;
     let duplicateInRound = false;
     if (previous && previous.fingerprint === fingerprint) {
@@ -797,11 +807,11 @@ export class DoomLoopMonitor {
     } else {
       streak = 1;
     }
-    this.tools[toolName] = {
+    this.tools.set(toolName, {
       fingerprint,
       streak,
       round,
-    };
+    });
 
     const allowBlock = options?.allowBlock ?? true;
     const action = resolveLadderAction(this.config.ladder, streak, {

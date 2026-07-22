@@ -916,6 +916,49 @@ describe('DoomLoopMonitor — state round-trip', () => {
     ).toBeUndefined(); // fresh state, streak 1
     expect(warn).toHaveBeenCalled();
   });
+  it('a persisted "__proto__" tool name cannot pollute streak bookkeeping', async () => {
+    // Regression (PR #73 review): the streak map was a plain object; a
+    // crafted persisted blob {"tools":{"__proto__":{...}}} reassigned its
+    // prototype, making EVERY unseen tool inherit the seeded streak —
+    // false stop verdicts from client-writable state storage.
+    const config = resolveDoomLoopOption(true);
+    if (!config) {
+      throw new Error('unreachable');
+    }
+    const hostile = JSON.parse(
+      '{"tools":{"__proto__":{"fingerprint":"x","streak":999}}}',
+    ) as unknown;
+    const monitor = new DoomLoopMonitor(config, hostile);
+
+    // An unseen tool must start at streak 1 — not inherit streak 999 and
+    // instantly cross the stop rung.
+    const record = await monitor.recordToolCall(
+      'unrelated_tool',
+      {
+        q: 'first call',
+      },
+      1,
+    );
+    expect(record.streak).toBe(1);
+    expect(record.verdict).toBeUndefined();
+    // And Object.prototype itself was not touched.
+    expect(({} as Record<string, unknown>)['fingerprint']).toBeUndefined();
+  });
+
+  it('a tool legitimately named "__proto__" is tracked as ordinary data', async () => {
+    const monitor = makeMonitor();
+    await monitor.recordToolCall('__proto__', {}, 1);
+    const record = await monitor.recordToolCall('__proto__', {}, 2);
+    expect(record.streak).toBe(2);
+    // Round-trips through getState (own property, not a prototype hit)…
+    const snapshot = monitor.getState();
+    expect(Object.hasOwn(snapshot.tools, '__proto__')).toBe(true);
+    // …and JSON serialization keeps it as data.
+    const revived = JSON.parse(JSON.stringify(snapshot)) as {
+      tools: Record<string, unknown>;
+    };
+    expect(Object.hasOwn(revived.tools, '__proto__')).toBe(true);
+  });
 
   it('getState returns a snapshot, not a live reference', async () => {
     const monitor = makeMonitor();
