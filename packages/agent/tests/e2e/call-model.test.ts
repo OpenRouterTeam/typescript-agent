@@ -1899,9 +1899,27 @@ describe('callModel E2E Tests', () => {
     // 0/3 with the directive — this test discriminates the fix. The final
     // turn now keeps tools with `toolChoice: 'none'` and is on by default,
     // so the option is deliberately omitted here.
+    //
+    // Flake hardening (measured 2026-07-22): the run is THREE sequential
+    // GLM requests, and the final turn triggers a 750–1150-token reasoning
+    // burst taking 50–65s on a healthy provider (~70–80s total), so the
+    // old 120s budget was a coin flip against provider variance — one CI
+    // window saw both the attempt AND its retry time out back-to-back.
+    // Three mitigations, none of which weaken the discrimination (the leak
+    // pressure is "wants to search, can't", not question difficulty or
+    // reasoning depth):
+    // 1. 300s test budget over the measured ~80s healthy path.
+    // 2. Bounded generation: a reasoning token cap + maxOutputTokens, so
+    //    the final turn cannot reason unboundedly. (The API rejects
+    //    reasoning.effort combined with reasoning.maxTokens — the token
+    //    cap is the harder bound, so it wins.)
+    // 3. Per-request timeoutMs (90s) via RequestOptions, so a stalled
+    //    provider fails THAT request in seconds-not-minutes and the vitest
+    //    retry gets a fresh provider draw instead of inheriting a burned
+    //    budget.
     it('DEV-658: default final turn must not leak raw tool-call syntax on GLM', {
       retry: 1,
-      timeout: 120000,
+      timeout: 300000,
     }, async () => {
       const leakPattern = /<tool_call|<\|tool|<tool▁|\[TOOL_CALL\]|<function=/i;
       const searchTool = {
@@ -1923,16 +1941,29 @@ describe('callModel E2E Tests', () => {
         },
       } as const;
 
-      const response = client.callModel({
-        model: 'z-ai/glm-5.2',
-        input:
-          'Find the year in which the architect who designed the main library of the university where the 2019 Nobel laureate in Economics (the one born in Mumbai) earned his PhD was born. Research step by step with web searches and verify each fact.',
-        tools: [
-          searchTool,
-        ] as const,
-        stopWhen: stepCountIs(1),
-        // allowFinalResponse omitted — default-on path under test
-      });
+      const response = client.callModel(
+        {
+          model: 'z-ai/glm-5.2',
+          // Unanswerable-without-search, but shallow: the model MUST want
+          // another search on the final turn (the leak condition) without
+          // being invited to derive a multi-hop answer from parametric
+          // memory (the reasoning-burst condition).
+          input:
+            'What was the closing price of OpenRouter (fictional ticker ORTR) on the Frankfurt exchange yesterday? Use web_search to find out; do not guess.',
+          tools: [
+            searchTool,
+          ] as const,
+          stopWhen: stepCountIs(1),
+          // allowFinalResponse omitted — default-on path under test
+          reasoning: {
+            maxTokens: 512,
+          },
+          maxOutputTokens: 1024,
+        },
+        {
+          timeoutMs: 90000,
+        },
+      );
 
       const finalResponse = await response.getResponse();
       const text = await response.getText();

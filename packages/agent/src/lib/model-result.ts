@@ -365,6 +365,11 @@ export interface GetResponseOptions<
    * an object tunes thresholds. Off by default.
    */
   doomLoop?: DoomLoopOption;
+  /**
+   * Cancel the whole run: stops the loop at the next boundary and aborts
+   * the in-flight API request/stream. See `CallModelInput.signal`.
+   */
+  signal?: AbortSignal;
 }
 
 /**
@@ -2658,7 +2663,7 @@ export class ModelResult<
       {
         responsesRequest: newRequest,
       },
-      this.options.options,
+      this.dispatchRequestOptions(),
     );
 
     if (!newResult.ok) {
@@ -2746,7 +2751,7 @@ export class ModelResult<
       {
         responsesRequest: finalRequest,
       },
-      this.options.options,
+      this.dispatchRequestOptions(),
     );
 
     if (!result.ok) {
@@ -2811,7 +2816,7 @@ export class ModelResult<
       {
         responsesRequest: newRequest,
       },
-      this.options.options,
+      this.dispatchRequestOptions(),
     );
 
     if (!newResult.ok) {
@@ -2821,6 +2826,49 @@ export class ModelResult<
     const response = await this.materializeResponse(newResult.value, turnNumber);
     await this.emitPostModelCall(response, startedAt, 'retry', turnNumber);
     return response;
+  }
+
+  /**
+   * Build the RequestOptions for one API dispatch, composing the run-level
+   * cancellation signal (`options.signal`) with the caller's RequestOptions.
+   *
+   * The SDK only auto-wires `timeoutMs` into an abort signal when NO signal
+   * is present on the options — a supplied signal silently disables the
+   * timeout. Composing here keeps both: each request is bounded by
+   * whichever of {run signal, caller signal, per-request timeout} fires
+   * first. MUST be called once per dispatch — `AbortSignal.timeout()`
+   * starts counting at creation, so a cached composite would burn its
+   * budget across turns instead of per request.
+   *
+   * Also the per-request fail-fast checkpoint: an already-aborted run
+   * signal throws its abort reason here, before any network I/O.
+   */
+  private dispatchRequestOptions(): RequestOptions | undefined {
+    const base = this.options.options;
+    const runSignal = this.options.signal;
+    if (!runSignal) {
+      return base;
+    }
+    runSignal.throwIfAborted();
+
+    const signals: AbortSignal[] = [
+      runSignal,
+    ];
+    const callerSignal = base?.signal ?? base?.fetchOptions?.signal;
+    if (callerSignal) {
+      signals.push(callerSignal);
+    }
+    // Re-create the timeout the SDK would have wired had no signal been
+    // present. Per-request option wins over the client-level default,
+    // mirroring betaResponsesSend's own precedence.
+    const timeoutMs = base?.timeoutMs ?? this.options.client._options.timeoutMs;
+    if (typeof timeoutMs === 'number' && timeoutMs > 0) {
+      signals.push(AbortSignal.timeout(timeoutMs));
+    }
+    return {
+      ...base,
+      signal: signals.length === 1 ? runSignal : AbortSignal.any(signals),
+    };
   }
 
   /**
@@ -2852,6 +2900,7 @@ export class ModelResult<
       strictFinalResponse: _sfr,
       hooks: _h,
       doomLoop: _dl,
+      signal: _sig,
       ...rest
     } = this.options.request;
     return rest as ResolvedCallModelInput;
@@ -3273,7 +3322,7 @@ export class ModelResult<
         {
           responsesRequest: request,
         },
-        this.options.options,
+        this.dispatchRequestOptions(),
       );
 
       if (!apiResult.ok) {
@@ -3540,7 +3589,7 @@ export class ModelResult<
       {
         responsesRequest: request,
       },
-      this.options.options,
+      this.dispatchRequestOptions(),
     );
 
     if (!apiResult.ok) {
@@ -3652,6 +3701,13 @@ export class ModelResult<
         let forceResumeCount = 0;
 
         while (true) {
+          // Run-level cancellation: fail the loop at the turn boundary with
+          // the abort reason. In-flight requests are aborted independently
+          // by the composed dispatch signal (dispatchRequestOptions); this
+          // check covers cancellation between requests (during tool
+          // execution or hook work).
+          this.options.signal?.throwIfAborted();
+
           // Check for external interruption
           if (await this.checkForInterruption(currentResponse)) {
             sessionEndReason = 'user';

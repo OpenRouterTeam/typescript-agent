@@ -108,6 +108,7 @@ export function callModel<
     strictFinalResponse,
     hooks,
     doomLoop,
+    signal,
     ...apiRequest
   } = request;
 
@@ -180,6 +181,9 @@ export function callModel<
     }),
     ...(doomLoop !== undefined && {
       doomLoop,
+    }),
+    ...(signal !== undefined && {
+      signal,
     }),
   } as GetResponseOptions<TTools, TShared>);
 }

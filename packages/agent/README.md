@@ -219,6 +219,44 @@ original `instructions` are sent with `toolChoice: 'none'`. Any
 non-executable (manual) tool calls in the halted turn are paired with
 synthesized stub `function_call_output` items so the input is well-formed.
 
+### Cancellation & Request Timeouts
+
+A `callModel` run is a *sequence* of API requests (initial, one per tool
+round, plus final/retry turns). Two independent bounds compose:
+
+```typescript
+const controller = new AbortController();
+
+const result = callModel(
+  client,
+  {
+    model: 'openai/gpt-4o',
+    input: 'Research this topic',
+    tools: [searchTool] as const,
+    // Cancel the WHOLE run: stops the loop at the next turn boundary and
+    // aborts the in-flight request/stream. Promises reject with the
+    // signal's abort reason.
+    signal: controller.signal,
+  },
+  {
+    // Bound EACH request: a provider that stalls fails that request after
+    // 90s instead of hanging until an outer timeout kills the process.
+    timeoutMs: 90000,
+  },
+);
+
+// later, e.g. on user navigation:
+controller.abort(new Error('user cancelled'));
+```
+
+`timeoutMs` is per-request (each dispatch gets a fresh budget), not
+per-run — bound the run with `stopWhen` (`maxCost`, `maxTokensUsed`,
+`stepCountIs`) and/or `signal`. The two compose: when both are set, each
+request is bounded by whichever fires first. Prefer the `signal` option
+over passing a raw `signal` through `RequestOptions` — the underlying SDK
+skips its `timeoutMs` wiring whenever a request already carries a signal,
+so the engine re-composes them for you only on the `signal` option path.
+
 ### Doom-Loop Detection
 
 Catch runs that stop making progress while continuing to spend: the model
