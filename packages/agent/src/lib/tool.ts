@@ -12,11 +12,11 @@ import type {
   Tool,
   ToolApprovalCheck,
   ToolExecuteContext,
-  ToolLoopKeyFn,
+  ToolLoopKey,
   ToolWithExecute,
   ToolWithGenerator,
 } from './tool-types.js';
-import { SHARED_CONTEXT_KEY, ToolType } from './tool-types.js';
+import { isClientTool, SHARED_CONTEXT_KEY, ToolType } from './tool-types.js';
 
 //#region Config Types
 
@@ -40,8 +40,8 @@ type RegularToolConfigWithOutput<
   contextSchema?: TCtx;
   nextTurnParams?: NextTurnParamsFunctions<zodInfer<TInput>>;
   requireApproval?: boolean | ToolApprovalCheck<zodInfer<TInput>>;
-  /** Doom-loop identity for this tool's calls — see {@link ToolLoopKeyFn} */
-  loopKey?: ToolLoopKeyFn<zodInfer<TInput>>;
+  /** Doom-loop identity: function, field list, or false — see {@link ToolLoopKey} */
+  loopKey?: ToolLoopKey<zodInfer<TInput>>;
   execute: (
     params: zodInfer<TInput>,
     context?: ToolExecuteContext<TName, ContextFromSchema<TCtx>>,
@@ -68,8 +68,8 @@ type RegularToolConfigWithoutOutput<
   contextSchema?: TCtx;
   nextTurnParams?: NextTurnParamsFunctions<zodInfer<TInput>>;
   requireApproval?: boolean | ToolApprovalCheck<zodInfer<TInput>>;
-  /** Doom-loop identity for this tool's calls — see {@link ToolLoopKeyFn} */
-  loopKey?: ToolLoopKeyFn<zodInfer<TInput>>;
+  /** Doom-loop identity: function, field list, or false — see {@link ToolLoopKey} */
+  loopKey?: ToolLoopKey<zodInfer<TInput>>;
   execute: (
     params: zodInfer<TInput>,
     context?: ToolExecuteContext<TName, ContextFromSchema<TCtx>>,
@@ -97,8 +97,8 @@ type GeneratorToolConfig<
   contextSchema?: TCtx;
   nextTurnParams?: NextTurnParamsFunctions<zodInfer<TInput>>;
   requireApproval?: boolean | ToolApprovalCheck<zodInfer<TInput>>;
-  /** Doom-loop identity for this tool's calls — see {@link ToolLoopKeyFn} */
-  loopKey?: ToolLoopKeyFn<zodInfer<TInput>>;
+  /** Doom-loop identity: function, field list, or false — see {@link ToolLoopKey} */
+  loopKey?: ToolLoopKey<zodInfer<TInput>>;
   execute: (
     params: zodInfer<TInput>,
     context?: ToolExecuteContext<TName, ContextFromSchema<TCtx>>,
@@ -121,8 +121,8 @@ type ManualToolConfig<
   contextSchema?: TCtx;
   nextTurnParams?: NextTurnParamsFunctions<zodInfer<TInput>>;
   requireApproval?: boolean | ToolApprovalCheck<zodInfer<TInput>>;
-  /** Doom-loop identity for this tool's calls — see {@link ToolLoopKeyFn} */
-  loopKey?: ToolLoopKeyFn<zodInfer<TInput>>;
+  /** Doom-loop identity: function, field list, or false — see {@link ToolLoopKey} */
+  loopKey?: ToolLoopKey<zodInfer<TInput>>;
   execute: false;
 };
 
@@ -159,8 +159,8 @@ type HITLToolConfig<
   contextSchema?: TCtx;
   nextTurnParams?: NextTurnParamsFunctions<zodInfer<TInput>>;
   requireApproval?: boolean | ToolApprovalCheck<zodInfer<TInput>>;
-  /** Doom-loop identity for this tool's calls — see {@link ToolLoopKeyFn} */
-  loopKey?: ToolLoopKeyFn<zodInfer<TInput>>;
+  /** Doom-loop identity: function, field list, or false — see {@link ToolLoopKey} */
+  loopKey?: ToolLoopKey<zodInfer<TInput>>;
   onToolCalled: (
     params: zodInfer<TInput>,
     context?: ToolExecuteContext<TName, ContextFromSchema<TCtx>>,
@@ -189,8 +189,8 @@ type ToolConfigWithSharedContext<
   contextSchema?: TCtx;
   nextTurnParams?: NextTurnParamsFunctions<Record<string, unknown>>;
   requireApproval?: boolean | ToolApprovalCheck<Record<string, unknown>>;
-  /** Doom-loop identity for this tool's calls — see {@link ToolLoopKeyFn} */
-  loopKey?: ToolLoopKeyFn<Record<string, unknown>>;
+  /** Doom-loop identity: function, field list, or false — see {@link ToolLoopKey} */
+  loopKey?: ToolLoopKey<Record<string, unknown>>;
   execute:
     | ((
         params: Record<string, unknown>,
@@ -549,12 +549,29 @@ export function serverTool<T extends ServerToolType>(
  * the tool's runtime behavior and wire shape are unchanged — only its type (and
  * the runtime {@link isMcpTool} check) now identify it as MCP-originated. Used
  * by `@openrouter/mcp` to mark wrapped remote tools.
+ *
+ * `options.loopKey` attaches a doom-loop identity to the wrapped tool —
+ * the only injection point for MCP tools, whose remote definitions cannot
+ * carry client-side functions. Prefer the declarative field-list form
+ * (data, not code): it round-trips through serializable tool caches.
  */
-export function markMcp<T extends Tool>(toolToMark: T): McpBranded<T> {
-  return {
+export function markMcp<T extends Tool>(
+  toolToMark: T,
+  options?: {
+    loopKey?: ToolLoopKey<Record<string, unknown>>;
+  },
+): McpBranded<T> {
+  const marked = {
     ...toolToMark,
     _mcp: true as const,
   };
+  if (options?.loopKey !== undefined && isClientTool(marked)) {
+    marked.function = {
+      ...marked.function,
+      loopKey: options.loopKey,
+    };
+  }
+  return marked;
 }
 
 //#endregion

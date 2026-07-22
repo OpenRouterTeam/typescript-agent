@@ -223,8 +223,9 @@ synthesized stub `function_call_output` items so the input is well-formed.
 
 Catch runs that stop making progress while continuing to spend: the model
 re-issuing the same tool call with identical arguments (including repeated
-*empty* calls and repeated invalid-JSON calls), or emitting the same text
-tokens over and over. Off by default; opt in with `doomLoop: true`:
+*empty* calls and repeated invalid-JSON calls), repeating identical
+server-tool requests, or emitting the same text tokens over and over. Off by
+default; opt in with `doomLoop: true`:
 
 ```typescript
 const result = callModel(client, {
@@ -246,22 +247,29 @@ if (verdict) console.warn(verdict.message);
 
 Detection is **deterministic** — a verdict is a pure function of the
 transcript, so the same sequence of calls/text always fires at the same
-point. Consecutive identical calls build a per-tool streak (interleaved
-calls to *other* tools don't reset it); the streak crosses a graduated
-ladder:
+point. Identical calls in consecutive **rounds** build a per-tool streak:
+interleaved calls to *other* tools don't reset it, and N identical calls
+fanned out in parallel within ONE round count once (a streak measures the
+model re-issuing a call *after seeing its result*, which requires a round
+trip). The streak crosses a graduated ladder — strongest crossed rung wins:
 
 | Action | Effect |
 |---|---|
 | `observe` | Emit the `DoomLoopDetected` hook only |
-| `steer` | Inject a corrective user message before the next turn (off by default) |
-| `block` | Refuse the call and return an explanatory error as the tool output — the model sees why and can change course |
-| `stop` | Halt the loop before the next request (`SessionEnd.reason: 'doom_loop'`) |
+| `steer` | Inject a corrective user message before the next turn (off by default). Guidance queued right before a pause persists in `ConversationState.doomLoop.pendingSteer` and is delivered on resume |
+| `block` | Refuse the call and return an explanatory error as the tool output — the model sees why and can change course. Not applicable to text or server-tool verdicts (already emitted/executed); those downgrade to `observe` |
+| `stop` | Halt the loop before any further model request (`SessionEnd.reason: 'doom_loop'`). Unresolved tool calls in the final turn get synthesized halt-error outputs so persisted history stays well-formed and resumable |
 
-**Tools declare what identifies a call** via `loopKey`. Without one, the
-full arguments object is the identity:
+Ladder configs are sanity-checked at resolve time: enabling `block` with
+`stop: false` warns (a model that keeps re-issuing a blocked call loops
+until `stopWhen` fires — and `stopWhen` defaults to unbounded), and dead
+rungs (a weaker threshold at or past an enabled stronger one) warn too.
+
+**Tools declare what identifies a call** via `loopKey` on the tool
+definition — a **function or a variable**:
 
 ```typescript
-// A web-search tool: the (normalized) query is the identity.
+// Function: compute the identity — a web-search tool normalizes its query.
 tool({
   name: 'web_search',
   inputSchema: z.object({ query: z.string() }),
@@ -269,35 +277,67 @@ tool({
   execute: async ({ query }) => search(query),
 });
 
-// A bash tool: the command AND where/how it runs.
+// Variable (field list): declarative subset — data, not code, so it
+// survives serializable tool caches. A bash call is identified by the
+// command AND where it runs; other fields (e.g. verbose) don't count.
 tool({
   name: 'bash',
-  inputSchema: z.object({ command: z.string(), cwd: z.string() }),
-  loopKey: ({ command, cwd }) => ({ command: command.trim(), cwd }),
+  inputSchema: z.object({ command: z.string(), cwd: z.string(), verbose: z.boolean() }),
+  loopKey: ['command', 'cwd'],
   execute: async ({ command, cwd }) => run(command, cwd),
 });
 
-// A status poller: repetition is the job — exempt it.
+// Variable (false): statically exempt — repetition is this tool's job.
 tool({
   name: 'check_status',
   inputSchema: z.object({ jobId: z.string() }),
-  loopKey: () => null,
+  loopKey: false,
   execute: async ({ jobId }) => poll(jobId),
 });
 ```
 
-The engine canonicalizes the returned key material (recursive key sort) and
-fingerprints it, so key order never defeats detection and fingerprints are
-identical across SDK ports. Malformed calls count too: a model stuck
-emitting the same invalid JSON trips the detector instead of bouncing off
-the parse error forever. Detector state is plain JSON inside
-`ConversationState.doomLoop`, so streaks survive serialize → resume.
+A function-form `loopKey` may return `null` to exempt an individual call.
+Returning `undefined`, throwing, or returning unhashable material (bigint,
+circular, >64 levels deep) falls back to the full-arguments identity with a
+warning — detection never fails a run. Without any `loopKey`, the full
+validated arguments object is the identity. MCP-wrapped tools accept a
+`loopKey` via `markMcp(tool, { loopKey })` (prefer the field-list form).
+
+**Fingerprints are a cross-port contract**: key material is canonicalized
+per RFC 8785 (JCS) and hashed with SHA-256 over the UTF-8 bytes, so the
+Python/Go ports produce identical fingerprints — they MUST use an RFC 8785
+implementation (pip `jcs`, `cyberphone/json-canonicalization`), not their
+stdlib JSON serializer. The conformance vectors live in
+`tests/vectors/doom-loop-fingerprints.json`. Key order never defeats
+detection; malformed calls count too (a model stuck emitting the same
+invalid JSON trips the detector instead of bouncing off the parse error
+forever). Detector state is plain JSON inside `ConversationState.doomLoop`,
+so streaks survive serialize → resume **when the resuming call also passes
+`doomLoop`**. A `stop` verdict persists across decision-only resumes
+(`approveToolCalls`/`rejectToolCalls`); a fresh conversational turn clears
+it (streaks are kept, so renewed repetition re-condemns quickly).
 
 The `DoomLoopDetected` hook observes every verdict and can override the
-action per event (`overrideAction`) — de-escalate a block to observe for a
-known-chatty tool, or escalate straight to stop. Text verdicts can't be
-blocked (the tokens are already emitted); `block` on them downgrades to
-`observe`.
+action per event (`overrideAction`, last handler wins) — de-escalate a
+block to observe for a known-chatty tool, or escalate straight to stop.
+
+**What this does NOT catch** (documented limits, locked by negative tests):
+
+- **Varying-input loops.** The fingerprint is identity-based: a model that
+  invents a fresh nonce/timestamp field each call evades the default
+  whole-arguments identity entirely. A `loopKey` that names the meaningful
+  fields closes this per tool; the structural fix (outcome hashing — the
+  progress-ledger detector from the design doc) is planned, not shipped.
+- **Paraphrased repetition.** Text detectors require exact repeated token
+  blocks (within a response) or byte-identical whitespace-normalized text
+  (across steps). Semantically-identical rephrasings do not trip.
+- **Pre-mutation identity.** Fingerprints are computed on the arguments the
+  MODEL issued, before any `PreToolUse` mutation — a hook that rewrites
+  varying inputs into identical ones does not make them count as repeats
+  (and a hook that injects a nonce cannot mask real repetition).
+- **Manual/client-executed calls** pause the loop for the caller and are
+  not recorded (only executed, blocked, and parse-error calls are
+  evidence).
 
 ### Tool Approval
 
@@ -406,7 +446,7 @@ const result = callModel(client, { model, input, tools, hooks });
 | `SessionStart` | Once per run, before the initial request. `config` summarizes the session (`hasTools`, `hasApproval`, `hasState`) | none (void) |
 | `SessionEnd` | Once per run, on every exit path — completion, approval pause, interruption, error, and the no-tools streaming paths. `reason` is `'complete' \| 'error' \| 'max_turns' \| 'user' \| 'doom_loop'`. When at least one model call completed, `totalUsage` aggregates tokens/cost across all of them (`modelCalls`, `inputTokens`, `outputTokens`, `totalTokens`, `cachedTokens`, `reasoningTokens`, and `cost` when the server reported it) | none (void) |
 | `PostModelCall` | Once per completed model response, on **every** request the loop makes — initial, each tool-round follow-up, the empty-final retry, the `allowFinalResponse` final turn, and approval-resume requests. Payload: `responseId` (the OpenRouter generation id), `model`, `durationMs` (dispatch → fully materialized response, including stream consumption), `turnType` (`'initial' \| 'resume' \| 'tool_round' \| 'final' \| 'retry'`), `turnNumber`, and `usage` (`inputTokens`, `outputTokens`, `totalTokens`, `cachedTokens`, `reasoningTokens`, `cost?`) when the server reported usage accounting. Purely observational — the telemetry primitive for tracing/benchmark consumers: one span per model call | none (void) |
-| `DoomLoopDetected` | Every time doom-loop detection crosses a ladder rung (requires the `doomLoop` option). Payload: `detector` (`'tool-fingerprint' \| 'text-repetition' \| 'text-streak'`), the resolved `action`, the `streak`, the `fingerprint`, `toolName`/`toolInput` for tool verdicts, and the explanatory `message` | `overrideAction` replaces the engine's resolved action for this event (last handler wins); `block` on a text verdict downgrades to `observe` |
+| `DoomLoopDetected` | Every time doom-loop detection crosses a ladder rung, once per `(tool, fingerprint)` per round — parallel duplicates in one round share the event (requires the `doomLoop` option). Payload: `detector` (`'tool-fingerprint' \| 'server-tool-fingerprint' \| 'text-repetition' \| 'text-streak'`), the resolved `action`, the `streak`, the `fingerprint`, `toolName`/`toolInput` for tool verdicts, and the explanatory `message` | `overrideAction` replaces the engine's resolved action for this event (last handler wins); `block` on a text or server-tool verdict downgrades to `observe` |
 
 Notes on lifecycle pairing: `SessionEnd` only fires when a matching
 `SessionStart` succeeded, and at most once per run. Pending async hook work is

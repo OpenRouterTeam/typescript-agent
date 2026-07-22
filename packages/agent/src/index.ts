@@ -111,6 +111,7 @@ export {
 // Doom-loop detection (see the `doomLoop` option on callModel)
 export type {
   DoomLoopAction,
+  DoomLoopCallRecord,
   DoomLoopConfig,
   DoomLoopDetectorKind,
   DoomLoopLadder,
@@ -119,6 +120,7 @@ export type {
   DoomLoopStreak,
   DoomLoopTextOptions,
   DoomLoopVerdict,
+  LoopKeyResolution,
   TextRepetitionResult,
 } from './lib/doom-loop.js';
 export {
@@ -128,6 +130,8 @@ export {
   detectTextRepetition,
   fingerprintKeyMaterial,
   fingerprintToolCall,
+  MAX_CANONICALIZE_DEPTH,
+  resolveLoopKeyMaterial,
 } from './lib/doom-loop.js';
 // Lifecycle hooks system (PreToolUse, PostToolUse, Stop, SessionStart, ...).
 // Distinct from the SDK transport hooks re-exported above (SDKHooks,
@@ -235,6 +239,7 @@ export type {
   ToolExecutionResult,
   ToolExecutionResultUnion,
   ToolHasApproval,
+  ToolLoopKey,
   ToolLoopKeyFn,
   ToolOutputContentItem,
   ToolPreliminaryResultEvent,

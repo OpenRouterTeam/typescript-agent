@@ -159,9 +159,10 @@ export const PostModelCallPayloadSchema = z4.object({
 });
 
 export const DoomLoopDetectedPayloadSchema = z4.object({
-  /** Which detector fired: consecutive identical tool calls, or repeated text. */
+  /** Which detector fired: identical client/server tool calls, or repeated text. */
   detector: z4.enum([
     'tool-fingerprint',
+    'server-tool-fingerprint',
     'text-repetition',
     'text-streak',
   ]),

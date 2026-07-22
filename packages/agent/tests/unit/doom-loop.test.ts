@@ -1,13 +1,21 @@
 /**
  * Unit tests for the doom-loop detection primitives (src/lib/doom-loop.ts).
  *
- * Everything here is pure and deterministic: fingerprints, canonicalization,
- * text-repetition detection, ladder resolution, and the DoomLoopMonitor state
- * machine. Loop integration (blocking, steering, stopping a real run) is
- * covered by doom-loop-integration.test.ts against scripted model responses.
+ * Everything here is pure and deterministic: JCS canonicalization, SHA-256
+ * fingerprints (asserted against the cross-port vector file),
+ * text-repetition detection, ladder resolution, loopKey resolution, and the
+ * DoomLoopMonitor state machine (round-scoped streaks). Loop integration
+ * (blocking, steering, stopping a real run) is covered by
+ * doom-loop-integration.test.ts against scripted model responses.
  */
-import { describe, expect, it, vi } from 'vitest';
-import type { DoomLoopOption, DoomLoopVerdict } from '../../src/lib/doom-loop.js';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import type {
+  DoomLoopCallRecord,
+  DoomLoopOption,
+  DoomLoopVerdict,
+} from '../../src/lib/doom-loop.js';
 import {
   canonicalizeKeyMaterial,
   DEFAULT_DOOM_LOOP_LADDER,
@@ -15,12 +23,18 @@ import {
   detectTextRepetition,
   fingerprintKeyMaterial,
   fingerprintToolCall,
+  MAX_CANONICALIZE_DEPTH,
   resolveDoomLoopOption,
   resolveLadderAction,
+  resolveLoopKeyMaterial,
 } from '../../src/lib/doom-loop.js';
 
+afterEach(() => {
+  vi.restoreAllMocks();
+});
+
 // ---------------------------------------------------------------------------
-// Canonicalization & fingerprints
+// Canonicalization (RFC 8785 / JCS semantics)
 // ---------------------------------------------------------------------------
 
 describe('canonicalizeKeyMaterial', () => {
@@ -71,11 +85,23 @@ describe('canonicalizeKeyMaterial', () => {
     );
   });
 
-  it('canonicalizes primitives and null deterministically', () => {
+  it('canonicalizes primitives per JCS', () => {
     expect(canonicalizeKeyMaterial('query')).toBe('"query"');
     expect(canonicalizeKeyMaterial(42)).toBe('42');
     expect(canonicalizeKeyMaterial(null)).toBe('null');
-    expect(canonicalizeKeyMaterial(Number.NaN)).toBe('null');
+    // JCS number serialization is ECMAScript JSON.stringify:
+    expect(canonicalizeKeyMaterial(-0)).toBe('0');
+    expect(canonicalizeKeyMaterial(1e21)).toBe('1e+21');
+  });
+
+  it('REJECTS values RFC 8785 cannot represent (engine falls back)', () => {
+    expect(() => canonicalizeKeyMaterial(Number.NaN)).toThrow(/non-finite/i);
+    expect(() => canonicalizeKeyMaterial(Number.POSITIVE_INFINITY)).toThrow(/non-finite/i);
+    expect(() =>
+      canonicalizeKeyMaterial({
+        id: 10n,
+      }),
+    ).toThrow(/bigint/i);
   });
 
   it('throws on circular key material instead of hanging', () => {
@@ -83,55 +109,167 @@ describe('canonicalizeKeyMaterial', () => {
     circular['self'] = circular;
     expect(() => canonicalizeKeyMaterial(circular)).toThrow(/circular/i);
   });
+
+  it('throws on nesting past MAX_CANONICALIZE_DEPTH instead of overflowing the stack', () => {
+    let deep: unknown = 'leaf';
+    for (let i = 0; i < MAX_CANONICALIZE_DEPTH + 10; i++) {
+      deep = [
+        deep,
+      ];
+    }
+    expect(() => canonicalizeKeyMaterial(deep)).toThrow(/deeper than/i);
+  });
 });
 
-describe('fingerprints', () => {
-  it('produces identical fingerprints for identical calls', () => {
-    expect(
-      fingerprintToolCall('web_search', {
-        query: 'openrouter agent sdk',
-      }),
-    ).toBe(
-      fingerprintToolCall('web_search', {
-        query: 'openrouter agent sdk',
-      }),
-    );
+// ---------------------------------------------------------------------------
+// Fingerprints — the cross-port contract
+// ---------------------------------------------------------------------------
+
+interface VectorFile {
+  toolCallVectors: Array<{
+    name: string;
+    toolName: string;
+    keyMaterial: unknown;
+    jcs: string;
+    fingerprint: string;
+  }>;
+  keyMaterialVectors: Array<{
+    name: string;
+    keyMaterial: unknown;
+    jcs: string;
+    fingerprint: string;
+  }>;
+}
+
+const vectors = JSON.parse(
+  readFileSync(join(__dirname, '../vectors/doom-loop-fingerprints.json'), 'utf8'),
+) as VectorFile;
+
+describe('fingerprints (cross-port vectors)', () => {
+  it('reproduces every tool-call vector: sha256(utf8(toolName + "\\n" + jcs))', async () => {
+    expect(vectors.toolCallVectors.length).toBeGreaterThan(5);
+    for (const vector of vectors.toolCallVectors) {
+      expect(canonicalizeKeyMaterial(vector.keyMaterial), vector.name).toBe(vector.jcs);
+      expect(await fingerprintToolCall(vector.toolName, vector.keyMaterial), vector.name).toBe(
+        vector.fingerprint,
+      );
+    }
   });
 
-  it('distinguishes different arguments', () => {
-    expect(
-      fingerprintToolCall('web_search', {
-        query: 'a',
-      }),
-    ).not.toBe(
-      fingerprintToolCall('web_search', {
-        query: 'b',
-      }),
-    );
+  it('reproduces every bare key-material vector', async () => {
+    for (const vector of vectors.keyMaterialVectors) {
+      expect(await fingerprintKeyMaterial(vector.keyMaterial), vector.name).toBe(
+        vector.fingerprint,
+      );
+    }
   });
 
-  it('includes the tool name: same args on different tools never collide by construction', () => {
+  it('produces 64-char lowercase hex (SHA-256)', async () => {
+    const fp = await fingerprintToolCall('t', {});
+    expect(fp).toMatch(/^[0-9a-f]{64}$/);
+  });
+
+  it('includes the tool name: same args on different tools never collide by construction', async () => {
     expect(
-      fingerprintToolCall('web_search', {
+      await fingerprintToolCall('web_search', {
         q: 'x',
       }),
     ).not.toBe(
-      fingerprintToolCall('fetch_page', {
+      await fingerprintToolCall('fetch_page', {
         q: 'x',
       }),
     );
   });
 
-  it('is stable across processes (documented vector for the Python/Go ports)', () => {
-    // If this vector changes, the fingerprint algorithm changed — a breaking
-    // cross-port contract change, not a refactor.
+  it('non-ASCII key material hashes over UTF-8 bytes (the Python/Go parity case)', async () => {
+    const vector = vectors.toolCallVectors.find((v) => v.name.includes('non-ascii'));
+    expect(vector).toBeDefined();
+    if (vector) {
+      expect(await fingerprintToolCall(vector.toolName, vector.keyMaterial)).toBe(
+        vector.fingerprint,
+      );
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// loopKey resolution (function | field list | false | absent)
+// ---------------------------------------------------------------------------
+
+describe('resolveLoopKeyMaterial', () => {
+  const args = {
+    command: 'ls',
+    cwd: '/tmp',
+    verbose: true,
+  };
+
+  it('absent declaration → full arguments', () => {
+    expect(resolveLoopKeyMaterial(undefined, args)).toEqual({
+      kind: 'key',
+      keyMaterial: args,
+    });
+  });
+
+  it('false → statically exempt', () => {
+    expect(resolveLoopKeyMaterial(false, args)).toEqual({
+      kind: 'exempt',
+    });
+  });
+
+  it('field array → declarative subset (missing fields simply absent)', () => {
     expect(
-      fingerprintToolCall('bash', {
-        command: 'ls -la',
+      resolveLoopKeyMaterial(
+        [
+          'command',
+          'cwd',
+          'not_a_field',
+        ],
+        args,
+      ),
+    ).toEqual({
+      kind: 'key',
+      keyMaterial: {
+        command: 'ls',
         cwd: '/tmp',
-      }),
-    ).toBe('0a7c2d7e481421');
-    expect(fingerprintKeyMaterial('I am stuck.')).toBe('1dc6b803db9a8e');
+      },
+    });
+  });
+
+  it('function returning a value → that value', () => {
+    const resolution = resolveLoopKeyMaterial(
+      (a: Record<string, unknown>) => String(a['command']).trim(),
+      args,
+    );
+    expect(resolution).toEqual({
+      kind: 'key',
+      keyMaterial: 'ls',
+    });
+  });
+
+  it('function returning null → per-call exemption', () => {
+    expect(resolveLoopKeyMaterial(() => null, args)).toEqual({
+      kind: 'exempt',
+    });
+  });
+
+  it('function returning undefined → FALLBACK to full args with warning (not a colliding constant)', () => {
+    const resolution = resolveLoopKeyMaterial(() => undefined, args);
+    expect(resolution.kind).toBe('fallback');
+    if (resolution.kind === 'fallback') {
+      expect(resolution.keyMaterial).toBe(args);
+      expect(resolution.warning).toMatch(/undefined/);
+    }
+  });
+
+  it('throwing function → fallback to full args with warning', () => {
+    const resolution = resolveLoopKeyMaterial(() => {
+      throw new Error('loopKey bug');
+    }, args);
+    expect(resolution.kind).toBe('fallback');
+    if (resolution.kind === 'fallback') {
+      expect(resolution.keyMaterial).toBe(args);
+      expect(resolution.warning).toMatch(/threw/);
+    }
   });
 });
 
@@ -178,9 +316,37 @@ describe('detectTextRepetition', () => {
     ).toBeNull();
   });
 
+  it('DOCUMENTED MISS: paraphrased repetition does not trip (needs exact token blocks)', () => {
+    const paraphrased = [
+      'I am unable to find the file.',
+      'I cannot locate the file.',
+      'I am not able to find that file.',
+      'The file cannot be found by me.',
+      'Finding the file is not possible.',
+      'I could not locate that file.',
+    ].join(' ');
+    expect(detectTextRepetition(paraphrased)).toBeNull();
+  });
+
   it('is deterministic: same input, same result object', () => {
     const text = Array(8).fill('loop detected').join(' ');
     expect(detectTextRepetition(text)).toEqual(detectTextRepetition(text));
+  });
+
+  it('handles multi-megabyte input without tokenizing the full text (char-budget tail slice)', () => {
+    // 4 MB of unique-ish tokens, ending in a loop. Correctness: still detected.
+    const filler = Array.from(
+      {
+        length: 400_000,
+      },
+      (_, i) => `w${i}`,
+    ).join(' ');
+    const doomTail = Array(20).fill('stuck').join(' ');
+    const result = detectTextRepetition(`${filler} ${doomTail}`);
+    expect(result).toMatchObject({
+      periodTokens: 1,
+      repeats: 20,
+    });
   });
 
   it('honors custom thresholds', () => {
@@ -238,7 +404,7 @@ describe('resolveLadderAction', () => {
     ).toBe('stop');
   });
 
-  it('falls through block for text verdicts (allowBlock: false)', () => {
+  it('falls through block for non-blockable verdicts (allowBlock: false)', () => {
     expect(
       resolveLadderAction(ladder, 3, {
         allowBlock: false,
@@ -300,10 +466,38 @@ describe('resolveDoomLoopOption', () => {
       })?.text.enabled,
     ).toBe(false);
   });
+
+  it('warns when block is enabled with stop disabled (unbounded block/re-issue hazard)', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    resolveDoomLoopOption({
+      ladder: {
+        block: 3,
+        stop: false,
+      },
+    });
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('stop disabled'));
+  });
+
+  it('warns on dead rungs (weaker threshold >= enabled stronger threshold)', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    resolveDoomLoopOption({
+      ladder: {
+        observe: 5,
+        block: 2,
+      },
+    });
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('"observe" (5) can never fire'));
+  });
+
+  it('does not warn on the default ladder', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    resolveDoomLoopOption(true);
+    expect(warn).not.toHaveBeenCalled();
+  });
 });
 
 // ---------------------------------------------------------------------------
-// Monitor state machine
+// Monitor state machine (round-scoped streaks)
 // ---------------------------------------------------------------------------
 
 function makeMonitor(overrides?: DoomLoopOption) {
@@ -315,119 +509,226 @@ function makeMonitor(overrides?: DoomLoopOption) {
 }
 
 describe('DoomLoopMonitor — tool-call streaks', () => {
-  it('fires observe at 2 and block at 3 identical calls (default ladder)', () => {
+  it('fires observe at 2 and block at 3 identical rounds (default ladder)', async () => {
     const monitor = makeMonitor();
     const args = {
       query: 'same thing',
     };
-    expect(monitor.recordToolCall('search', args)).toBeUndefined();
-    expect(monitor.recordToolCall('search', args)).toMatchObject({
+    expect((await monitor.recordToolCall('search', args, 1)).verdict).toBeUndefined();
+    expect((await monitor.recordToolCall('search', args, 2)).verdict).toMatchObject({
       action: 'observe',
       streak: 2,
       detector: 'tool-fingerprint',
       toolName: 'search',
     });
-    expect(monitor.recordToolCall('search', args)).toMatchObject({
+    expect((await monitor.recordToolCall('search', args, 3)).verdict).toMatchObject({
       action: 'block',
       streak: 3,
     });
   });
 
-  it('escalates to stop at the stop threshold', () => {
+  it('escalates to stop at the stop threshold', async () => {
     const monitor = makeMonitor();
-    let last: DoomLoopVerdict | undefined;
-    for (let i = 0; i < 6; i++) {
-      last = monitor.recordToolCall('search', {
-        q: 'x',
-      });
+    let last: DoomLoopCallRecord | undefined;
+    for (let round = 1; round <= 6; round++) {
+      last = await monitor.recordToolCall(
+        'search',
+        {
+          q: 'x',
+        },
+        round,
+      );
     }
-    expect(last).toMatchObject({
+    expect(last?.verdict).toMatchObject({
       action: 'stop',
       streak: 6,
     });
   });
 
-  it('different arguments reset the streak', () => {
+  it('identical calls in the SAME round are duplicates: one streak increment, shared decision', async () => {
     const monitor = makeMonitor();
-    monitor.recordToolCall('search', {
-      q: 'a',
+    const args = {
+      q: 'parallel',
+    };
+    // 6 identical calls fanned out in ONE round — previously walked the
+    // ladder to stop; now they are one piece of evidence.
+    const first = await monitor.recordToolCall('search', args, 1);
+    expect(first).toMatchObject({
+      streak: 1,
+      duplicateInRound: false,
     });
-    monitor.recordToolCall('search', {
-      q: 'a',
+    for (let i = 0; i < 5; i++) {
+      const dup = await monitor.recordToolCall('search', args, 1);
+      expect(dup).toMatchObject({
+        streak: 1,
+        duplicateInRound: true,
+      });
+      expect(dup.verdict).toBeUndefined();
+    }
+    // The NEXT round increments normally.
+    expect(await monitor.recordToolCall('search', args, 2)).toMatchObject({
+      streak: 2,
+      duplicateInRound: false,
     });
+  });
+
+  it('different arguments reset the streak', async () => {
+    const monitor = makeMonitor();
+    await monitor.recordToolCall(
+      'search',
+      {
+        q: 'a',
+      },
+      1,
+    );
+    await monitor.recordToolCall(
+      'search',
+      {
+        q: 'a',
+      },
+      2,
+    );
     // change breaks the streak…
     expect(
-      monitor.recordToolCall('search', {
-        q: 'b',
-      }),
+      (
+        await monitor.recordToolCall(
+          'search',
+          {
+            q: 'b',
+          },
+          3,
+        )
+      ).verdict,
     ).toBeUndefined();
     // …and the next identical call counts from the new base.
     expect(
-      monitor.recordToolCall('search', {
-        q: 'b',
-      }),
+      (
+        await monitor.recordToolCall(
+          'search',
+          {
+            q: 'b',
+          },
+          4,
+        )
+      ).verdict,
     ).toMatchObject({
       streak: 2,
     });
   });
 
-  it('interleaved calls to OTHER tools do not reset a tool streak', () => {
+  it('interleaved calls to OTHER tools do not reset a tool streak', async () => {
     // search X, read file, search X, read file, search X → search streak = 3.
     const monitor = makeMonitor();
     const search = {
       q: 'x',
     };
-    monitor.recordToolCall('search', search);
-    monitor.recordToolCall('read_file', {
-      path: '/a',
-    });
-    expect(monitor.recordToolCall('search', search)).toMatchObject({
+    await monitor.recordToolCall('search', search, 1);
+    await monitor.recordToolCall(
+      'read_file',
+      {
+        path: '/a',
+      },
+      2,
+    );
+    expect((await monitor.recordToolCall('search', search, 3)).verdict).toMatchObject({
       action: 'observe',
       streak: 2,
     });
-    monitor.recordToolCall('read_file', {
-      path: '/b',
-    });
-    expect(monitor.recordToolCall('search', search)).toMatchObject({
+    await monitor.recordToolCall(
+      'read_file',
+      {
+        path: '/b',
+      },
+      4,
+    );
+    expect((await monitor.recordToolCall('search', search, 5)).verdict).toMatchObject({
       action: 'block',
       streak: 3,
     });
   });
 
-  it('argument key order does not defeat detection', () => {
+  it('argument key order does not defeat detection', async () => {
     const monitor = makeMonitor();
-    monitor.recordToolCall('run', {
-      cmd: 'ls',
-      cwd: '/tmp',
-    });
-    expect(
-      monitor.recordToolCall('run', {
-        cwd: '/tmp',
+    await monitor.recordToolCall(
+      'run',
+      {
         cmd: 'ls',
-      }),
+        cwd: '/tmp',
+      },
+      1,
+    );
+    expect(
+      (
+        await monitor.recordToolCall(
+          'run',
+          {
+            cwd: '/tmp',
+            cmd: 'ls',
+          },
+          2,
+        )
+      ).verdict,
     ).toMatchObject({
       streak: 2,
     });
   });
 
-  it('repeated EMPTY calls trip the detector (the empty-tool-call doom loop)', () => {
+  it('repeated EMPTY calls trip the detector (the empty-tool-call doom loop)', async () => {
     const monitor = makeMonitor();
-    expect(monitor.recordToolCall('list_tasks', {})).toBeUndefined();
-    expect(monitor.recordToolCall('list_tasks', {})).toMatchObject({
+    expect((await monitor.recordToolCall('list_tasks', {}, 1)).verdict).toBeUndefined();
+    expect((await monitor.recordToolCall('list_tasks', {}, 2)).verdict).toMatchObject({
       action: 'observe',
       streak: 2,
     });
-    expect(monitor.recordToolCall('list_tasks', {})).toMatchObject({
+    expect((await monitor.recordToolCall('list_tasks', {}, 3)).verdict).toMatchObject({
       action: 'block',
       streak: 3,
     });
   });
 
-  it('is deterministic: two monitors fed the same sequence agree exactly', () => {
+  it('propagates canonicalization errors (bigint) for the engine fallback to catch', async () => {
+    const monitor = makeMonitor();
+    await expect(
+      monitor.recordToolCall(
+        'search',
+        {
+          id: 10n,
+        },
+        1,
+      ),
+    ).rejects.toThrow(/bigint/i);
+  });
+
+  it('server-tool records use the non-blockable ladder path and the server detector label', async () => {
+    const monitor = makeMonitor();
+    let last: DoomLoopCallRecord | undefined;
+    for (let round = 1; round <= 3; round++) {
+      last = await monitor.recordToolCall(
+        'server:web_search_call',
+        {
+          query: 'x',
+        },
+        round,
+        {
+          allowBlock: false,
+          detector: 'server-tool-fingerprint',
+        },
+      );
+    }
+    // Streak 3 crosses the block rung, but allowBlock=false ⇒ observe.
+    expect(last?.verdict).toMatchObject({
+      detector: 'server-tool-fingerprint',
+      action: 'observe',
+      streak: 3,
+    });
+  });
+
+  it('is deterministic: two monitors fed the same sequence agree exactly', async () => {
     const script: Array<
       [
         string,
         unknown,
+        number,
       ]
     > = [
       [
@@ -435,42 +736,51 @@ describe('DoomLoopMonitor — tool-call streaks', () => {
         {
           x: 1,
         },
+        1,
       ],
       [
         'b',
         {},
+        1,
       ],
       [
         'a',
         {
           x: 1,
         },
+        2,
       ],
       [
         'a',
         {
           x: 2,
         },
+        3,
       ],
       [
         'a',
         {
           x: 2,
         },
+        4,
       ],
     ];
-    const run = () => {
+    const run = async () => {
       const monitor = makeMonitor();
-      return script.map(([name, args]) => monitor.recordToolCall(name, args) ?? null);
+      const results: Array<DoomLoopVerdict | null> = [];
+      for (const [name, args, round] of script) {
+        results.push((await monitor.recordToolCall(name, args, round)).verdict ?? null);
+      }
+      return results;
     };
-    expect(run()).toEqual(run());
+    expect(await run()).toEqual(await run());
   });
 });
 
 describe('DoomLoopMonitor — text', () => {
-  it('within-response repetition can stop immediately when repeats cross the stop rung', () => {
+  it('within-response repetition can stop immediately when repeats cross the stop rung', async () => {
     const monitor = makeMonitor();
-    const verdict = monitor.recordAssistantText(Array(20).fill('I am stuck.').join(' '));
+    const verdict = await monitor.recordAssistantText(Array(20).fill('I am stuck.').join(' '));
     expect(verdict).toMatchObject({
       detector: 'text-repetition',
       action: 'stop',
@@ -478,64 +788,87 @@ describe('DoomLoopMonitor — text', () => {
     });
   });
 
-  it('cross-step identical text builds a streak (block downgrades to observe for text)', () => {
+  it('cross-step identical text builds a streak (block downgrades to observe for text)', async () => {
     const monitor = makeMonitor();
-    expect(monitor.recordAssistantText('Let me try that again.')).toBeUndefined();
-    expect(monitor.recordAssistantText('Let me try that again.')).toMatchObject({
+    expect(await monitor.recordAssistantText('Let me try that again.')).toBeUndefined();
+    expect(await monitor.recordAssistantText('Let me try that again.')).toMatchObject({
       detector: 'text-streak',
       action: 'observe',
       streak: 2,
     });
     // Streak 3 crosses the block rung, but text cannot be blocked → observe.
-    expect(monitor.recordAssistantText('Let me try that again.')).toMatchObject({
+    expect(await monitor.recordAssistantText('Let me try that again.')).toMatchObject({
       detector: 'text-streak',
       action: 'observe',
       streak: 3,
     });
     for (let i = 0; i < 2; i++) {
-      monitor.recordAssistantText('Let me try that again.');
+      await monitor.recordAssistantText('Let me try that again.');
     }
-    expect(monitor.recordAssistantText('Let me try that again.')).toMatchObject({
+    expect(await monitor.recordAssistantText('Let me try that again.')).toMatchObject({
       action: 'stop',
       streak: 6,
     });
   });
 
-  it('whitespace-only differences do not defeat the cross-step streak', () => {
+  it('whitespace-only differences do not defeat the cross-step streak', async () => {
     const monitor = makeMonitor();
-    monitor.recordAssistantText('Retrying   the\nsame plan.');
-    expect(monitor.recordAssistantText('Retrying the same plan.')).toMatchObject({
+    await monitor.recordAssistantText('Retrying   the\nsame plan.');
+    expect(await monitor.recordAssistantText('Retrying the same plan.')).toMatchObject({
       streak: 2,
     });
   });
 
-  it('empty text (tool-only turns) neither counts nor resets', () => {
+  it('DOCUMENTED MISS: paraphrased cross-step text does not build a streak', async () => {
     const monitor = makeMonitor();
-    monitor.recordAssistantText('same');
-    monitor.recordAssistantText('');
-    monitor.recordAssistantText('   ');
-    expect(monitor.recordAssistantText('same')).toMatchObject({
+    const paraphrases = [
+      'I am unable to find the file.',
+      'I cannot locate the file.',
+      'I am not able to find that file.',
+      'The file cannot be found.',
+      'Locating the file is not possible.',
+      'I could not find that file.',
+    ];
+    for (const text of paraphrases) {
+      expect(await monitor.recordAssistantText(text)).toBeUndefined();
+    }
+  });
+
+  it('empty text (tool-only turns) neither counts nor resets', async () => {
+    const monitor = makeMonitor();
+    await monitor.recordAssistantText('same');
+    await monitor.recordAssistantText('');
+    await monitor.recordAssistantText('   ');
+    expect(await monitor.recordAssistantText('same')).toMatchObject({
       streak: 2,
     });
   });
 
-  it('text: false disables both text detectors', () => {
+  it('text: false disables both text detectors', async () => {
     const monitor = makeMonitor({
       text: false,
     });
-    expect(monitor.recordAssistantText(Array(30).fill('loop').join(' '))).toBeUndefined();
+    expect(await monitor.recordAssistantText(Array(30).fill('loop').join(' '))).toBeUndefined();
   });
 });
 
 describe('DoomLoopMonitor — state round-trip', () => {
-  it('serializes to plain JSON and resumes counting where it left off', () => {
+  it('serializes to plain JSON and resumes counting where it left off', async () => {
     const monitor = makeMonitor();
-    monitor.recordToolCall('search', {
-      q: 'x',
-    });
-    monitor.recordToolCall('search', {
-      q: 'x',
-    });
+    await monitor.recordToolCall(
+      'search',
+      {
+        q: 'x',
+      },
+      1,
+    );
+    await monitor.recordToolCall(
+      'search',
+      {
+        q: 'x',
+      },
+      2,
+    );
 
     // Simulate serialize → store → resume (JSON round-trip proves plainness).
     const blob = JSON.parse(JSON.stringify(monitor.getState()));
@@ -545,40 +878,50 @@ describe('DoomLoopMonitor — state round-trip', () => {
     }
     const resumed = new DoomLoopMonitor(config, blob);
 
+    // The resumed run numbers its rounds from 1 again — round markers are
+    // NOT serialized, so the first resumed record still increments.
     expect(
-      resumed.recordToolCall('search', {
-        q: 'x',
-      }),
+      (
+        await resumed.recordToolCall(
+          'search',
+          {
+            q: 'x',
+          },
+          1,
+        )
+      ).verdict,
     ).toMatchObject({
       action: 'block',
       streak: 3, // 2 before the round-trip + 1 after
     });
   });
 
-  it('ignores corrupt persisted state instead of crashing the run', () => {
+  it('ignores corrupt persisted state instead of crashing the run', async () => {
     const config = resolveDoomLoopOption(true);
     if (!config) {
       throw new Error('unreachable');
     }
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    try {
-      const monitor = new DoomLoopMonitor(config, 'not an object');
-      expect(
-        monitor.recordToolCall('search', {
-          q: 'x',
-        }),
-      ).toBeUndefined(); // fresh state, streak 1
-      expect(warn).toHaveBeenCalled();
-    } finally {
-      warn.mockRestore();
-    }
+    const monitor = new DoomLoopMonitor(config, 'not an object');
+    expect(
+      (
+        await monitor.recordToolCall(
+          'search',
+          {
+            q: 'x',
+          },
+          1,
+        )
+      ).verdict,
+    ).toBeUndefined(); // fresh state, streak 1
+    expect(warn).toHaveBeenCalled();
   });
 
-  it('getState returns a snapshot, not a live reference', () => {
+  it('getState returns a snapshot, not a live reference', async () => {
     const monitor = makeMonitor();
-    monitor.recordToolCall('a', {});
+    await monitor.recordToolCall('a', {}, 1);
     const snapshot = monitor.getState();
-    monitor.recordToolCall('a', {});
+    await monitor.recordToolCall('a', {}, 2);
     expect(snapshot.tools['a']?.streak).toBe(1);
     expect(monitor.getState().tools['a']?.streak).toBe(2);
   });

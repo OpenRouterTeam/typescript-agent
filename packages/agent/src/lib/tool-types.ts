@@ -181,19 +181,20 @@ export type ToolApprovalCheck<TInput> = {
 }['bivarianceHack'];
 
 /**
- * Selects the key material that identifies a call of this tool for doom-loop
- * detection (see the `doomLoop` option on `callModel`).
+ * Function form of {@link ToolLoopKey}: computes the key material that
+ * identifies a call of this tool for doom-loop detection.
  *
- * The returned value is canonicalized (recursive key sort) and hashed by the
- * engine — tools declare *what identifies a call*, the engine owns *how it is
- * fingerprinted*. Two calls whose key material canonicalizes identically count
- * as the same call.
+ * The returned value is canonicalized (RFC 8785) and hashed by the engine —
+ * tools declare *what identifies a call*, the engine owns *how it is
+ * fingerprinted*. Two calls whose key material canonicalizes identically
+ * count as the same call.
  *
  * - Return a focused subset for precise identity: a web-search tool returns
  *   its normalized query; a bash tool returns `{ command, cwd, env }`.
- * - Return `null` to exempt the call from detection entirely (e.g. a status
- *   poller whose repetition is legitimate).
- * - When absent, the engine fingerprints the full validated arguments object.
+ * - Return `null` to exempt THIS call from detection (e.g. a legitimate
+ *   repeat the tool can recognize from its arguments).
+ * - Returning `undefined` (a bare `return;`) is treated as a bug: the
+ *   engine warns and falls back to the full-arguments identity.
  *
  * Must be pure and deterministic. A throwing `loopKey` falls back to the
  * full-arguments fingerprint (detection must never take down a run).
@@ -202,6 +203,22 @@ export type ToolLoopKeyFn<TInput> = {
   // Bivariant params — see NextTurnParamsFunctions.
   bivarianceHack(params: TInput): unknown;
 }['bivarianceHack'];
+
+/**
+ * Doom-loop identity declaration for a tool (see the `doomLoop` option on
+ * `callModel`). A tool provides a **function or a variable** describing how
+ * its calls are fingerprinted, so the harness can flag duplicates:
+ *
+ * - function — computes key material per call ({@link ToolLoopKeyFn});
+ *   `null` exempts individual calls.
+ * - `readonly string[]` — declarative field subset of the arguments, e.g.
+ *   `['command', 'cwd']` for a bash tool. Data, not code: serializable, so
+ *   it survives tool caches and can be advertised over the MCP wire.
+ * - `false` — this tool is statically exempt (repetition is its job, e.g. a
+ *   status poller).
+ * - absent — the full validated arguments object is the identity.
+ */
+export type ToolLoopKey<TInput> = ToolLoopKeyFn<TInput> | readonly string[] | false;
 
 /**
  * Content item types for tool output to model.
@@ -273,10 +290,11 @@ export interface BaseToolFunction<
    */
   requireApproval?: boolean | ToolApprovalCheck<zodInfer<TInput>>;
   /**
-   * Doom-loop identity for this tool's calls — see {@link ToolLoopKeyFn}.
-   * Absent: the full validated arguments object is the identity.
+   * Doom-loop identity for this tool's calls — see {@link ToolLoopKey}.
+   * Function, field-name array, or `false` (exempt). Absent: the full
+   * validated arguments object is the identity.
    */
-  loopKey?: ToolLoopKeyFn<zodInfer<TInput>>;
+  loopKey?: ToolLoopKey<zodInfer<TInput>>;
 }
 
 /**

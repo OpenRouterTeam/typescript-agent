@@ -271,7 +271,7 @@ describe('simulated LLM repeating the same tool call', () => {
     const blocked = outputs[outputs.length - 1];
     expect(blocked?.output).toContain('Doom loop suspected');
     expect(blocked?.output).toContain('web_search');
-    expect(blocked?.output).toContain('3 consecutive times');
+    expect(blocked?.output).toContain('3 consecutive rounds');
   });
 
   it('stops the run at the stop threshold instead of spending forever', async () => {
@@ -870,8 +870,7 @@ describe('tool-declared loopKey', () => {
         ],
       ]);
       expect(warn).toHaveBeenCalledWith(
-        expect.stringContaining('loopKey for tool "flaky" threw'),
-        expect.any(Error),
+        expect.stringContaining('loopKey threw (loopKey bug); falling back to full arguments'),
       );
     } finally {
       warn.mockRestore();
