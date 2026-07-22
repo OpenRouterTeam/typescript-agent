@@ -216,7 +216,11 @@ export {
   getUnsupportedContentSummary,
   hasUnsupportedContent,
 } from './lib/stream-transformers.js';
-export type { BuiltDeferredTool, DeferredToolMethods } from './lib/tool.js';
+export type {
+  BuiltDeferredTool,
+  DeferredToolMethods,
+  ServerToolOptions,
+} from './lib/tool.js';
 // Tool creation helpers (tool also carries tool.background / tool.deferred)
 export { markMcp, serverTool, tool } from './lib/tool.js';
 // Universal task-tool helpers
@@ -272,6 +276,7 @@ export type {
   ResponseStreamEvent,
   ResponseStreamEvent as EnhancedResponseStreamEvent,
   ServerTool,
+  ServerToolBase,
   ServerToolConfig,
   ServerToolResultItem,
   ServerToolType,
