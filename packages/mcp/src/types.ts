@@ -1,4 +1,4 @@
-import type { Tool } from '@openrouter/agent/tool-types';
+import type { Tool, ToolLoopKey } from '@openrouter/agent/tool-types';
 import type { MCPAuth } from './auth/auth-types.js';
 import type { MCPCacheStore } from './cache/cache-store.js';
 import type { UnconvertibleSchemaMode } from './schema/json-schema-to-zod.js';
@@ -84,6 +84,17 @@ export interface CreateMCPToolsOptions {
   resources?: ResourcesOption;
   /** Map MCP progress notifications to generator-tool events. Default true. */
   emitProgress?: boolean;
+  /**
+   * Doom-loop identities for wrapped tools (see the `doomLoop` option on
+   * `callModel`), keyed by the tool's UNPREFIXED MCP name. Any `ToolLoopKey`
+   * form: a function computing key material, a declarative field-name array
+   * (e.g. `{ run_command: ['command', 'cwd'] }`), or `false` to exempt a
+   * tool. Takes precedence over a server-advertised
+   * `_meta['openrouter/loopKey']` declaration. Function forms are
+   * client-side only (they cannot be cached or transported); prefer field
+   * lists where possible.
+   */
+  loopKeys?: Readonly<Record<string, ToolLoopKey<Record<string, unknown>>>>;
   /** Auto-refresh tools on `tools/list_changed`. Default true when connected. */
   autoRefreshOnListChanged?: boolean;
   /** Handler for server-initiated elicitation; auto-declines when omitted. */

@@ -7,6 +7,8 @@ export interface SerializedMCPToolDef {
   description?: string;
   inputSchema: Readonly<Record<string, unknown>>;
   outputSchema?: Readonly<Record<string, unknown>>;
+  /** Server-advertised doom-loop identity (field list or `false`), if any. */
+  loopKey?: readonly string[] | false;
 }
 
 /** OAuth/bearer token material, persisted only when `cacheCredentials` is on. */
