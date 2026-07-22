@@ -1,8 +1,8 @@
 {
   "name": "@openrouter/agent-tool-set",
-  "version": "0.1.0",
+  "version": "0.0.0",
   "author": "OpenRouter",
-  "description": "Declarative activation/deactivation for @openrouter/agent tools. Port of ai-tool-set (MIT © zirkelc) adapted for callModel + tool().",
+  "description": "Declarative activation/deactivation for @openrouter/agent tools. Port of ai-tool-set (MIT © Chris Cook) adapted for callModel + tool().",
   "keywords": [
     "openrouter",
     "agent",
@@ -34,7 +34,8 @@
   "files": [
     "esm",
     "package.json",
-    "README.md"
+    "README.md",
+    "THIRD_PARTY_NOTICES.md"
   ],
   "scripts": {
     "lint": "biome check src tests",

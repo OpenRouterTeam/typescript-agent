@@ -2,7 +2,7 @@
 
 Declarative, state-aware activation and deactivation for tools used with `@openrouter/agent`.
 
-Port of [`ai-tool-set`](https://github.com/zirkelc/ai-tool-set) v1.0.0 (MIT © zirkelc), adapted for this SDK:
+Port of [`ai-tool-set`](https://github.com/zirkelc/ai-tool-set) v1.0.0 (MIT © Chris Cook), adapted for this SDK. See [`THIRD_PARTY_NOTICES.md`](./THIRD_PARTY_NOTICES.md).
 
 - Input is an ordered array of `Tool` (as used by `callModel`), not a name-keyed record.
 - Predicates receive `{ state, context }` where `state` is the SDK's `ConversationState` and `context` is the typed shared context.
