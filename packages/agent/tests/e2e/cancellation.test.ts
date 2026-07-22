@@ -80,13 +80,29 @@ describe('run cancellation E2E', () => {
     // and far shorter than the ~20s+ full generation.
     const abortTimer = setTimeout(() => controller.abort(reason), 1500);
 
+    const RESOLVED = Symbol('resolved');
     const startedAt = performance.now();
-    try {
-      await expect(run).rejects.toThrow();
-    } finally {
-      clearTimeout(abortTimer);
-    }
+    const rejection: unknown = await run.then(
+      () => RESOLVED,
+      (error: unknown) => error,
+    );
+    clearTimeout(abortTimer);
+    // Must reject — resolving means the abort never reached the transport.
+    expect(rejection).not.toBe(RESOLVED);
     const elapsed = performance.now() - startedAt;
+
+    // The rejection must trace back to OUR abort — a bare "anything threw"
+    // would pass vacuously on an unrelated transport/auth failure. The SDK
+    // wraps mid-flight aborts (UnexpectedClientError) with the abort reason
+    // as `cause`; a pre-stream abort may surface the reason directly.
+    const chain: unknown[] = [];
+    for (let e = rejection; e !== undefined && e !== null; e = (e as Error).cause) {
+      chain.push(e);
+      if (chain.length > 5) {
+        break;
+      }
+    }
+    expect(chain).toContain(reason);
 
     // The contract under test: fail-fast. Without the composed signal
     // reaching the fetch, this would resolve (or hang) only after the
@@ -118,13 +134,16 @@ describe('run cancellation E2E', () => {
           },
         )
         .getText(),
-    ).rejects.toThrow();
+    ).rejects.toMatchObject({
+      // AbortSignal.timeout's DOMException — proves THE TIMEOUT fired, not
+      // an unrelated transport/auth failure passing vacuously.
+      name: 'TimeoutError',
+    });
     const elapsed = performance.now() - startedAt;
 
     // Must settle near the 2.5s timeout, not after the full generation.
     expect(elapsed).toBeLessThan(15000);
-    // And not BEFORE the timeout could have fired (guards against the
-    // request failing for an unrelated reason and passing vacuously).
+    // And not meaningfully before the timeout could have fired.
     expect(elapsed).toBeGreaterThanOrEqual(2000);
   });
 

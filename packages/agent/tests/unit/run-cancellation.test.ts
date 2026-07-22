@@ -275,32 +275,38 @@ describe('per-request timeoutMs composition', () => {
     expect(options.signal).toBeUndefined();
   });
 
+  // NOTE on real timers (documented exception to the fake-timer rule): the
+  // engine's per-request timeout is AbortSignal.timeout(), which runs on
+  // Node-internal timers that vitest fake timers cannot fake. Faking the
+  // mockable globals while AbortSignal.timeout stays real would make these
+  // tests pass vacuously (near-zero real time elapses, so a WRONG shared
+  // per-run timer would never fire either). Budgets are kept tiny (≤150ms)
+  // so the suite stays fast, and assertions are on outcomes, not timings.
   it('timeoutMs STILL bounds each request when a run signal is present', async () => {
     // The SDK skips its timeoutMs wiring whenever a signal is supplied —
     // the engine must re-create the timeout inside the composed signal or
     // the caller's timeout would be silently dropped.
-    vi.useFakeTimers();
-    try {
-      const controller = new AbortController();
+    const controller = new AbortController();
 
-      mockBetaResponsesSend.mockImplementation(
-        (
-          _client,
-          _req,
-          options: {
-            signal?: AbortSignal;
-          },
-        ) => {
-          // Hung provider; only the composed timeout can end this.
-          const { promise, reject } = Promise.withResolvers<never>();
-          options.signal?.addEventListener('abort', () => reject(options.signal?.reason), {
-            once: true,
-          });
-          return promise;
+    mockBetaResponsesSend.mockImplementation(
+      (
+        _client,
+        _req,
+        options: {
+          signal?: AbortSignal;
         },
-      );
+      ) => {
+        // Hung provider; only the composed timeout can end this.
+        const { promise, reject } = Promise.withResolvers<never>();
+        options.signal?.addEventListener('abort', () => reject(options.signal?.reason), {
+          once: true,
+        });
+        return promise;
+      },
+    );
 
-      const run = callModel(
+    await expect(
+      callModel(
         client,
         {
           model: 'test-model',
@@ -308,92 +314,79 @@ describe('per-request timeoutMs composition', () => {
           signal: controller.signal,
         },
         {
-          timeoutMs: 1000,
+          timeoutMs: 50,
         },
-      ).getText();
-      const outcome = expect(run).rejects.toMatchObject({
-        name: 'TimeoutError',
-      });
-
-      await vi.advanceTimersByTimeAsync(1100);
-      await outcome;
-    } finally {
-      vi.useRealTimers();
-    }
+      ).getText(),
+    ).rejects.toMatchObject({
+      name: 'TimeoutError',
+    });
   });
 
   it('the composed timeout is created per dispatch, not shared across turns', async () => {
-    // Two sequential requests, each taking 60% of the timeout budget: a
-    // per-run timer would fire during request 2; per-request timers never
-    // fire. Uses fake timers for determinism.
-    vi.useFakeTimers();
-    try {
-      const controller = new AbortController();
-      let call = 0;
-      mockBetaResponsesSend.mockImplementation(
-        (
-          _client,
-          _req,
-          options: {
-            signal?: AbortSignal;
+    // Two sequential requests, each taking ~66% of the timeout budget
+    // (80ms of 120ms): a SHARED per-run timer would fire during request 2
+    // and reject the run; per-dispatch timers never fire and the run
+    // completes. Real delays are required — see the note above — and are
+    // the discriminating variable here, not a race guess.
+    const controller = new AbortController();
+    let call = 0;
+    mockBetaResponsesSend.mockImplementation(
+      (
+        _client,
+        _req,
+        options: {
+          signal?: AbortSignal;
+        },
+      ) => {
+        call++;
+        const value =
+          call === 1
+            ? toolCallTurn('echo', {
+                value: 'x',
+              })
+            : textTurn('done');
+        const { promise, resolve, reject } = Promise.withResolvers<{
+          ok: true;
+          value: models.OpenResponsesResult;
+        }>();
+        const timer = setTimeout(
+          () =>
+            resolve({
+              ok: true,
+              value,
+            }),
+          80,
+        );
+        options.signal?.addEventListener(
+          'abort',
+          () => {
+            clearTimeout(timer);
+            reject(options.signal?.reason);
           },
-        ) => {
-          call++;
-          const value =
-            call === 1
-              ? toolCallTurn('echo', {
-                  value: 'x',
-                })
-              : textTurn('done');
-          const { promise, resolve, reject } = Promise.withResolvers<{
-            ok: true;
-            value: models.OpenResponsesResult;
-          }>();
-          // Fake-timer-driven provider latency (600ms < the 1000ms budget);
-          // deterministic via vi.advanceTimersByTimeAsync in the test body.
-          const timer = setTimeout(
-            () =>
-              resolve({
-                ok: true,
-                value,
-              }),
-            600,
-          );
-          options.signal?.addEventListener(
-            'abort',
-            () => {
-              clearTimeout(timer);
-              reject(options.signal?.reason);
-            },
-            {
-              once: true,
-            },
-          );
-          return promise;
-        },
-      );
+          {
+            once: true,
+          },
+        );
+        return promise;
+      },
+    );
 
-      const run = callModel(
-        client,
-        {
-          model: 'test-model',
-          input: 'go',
-          tools: [
-            echoTool,
-          ] as const,
-          signal: controller.signal,
-        },
-        {
-          timeoutMs: 1000,
-        },
-      ).getText();
+    const text = await callModel(
+      client,
+      {
+        model: 'test-model',
+        input: 'go',
+        tools: [
+          echoTool,
+        ] as const,
+        signal: controller.signal,
+      },
+      {
+        timeoutMs: 120,
+      },
+    ).getText();
 
-      const textPromise = run.then((text) => text);
-      await vi.advanceTimersByTimeAsync(1300); // 600ms + 600ms, both under 1000ms individually
-      await expect(textPromise).resolves.toBe('done');
-      expect(mockBetaResponsesSend).toHaveBeenCalledTimes(2);
-    } finally {
-      vi.useRealTimers();
-    }
+    expect(text).toBe('done');
+    expect(mockBetaResponsesSend).toHaveBeenCalledTimes(2);
   });
 });
