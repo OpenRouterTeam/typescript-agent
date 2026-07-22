@@ -145,8 +145,9 @@ type GeneratorToolConfig<
 type ManualToolConfig<
   TInput extends $ZodObject<$ZodShape>,
   TCtx extends $ZodObject<$ZodShape> = $ZodObject<$ZodShape>,
+  TName extends string = string,
 > = {
-  name: string; // Manual tools don't use TName since they have no execute
+  name: TName;
   description?: string;
   inputSchema: TInput;
   /** Strict schema adherence for tool-call generation — see {@link BaseToolFunction.strict} */
@@ -447,7 +448,7 @@ export function tool<
   TName extends string = string,
 >(
   config: GeneratorToolConfig<TInput, TEvent, TOutput, TCtx, TName>,
-): ToolWithGenerator<TInput, TEvent, TOutput, Record<string, unknown>, TCtx>;
+): ToolWithGenerator<TInput, TEvent, TOutput, Record<string, unknown>, TCtx, TName>;
 
 // Overload for HITL tools (when onToolCalled is provided)
 export function tool<
@@ -457,13 +458,16 @@ export function tool<
   TName extends string = string,
 >(
   config: HITLToolConfig<TInput, TOutput, TCtx, TName>,
-): HITLTool<TInput, TOutput, Record<string, unknown>, TCtx>;
+): HITLTool<TInput, TOutput, Record<string, unknown>, TCtx, TName>;
 
 // Overload for manual tools (execute: false)
 export function tool<
   TInput extends $ZodObject<$ZodShape>,
   TCtx extends $ZodObject<$ZodShape> = $ZodObject<$ZodShape>,
->(config: ManualToolConfig<TInput, TCtx>): ManualTool<TInput, $ZodType<unknown>, TCtx>;
+  TName extends string = string,
+>(
+  config: ManualToolConfig<TInput, TCtx, TName>,
+): ManualTool<TInput, $ZodType<unknown>, TCtx, TName>;
 
 // Overload for regular tools with outputSchema
 export function tool<
@@ -473,7 +477,7 @@ export function tool<
   TName extends string = string,
 >(
   config: RegularToolConfigWithOutput<TInput, TOutput, TCtx, TName>,
-): ToolWithExecute<TInput, TOutput, Record<string, unknown>, TCtx>;
+): ToolWithExecute<TInput, TOutput, Record<string, unknown>, TCtx, TName>;
 
 // Overload for regular tools without outputSchema (infers return type)
 export function tool<
@@ -483,7 +487,7 @@ export function tool<
   TName extends string = string,
 >(
   config: RegularToolConfigWithoutOutput<TInput, TReturn, TCtx, TName>,
-): ToolWithExecute<TInput, $ZodType<TReturn>, Record<string, unknown>, TCtx>;
+): ToolWithExecute<TInput, $ZodType<TReturn>, Record<string, unknown>, TCtx, TName>;
 
 // Overload for explicit TShared: tool<SharedContext>({...})
 // When a non-ZodObject type is provided as the first generic,
