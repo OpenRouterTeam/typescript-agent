@@ -85,13 +85,22 @@ type BaseCallModelInput<
   /**
    * When the loop exits because `stopWhen` was met and the last response
    * still contained tool calls, execute those pending tool calls (so they
-   * have matching outputs) and then make one more model request with no
-   * tools so the model produces a final text response.
+   * have matching outputs) and then make one more model request with
+   * `toolChoice: 'none'` so the model produces a final text response.
+   * Tools stay in the request — only calling is forbidden — so the
+   * prompt-cache prefix is preserved.
    *
-   * - `true` (or `''`) — re-prompt with the accumulated conversation and no
-   *   tools.
-   * - non-empty string — additionally append that string as a final user
-   *   message (e.g. `"Please summarize what you've learned"`).
+   * **Default: on.** Omitting the option behaves like `true`.
+   *
+   * - `true` / omitted — re-prompt with the accumulated conversation and a
+   *   default final-answer directive appended as a user message
+   *   (`DEFAULT_FINAL_RESPONSE_DIRECTIVE`). Without the directive, models
+   *   that emit tool-call syntax as text may leak an unparsed tool call
+   *   into the final content.
+   * - non-empty string — append that string as the final user message
+   *   instead of the default (e.g. `"Please summarize what you've learned"`).
+   * - `''` — no final user message; tool calls are still forbidden.
+   * - `false` — no final turn; the run ends on the halted tool-call turn.
    *
    * The full accumulated input array and the original `instructions` are
    * sent. Manual (non-executable) tool calls in the halted turn are paired
@@ -208,7 +217,7 @@ export async function resolveAsyncFunctions<TTools extends readonly Tool[] = rea
     'sharedContextSchema', // Client-side schema for shared context validation
     'onTurnStart', // Client-side turn start callback
     'onTurnEnd', // Client-side turn end callback
-    'allowFinalResponse', // Client-side: triggers no-tools final turn when stopWhen breaks the loop
+    'allowFinalResponse', // Client-side: tunes the default toolChoice:'none' final turn when stopWhen breaks the loop
     'strictFinalResponse', // Client-side: restore throw on empty final after tool rounds
     'hooks', // Client-side hook system
   ]);

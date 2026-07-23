@@ -1892,6 +1892,64 @@ describe('callModel E2E Tests', () => {
       expect(text.length).toBeGreaterThan(0);
     }, 30000);
 
+    // Regression: DEV-658. The forced final turn used to strip tools and
+    // append no directive, so models that emit tool-call syntax as text
+    // (GLM) would attempt another call and leak unparsed `<tool_call>…`
+    // into content. Reproduced 3/3 on the legacy path (no directive) and
+    // 0/3 with the directive — this test discriminates the fix. The final
+    // turn now keeps tools with `toolChoice: 'none'` and is on by default,
+    // so the option is deliberately omitted here.
+    it('DEV-658: default final turn must not leak raw tool-call syntax on GLM', {
+      retry: 1,
+      timeout: 120000,
+    }, async () => {
+      const leakPattern = /<tool_call|<\|tool|<tool▁|\[TOOL_CALL\]|<function=/i;
+      const searchTool = {
+        type: ToolType.Function,
+        function: {
+          name: 'web_search',
+          description: 'Search the web for information.',
+          inputSchema: z.object({
+            query: z.string(),
+          }),
+          outputSchema: z.object({
+            results: z.string(),
+          }),
+          // Unhelpful results pressure the model to try another search on
+          // the final turn — the exact condition that leaked pre-fix.
+          execute: async (params: { query: string }) => ({
+            results: `No useful results for "${params.query}". Try a refined query.`,
+          }),
+        },
+      } as const;
+
+      const response = client.callModel({
+        model: 'z-ai/glm-5.2',
+        input:
+          'Find the year in which the architect who designed the main library of the university where the 2019 Nobel laureate in Economics (the one born in Mumbai) earned his PhD was born. Research step by step with web searches and verify each fact.',
+        tools: [
+          searchTool,
+        ] as const,
+        stopWhen: stepCountIs(1),
+        // allowFinalResponse omitted — default-on path under test
+      });
+
+      const finalResponse = await response.getResponse();
+      const text = await response.getText();
+
+      // A real answer, not an empty turn.
+      expect(text.length).toBeGreaterThan(0);
+      // No unparsed tool-call syntax leaked into content.
+      expect(text).not.toMatch(leakPattern);
+      // The forced final turn produced no structured tool calls either.
+      const outputItems = Array.isArray(finalResponse.output)
+        ? finalResponse.output
+        : [
+            finalResponse.output,
+          ];
+      expect(outputItems.filter((item) => item?.type === 'function_call')).toHaveLength(0);
+    });
+
     it('should append string allowFinalResponse as a user message', async () => {
       const response = client.callModel({
         model: 'anthropic/claude-haiku-4.5',

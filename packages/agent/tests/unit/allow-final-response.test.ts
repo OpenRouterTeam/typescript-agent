@@ -10,6 +10,7 @@ vi.mock('@openrouter/sdk/funcs/betaResponsesSend', () => ({
 }));
 
 import { callModel } from '../../src/inner-loop/call-model.js';
+import { DEFAULT_FINAL_RESPONSE_DIRECTIVE } from '../../src/lib/model-result.js';
 import { stepCountIs } from '../../src/lib/stop-conditions.js';
 import { ToolType } from '../../src/lib/tool-types.js';
 
@@ -106,7 +107,7 @@ describe('allowFinalResponse', () => {
     mockBetaResponsesSend.mockReset();
   });
 
-  it('makes a no-tools follow-up request when stopWhen halts mid-tool-call', async () => {
+  it("makes a toolChoice:'none' follow-up request when stopWhen halts mid-tool-call", async () => {
     mockBetaResponsesSend
       .mockResolvedValueOnce({
         ok: true,
@@ -137,10 +138,10 @@ describe('allowFinalResponse', () => {
 
     const secondCallRequest = mockBetaResponsesSend.mock.calls[1]?.[1]?.responsesRequest;
     expect(secondCallRequest).toBeDefined();
-    // Tool-related fields are stripped.
-    expect(secondCallRequest).not.toHaveProperty('tools');
-    expect(secondCallRequest).not.toHaveProperty('toolChoice');
-    expect(secondCallRequest).not.toHaveProperty('parallelToolCalls');
+    // Tools stay in the request (prompt-cache prefix preserved); calling is
+    // forbidden via toolChoice, overriding the caller's 'required'.
+    expect(secondCallRequest).toHaveProperty('tools');
+    expect(secondCallRequest.toolChoice).toBe('none');
     // Instructions ride along.
     expect(secondCallRequest.instructions).toBe('You are a weather assistant.');
     // Input contains the function_call from the halted turn AND a matching
@@ -184,6 +185,49 @@ describe('allowFinalResponse', () => {
     // The tool's execute fn returned { temperature: 22 } — that's the real
     // output, NOT a stub.
     expect(fnCallOutput?.output).toContain('"temperature":22');
+    // Bare `true` appends the built-in final-answer directive as the last
+    // user message so tool-syntax-emitting models don't leak an unparsed
+    // tool call into content (DEV-658).
+    const lastItem = input[input.length - 1] as {
+      role?: string;
+      content?: string;
+    };
+    expect(lastItem.role).toBe('user');
+    expect(lastItem.content).toBe(DEFAULT_FINAL_RESPONSE_DIRECTIVE);
+  });
+
+  it('is on by default: omitted allowFinalResponse still makes the final turn with the directive', async () => {
+    mockBetaResponsesSend
+      .mockResolvedValueOnce({
+        ok: true,
+        value: toolCallResponse(),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        value: textResponse('Final summary.'),
+      });
+
+    const text = await callModel(client, {
+      model: 'test-model',
+      input: 'What is the weather?',
+      tools: [
+        weatherTool,
+      ] as const,
+      stopWhen: stepCountIs(0),
+      // allowFinalResponse deliberately omitted
+    }).getText();
+
+    expect(text).toBe('Final summary.');
+    expect(mockBetaResponsesSend).toHaveBeenCalledTimes(2);
+    const secondCallRequest = mockBetaResponsesSend.mock.calls[1]?.[1]?.responsesRequest;
+    expect(secondCallRequest.toolChoice).toBe('none');
+    const input = secondCallRequest?.input as unknown[];
+    const lastItem = input[input.length - 1] as {
+      role?: string;
+      content?: string;
+    };
+    expect(lastItem.role).toBe('user');
+    expect(lastItem.content).toBe(DEFAULT_FINAL_RESPONSE_DIRECTIVE);
   });
 
   it('appends a non-empty string allowFinalResponse as a user message', async () => {
