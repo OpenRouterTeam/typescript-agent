@@ -283,13 +283,8 @@ type InferServerToolOutputsUnion<TTools extends readonly Tool[]> = InferServerTo
  * `true extends (distributed-check)` so distribution over a union yields
  * `true` when any member matches (not `boolean`).
  */
-type HasClientTool<TTools extends readonly Tool[]> = true extends (
-  TTools[number] extends ClientTool
-    ? true
-    : never
-)
-  ? true
-  : false;
+type HasClientTool<TTools extends readonly Tool[]> =
+  Extract<TTools[number], ClientTool> extends never ? false : true;
 
 /**
  * Widest possible streamable output — every item type the API can emit

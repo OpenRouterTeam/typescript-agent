@@ -106,8 +106,9 @@ type GeneratorToolConfig<
 type ManualToolConfig<
   TInput extends $ZodObject<$ZodShape>,
   TCtx extends $ZodObject<$ZodShape> = $ZodObject<$ZodShape>,
+  TName extends string = string,
 > = {
-  name: string; // Manual tools don't use TName since they have no execute
+  name: TName;
   description?: string;
   inputSchema: TInput;
   /** Zod schema declaring the context data this tool needs */
@@ -252,7 +253,7 @@ export function tool<
   TName extends string = string,
 >(
   config: GeneratorToolConfig<TInput, TEvent, TOutput, TCtx, TName>,
-): ToolWithGenerator<TInput, TEvent, TOutput, Record<string, unknown>, TCtx>;
+): ToolWithGenerator<TInput, TEvent, TOutput, Record<string, unknown>, TCtx, TName>;
 
 // Overload for HITL tools (when onToolCalled is provided)
 export function tool<
@@ -262,13 +263,16 @@ export function tool<
   TName extends string = string,
 >(
   config: HITLToolConfig<TInput, TOutput, TCtx, TName>,
-): HITLTool<TInput, TOutput, Record<string, unknown>, TCtx>;
+): HITLTool<TInput, TOutput, Record<string, unknown>, TCtx, TName>;
 
 // Overload for manual tools (execute: false)
 export function tool<
   TInput extends $ZodObject<$ZodShape>,
   TCtx extends $ZodObject<$ZodShape> = $ZodObject<$ZodShape>,
->(config: ManualToolConfig<TInput, TCtx>): ManualTool<TInput, $ZodType<unknown>, TCtx>;
+  TName extends string = string,
+>(
+  config: ManualToolConfig<TInput, TCtx, TName>,
+): ManualTool<TInput, $ZodType<unknown>, TCtx, TName>;
 
 // Overload for regular tools with outputSchema
 export function tool<
@@ -278,7 +282,7 @@ export function tool<
   TName extends string = string,
 >(
   config: RegularToolConfigWithOutput<TInput, TOutput, TCtx, TName>,
-): ToolWithExecute<TInput, TOutput, Record<string, unknown>, TCtx>;
+): ToolWithExecute<TInput, TOutput, Record<string, unknown>, TCtx, TName>;
 
 // Overload for regular tools without outputSchema (infers return type)
 export function tool<
@@ -288,15 +292,25 @@ export function tool<
   TName extends string = string,
 >(
   config: RegularToolConfigWithoutOutput<TInput, TReturn, TCtx, TName>,
-): ToolWithExecute<TInput, $ZodType<TReturn>, Record<string, unknown>, TCtx>;
+): ToolWithExecute<TInput, $ZodType<TReturn>, Record<string, unknown>, TCtx, TName>;
 
 // Overload for explicit TShared: tool<SharedContext>({...})
 // When a non-ZodObject type is provided as the first generic,
 // the specific overloads above won't match (constraint mismatch),
 // so TypeScript falls through to this catch-all.
-export function tool<TShared extends Record<string, unknown>>(
-  config: ToolConfigWithSharedContext<TShared>,
-): Tool;
+export function tool<
+  TShared extends Record<string, unknown>,
+  TName extends string = string,
+  TCtx extends $ZodObject<$ZodShape> = $ZodObject<$ZodShape>,
+>(
+  config: ToolConfigWithSharedContext<TShared, TCtx> & {
+    name: TName;
+  },
+): Tool & {
+  function: {
+    name: TName;
+  };
+};
 
 // Implementation
 export function tool(
@@ -482,6 +496,18 @@ export function tool(
 //#region serverTool() Factory
 
 /**
+ * Options for {@link serverTool}.
+ * @template TId Stable tool-set identity used by `@openrouter/agent-tool-set`.
+ */
+export type ServerToolOptions<TId extends string = string> = {
+  /**
+   * Override the default tool-set ID (`server:${config.type}`).
+   * Useful when two server tools of the same type need distinct activation IDs.
+   */
+  id?: TId;
+};
+
+/**
  * Creates an OpenRouter server-executed tool. OpenRouter runs the tool (web
  * search, datetime, image generation, etc.) and returns the output item in
  * the response — no client-side execute function is needed.
@@ -492,26 +518,36 @@ export function tool(
  * in this SDK. Provide the `type` literal and the remaining fields narrow
  * to match the chosen tool.
  *
+ * Each server tool carries a stable tool-set `id` (default `server:${type}`)
+ * so activation APIs can address it. Override via the optional second argument.
+ *
  * @example
  * ```typescript
  * const tools = [
  *   serverTool({ type: 'web_search_2025_08_26', engine: 'exa', maxResults: 10 }),
  *   serverTool({ type: 'openrouter:datetime', parameters: { timezone: 'UTC' } }),
  *   serverTool({ type: 'image_generation', size: '1024x1024', quality: 'high' }),
+ *   serverTool({ type: 'web_search_2025_08_26' }, { id: 'server:public_search' }),
  * ];
  * ```
  */
-export function serverTool<T extends ServerToolType>(
+export function serverTool<T extends ServerToolType, TId extends string = `server:${T}`>(
   config: Extract<
     ServerToolConfig,
     {
       type: T;
     }
   >,
-): ServerTool<T> {
+  options?: ServerToolOptions<TId>,
+): ServerTool<T, TId> {
+  if (options?.id === '') {
+    throw new Error('Server tool ID must not be empty');
+  }
+  const id = (options?.id ?? (`server:${config.type}` as const)) as TId;
   return {
     _brand: 'server-tool',
     config,
+    id,
   };
 }
 

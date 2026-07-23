@@ -57,10 +57,11 @@ import { applyOnResponseReceivedHooks, executeTool } from './tool-executor.js';
 import type {
   ConversationState,
   ConversationStatus,
+  CorrelatedResponseStreamEvent,
+  CorrelatedToolStreamEvent,
   InferToolEventsUnion,
   InferToolOutputsUnion,
   ParsedToolCall,
-  ResponseStreamEvent,
   ServerToolResultItem,
   StateAccessor,
   StopWhen,
@@ -68,7 +69,6 @@ import type {
   ToolCallOutputEvent,
   ToolContextMapWithShared,
   ToolResultItem,
-  ToolStreamEvent,
   TurnContext,
   TurnEndEvent,
   TurnStartEvent,
@@ -351,11 +351,13 @@ export class ModelResult<
     | {
         type: 'preliminary_result';
         toolCallId: string;
+        toolName: string;
         result: InferToolEventsUnion<TTools>;
       }
     | {
         type: 'tool_result';
         toolCallId: string;
+        toolName: string;
         source: 'client' | 'mcp';
         result: InferToolOutputsUnion<TTools>;
         preliminaryResults?: InferToolEventsUnion<TTools>[];
@@ -394,9 +396,8 @@ export class ModelResult<
   private isResumingFromApproval = false;
 
   // Unified turn broadcaster for multi-turn streaming
-  private turnBroadcaster: ToolEventBroadcaster<
-    ResponseStreamEvent<InferToolEventsUnion<TTools>, InferToolOutputsUnion<TTools>>
-  > | null = null;
+  private turnBroadcaster: ToolEventBroadcaster<CorrelatedResponseStreamEvent<TTools>> | null =
+    null;
   private initialStreamPipeStarted = false;
   private initialPipePromise: Promise<void> | null = null;
 
@@ -469,9 +470,7 @@ export class ModelResult<
    * Get or create the unified turn broadcaster (lazy initialization).
    * Broadcasts all API stream events, tool events, and turn delimiters across turns.
    */
-  private ensureTurnBroadcaster(): ToolEventBroadcaster<
-    ResponseStreamEvent<InferToolEventsUnion<TTools>, InferToolOutputsUnion<TTools>>
-  > {
+  private ensureTurnBroadcaster(): ToolEventBroadcaster<CorrelatedResponseStreamEvent<TTools>> {
     if (!this.turnBroadcaster) {
       this.turnBroadcaster = new ToolEventBroadcaster();
     }
@@ -582,6 +581,7 @@ export class ModelResult<
    */
   private broadcastToolResult(
     toolCallId: string,
+    toolName: string,
     source: 'client' | 'mcp',
     result: InferToolOutputsUnion<TTools>,
     preliminaryResults?: InferToolEventsUnion<TTools>[],
@@ -589,6 +589,7 @@ export class ModelResult<
     this.toolEventBroadcaster?.push({
       type: 'tool_result' as const,
       toolCallId,
+      toolName,
       source,
       result,
       ...(preliminaryResults?.length && {
@@ -598,13 +599,14 @@ export class ModelResult<
     this.turnBroadcaster?.push({
       type: 'tool.result' as const,
       toolCallId,
+      toolName,
       source,
       result,
       timestamp: Date.now(),
       ...(preliminaryResults?.length && {
         preliminaryResults,
       }),
-    });
+    } as CorrelatedResponseStreamEvent<TTools>);
   }
 
   /**
@@ -613,19 +615,22 @@ export class ModelResult<
    */
   private broadcastPreliminaryResult(
     toolCallId: string,
+    toolName: string,
     result: InferToolEventsUnion<TTools>,
   ): void {
     this.toolEventBroadcaster?.push({
       type: 'preliminary_result' as const,
       toolCallId,
+      toolName,
       result,
     });
     this.turnBroadcaster?.push({
       type: 'tool.preliminary_result' as const,
       toolCallId,
+      toolName,
       result,
       timestamp: Date.now(),
-    });
+    } as CorrelatedResponseStreamEvent<TTools>);
   }
 
   /**
@@ -633,9 +638,7 @@ export class ModelResult<
    * Used by stream methods that need to iterate over all turns.
    */
   private startTurnBroadcasterExecution(): {
-    consumer: AsyncIterableIterator<
-      ResponseStreamEvent<InferToolEventsUnion<TTools>, InferToolOutputsUnion<TTools>>
-    >;
+    consumer: AsyncIterableIterator<CorrelatedResponseStreamEvent<TTools>>;
     executionPromise: Promise<void>;
   } {
     const broadcaster = this.ensureTurnBroadcaster();
@@ -1524,7 +1527,7 @@ export class ModelResult<
       );
 
       if (hookOutcome.type === 'parse_error') {
-        this.broadcastToolResult(tc.id, isMcpTool(tool) ? 'mcp' : 'client', {
+        this.broadcastToolResult(tc.id, String(tc.name), isMcpTool(tool) ? 'mcp' : 'client', {
           error: hookOutcome.errorMessage,
         } as InferToolOutputsUnion<TTools>);
         return createRejectedResult(tc.id, String(tc.name), hookOutcome.errorMessage);
@@ -1893,7 +1896,7 @@ export class ModelResult<
       ? (callId: string, resultValue: unknown) => {
           const typedResult = resultValue as InferToolEventsUnion<TTools>;
           preliminaryResultsForCall.push(typedResult);
-          this.broadcastPreliminaryResult(callId, typedResult);
+          this.broadcastPreliminaryResult(callId, String(toolCall.name), typedResult);
         }
       : undefined;
 
@@ -1903,9 +1906,14 @@ export class ModelResult<
     // shared `parse_error` / `hook_blocked` branch.
     const executed = await this.runToolWithHooks(tool, toolCall, turnContext, onPreliminaryResult);
     if (executed.type === 'parse_error') {
-      this.broadcastToolResult(toolCall.id, isMcpTool(tool) ? 'mcp' : 'client', {
-        error: executed.errorMessage,
-      } as InferToolOutputsUnion<TTools>);
+      this.broadcastToolResult(
+        toolCall.id,
+        String(toolCall.name),
+        isMcpTool(tool) ? 'mcp' : 'client',
+        {
+          error: executed.errorMessage,
+        } as InferToolOutputsUnion<TTools>,
+      );
       return executed;
     }
     if (executed.type === 'hook_blocked') {
@@ -1959,6 +1967,7 @@ export class ModelResult<
         // `runToolWithHooks` is the single point of emission for PostToolUseFailure.
         this.broadcastToolResult(
           originalToolCall.id,
+          originalToolCall.name,
           this.toolSourceByName(originalToolCall.name),
           {
             error: errorMessage,
@@ -2015,6 +2024,7 @@ export class ModelResult<
       ) as InferToolOutputsUnion<TTools>;
       this.broadcastToolResult(
         value.toolCall.id,
+        String(value.toolCall.name),
         isMcpTool(value.tool) ? 'mcp' : 'client',
         toolResult,
         value.preliminaryResultsForCall.length > 0 ? value.preliminaryResultsForCall : undefined,
@@ -2778,9 +2788,14 @@ export class ModelResult<
       );
 
       if (hookOutcome.type === 'parse_error') {
-        this.broadcastToolResult(callId, this.toolSourceByName(String(toolCall.name)), {
-          error: hookOutcome.errorMessage,
-        } as InferToolOutputsUnion<TTools>);
+        this.broadcastToolResult(
+          callId,
+          String(toolCall.name),
+          this.toolSourceByName(String(toolCall.name)),
+          {
+            error: hookOutcome.errorMessage,
+          } as InferToolOutputsUnion<TTools>,
+        );
         unsentResults.push(
           createRejectedResult(callId, String(toolCall.name), hookOutcome.errorMessage),
         );
@@ -3385,9 +3400,7 @@ export class ModelResult<
    * Multiple consumers can iterate over this stream concurrently.
    * Includes API events, tool events, and turn.start/turn.end delimiters.
    */
-  getFullResponsesStream(): AsyncIterableIterator<
-    ResponseStreamEvent<InferToolEventsUnion<TTools>, InferToolOutputsUnion<TTools>>
-  > {
+  getFullResponsesStream(): AsyncIterableIterator<CorrelatedResponseStreamEvent<TTools>> {
     return async function* (this: ModelResult<TTools, TShared>) {
       await this.initStreamGuarded();
 
@@ -3774,7 +3787,7 @@ export class ModelResult<
    * - Tool call argument deltas as { type: "delta", content: string }
    * - Preliminary results as { type: "preliminary_result", toolCallId, result }
    */
-  getToolStream(): AsyncIterableIterator<ToolStreamEvent<InferToolEventsUnion<TTools>>> {
+  getToolStream(): AsyncIterableIterator<CorrelatedToolStreamEvent<TTools>> {
     return async function* (this: ModelResult<TTools, TShared>) {
       await this.initStreamGuarded();
 
@@ -3813,19 +3826,17 @@ export class ModelResult<
           continue;
         }
         if (event.type === 'tool.preliminary_result') {
+          const prelim = event as {
+            toolCallId: string;
+            toolName: string;
+            result: InferToolEventsUnion<TTools>;
+          };
           yield {
             type: 'preliminary_result' as const,
-            toolCallId: (
-              event as {
-                toolCallId: string;
-              }
-            ).toolCallId,
-            result: (
-              event as {
-                result: InferToolEventsUnion<TTools>;
-              }
-            ).result,
-          };
+            toolCallId: prelim.toolCallId,
+            toolName: prelim.toolName,
+            result: prelim.result,
+          } as CorrelatedToolStreamEvent<TTools>;
         }
       }
 
