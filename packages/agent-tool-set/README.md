@@ -209,3 +209,5 @@ Alias of the agent's `CorrelatedToolEventUnion<TTools>` — name-correlated prel
 - `mutable: true` mutates in place. Partition type parameters may widen for soundness; runtime state is still exact.
 - Last-call-wins: each directive on a given ID replaces any prior one for that ID.
 - Server tools participate fully in activation once they have an ID. When active they appear in `tools` (and `enabled` / `statusByTool`) but **not** in `activeTools`, which remains the client-name list expected by `callModel`.
+- Keep a snapshot's `tools` and `activeTools` together by spreading `.callModel`; `callModel` cannot verify `activeTools` against an unrelated tools array.
+- `callModel` ignores names in `activeTools` that are not present in `tools`. Tool-set snapshots avoid stale names by deriving both arrays from the same set.
