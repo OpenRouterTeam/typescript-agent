@@ -1,4 +1,5 @@
 import type * as models from '@openrouter/sdk/models';
+import * as z4 from 'zod/v4';
 import type {
   ConversationState,
   ParsedToolCall,
@@ -255,6 +256,21 @@ export function appendToMessages(
   ];
 }
 
+function normalizeToolCallArguments<
+  TTool extends Exclude<
+    Tool,
+    {
+      _brand: 'server-tool';
+    }
+  >,
+>(toolCall: ParsedToolCall<TTool>, tool: TTool): boolean {
+  const parsed = z4.safeParse(tool.function.inputSchema, toolCall.arguments);
+  if (parsed.success) {
+    toolCall.arguments = parsed.data as ParsedToolCall<TTool>['arguments'];
+  }
+  return parsed.success;
+}
+
 /**
  * Check if a tool call requires approval
  * @param toolCall - The tool call to check
@@ -271,12 +287,6 @@ export async function toolRequiresApproval<TTools extends readonly Tool[]>(
     context: TurnContext,
   ) => boolean | Promise<boolean>,
 ): Promise<boolean> {
-  // Call-level check takes precedence
-  if (callLevelCheck) {
-    return callLevelCheck(toolCall, context);
-  }
-
-  // Fall back to tool-level setting (server tools never require approval)
   const tool = tools.find(
     (
       t,
@@ -287,6 +297,25 @@ export async function toolRequiresApproval<TTools extends readonly Tool[]>(
       }
     > => isClientTool(t) && t.function.name === toolCall.name,
   );
+  if (tool) {
+    const argumentsAreValid = normalizeToolCallArguments(
+      toolCall as ParsedToolCall<typeof tool>,
+      tool,
+    );
+    if (!argumentsAreValid) {
+      // Invalid arguments cannot execute. Let executeTool surface its structured
+      // validation error instead of asking for approval or evaluating a
+      // predicate against unvalidated input.
+      return false;
+    }
+  }
+
+  // Call-level check takes precedence
+  if (callLevelCheck) {
+    return callLevelCheck(toolCall, context);
+  }
+
+  // Fall back to tool-level setting (server tools never require approval)
   if (!tool) {
     return false;
   }
@@ -294,10 +323,8 @@ export async function toolRequiresApproval<TTools extends readonly Tool[]>(
   const requireApproval = tool.function.requireApproval;
 
   // If it's a function, call it with the tool's arguments and context.
-  // Arguments have already been parsed and validated against the tool's
-  // Zod inputSchema (a ZodObject), so the runtime shape is always a
-  // record here. A non-record value signals a real upstream bug — surface
-  // it rather than substituting an empty object.
+  // Arguments were schema-normalized above. The guard keeps this boundary
+  // explicit if an input schema ever produces a non-record value.
   if (typeof requireApproval === 'function') {
     const rawArgs: unknown = toolCall.arguments;
     if (!isRecord(rawArgs)) {
