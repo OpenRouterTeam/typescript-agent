@@ -114,6 +114,7 @@ export type {
   DoomLoopCallRecord,
   DoomLoopConfig,
   DoomLoopDetectorKind,
+  DoomLoopEscalationConfig,
   DoomLoopLadder,
   DoomLoopOption,
   DoomLoopSerializedState,
@@ -126,6 +127,7 @@ export type {
 export {
   canonicalizeKeyMaterial,
   DEFAULT_DOOM_LOOP_LADDER,
+  DEFAULT_MAX_ESCALATIONS,
   DoomLoopMonitor,
   detectTextRepetition,
   fingerprintKeyMaterial,

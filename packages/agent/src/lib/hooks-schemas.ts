@@ -170,6 +170,7 @@ export const DoomLoopDetectedPayloadSchema = z4.object({
   action: z4.enum([
     'observe',
     'steer',
+    'escalate',
     'block',
     'stop',
   ]),
@@ -267,12 +268,16 @@ export const DoomLoopDetectedResultSchema = z4.object({
    * (`'observe'` on a would-be block) or escalate (`'stop'` immediately).
    * When several handlers override, the last override wins. Text verdicts
    * cannot be blocked (the tokens are already emitted); an `overrideAction:
-   * 'block'` on a text verdict downgrades to `'observe'`.
+   * 'block'` on a text verdict downgrades to `'observe'`. An
+   * `overrideAction: 'escalate'` is honored only when an `escalation`
+   * config exists and budget remains; otherwise it downgrades to
+   * `'observe'`.
    */
   overrideAction: z4
     .enum([
       'observe',
       'steer',
+      'escalate',
       'block',
       'stop',
     ])

@@ -45,16 +45,22 @@
 /**
  * Escalation actions, weakest to strongest:
  *
- * - `observe` — emit the `DoomLoopDetected` hook only.
- * - `steer`   — inject a corrective user message before the next model turn
+ * - `observe`  — emit the `DoomLoopDetected` hook only.
+ * - `steer`    — inject a corrective user message before the next model turn
  *   (same mechanism as the Stop hook's `appendPrompt`); the call still runs.
- * - `block`   — refuse the tool call and synthesize an error
+ * - `escalate` — recover by throwing more intelligence at the NEXT turn:
+ *   temporarily swap to a stronger model and/or force an `openrouter:advisor`
+ *   consult, per the `escalation` config. One-turn overrides; the run
+ *   returns to its configured model afterward. Bounded by
+ *   `escalation.maxEscalations`; exhausted or unconfigured escalations fall
+ *   through to the weaker rungs. The call still runs.
+ * - `block`    — refuse the tool call and synthesize an error
  *   `function_call_output` (same shape as a PreToolUse block); the error text
  *   is itself steering, delivered where the model looks.
- * - `stop`    — halt the run before the next model request
+ * - `stop`     — halt the run before the next model request
  *   (`SessionEnd.reason: 'doom_loop'`).
  */
-export type DoomLoopAction = 'observe' | 'steer' | 'block' | 'stop';
+export type DoomLoopAction = 'observe' | 'steer' | 'escalate' | 'block' | 'stop';
 
 /** Which detector produced a verdict. */
 export type DoomLoopDetectorKind =
@@ -102,15 +108,50 @@ export interface DoomLoopCallRecord {
 /**
  * Streak thresholds for each action. A threshold of `false` disables that
  * rung. When several rungs are crossed the strongest wins
- * (stop > block > steer > observe). Thresholds compare with `>=`, so a
- * verdict fires on *every* record at or past a rung — escalating as the
- * streak grows.
+ * (stop > block > escalate > steer > observe). Thresholds compare with
+ * `>=`, so a verdict fires on *every* record at or past a rung — escalating
+ * as the streak grows.
  */
 export interface DoomLoopLadder {
   observe?: number | false;
   steer?: number | false;
+  escalate?: number | false;
   block?: number | false;
   stop?: number | false;
+}
+
+/**
+ * Recovery configuration for the `escalate` ladder action: what "throw more
+ * intelligence at the stuck turn" means for this run. At least one of
+ * `model`/`advisor` must be set for the rung to do anything (enabling the
+ * rung without a config warns and the rung is skipped).
+ */
+export interface DoomLoopEscalationConfig {
+  /**
+   * Model slug to run the NEXT turn on (e.g. a frontier model), replacing
+   * the request's configured model for one request only. The following
+   * turn reverts automatically.
+   */
+  model?: string;
+  /**
+   * Force an `openrouter:advisor` consult on the next turn: the advisor
+   * server tool is added to the request with these parameters and
+   * `toolChoice` pinned to it, so the stuck model must ask for guidance
+   * before doing anything else. The advisor's transcript context defaults
+   * to on (`forwardTranscript: true`) so it sees the loop it is diagnosing.
+   *
+   * `true` uses defaults (advisor model chosen by the platform, transcript
+   * forwarded, instructions describing the detected loop); an object is
+   * passed through as the advisor tool's `parameters` (missing
+   * `instructions`/`forwardTranscript` filled with those defaults).
+   */
+  advisor?: boolean | Record<string, unknown>;
+  /**
+   * Escalations are real spend on a run already suspected of wasting it:
+   * cap how many times this run may escalate. When exhausted, `escalate`
+   * verdicts fall through to the weaker rungs (steer/observe). Default 2.
+   */
+  maxEscalations?: number;
 }
 
 /** Options for within-response text-repetition detection. */
@@ -132,6 +173,8 @@ export interface DoomLoopConfig {
   ladder?: DoomLoopLadder;
   /** Text-loop detection. `false` disables; an object tunes it. Default on. */
   text?: boolean | DoomLoopTextOptions;
+  /** Recovery behavior for the `escalate` rung. Off unless configured. */
+  escalation?: DoomLoopEscalationConfig;
 }
 
 /** The `doomLoop` option on `callModel`: `true` for defaults, or a config object. */
@@ -165,6 +208,12 @@ export interface DoomLoopSerializedState {
    * into the conversation on resume.
    */
   pendingSteer?: string[];
+  /**
+   * How many escalation recoveries this conversation has consumed, counted
+   * against `escalation.maxEscalations`. Persisted so a resumed run cannot
+   * reset its escalation budget by resuming.
+   */
+  escalationsUsed?: number;
 }
 
 /**
@@ -197,9 +246,13 @@ export type LoopKeyResolution =
 export const DEFAULT_DOOM_LOOP_LADDER: Readonly<Required<DoomLoopLadder>> = Object.freeze({
   observe: 2,
   steer: false as const,
+  escalate: false as const,
   block: 3,
   stop: 6,
 });
+
+/** Default escalation budget when the rung is enabled without a cap. */
+export const DEFAULT_MAX_ESCALATIONS = 2;
 
 const DEFAULT_TEXT_OPTIONS: Readonly<Required<DoomLoopTextOptions>> = Object.freeze({
   enabled: true,
@@ -209,10 +262,18 @@ const DEFAULT_TEXT_OPTIONS: Readonly<Required<DoomLoopTextOptions>> = Object.fre
   maxWindowTokens: 400,
 });
 
+/** Escalation config with the budget resolved. */
+export interface ResolvedEscalationConfig {
+  model?: string;
+  advisor?: boolean | Record<string, unknown>;
+  maxEscalations: number;
+}
+
 /** Fully-resolved config used by the monitor. */
 export interface ResolvedDoomLoopConfig {
   ladder: Required<DoomLoopLadder>;
   text: Required<DoomLoopTextOptions>;
+  escalation: ResolvedEscalationConfig | null;
 }
 
 function sanitizeThreshold(
@@ -232,6 +293,7 @@ function sanitizeThreshold(
 const LADDER_ORDER: ReadonlyArray<keyof DoomLoopLadder> = [
   'observe',
   'steer',
+  'escalate',
   'block',
   'stop',
 ];
@@ -293,12 +355,51 @@ export function resolveDoomLoopOption(
   const ladder: Required<DoomLoopLadder> = {
     observe: sanitizeThreshold(ladderInput.observe, DEFAULT_DOOM_LOOP_LADDER.observe),
     steer: sanitizeThreshold(ladderInput.steer, DEFAULT_DOOM_LOOP_LADDER.steer),
+    escalate: sanitizeThreshold(ladderInput.escalate, DEFAULT_DOOM_LOOP_LADDER.escalate),
     block: sanitizeThreshold(ladderInput.block, DEFAULT_DOOM_LOOP_LADDER.block),
     stop: sanitizeThreshold(ladderInput.stop, DEFAULT_DOOM_LOOP_LADDER.stop),
   };
   warnOnLadderHazards(ladder);
+
+  // Escalation recovery: usable only when the config names at least one
+  // mechanism. An enabled rung without a mechanism (or vice versa, a
+  // mechanism without the rung) is probably a config mistake — warn, and
+  // treat the rung as absent so verdicts fall through to weaker rungs.
+  const escalationInput = config.escalation;
+  const hasMechanism =
+    escalationInput !== undefined &&
+    (escalationInput.model !== undefined || escalationInput.advisor !== undefined);
+  let escalation: ResolvedEscalationConfig | null = null;
+  if (hasMechanism) {
+    const cap = escalationInput.maxEscalations;
+    escalation = {
+      ...(escalationInput.model !== undefined && {
+        model: escalationInput.model,
+      }),
+      ...(escalationInput.advisor !== undefined && {
+        advisor: escalationInput.advisor,
+      }),
+      maxEscalations:
+        typeof cap === 'number' && Number.isFinite(cap) && cap >= 1
+          ? Math.floor(cap)
+          : DEFAULT_MAX_ESCALATIONS,
+    };
+    if (ladder.escalate === false) {
+      console.warn(
+        '[DoomLoop] escalation config provided but the escalate ladder rung is disabled; ' +
+          'set ladder.escalate to a streak threshold for recovery to trigger.',
+      );
+    }
+  } else if (ladder.escalate !== false) {
+    console.warn(
+      '[DoomLoop] ladder.escalate is enabled but no escalation config (model/advisor) was ' +
+        'provided; the rung is skipped and verdicts fall through to weaker rungs.',
+    );
+  }
+
   return {
     ladder,
+    escalation,
     text:
       textInput === false
         ? {
@@ -623,14 +724,21 @@ export function detectTextRepetition(
  *
  * `allowBlock: false` is used for text and server-tool verdicts: the tokens
  * are already emitted / the tool already ran server-side, so there is
- * nothing to block — a block-level streak falls through to steer (when
- * enabled) or observe, while stop still stops.
+ * nothing to block — a block-level streak falls through to escalate/steer
+ * (when enabled) or observe, while stop still stops.
+ *
+ * `allowEscalate: false` disables the escalate rung for this resolution —
+ * used when no escalation mechanism is configured or the run's escalation
+ * budget is exhausted; the streak falls through to the weaker rungs.
+ * Escalation applies to the NEXT model request, so it is available to every
+ * detector kind (tool, server-tool, and text verdicts alike).
  */
 export function resolveLadderAction(
   ladder: Required<DoomLoopLadder>,
   streak: number,
   options: {
     allowBlock: boolean;
+    allowEscalate?: boolean;
   },
 ): DoomLoopAction | undefined {
   const meets = (threshold: number | false): boolean => threshold !== false && streak >= threshold;
@@ -639,6 +747,9 @@ export function resolveLadderAction(
   }
   if (options.allowBlock && meets(ladder.block)) {
     return 'block';
+  }
+  if ((options.allowEscalate ?? true) && meets(ladder.escalate)) {
+    return 'escalate';
   }
   if (meets(ladder.steer)) {
     return 'steer';
@@ -691,12 +802,36 @@ export class DoomLoopMonitor {
   // hostile names (and legitimate tools named "__proto__") just work.
   private tools = new Map<string, StreakEntry>();
   private text: StreakEntry | undefined;
+  // Escalation recoveries consumed by this conversation. Persisted (see
+  // getState/restore) so a resumed run cannot reset its budget.
+  private escalationsUsed = 0;
 
   constructor(config: ResolvedDoomLoopConfig, initialState?: unknown) {
     this.config = config;
     if (initialState !== undefined) {
       this.restore(initialState);
     }
+  }
+
+  /**
+   * True when the escalate rung can still fire: a mechanism is configured
+   * and the budget is not exhausted.
+   */
+  canEscalate(): boolean {
+    return (
+      this.config.escalation !== null &&
+      this.escalationsUsed < this.config.escalation.maxEscalations
+    );
+  }
+
+  /**
+   * Consume one escalation from the budget. The ENGINE calls this when it
+   * actually applies the recovery (model swap / advisor forcing) — not at
+   * verdict time, so a verdict the engine ends up not honoring (e.g. a hook
+   * override) does not burn budget.
+   */
+  consumeEscalation(): void {
+    this.escalationsUsed++;
   }
 
   /**
@@ -723,6 +858,9 @@ export class DoomLoopMonitor {
           fingerprint: this.text.fingerprint,
           streak: this.text.streak,
         },
+      }),
+      ...(this.escalationsUsed > 0 && {
+        escalationsUsed: this.escalationsUsed,
       }),
     };
   }
@@ -758,6 +896,12 @@ export class DoomLoopMonitor {
           streak: candidate.text.streak,
         }
       : undefined;
+    this.escalationsUsed =
+      typeof candidate.escalationsUsed === 'number' &&
+      Number.isFinite(candidate.escalationsUsed) &&
+      candidate.escalationsUsed >= 0
+        ? Math.floor(candidate.escalationsUsed)
+        : 0;
   }
 
   /**
@@ -816,6 +960,7 @@ export class DoomLoopMonitor {
     const allowBlock = options?.allowBlock ?? true;
     const action = resolveLadderAction(this.config.ladder, streak, {
       allowBlock,
+      allowEscalate: this.canEscalate(),
     });
     if (!action) {
       return {
@@ -870,6 +1015,7 @@ export class DoomLoopMonitor {
     if (repetition) {
       const action = resolveLadderAction(this.config.ladder, repetition.repeats, {
         allowBlock: false,
+        allowEscalate: this.canEscalate(),
       });
       if (action) {
         withinResponse = {
@@ -894,6 +1040,7 @@ export class DoomLoopMonitor {
     let crossStep: DoomLoopVerdict | undefined;
     const crossAction = resolveLadderAction(this.config.ladder, streak, {
       allowBlock: false,
+      allowEscalate: this.canEscalate(),
     });
     if (crossAction) {
       crossStep = {
@@ -914,8 +1061,9 @@ export class DoomLoopMonitor {
 const ACTION_STRENGTH: Readonly<Record<DoomLoopAction, number>> = Object.freeze({
   observe: 0,
   steer: 1,
-  block: 2,
-  stop: 3,
+  escalate: 2,
+  block: 3,
+  stop: 4,
 });
 
 function strongerVerdict(

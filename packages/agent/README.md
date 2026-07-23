@@ -295,13 +295,48 @@ trip). The streak crosses a graduated ladder — strongest crossed rung wins:
 |---|---|
 | `observe` | Emit the `DoomLoopDetected` hook only |
 | `steer` | Inject a corrective user message before the next turn (off by default). Guidance queued right before a pause persists in `ConversationState.doomLoop.pendingSteer` and is delivered on resume |
+| `escalate` | **Recover by throwing more intelligence at the next turn** (off by default; requires an `escalation` config). One-turn overrides — a stronger model and/or a forced `openrouter:advisor` consult — then automatic revert. Bounded by `escalation.maxEscalations` (default 2, persisted across resumes); exhausted or unconfigured escalations fall through to weaker rungs |
 | `block` | Refuse the call and return an explanatory error as the tool output — the model sees why and can change course. Not applicable to text or server-tool verdicts (already emitted/executed); those downgrade to `observe` |
 | `stop` | Halt the loop before any further model request (`SessionEnd.reason: 'doom_loop'`). Unresolved tool calls in the final turn get synthesized halt-error outputs so persisted history stays well-formed and resumable |
 
+**Escalation recovery** — instead of (or before) blocking, unblock the loop
+by escalating the next turn, then return to the cheap model:
+
+```typescript
+callModel(client, {
+  model: 'z-ai/glm-5.2', // the everyday executor
+  input: 'Research this topic',
+  tools: [searchTool] as const,
+  doomLoop: {
+    ladder: { observe: 2, escalate: 3, block: 5, stop: 8 },
+    escalation: {
+      // Either or both:
+      model: 'anthropic/claude-opus-4.6',  // run the NEXT turn on a stronger model
+      advisor: true,                        // and/or force an openrouter:advisor consult
+      maxEscalations: 2,                    // spend cap for the whole conversation
+    },
+  },
+});
+```
+
+On an `escalate` verdict the engine (1) injects a user notice naming the
+detected loop, and (2) applies one-turn request overrides: `model` is
+swapped for that dispatch only, and/or the `openrouter:advisor` server tool
+is appended with `forwardTranscript: true`, loop-diagnosing instructions,
+and `toolChoice` pinned to it (`allowed_tools`/`required`) so the stuck
+model must consult the advisor before doing anything else. `advisor` may
+also be an object passed through as the advisor tool's parameters
+(`model`, `instructions`, `maxToolCalls`, ...). The following turn reverts
+automatically. Budget is consumed when a recovery is *applied* (not at
+verdict time) and `escalationsUsed` persists in `ConversationState.doomLoop`
+so a resumed run cannot reset it; concurrent detector verdicts in one window
+escalate once.
+
 Ladder configs are sanity-checked at resolve time: enabling `block` with
 `stop: false` warns (a model that keeps re-issuing a blocked call loops
-until `stopWhen` fires — and `stopWhen` defaults to unbounded), and dead
-rungs (a weaker threshold at or past an enabled stronger one) warn too.
+until `stopWhen` fires — and `stopWhen` defaults to unbounded), dead
+rungs (a weaker threshold at or past an enabled stronger one) warn, and so
+does an `escalate` rung without an `escalation` config (or vice versa).
 
 **Tools declare what identifies a call** via `loopKey` on the tool
 definition — a **function or a variable**:
@@ -484,7 +519,7 @@ const result = callModel(client, { model, input, tools, hooks });
 | `SessionStart` | Once per run, before the initial request. `config` summarizes the session (`hasTools`, `hasApproval`, `hasState`) | none (void) |
 | `SessionEnd` | Once per run, on every exit path — completion, approval pause, interruption, error, and the no-tools streaming paths. `reason` is `'complete' \| 'error' \| 'max_turns' \| 'user' \| 'doom_loop'`. When at least one model call completed, `totalUsage` aggregates tokens/cost across all of them (`modelCalls`, `inputTokens`, `outputTokens`, `totalTokens`, `cachedTokens`, `reasoningTokens`, and `cost` when the server reported it) | none (void) |
 | `PostModelCall` | Once per completed model response, on **every** request the loop makes — initial, each tool-round follow-up, the empty-final retry, the `allowFinalResponse` final turn, and approval-resume requests. Payload: `responseId` (the OpenRouter generation id), `model`, `durationMs` (dispatch → fully materialized response, including stream consumption), `turnType` (`'initial' \| 'resume' \| 'tool_round' \| 'final' \| 'retry'`), `turnNumber`, and `usage` (`inputTokens`, `outputTokens`, `totalTokens`, `cachedTokens`, `reasoningTokens`, `cost?`) when the server reported usage accounting. Purely observational — the telemetry primitive for tracing/benchmark consumers: one span per model call | none (void) |
-| `DoomLoopDetected` | Every time doom-loop detection crosses a ladder rung, once per `(tool, fingerprint)` per round — parallel duplicates in one round share the event (requires the `doomLoop` option). Payload: `detector` (`'tool-fingerprint' \| 'server-tool-fingerprint' \| 'text-repetition' \| 'text-streak'`), the resolved `action`, the `streak`, the `fingerprint`, `toolName`/`toolInput` for tool verdicts, and the explanatory `message` | `overrideAction` replaces the engine's resolved action for this event (last handler wins); `block` on a text or server-tool verdict downgrades to `observe` |
+| `DoomLoopDetected` | Every time doom-loop detection crosses a ladder rung, once per `(tool, fingerprint)` per round — parallel duplicates in one round share the event (requires the `doomLoop` option). Payload: `detector` (`'tool-fingerprint' \| 'server-tool-fingerprint' \| 'text-repetition' \| 'text-streak'`), the resolved `action` (`'observe' \| 'steer' \| 'escalate' \| 'block' \| 'stop'`), the `streak`, the `fingerprint`, `toolName`/`toolInput` for tool verdicts, and the explanatory `message` | `overrideAction` replaces the engine's resolved action for this event (last handler wins); `block` on a text or server-tool verdict downgrades to `observe`; `escalate` without an `escalation` config or remaining budget downgrades to `observe` |
 
 Notes on lifecycle pairing: `SessionEnd` only fires when a matching
 `SessionStart` succeeded, and at most once per run. Pending async hook work is
