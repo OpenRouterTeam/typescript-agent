@@ -452,7 +452,7 @@ export function resolveLoopKeyMaterial(
     };
   }
   if (Array.isArray(loopKey)) {
-    const subset: Record<string, unknown> = {};
+    const subset: Record<string, unknown> = Object.create(null) as Record<string, unknown>;
     for (const field of loopKey) {
       if (typeof field === 'string' && field in args) {
         subset[field] = args[field];
