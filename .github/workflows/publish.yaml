@@ -46,6 +46,13 @@ jobs:
   release:
     runs-on: ubuntu-latest
     environment: npm-publish
+    # Publishing is only ever valid from main. npm's GitHub trusted publisher
+    # can only pin org/repo/workflow-filename/environment — it has no branch or
+    # ref claim — so OIDC alone would authorize a publish from any branch that
+    # can reach this workflow. The `npm-publish` environment currently has no
+    # deployment branch policy either, which would let a `workflow_dispatch`
+    # from an arbitrary branch publish to npm. This is the in-repo backstop.
+    if: github.ref == 'refs/heads/main'
     steps:
       - uses: actions/checkout@v6
 

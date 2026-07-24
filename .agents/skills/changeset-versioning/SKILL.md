@@ -5,8 +5,22 @@
 This repo uses [changesets](https://github.com/changesets/changesets) for version management and changelog generation.
 
 > **Publishing happens automatically on push to `main`.** `.github/workflows/publish.yaml` triggers on both `push: main` and `workflow_dispatch`. On a push with no pending changesets, `changesets/action` publishes any package whose local version is not yet on npm; with pending changesets it opens/updates the Version Packages PR instead. The `workflow_dispatch` modes below are for driving a release manually, not a gate that prevents automatic publishes.
->
-> This describes current behavior, which diverges from the original intent recorded in `@openrouter/agent@0.1.1` ("release-gate publishing via workflow_dispatch", [#4](https://github.com/OpenRouterTeam/typescript-agent/pull/4)) — the `push` leg has been passing `publish:` to `changesets/action` regardless. If the gate is wanted back, remove `publish:` from that step (or condition it on `workflow_dispatch`) rather than relying on this doc; note that the `npm-publish` environment currently has no protection rules, so nothing else stands between a merge and a live publish.
+
+This diverges from the original intent recorded in `@openrouter/agent@0.1.1` ("release-gate publishing via workflow_dispatch", [#4](https://github.com/OpenRouterTeam/typescript-agent/pull/4)): the `push` leg has been passing `publish:` to `changesets/action` regardless, so the gate has not been in effect. **Auto-publish is the intended behavior going forward** — the changeset flow already gates releases (no changeset means no version bump means nothing to publish), and the Version Packages PR is the human review point. To restore the old gate instead, condition the `publish:` input on `github.event_name == 'workflow_dispatch'`.
+
+### What actually protects a release
+
+The changeset flow controls *what* publishes; these control *who and from where*:
+
+| Control | Status |
+| --- | --- |
+| Version Packages PR review | Active — the human approval point for any version bump |
+| Job-level `if: github.ref == 'refs/heads/main'` | Active — blocks publishing from any non-`main` ref |
+| npm trusted publisher | Pins org, repo, workflow filename, environment. **No branch/ref claim exists**, so npm alone cannot restrict which branch publishes |
+| `npm-publish` deployment branch policy | **Not configured** (all branches allowed) |
+| `npm-publish` required reviewers | **Not configured** |
+
+Because npm's trusted publisher has no ref claim and the environment has no branch policy, the job-level `if` is what prevents a `workflow_dispatch` from an arbitrary branch reaching npm. Under token auth this mattered less; OIDC mints credentials on demand from any ref that reaches the workflow. Adding a branch policy (`main` only) and/or required reviewers to the `npm-publish` environment is the defense-in-depth follow-up — GitHub settings, not repo config.
 
 ## Why Coordinate Releases?
 
