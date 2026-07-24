@@ -108,6 +108,33 @@ export {
   UnsupportedStateVersionError,
   updateState,
 } from './lib/conversation-state.js';
+// Doom-loop detection (see the `doomLoop` option on callModel)
+export type {
+  DoomLoopAction,
+  DoomLoopCallRecord,
+  DoomLoopConfig,
+  DoomLoopDetectorKind,
+  DoomLoopEscalationConfig,
+  DoomLoopLadder,
+  DoomLoopOption,
+  DoomLoopSerializedState,
+  DoomLoopStreak,
+  DoomLoopTextOptions,
+  DoomLoopVerdict,
+  LoopKeyResolution,
+  TextRepetitionResult,
+} from './lib/doom-loop.js';
+export {
+  canonicalizeKeyMaterial,
+  DEFAULT_DOOM_LOOP_LADDER,
+  DEFAULT_MAX_ESCALATIONS,
+  DoomLoopMonitor,
+  detectTextRepetition,
+  fingerprintKeyMaterial,
+  fingerprintToolCall,
+  MAX_CANONICALIZE_DEPTH,
+  resolveLoopKeyMaterial,
+} from './lib/doom-loop.js';
 // Lifecycle hooks system (PreToolUse, PostToolUse, Stop, SessionStart, ...).
 // Distinct from the SDK transport hooks re-exported above (SDKHooks,
 // BeforeRequestHook, HookContext, ...), which intercept HTTP requests.
@@ -118,6 +145,8 @@ export { HooksManager } from './lib/hooks-manager.js';
 export type {
   AsyncOutput,
   BuiltInHookDefinitions,
+  DoomLoopDetectedPayload,
+  DoomLoopDetectedResult,
   EmitResult,
   HookDefinition,
   HookEntry,
@@ -212,6 +241,8 @@ export type {
   ToolExecutionResult,
   ToolExecutionResultUnion,
   ToolHasApproval,
+  ToolLoopKey,
+  ToolLoopKeyFn,
   ToolOutputContentItem,
   ToolPreliminaryResultEvent,
   ToolResultEvent,

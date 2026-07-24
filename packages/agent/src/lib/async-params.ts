@@ -1,5 +1,6 @@
 import type * as models from '@openrouter/sdk/models';
 import type { OpenResponsesResult } from '@openrouter/sdk/models';
+import type { DoomLoopOption } from './doom-loop.js';
 import type { HooksManager } from './hooks-manager.js';
 import type { InlineHookConfig } from './hooks-types.js';
 import type { Item } from './item-types.js';
@@ -117,6 +118,34 @@ type BaseCallModelInput<
   strictFinalResponse?: boolean;
   /** Hook system for lifecycle events. Accepts inline config or a HooksManager instance. */
   hooks?: InlineHookConfig | HooksManager;
+  /**
+   * Doom-loop detection: catch runs that repeat the same tool call with
+   * identical arguments (including repeated empty or unparseable calls) or
+   * emit the same text over and over, and respond with a graduated ladder
+   * (observe → steer → block → stop; defaults observe@2, block@3, stop@6
+   * consecutive repetitions). `true` enables recommended defaults; an
+   * object tunes thresholds and text detection. Off by default.
+   *
+   * Tools declare precise call identity via `loopKey` (hash the search
+   * query, the bash command + cwd + env, ...); without one the full
+   * arguments object is the identity. `loopKey: () => null` exempts a tool
+   * (legitimate polling). Detection is deterministic: the same transcript
+   * always produces the same verdicts.
+   */
+  doomLoop?: DoomLoopOption;
+  /**
+   * Cancel the whole run. Aborting stops the tool-execution loop at the
+   * next turn boundary AND aborts the in-flight API request/stream, so a
+   * stalled provider fails fast instead of hanging until an outer test or
+   * caller timeout kills the process. The run's promises reject with the
+   * signal's abort reason.
+   *
+   * Composes with per-request `RequestOptions.timeoutMs` (the third
+   * `callModel` argument): when both are set, each request is bounded by
+   * whichever fires first. (Passing a raw `signal` through `RequestOptions`
+   * instead would silently disable the SDK's `timeoutMs` wiring.)
+   */
+  signal?: AbortSignal;
 };
 
 /**
@@ -220,6 +249,8 @@ export async function resolveAsyncFunctions<TTools extends readonly Tool[] = rea
     'allowFinalResponse', // Client-side: tunes the default toolChoice:'none' final turn when stopWhen breaks the loop
     'strictFinalResponse', // Client-side: restore throw on empty final after tool rounds
     'hooks', // Client-side hook system
+    'doomLoop', // Client-side doom-loop detection config
+    'signal', // Client-side run cancellation
   ]);
 
   // Iterate over all keys in the input

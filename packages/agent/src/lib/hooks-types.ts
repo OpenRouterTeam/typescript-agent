@@ -1,5 +1,7 @@
 import * as z4 from 'zod/v4';
 import type {
+  DoomLoopDetectedPayload,
+  DoomLoopDetectedResult,
   PermissionRequestPayload,
   PermissionRequestResult,
   PostModelCallPayload,
@@ -152,6 +154,8 @@ export interface HooksManagerOptions {
 // and the runtime validation is structurally impossible). Re-exported here
 // so the public import surface is unchanged.
 export type {
+  DoomLoopDetectedPayload,
+  DoomLoopDetectedResult,
   ModelCallUsage,
   PermissionRequestPayload,
   PermissionRequestResult,
@@ -214,6 +218,10 @@ export interface BuiltInHookDefinitions {
     payload: PostModelCallPayload;
     /** Observation-only hook: handlers have no meaningful result. */
     result: undefined;
+  };
+  DoomLoopDetected: {
+    payload: DoomLoopDetectedPayload;
+    result: DoomLoopDetectedResult;
   };
 }
 

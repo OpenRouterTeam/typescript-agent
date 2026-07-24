@@ -19,6 +19,7 @@ export const HookName = {
   SessionStart: 'SessionStart',
   SessionEnd: 'SessionEnd',
   PostModelCall: 'PostModelCall',
+  DoomLoopDetected: 'DoomLoopDetected',
 } as const;
 
 export type HookName = (typeof HookName)[keyof typeof HookName];
@@ -136,6 +137,7 @@ export const SessionEndPayloadSchema = z4.object({
     'error',
     'max_turns',
     'complete',
+    'doom_loop',
   ]),
   totalUsage: SessionUsageTotalsSchema.optional(),
 });
@@ -155,6 +157,36 @@ export const PostModelCallPayloadSchema = z4.object({
   turnNumber: z4.number(),
   usage: ModelCallUsageSchema.optional(),
 });
+
+export const DoomLoopDetectedPayloadSchema = z4.object({
+  /** Which detector fired: identical client/server tool calls, or repeated text. */
+  detector: z4.enum([
+    'tool-fingerprint',
+    'server-tool-fingerprint',
+    'text-repetition',
+    'text-streak',
+  ]),
+  /** The ladder action the engine resolved for this streak. */
+  action: z4.enum([
+    'observe',
+    'steer',
+    'escalate',
+    'block',
+    'stop',
+  ]),
+  /** Consecutive repetition count that crossed a ladder rung. */
+  streak: z4.number(),
+  /** Deterministic fingerprint of the repeated unit (call identity or text). */
+  fingerprint: z4.string(),
+  /** Present for tool-fingerprint verdicts. */
+  toolName: z4.string().optional(),
+  /** Present for tool-fingerprint verdicts: the repeated call's arguments. */
+  toolInput: z4.record(z4.string(), z4.unknown()).optional(),
+  /** Explanation used for block outputs / steer messages. */
+  message: z4.string(),
+});
+
+export type DoomLoopDetectedPayload = Readonly<z4.infer<typeof DoomLoopDetectedPayloadSchema>>;
 
 export type SessionEndPayload = Readonly<z4.infer<typeof SessionEndPayloadSchema>>;
 export type PostModelCallPayload = Readonly<z4.infer<typeof PostModelCallPayloadSchema>>;
@@ -230,6 +262,30 @@ export const UserPromptSubmitResultSchema = z4.object({
 
 export type UserPromptSubmitResult = Readonly<z4.infer<typeof UserPromptSubmitResultSchema>>;
 
+export const DoomLoopDetectedResultSchema = z4.object({
+  /**
+   * Override the engine's resolved action for THIS event — de-escalate
+   * (`'observe'` on a would-be block) or escalate (`'stop'` immediately).
+   * When several handlers override, the last override wins. Text verdicts
+   * cannot be blocked (the tokens are already emitted); an `overrideAction:
+   * 'block'` on a text verdict downgrades to `'observe'`. An
+   * `overrideAction: 'escalate'` is honored only when an `escalation`
+   * config exists and budget remains; otherwise it downgrades to
+   * `'observe'`.
+   */
+  overrideAction: z4
+    .enum([
+      'observe',
+      'steer',
+      'escalate',
+      'block',
+      'stop',
+    ])
+    .optional(),
+});
+
+export type DoomLoopDetectedResult = Readonly<z4.infer<typeof DoomLoopDetectedResultSchema>>;
+
 const VoidResultSchema = z4.void();
 
 //#endregion
@@ -275,6 +331,10 @@ export const BUILT_IN_HOOKS: Record<HookName, HookDefinition> = {
   PostModelCall: {
     payload: PostModelCallPayloadSchema,
     result: VoidResultSchema,
+  },
+  [HookName.DoomLoopDetected]: {
+    payload: DoomLoopDetectedPayloadSchema,
+    result: DoomLoopDetectedResultSchema,
   },
 };
 
