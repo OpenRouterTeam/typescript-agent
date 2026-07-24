@@ -235,6 +235,25 @@ describe('resolveLoopKeyMaterial', () => {
     });
   });
 
+  it('preserves __proto__ as a declared field', () => {
+    const args = JSON.parse('{"__proto__":"declared"}') as Record<string, unknown>;
+    const resolution = resolveLoopKeyMaterial(
+      [
+        '__proto__',
+      ],
+      args,
+    );
+    expect(resolution).toEqual({
+      kind: 'key',
+      keyMaterial: expect.objectContaining({
+        ['__proto__']: 'declared',
+      }),
+    });
+    if (resolution.kind === 'key') {
+      expect(Object.getPrototypeOf(resolution.keyMaterial)).toBeNull();
+    }
+  });
+
   it('function returning a value → that value', () => {
     const resolution = resolveLoopKeyMaterial(
       (a: Record<string, unknown>) => String(a['command']).trim(),
