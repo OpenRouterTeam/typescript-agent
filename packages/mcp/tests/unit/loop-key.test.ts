@@ -15,6 +15,8 @@ import { describe, expect, it } from 'vitest';
 import { buildTools } from '../../src/build-tools.js';
 import { isSerializedMCPServer } from '../../src/cache/cache-types.js';
 import { serializeServer } from '../../src/cache/serialize.js';
+import { listToolDefs } from '../../src/handle.js';
+import type { MCPConnection } from '../../src/mcp-connection.js';
 import type { McpToolDef } from '../../src/tool-wrapper.js';
 import { wrapMcpTool } from '../../src/tool-wrapper.js';
 
@@ -183,6 +185,59 @@ describe('buildTools loopKeys plumbing', () => {
       'command',
       'cwd',
     ]);
+  });
+});
+
+describe('server-advertised loopKey validation', () => {
+  it.each([
+    [
+      'truthy scalar',
+      'loop',
+    ],
+    [
+      'mixed-type array',
+      [
+        'command',
+        1,
+      ],
+    ],
+    [
+      'nested object',
+      {
+        fields: [
+          'command',
+        ],
+      },
+    ],
+    [
+      'missing metadata',
+      undefined,
+    ],
+  ])('ignores invalid or missing metadata: %s', async (_label, loopKey) => {
+    const connection = {
+      client: {
+        listTools: () =>
+          Promise.resolve({
+            tools: [
+              {
+                name: 'run_command',
+                inputSchema: {
+                  type: 'object',
+                  properties: {},
+                },
+                ...(loopKey !== undefined && {
+                  _meta: {
+                    'openrouter/loopKey': loopKey,
+                  },
+                }),
+              },
+            ],
+          }),
+      },
+    } as unknown as MCPConnection;
+
+    const [tool] = await listToolDefs(connection, undefined);
+    expect(tool?.loopKey).toBeUndefined();
   });
 });
 
