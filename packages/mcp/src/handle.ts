@@ -27,6 +27,25 @@ function nextCursorOrUndefined(value: string | undefined): string | undefined {
 }
 
 /**
+ * Parse a server-advertised doom-loop identity from a tool definition's
+ * `_meta['openrouter/loopKey']`: a field-name array (the declarative subset
+ * of arguments identifying a call) or `false` (tool exempt). Data-only by
+ * design — functions can't cross the wire; any other shape is ignored.
+ */
+function advertisedLoopKey(
+  meta: Record<string, unknown> | undefined,
+): readonly string[] | false | undefined {
+  const advertised = meta?.['openrouter/loopKey'];
+  if (advertised === false) {
+    return false;
+  }
+  if (Array.isArray(advertised) && advertised.every((f) => typeof f === 'string')) {
+    return advertised as string[];
+  }
+  return undefined;
+}
+
+/**
  * Read the discovered tools off the live connection into our internal shape.
  *
  * `tools/list` is paginated: each response may carry a `nextCursor` that must be
@@ -54,6 +73,7 @@ export async function listToolDefs(
         : undefined;
     const { tools, nextCursor } = await connection.client.listTools(params, requestOptions);
     for (const t of tools) {
+      const loopKey = advertisedLoopKey(t._meta);
       collected.push({
         name: t.name,
         ...(t.description !== undefined && {
@@ -62,6 +82,9 @@ export async function listToolDefs(
         inputSchema: t.inputSchema,
         ...(t.outputSchema !== undefined && {
           outputSchema: t.outputSchema,
+        }),
+        ...(loopKey !== undefined && {
+          loopKey,
         }),
       });
     }
@@ -245,6 +268,9 @@ function buildToolsArgs(
     }),
     ...(options.signal !== undefined && {
       signal: options.signal,
+    }),
+    ...(options.loopKeys !== undefined && {
+      loopKeys: options.loopKeys,
     }),
     ...(options.resources !== undefined && {
       resources: options.resources,

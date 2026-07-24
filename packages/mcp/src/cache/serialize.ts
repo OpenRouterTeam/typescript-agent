@@ -82,6 +82,9 @@ export async function serializeServer(input: SerializeInput): Promise<Serialized
     ...(def.outputSchema !== undefined && {
       outputSchema: def.outputSchema,
     }),
+    ...(def.loopKey !== undefined && {
+      loopKey: def.loopKey,
+    }),
   }));
 
   const snapshot: SerializedMCPServer = {

@@ -7,6 +7,8 @@ export interface SerializedMCPToolDef {
   description?: string;
   inputSchema: Readonly<Record<string, unknown>>;
   outputSchema?: Readonly<Record<string, unknown>>;
+  /** Server-advertised doom-loop identity (field list or `false`), if any. */
+  loopKey?: readonly string[] | false;
 }
 
 /** OAuth/bearer token material, persisted only when `cacheCredentials` is on. */
@@ -58,10 +60,16 @@ export function isFiniteEpoch(value: unknown): value is number {
 }
 
 function isSerializedToolDef(value: unknown): value is SerializedMCPToolDef {
+  const loopKey = isJsonSchemaObject(value) ? value['loopKey'] : undefined;
+  const hasValidLoopKey =
+    loopKey === undefined ||
+    loopKey === false ||
+    (Array.isArray(loopKey) && loopKey.every((field) => typeof field === 'string'));
   return (
     isJsonSchemaObject(value) &&
     typeof value['name'] === 'string' &&
-    isJsonSchemaObject(value['inputSchema'])
+    isJsonSchemaObject(value['inputSchema']) &&
+    hasValidLoopKey
   );
 }
 
