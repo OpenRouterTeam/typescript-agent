@@ -64,7 +64,7 @@ jobs:
     if: >
       github.ref == 'refs/heads/main' ||
       (github.event_name == 'workflow_dispatch' &&
-       inputs.mode == 'publish' && inputs.dry-run)
+      inputs.mode == 'publish' && inputs.dry-run)
     steps:
       - uses: actions/checkout@v6
 
