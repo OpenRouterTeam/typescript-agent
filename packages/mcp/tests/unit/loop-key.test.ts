@@ -13,6 +13,7 @@
 import type { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { describe, expect, it } from 'vitest';
 import { buildTools } from '../../src/build-tools.js';
+import { isSerializedMCPServer } from '../../src/cache/cache-types.js';
 import { serializeServer } from '../../src/cache/serialize.js';
 import type { McpToolDef } from '../../src/tool-wrapper.js';
 import { wrapMcpTool } from '../../src/tool-wrapper.js';
@@ -224,5 +225,64 @@ describe('cache round-trip', () => {
       'cwd',
     ]);
     expect(revived.tools[1].loopKey).toBe(false);
+  });
+
+  it.each([
+    [
+      'truthy scalar',
+      'loop',
+    ],
+    [
+      'mixed-type array',
+      [
+        'command',
+        1,
+      ],
+    ],
+    [
+      'nested object',
+      {
+        fields: [
+          'command',
+        ],
+      },
+    ],
+  ])('rejects invalid cached loopKey: %s', (_label, loopKey) => {
+    expect(
+      isSerializedMCPServer({
+        version: 1,
+        url: 'https://example.com/mcp',
+        transport: 'streamableHttp',
+        cachedAt: 1234,
+        tools: [
+          {
+            name: 'run_command',
+            inputSchema: {
+              type: 'object',
+            },
+            loopKey,
+          },
+        ],
+      }),
+    ).toBe(false);
+  });
+
+  it('accepts a cached tool with missing loopKey metadata', () => {
+    expect(
+      isSerializedMCPServer({
+        version: 1,
+        url: 'https://example.com/mcp',
+        transport: 'streamableHttp',
+        cachedAt: 1234,
+        tools: [
+          {
+            name: 'run_command',
+            inputSchema: {
+              type: 'object',
+            },
+          },
+        ],
+      }),
+    ).toBe(true);
   });
 });

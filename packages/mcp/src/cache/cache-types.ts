@@ -60,10 +60,16 @@ export function isFiniteEpoch(value: unknown): value is number {
 }
 
 function isSerializedToolDef(value: unknown): value is SerializedMCPToolDef {
+  const loopKey = isJsonSchemaObject(value) ? value['loopKey'] : undefined;
+  const hasValidLoopKey =
+    loopKey === undefined ||
+    loopKey === false ||
+    (Array.isArray(loopKey) && loopKey.every((field) => typeof field === 'string'));
   return (
     isJsonSchemaObject(value) &&
     typeof value['name'] === 'string' &&
-    isJsonSchemaObject(value['inputSchema'])
+    isJsonSchemaObject(value['inputSchema']) &&
+    hasValidLoopKey
   );
 }
 
