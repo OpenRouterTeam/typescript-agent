@@ -15,12 +15,14 @@ The changeset flow controls *what* publishes; these control *who and from where*
 | Control | Status |
 | --- | --- |
 | Version Packages PR review | Active — the human approval point for any version bump |
-| Job-level `if: github.ref == 'refs/heads/main'` | Active — blocks publishing from any non-`main` ref |
-| npm trusted publisher | Pins org, repo, workflow filename, environment. **No branch/ref claim exists**, so npm alone cannot restrict which branch publishes |
-| `npm-publish` deployment branch policy | **Not configured** (all branches allowed) |
+| Job-level ref guard (`publish.yaml`) | Active, but **accident-only** — `workflow_dispatch` runs the workflow file from the selected ref, so a branch whose copy drops the guard ignores it |
+| npm trusted publisher | Pins org, repo, workflow filename, environment. **No branch/ref claim exists**, so npm cannot restrict which branch publishes |
+| `npm-publish` deployment branch policy | **Not configured** (all branches allowed) — the only real server-side ref restriction |
 | `npm-publish` required reviewers | **Not configured** |
 
-Because npm's trusted publisher has no ref claim and the environment has no branch policy, the job-level `if` is what prevents a `workflow_dispatch` from an arbitrary branch reaching npm. Under token auth this mattered less; OIDC mints credentials on demand from any ref that reaches the workflow. Adding a branch policy (`main` only) and/or required reviewers to the `npm-publish` environment is the defense-in-depth follow-up — GitHub settings, not repo config.
+The job-level guard stops someone from mistakenly dispatching a release off `main`; it is not a security boundary, because the guard travels with the ref being dispatched. Since npm's trusted publisher carries no ref claim, **the `npm-publish` environment's deployment branch policy is the only server-side control over which branch can publish** — setting it to `main` is the actual fix, not merely defense-in-depth. This matters more under OIDC than it did under token auth, because credentials are now minted on demand from whatever ref reaches the workflow. Required reviewers on that environment are a further hardening step.
+
+The guard deliberately still allows `mode=publish` + `dry-run` from any branch, since that leg never reaches the OIDC exchange. It does **not** exempt `dry-run` generally: with `mode=version` the changesets step runs with `publish:` wired up and ignores `dry-run`, so a blanket exemption would let a feature branch publish for real.
 
 ## Why Coordinate Releases?
 

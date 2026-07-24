@@ -46,13 +46,25 @@ jobs:
   release:
     runs-on: ubuntu-latest
     environment: npm-publish
-    # Publishing is only ever valid from main. npm's GitHub trusted publisher
-    # can only pin org/repo/workflow-filename/environment — it has no branch or
-    # ref claim — so OIDC alone would authorize a publish from any branch that
-    # can reach this workflow. The `npm-publish` environment currently has no
-    # deployment branch policy either, which would let a `workflow_dispatch`
-    # from an arbitrary branch publish to npm. This is the in-repo backstop.
-    if: github.ref == 'refs/heads/main'
+    # Only publish from main, and allow dry-run diagnostics from any branch
+    # (that leg never reaches the OIDC exchange, so it cannot publish).
+    #
+    # This guards against *accidents*, not a determined actor: workflow_dispatch
+    # runs the workflow file from the selected ref, so a branch whose copy drops
+    # this line would ignore it. The only server-side ref restriction is the
+    # `npm-publish` environment's deployment branch policy, which is currently
+    # unset — and under OIDC that is the real control, because npm's trusted
+    # publisher pins org/repo/workflow-filename/environment and carries no
+    # branch or ref claim. Setting that policy to `main` is the actual fix.
+    #
+    # The off-main exemption is scoped to mode=publish + dry-run specifically.
+    # `dry-run` alone is not enough: with mode=version the changesets step runs
+    # with `publish:` wired up and ignores dry-run entirely, so `dry-run: true`
+    # from a feature branch could still publish for real.
+    if: >
+      github.ref == 'refs/heads/main' ||
+      (github.event_name == 'workflow_dispatch' &&
+       inputs.mode == 'publish' && inputs.dry-run)
     steps:
       - uses: actions/checkout@v6
 
