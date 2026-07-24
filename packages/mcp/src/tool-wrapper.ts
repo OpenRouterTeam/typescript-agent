@@ -98,7 +98,10 @@ export function wrapMcpTool(def: McpToolDef, options: WrapToolOptions): McpBrand
       : undefined;
   // Client-side config wins over the server-advertised declaration; both
   // ride markMcp's injection point so every tool kind gets the same wiring.
-  const loopKey = options.loopKeys?.[def.name] ?? def.loopKey;
+  const loopKey =
+    options.loopKeys !== undefined && Object.hasOwn(options.loopKeys, def.name)
+      ? options.loopKeys[def.name]
+      : def.loopKey;
   const markOptions =
     loopKey !== undefined
       ? {

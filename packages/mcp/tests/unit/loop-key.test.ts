@@ -163,6 +163,25 @@ describe('wrapMcpTool loopKey', () => {
     });
     expect(loopKeyOf(wrapped)).toBeUndefined();
   });
+
+  it('does not use inherited loopKeys for built-in property names', () => {
+    const wrapped = wrapMcpTool(
+      {
+        ...bashDef,
+        name: 'toString',
+        loopKey: [
+          'command',
+        ],
+      },
+      {
+        client: fakeClient(),
+        loopKeys: {},
+      },
+    );
+    expect(loopKeyOf(wrapped)).toEqual([
+      'command',
+    ]);
+  });
 });
 
 describe('buildTools loopKeys plumbing', () => {
