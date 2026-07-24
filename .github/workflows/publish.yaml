@@ -15,6 +15,9 @@ on:
           - "publish" — Publishes every package whose on-disk version differs
             from npm, with provenance. Only run this AFTER the Version Packages
             PR has been merged to main.
+            Note: merging that PR normally publishes on its own, because this
+            workflow also runs on push to main. This mode is for retrying or
+            forcing a publish, not a required second step.
           NOTE: @openrouter/agent releases must be coordinated with @openrouter/sdk
           because callModel changes are typically coupled with SDK type changes.
         required: true

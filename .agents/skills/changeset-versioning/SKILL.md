@@ -5,6 +5,8 @@
 This repo uses [changesets](https://github.com/changesets/changesets) for version management and changelog generation.
 
 > **Publishing happens automatically on push to `main`.** `.github/workflows/publish.yaml` triggers on both `push: main` and `workflow_dispatch`. On a push with no pending changesets, `changesets/action` publishes any package whose local version is not yet on npm; with pending changesets it opens/updates the Version Packages PR instead. The `workflow_dispatch` modes below are for driving a release manually, not a gate that prevents automatic publishes.
+>
+> This describes current behavior, which diverges from the original intent recorded in `@openrouter/agent@0.1.1` ("release-gate publishing via workflow_dispatch", [#4](https://github.com/OpenRouterTeam/typescript-agent/pull/4)) — the `push` leg has been passing `publish:` to `changesets/action` regardless. If the gate is wanted back, remove `publish:` from that step (or condition it on `workflow_dispatch`) rather than relying on this doc; note that the `npm-publish` environment currently has no protection rules, so nothing else stands between a merge and a live publish.
 
 ## Why Coordinate Releases?
 
