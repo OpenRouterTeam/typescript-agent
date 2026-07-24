@@ -133,6 +133,19 @@ type BaseCallModelInput<
    * always produces the same verdicts.
    */
   doomLoop?: DoomLoopOption;
+  /**
+   * Cancel the whole run. Aborting stops the tool-execution loop at the
+   * next turn boundary AND aborts the in-flight API request/stream, so a
+   * stalled provider fails fast instead of hanging until an outer test or
+   * caller timeout kills the process. The run's promises reject with the
+   * signal's abort reason.
+   *
+   * Composes with per-request `RequestOptions.timeoutMs` (the third
+   * `callModel` argument): when both are set, each request is bounded by
+   * whichever fires first. (Passing a raw `signal` through `RequestOptions`
+   * instead would silently disable the SDK's `timeoutMs` wiring.)
+   */
+  signal?: AbortSignal;
 };
 
 /**
@@ -237,6 +250,7 @@ export async function resolveAsyncFunctions<TTools extends readonly Tool[] = rea
     'strictFinalResponse', // Client-side: restore throw on empty final after tool rounds
     'hooks', // Client-side hook system
     'doomLoop', // Client-side doom-loop detection config
+    'signal', // Client-side run cancellation
   ]);
 
   // Iterate over all keys in the input

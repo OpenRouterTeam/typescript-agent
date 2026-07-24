@@ -22,6 +22,7 @@ import type {
   DoomLoopOption,
   DoomLoopSerializedState,
   DoomLoopVerdict,
+  ResolvedEscalationConfig,
 } from './doom-loop.js';
 import { DoomLoopMonitor, resolveDoomLoopOption, resolveLoopKeyMaterial } from './doom-loop.js';
 import type { HooksManager } from './hooks-manager.js';
@@ -365,6 +366,11 @@ export interface GetResponseOptions<
    * an object tunes thresholds. Off by default.
    */
   doomLoop?: DoomLoopOption;
+  /**
+   * Cancel the whole run: stops the loop at the next boundary and aborts
+   * the in-flight API request/stream. See `CallModelInput.signal`.
+   */
+  signal?: AbortSignal;
 }
 
 /**
@@ -528,12 +534,22 @@ export class ModelResult<
   // calls runs synchronously to the first await), so streak recording
   // stays a pure function of the transcript even though hashing is async.
   private doomLoopChain: Promise<unknown> = Promise.resolve();
+  // Armed by an 'escalate' verdict; consumed by the next follow-up request
+  // as ONE-TURN overrides (model swap and/or forced openrouter:advisor).
+  // Deliberately NOT persisted: an escalation is a reaction to the loop's
+  // live state; a resumed run re-detects and re-escalates if still stuck
+  // (the CONSUMED budget does persist, via the monitor's escalationsUsed).
+  private pendingDoomLoopEscalation: DoomLoopVerdict | null = null;
+  // Resolved escalation mechanism (null when unconfigured); mirrors the
+  // monitor's config so the engine can build the overrides.
+  private readonly doomLoopEscalation: ResolvedEscalationConfig | null;
 
   constructor(options: GetResponseOptions<TTools, TShared>) {
     this.options = options;
     this.hooksManager = options.hooks;
     const doomLoopConfig = resolveDoomLoopOption(options.doomLoop);
     this.doomLoopMonitor = doomLoopConfig ? new DoomLoopMonitor(doomLoopConfig) : null;
+    this.doomLoopEscalation = doomLoopConfig?.escalation ?? null;
 
     // Runtime validation: approval decisions require state
     const hasApprovalDecisions =
@@ -1391,11 +1407,7 @@ export class ModelResult<
         message: record.verdict.message,
       };
       this.doomLoopRoundDecisions.set(decisionKey, decision);
-      if (action === 'steer') {
-        this.queueDoomLoopSteer(record.verdict.message);
-      } else if (action === 'stop') {
-        this.doomLoopStop = record.verdict;
-      }
+      this.applyDoomLoopSideEffects(action, record.verdict);
       return decision;
     };
 
@@ -1484,7 +1496,10 @@ export class ModelResult<
    * the LAST override in the chain wins (matching PermissionRequest's
    * last-wins convention). Non-blockable verdicts (text, server tools —
    * the tokens are already emitted / the tool already ran) downgrade a
-   * 'block' override to 'observe'.
+   * 'block' override to 'observe'. An 'escalate' override is honored only
+   * when an escalation mechanism is configured with remaining budget;
+   * otherwise it downgrades to 'observe' (never silently to a stronger
+   * action).
    */
   private async applyDoomLoopVerdict(
     verdict: DoomLoopVerdict,
@@ -1521,7 +1536,108 @@ export class ModelResult<
       // silently acting stronger/weaker than the handler intended.
       action = 'observe';
     }
+    if (action === 'escalate' && !(this.doomLoopMonitor?.canEscalate() ?? false)) {
+      // Ladder verdicts are already budget-gated by the monitor; this
+      // catches hook overrides requesting escalation without config/budget.
+      action = 'observe';
+    }
     return action;
+  }
+
+  /**
+   * Apply the side effects of a resolved doom-loop action shared by every
+   * checkpoint: queue steer guidance, arm an escalation for the next
+   * request, or arm the stop verdict. 'block' has no shared side effect —
+   * the calling checkpoint synthesizes the blocked output itself.
+   */
+  private applyDoomLoopSideEffects(
+    action: DoomLoopAction | 'proceed',
+    verdict: DoomLoopVerdict,
+  ): void {
+    if (action === 'steer') {
+      this.queueDoomLoopSteer(verdict.message);
+    } else if (action === 'escalate') {
+      // Latch the FIRST escalation verdict for the next request; a second
+      // verdict in the same window (e.g. tool + text detectors both firing)
+      // must not double-spend the budget.
+      if (this.pendingDoomLoopEscalation === null) {
+        this.pendingDoomLoopEscalation = verdict;
+        // The model should know why its next turn looks different. Rides
+        // the persisted steer path so the transcript stays well-formed.
+        this.queueDoomLoopSteer(
+          `${verdict.message} An escalated turn follows: use the additional guidance to change course.`,
+        );
+      }
+    } else if (action === 'stop') {
+      this.doomLoopStop = verdict;
+    }
+  }
+
+  /**
+   * Consume a pending escalation into ONE-TURN request overrides:
+   *
+   * - `model` — replace the request's model for this dispatch only (the
+   *   base `resolvedRequest` is never mutated, so the following turn
+   *   reverts automatically).
+   * - `advisor` — append an `openrouter:advisor` server tool (transcript
+   *   forwarded, instructions describing the detected loop) and pin
+   *   `toolChoice` to it via `allowed_tools`/`required`, so the stuck model
+   *   must consult the advisor before doing anything else this turn.
+   *
+   * Burns one unit of the escalation budget (persisted via the monitor) at
+   * APPLICATION time — verdicts the engine never got to apply (run stopped,
+   * paused, or overridden) do not spend.
+   */
+  private takeDoomLoopEscalationOverrides(): Partial<models.ResponsesRequest> | null {
+    const verdict = this.pendingDoomLoopEscalation;
+    const config = this.doomLoopEscalation;
+    if (!verdict || !config || !this.doomLoopMonitor?.canEscalate()) {
+      this.pendingDoomLoopEscalation = null;
+      return null;
+    }
+    this.pendingDoomLoopEscalation = null;
+    this.doomLoopMonitor.consumeEscalation();
+
+    const overrides: Record<string, unknown> = {};
+    if (config.model !== undefined) {
+      overrides['model'] = config.model;
+      // A single-model override must not be shadowed by a fallback list.
+      overrides['models'] = undefined;
+    }
+    if (config.advisor !== undefined && config.advisor !== false) {
+      const advisorParameters: Record<string, unknown> = {
+        forwardTranscript: true,
+        instructions:
+          'You are an escalation advisor. The executing model appears stuck in a loop: ' +
+          `${verdict.message} Diagnose why its approach is failing and give concrete, ` +
+          'specific instructions for a DIFFERENT approach. Do not restate the problem.',
+        ...(typeof config.advisor === 'object' ? config.advisor : {}),
+      };
+      const existingTools = Array.isArray(
+        (this.resolvedRequest as Record<string, unknown> | null)?.['tools'],
+      )
+        ? ((this.resolvedRequest as Record<string, unknown>)['tools'] as unknown[])
+        : [];
+      overrides['tools'] = [
+        ...existingTools,
+        {
+          type: 'openrouter:advisor',
+          parameters: advisorParameters,
+        },
+      ];
+      // Force the consult: constrain this turn's tool surface to the
+      // advisor and require a call.
+      overrides['toolChoice'] = {
+        type: 'allowed_tools',
+        mode: 'required',
+        tools: [
+          {
+            type: 'openrouter:advisor',
+          },
+        ],
+      };
+    }
+    return overrides as Partial<models.ResponsesRequest>;
   }
 
   /**
@@ -1551,11 +1667,7 @@ export class ModelResult<
     }
     if (verdict) {
       const action = await this.applyDoomLoopVerdict(verdict);
-      if (action === 'steer') {
-        this.queueDoomLoopSteer(verdict.message);
-      } else if (action === 'stop') {
-        this.doomLoopStop = verdict;
-      }
+      this.applyDoomLoopSideEffects(action, verdict);
     }
 
     // Server-tool repetition. The response's server-tool output items echo
@@ -2647,8 +2759,13 @@ export class ModelResult<
       input: newInput,
     };
 
+    // Escalation recovery: one-turn overrides (model swap / forced advisor
+    // consult) applied to THIS dispatch only — `resolvedRequest` above keeps
+    // the configured model/tools, so the next turn reverts automatically.
+    const escalationOverrides = this.takeDoomLoopEscalationOverrides();
     const newRequest: models.ResponsesRequest = {
       ...this.resolvedRequest,
+      ...(escalationOverrides ?? {}),
       stream: true,
     };
 
@@ -2658,7 +2775,7 @@ export class ModelResult<
       {
         responsesRequest: newRequest,
       },
-      this.options.options,
+      this.dispatchRequestOptions(),
     );
 
     if (!newResult.ok) {
@@ -2746,7 +2863,7 @@ export class ModelResult<
       {
         responsesRequest: finalRequest,
       },
-      this.options.options,
+      this.dispatchRequestOptions(),
     );
 
     if (!result.ok) {
@@ -2811,7 +2928,7 @@ export class ModelResult<
       {
         responsesRequest: newRequest,
       },
-      this.options.options,
+      this.dispatchRequestOptions(),
     );
 
     if (!newResult.ok) {
@@ -2821,6 +2938,49 @@ export class ModelResult<
     const response = await this.materializeResponse(newResult.value, turnNumber);
     await this.emitPostModelCall(response, startedAt, 'retry', turnNumber);
     return response;
+  }
+
+  /**
+   * Build the RequestOptions for one API dispatch, composing the run-level
+   * cancellation signal (`options.signal`) with the caller's RequestOptions.
+   *
+   * The SDK only auto-wires `timeoutMs` into an abort signal when NO signal
+   * is present on the options — a supplied signal silently disables the
+   * timeout. Composing here keeps both: each request is bounded by
+   * whichever of {run signal, caller signal, per-request timeout} fires
+   * first. MUST be called once per dispatch — `AbortSignal.timeout()`
+   * starts counting at creation, so a cached composite would burn its
+   * budget across turns instead of per request.
+   *
+   * Also the per-request fail-fast checkpoint: an already-aborted run
+   * signal throws its abort reason here, before any network I/O.
+   */
+  private dispatchRequestOptions(): RequestOptions | undefined {
+    const base = this.options.options;
+    const runSignal = this.options.signal;
+    if (!runSignal) {
+      return base;
+    }
+    runSignal.throwIfAborted();
+
+    const signals: AbortSignal[] = [
+      runSignal,
+    ];
+    const callerSignal = base?.signal ?? base?.fetchOptions?.signal;
+    if (callerSignal) {
+      signals.push(callerSignal);
+    }
+    // Re-create the timeout the SDK would have wired had no signal been
+    // present. Per-request option wins over the client-level default,
+    // mirroring betaResponsesSend's own precedence.
+    const timeoutMs = base?.timeoutMs ?? this.options.client._options.timeoutMs;
+    if (typeof timeoutMs === 'number' && timeoutMs > 0) {
+      signals.push(AbortSignal.timeout(timeoutMs));
+    }
+    return {
+      ...base,
+      signal: signals.length === 1 ? runSignal : AbortSignal.any(signals),
+    };
   }
 
   /**
@@ -2852,6 +3012,7 @@ export class ModelResult<
       strictFinalResponse: _sfr,
       hooks: _h,
       doomLoop: _dl,
+      signal: _sig,
       ...rest
     } = this.options.request;
     return rest as ResolvedCallModelInput;
@@ -3273,7 +3434,7 @@ export class ModelResult<
         {
           responsesRequest: request,
         },
-        this.options.options,
+        this.dispatchRequestOptions(),
       );
 
       if (!apiResult.ok) {
@@ -3540,7 +3701,7 @@ export class ModelResult<
       {
         responsesRequest: request,
       },
-      this.options.options,
+      this.dispatchRequestOptions(),
     );
 
     if (!apiResult.ok) {
@@ -3652,6 +3813,13 @@ export class ModelResult<
         let forceResumeCount = 0;
 
         while (true) {
+          // Run-level cancellation: fail the loop at the turn boundary with
+          // the abort reason. In-flight requests are aborted independently
+          // by the composed dispatch signal (dispatchRequestOptions); this
+          // check covers cancellation between requests (during tool
+          // execution or hook work).
+          this.options.signal?.throwIfAborted();
+
           // Check for external interruption
           if (await this.checkForInterruption(currentResponse)) {
             sessionEndReason = 'user';
