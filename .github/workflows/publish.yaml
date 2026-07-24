@@ -34,7 +34,7 @@ on:
 permissions:
   contents: write # For creating releases and the Version Packages PR
   pull-requests: write # For creating/updating the Version Packages PR
-  id-token: write # For npm provenance signing
+  id-token: write # For npm trusted publishing (OIDC) + provenance signing
 
 env:
   TURBO_TELEMETRY_DISABLED: '1'
@@ -48,11 +48,21 @@ jobs:
 
       - uses: pnpm/action-setup@v6
 
+      # npm trusted publishing (OIDC) requires npm >= 11.5.1, which means Node
+      # 24 — Node 22 ships npm 10.x, which has no OIDC token-exchange support at
+      # all and fails with ENEEDAUTH/E404. `pnpm publish` shells out to whichever
+      # `npm` is on PATH, so the Node version here is what performs the exchange.
+      #
+      # `registry-url` is deliberately omitted: it makes setup-node write an
+      # .npmrc containing `//registry.npmjs.org/:_authToken=${NODE_AUTH_TOKEN}`,
+      # and with no NODE_AUTH_TOKEN set that placeholder is left unexpanded and
+      # sent to the registry as a literal bearer token, breaking the `npm info`
+      # lookups changesets performs before publishing. npm's OIDC flow sets the
+      # auth token itself once the trusted publisher matches.
       - uses: actions/setup-node@v6
         with:
-          node-version: 22
+          node-version: 24
           cache: pnpm
-          registry-url: https://registry.npmjs.org
 
       - run: pnpm install --frozen-lockfile
 
@@ -73,7 +83,10 @@ jobs:
           publish: pnpm exec changeset publish --no-git-checks
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          # No NODE_AUTH_TOKEN / NPM_TOKEN: auth comes from OIDC trusted
+          # publishing. changesets/action logs "No NPM_TOKEN found, but OIDC is
+          # available" and leaves .npmrc alone; npm then exchanges the Actions
+          # ID token for a short-lived, package-scoped publish token.
 
       # Record the npm version before a manual publish so the dispatch step can
       # tell whether this run actually published a new @openrouter/agent (the
@@ -87,19 +100,18 @@ jobs:
       - name: Publish (workflow_dispatch, live)
         if: github.event_name == 'workflow_dispatch' && inputs.mode == 'publish' && !inputs.dry-run
         run: pnpm exec changeset publish --no-git-checks
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
       # `changeset publish` has no native --dry-run. Fall back to pnpm's
       # recursive dry-run, which simulates publishing every workspace package
       # rather than only the ones changesets would pick. Output set may be
       # wider than the live publish — but nothing is actually published, so
       # this is only a diagnostic preview.
+      #
+      # Dry runs never reach the OIDC exchange, so they cannot verify auth —
+      # they only confirm which tarballs would go out.
       - name: Publish (workflow_dispatch, dry-run)
         if: github.event_name == 'workflow_dispatch' && inputs.mode == 'publish' && inputs.dry-run
-        run: pnpm -r publish --dry-run --access public --provenance --no-git-checks
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: pnpm -r publish --dry-run --access public --no-git-checks
 
       # HOP B trigger: when @openrouter/agent is actually published, tell the
       # monorepo (openrouter-web) to bump its pinned @openrouter/agent for
