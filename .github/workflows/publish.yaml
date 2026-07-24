@@ -64,6 +64,20 @@ jobs:
           node-version: 24
           cache: pnpm
 
+      # Fail fast with an actionable message if the runner's npm cannot do the
+      # OIDC exchange. Without this, an npm downgrade (e.g. someone lowers
+      # node-version) surfaces as a cryptic `E404 PUT` or `ENEEDAUTH` at publish
+      # time, which is what made the original breakage hard to diagnose.
+      - name: Verify npm supports trusted publishing
+        run: |
+          set -euo pipefail
+          NPM_VERSION="$(npm --version)"
+          echo "node $(node --version) / npm ${NPM_VERSION}"
+          if [ "$(printf '%s\n' "11.5.1" "${NPM_VERSION}" | sort -V | head -n1)" != "11.5.1" ]; then
+            echo "::error::npm ${NPM_VERSION} cannot use trusted publishing (OIDC); npm >= 11.5.1 is required. Raise node-version in this workflow."
+            exit 1
+          fi
+
       - run: pnpm install --frozen-lockfile
 
       - run: pnpm run build

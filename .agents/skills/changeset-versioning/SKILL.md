@@ -2,11 +2,15 @@
 
 ## Overview
 
-This repo uses [changesets](https://github.com/changesets/changesets) for version management and changelog generation. Publishing is **release-gated** via `workflow_dispatch` — it does NOT auto-publish on push to main.
+This repo uses [changesets](https://github.com/changesets/changesets) for version management and changelog generation.
 
-## Why Release-Gated?
+> **Publishing happens automatically on push to `main`.** `.github/workflows/publish.yaml` triggers on both `push: main` and `workflow_dispatch`. On a push with no pending changesets, `changesets/action` publishes any package whose local version is not yet on npm; with pending changesets it opens/updates the Version Packages PR instead. The `workflow_dispatch` modes below are for driving a release manually, not a gate that prevents automatic publishes.
+
+## Why Coordinate Releases?
 
 `@openrouter/agent` depends on `@openrouter/sdk`. When Speakeasy regenerates SDK types, the agent must be updated to match. Both packages need **coordinated releases** — publishing one without the other can break consumers.
+
+Because a merge to `main` can publish, the coordination point is **when the Version Packages PR merges**, not a separate manual publish step. Hold that PR until the matching `@openrouter/sdk` release is out.
 
 ## Adding a Changeset
 
@@ -17,7 +21,7 @@ pnpm changeset add
 ```
 
 This will prompt you to:
-1. Select the package (`@openrouter/agent`)
+1. Select the package (`@openrouter/agent` and/or `@openrouter/mcp`)
 2. Choose a bump type (`patch`, `minor`, `major`)
 3. Write a summary of the change
 
@@ -51,13 +55,23 @@ After the Version Packages PR is merged, go to **Actions → Release → Run wor
 - **Mode:** `publish`
 - **Dry run:** unchecked (or check it first to verify)
 
-This runs `pnpm publish --provenance --access public` to push the new version to npm.
+This runs `pnpm exec changeset publish --no-git-checks` to push the new version to npm.
+
+Authentication uses [npm trusted publishing](https://docs.npmjs.com/trusted-publishers) (OIDC) — there is no npm token in CI. Provenance attestations are generated automatically by npm and do not need a `--provenance` flag. This requires:
+
+- `id-token: write` permission on the job (already set).
+- Node 24+ on the runner, since OIDC needs npm >= 11.5.1 and Node 22 ships npm 10.x. A guard step fails the run early with a clear message if npm is too old.
+- A trusted publisher configured on npmjs.com for **each** package: repo `OpenRouterTeam/typescript-agent`, workflow filename `publish.yaml`, environment `npm-publish`. npm does not validate these fields on save, and all are case-sensitive — a mismatch only shows up as a failed publish (`ENEEDAUTH`, or `E404` on a `PUT`).
+
+A package's **first** version cannot be published via OIDC ([npm/cli#8544](https://github.com/npm/cli/issues/8544)); the npm UI requires the package to exist before a trusted publisher can be attached. Bootstrap a brand-new package with one manual `npm publish --access public`, then configure its trusted publisher.
 
 ### Dry Run
 
 To verify what would happen without making changes:
 - **Mode:** `publish`
 - **Dry run:** checked
+
+The dry run uses `pnpm -r publish --dry-run`, which simulates every workspace package rather than only the ones changesets would select, so its output set may be wider than a real publish. It also never reaches the OIDC token exchange, so it validates tarball contents — not authentication.
 
 ## Coordination with @openrouter/sdk
 
@@ -93,5 +107,5 @@ pnpm run build              # Build (tsc)
 pnpm run typecheck          # Type check without emitting
 pnpm run test               # Run unit tests
 pnpm run test:e2e           # Run e2e tests (requires OPENROUTER_API_KEY)
-pnpm lint                   # Lint with eslint
+pnpm run lint               # Lint with biome
 ```
