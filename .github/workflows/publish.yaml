@@ -147,3 +147,55 @@ jobs:
             -F "client_payload[version]=${{ steps.published.outputs.version }}" \
             -F "client_payload[source_run_url]=${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
           echo "Dispatched openrouter-agent-published (version ${{ steps.published.outputs.version }}) to openrouter-web"
+
+      # HOP C trigger: tell the Python and Go ports of @openrouter/agent that a
+      # new version shipped, so each opens a PR porting the delta. Those repos run
+      # Upstreamer against this repo as their reference spec (see their
+      # .upstreamer/upstreamer.md) and gate the result on a mechanical verifier
+      # plus a parity eval before advancing their sync state.
+      #
+      # Deliberately release-triggered rather than a cron over this repo's main:
+      # ports track published versions, so the delta they see always lands on a
+      # release boundary instead of a mid-flight commit.
+      #
+      # `ref` is the release tag changesets created, so a port reproduces the exact
+      # published tree rather than whatever main has drifted to since.
+      #
+      # This step must not fail the release: the packages are already on npm by
+      # now, so a red job here would misreport a successful publish. A failed
+      # dispatch is a warning — re-run it from the port repo's own
+      # "Upstreamer Port" workflow (workflow_dispatch), or let its weekly cron
+      # pick the change up.
+      #
+      # `!cancelled()` keeps this independent of the HOP B step above: a failed
+      # monorepo dispatch should not also stop the ports from being told.
+      - name: Dispatch port repos
+        if: ${{ !cancelled() && !inputs.dry-run && steps.published.outputs.version != '' }}
+        continue-on-error: true
+        env:
+          # Same cross-repo PAT as HOP B; additionally needs contents:write on
+          # OpenRouterTeam/python-agent and OpenRouterTeam/go-agent.
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+          VERSION: ${{ steps.published.outputs.version }}
+        run: |
+          set -uo pipefail
+          TAG="@openrouter/agent@${VERSION}"
+          FAILED=""
+
+          for REPO in python-agent go-agent; do
+            if gh api "repos/OpenRouterTeam/${REPO}/dispatches" \
+                 -f event_type=openrouter-agent-published \
+                 -F "client_payload[version]=${VERSION}" \
+                 -F "client_payload[ref]=${TAG}" \
+                 -F "client_payload[source_run_url]=${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"; then
+              echo "Dispatched openrouter-agent-published ($TAG) to ${REPO}"
+            else
+              echo "::warning::Failed to dispatch to OpenRouterTeam/${REPO}. Trigger its Upstreamer Port workflow manually with ref=${TAG}, or wait for its weekly cron."
+              FAILED="$FAILED ${REPO}"
+            fi
+          done
+
+          # Report, but never fail the release — npm is already updated.
+          if [ -n "$FAILED" ]; then
+            echo "Port dispatch incomplete:$FAILED"
+          fi
