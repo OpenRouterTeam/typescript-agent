@@ -90,6 +90,13 @@ jobs:
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
+      # `changeset publish` only creates release tags locally; on the push path
+      # changesets/action pushes them, but nothing does here. Push them so the
+      # HOP C dispatch below names a ref the port repos can actually resolve.
+      - name: Push release tags (manual publish)
+        if: github.event_name == 'workflow_dispatch' && inputs.mode == 'publish' && !inputs.dry-run
+        run: git push origin --tags
+
       # `changeset publish` has no native --dry-run. Fall back to pnpm's
       # recursive dry-run, which simulates publishing every workspace package
       # rather than only the ones changesets would pick. Output set may be
@@ -177,17 +184,21 @@ jobs:
           # OpenRouterTeam/python-agent and OpenRouterTeam/go-agent.
           GH_TOKEN: ${{ secrets.GH_TOKEN }}
           VERSION: ${{ steps.published.outputs.version }}
+          SOURCE_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
-          set -uo pipefail
+          set -euo pipefail
           TAG="@openrouter/agent@${VERSION}"
           FAILED=""
 
           for REPO in python-agent go-agent; do
+            # -f (--raw-field) everywhere: -F treats values starting with `@`
+            # (like TAG) as filenames to read, which would error out before the
+            # request is even sent.
             if gh api "repos/OpenRouterTeam/${REPO}/dispatches" \
                  -f event_type=openrouter-agent-published \
-                 -F "client_payload[version]=${VERSION}" \
-                 -F "client_payload[ref]=${TAG}" \
-                 -F "client_payload[source_run_url]=${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"; then
+                 -f "client_payload[version]=${VERSION}" \
+                 -f "client_payload[ref]=${TAG}" \
+                 -f "client_payload[source_run_url]=${SOURCE_RUN_URL}"; then
               echo "Dispatched openrouter-agent-published ($TAG) to ${REPO}"
             else
               echo "::warning::Failed to dispatch to OpenRouterTeam/${REPO}. Trigger its Upstreamer Port workflow manually with ref=${TAG}, or wait for its weekly cron."
