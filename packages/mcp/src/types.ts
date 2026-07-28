@@ -86,7 +86,16 @@ export interface CreateMCPToolsOptions {
   emitProgress?: boolean;
   /** Auto-refresh tools on `tools/list_changed`. Default true when connected. */
   autoRefreshOnListChanged?: boolean;
-  /** Handler for server-initiated elicitation; auto-declines when omitted. */
+  /**
+   * Handler for server-initiated elicitation; auto-declines when omitted.
+   *
+   * @deprecated Server-initiated `elicitation/create` is removed in MCP
+   * protocol revision 2026-07-28, replaced by Multi Round-Trip Requests
+   * (SEP-2322): servers return an `input_required` result and the client
+   * retries with `inputResponses`. This option keeps working against
+   * 2025-11-25 and earlier servers, which is what the pinned SDK negotiates,
+   * but will be reshaped when this package migrates. See the README.
+   */
   onElicitation?: ElicitationHandler;
   /** Abort signal threaded into every underlying `callTool`. */
   signal?: AbortSignal;

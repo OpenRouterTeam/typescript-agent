@@ -110,7 +110,7 @@ const result = callModel(client, {
 | Option | Description |
 | --- | --- |
 | `url` | Remote MCP server endpoint. |
-| `transport` | `'streamableHttp'` (default, falls back to SSE) or `'sse'`. |
+| `transport` | `'streamableHttp'` (default, falls back to SSE) or `'sse'` (deprecated upstream). |
 | `auth` | Bearer token, headers, or an `OAuthClientProvider`. |
 | `toolNamePrefix` | Prefix every wrapped tool name. |
 | `includeTools` / `excludeTools` | Allow/deny lists by MCP tool name. |
@@ -121,6 +121,39 @@ const result = callModel(client, {
 | `autoRefreshOnListChanged` | Re-list on `tools/list_changed` (default on). |
 | `onElicitation` | Handle server elicitation requests; auto-declines when omitted. |
 | `signal` | Abort signal threaded into every tool call. |
+
+## Protocol revision
+
+This package delegates protocol version negotiation entirely to
+`@modelcontextprotocol/sdk` (pinned `^1.29.0`), which negotiates **`2025-11-25`** and
+supports `2025-06-18`, `2025-03-26`, `2024-11-05`, and `2024-10-07`. There are no
+hardcoded protocol version strings here.
+
+MCP revision **`2026-07-28`** is published but this package does not speak it yet, and
+that is deliberate: as of this writing no released SDK negotiates it by default.
+`@modelcontextprotocol/client@2.0.0` still sends the `initialize` handshake with
+`protocolVersion: "2025-11-25"` and omits the `Mcp-Method` / `Mcp-Name` headers the new
+revision requires, so migrating today would change our dependency tree without changing
+a single byte on the wire.
+
+Three parts of this package's surface target primitives `2026-07-28` removes. They keep
+working against the revisions the pinned SDK negotiates, and are marked `@deprecated` so
+the eventual break is not a surprise:
+
+| Surface | Fate under `2026-07-28` |
+| --- | --- |
+| `sessionId` (snapshot field, reconnect replay) | Protocol-level sessions and `Mcp-Session-Id` **removed** (SEP-2567); cross-call state becomes server-minted handles passed as tool arguments. |
+| `onElicitation` | Server-initiated `elicitation/create` **removed**, replaced by Multi Round-Trip Requests (SEP-2322): an `input_required` result plus a client retry carrying `inputResponses`. |
+| `transport: 'sse'` | HTTP+SSE reclassified **Deprecated** (SEP-2596). |
+
+Also relevant when the migration happens: `resultType` and `ttlMs`/`cacheScope` become
+required result fields, `resources/subscribe` gives way to `subscriptions/listen`, and
+resource-not-found renumbers from `-32002` to `-32602`. Sampling and Roots are deprecated
+in the new revision and were never implemented here, so they need no migration.
+
+Snapshots written by earlier versions must keep deserializing — `isSerializedMCPServer`
+validates untrusted snapshots, so any format change is a data-compatibility concern, not
+only a code one.
 
 ## License
 

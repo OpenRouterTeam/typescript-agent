@@ -14,9 +14,11 @@ import { makeElicitationRequestHandler } from './elicitation.js';
 import { MCPConnectionError } from './errors.js';
 import type { ElicitationHandler, MCPTransportKind } from './types.js';
 
+// Keep in sync with the `version` field of packages/mcp/package.json — this is
+// self-reported to every MCP server we connect to.
 const DEFAULT_CLIENT_INFO = {
   name: '@openrouter/mcp',
-  version: '0.1.0',
+  version: '0.0.1',
 };
 
 export interface ConnectOptions {
