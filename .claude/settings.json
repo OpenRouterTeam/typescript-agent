@@ -1,13 +1,23 @@
 {
   "hooks": {
-    "stop": [
+    "Stop": [
       {
-        "command": "pnpm run lint",
-        "blocking": true
-      },
-      {
-        "command": "pnpm run typecheck",
-        "blocking": true
+        "hooks": [
+          {
+            "type": "command",
+            "command": "pnpm run lint >&2 || exit 2",
+            "asyncRewake": true,
+            "statusMessage": "Linting…",
+            "timeout": 300
+          },
+          {
+            "type": "command",
+            "command": "pnpm run typecheck >&2 || exit 2",
+            "asyncRewake": true,
+            "statusMessage": "Typechecking…",
+            "timeout": 300
+          }
+        ]
       }
     ]
   }
