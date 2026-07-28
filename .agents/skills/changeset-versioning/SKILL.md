@@ -69,7 +69,9 @@ Review and merge that PR to main.
 
 ### Step 2: Publish (pushes to npm)
 
-After the Version Packages PR is merged, go to **Actions → Release → Run workflow** and select:
+**Merging the Version Packages PR normally publishes on its own** — that merge is a push to `main`, which runs this workflow's `changesets/action` leg with `publish:` wired up. In the common case there is nothing to do here.
+
+This mode is for **retrying or forcing** a publish (for example after a failed run, or when a version is on disk but never reached npm). Go to **Actions → Release → Run workflow** and select:
 - **Mode:** `publish`
 - **Dry run:** unchecked (or check it first to verify)
 
@@ -112,7 +114,7 @@ The changelog is written to `CHANGELOG.md` during the version step.
 ## Configuration
 
 - `.changeset/config.json` — Changesets configuration
-- `.github/workflows/publish.yaml` — Release workflow (workflow_dispatch)
+- `.github/workflows/publish.yaml` — Release workflow (`push: main` + `workflow_dispatch`)
 - `.github/workflows/ci.yaml` — PR validation (lint, typecheck, test)
 
 ## Common Commands
