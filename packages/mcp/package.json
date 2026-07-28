@@ -57,12 +57,13 @@
   "scripts": {
     "lint": "biome check src tests",
     "lint:fix": "biome check --write src tests",
-    "build": "tsc",
+    "gen:version": "node scripts/gen-version.mjs",
+    "build": "node scripts/gen-version.mjs && tsc",
     "test": "vitest --run --project unit",
     "test:e2e": "vitest --run --project e2e",
     "test:watch": "vitest --watch --project unit",
     "typecheck": "tsc --noEmit",
-    "compile": "tsc"
+    "compile": "node scripts/gen-version.mjs && tsc"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",

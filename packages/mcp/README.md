@@ -122,6 +122,24 @@ const result = callModel(client, {
 | `onElicitation` | Handle server elicitation requests; auto-declines when omitted. |
 | `signal` | Abort signal threaded into every tool call. |
 
+## Client identity
+
+The client identifies itself to every server it connects to via MCP `clientInfo`
+(`{ name, version }`). Pass `clientInfo` in options to override it; otherwise the default
+is `@openrouter/mcp` at this package's version.
+
+That version is **generated** into `src/version.ts` from `package.json`, which is the
+single source of truth. `build` regenerates it, so a changesets version bump is picked up
+automatically before publish. To regenerate by hand:
+
+```bash
+pnpm --filter @openrouter/mcp gen:version
+```
+
+The generated file is committed rather than gitignored, because CI's lint, typecheck, and
+unit-test jobs compile `src` without running a build. `tests/unit/version.test.ts` fails
+if the committed constant drifts from `package.json`, so a stale value cannot merge.
+
 ## Protocol revision
 
 This package delegates protocol version negotiation entirely to

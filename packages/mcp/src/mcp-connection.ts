@@ -13,12 +13,13 @@ import type { MCPAuth } from './auth/auth-types.js';
 import { makeElicitationRequestHandler } from './elicitation.js';
 import { MCPConnectionError } from './errors.js';
 import type { ElicitationHandler, MCPTransportKind } from './types.js';
+import { PACKAGE_VERSION } from './version.js';
 
-// Keep in sync with the `version` field of packages/mcp/package.json — this is
-// self-reported to every MCP server we connect to.
+// Self-reported to every MCP server we connect to as `clientInfo`. The version
+// is generated from package.json (scripts/gen-version.mjs) so it cannot drift.
 const DEFAULT_CLIENT_INFO = {
   name: '@openrouter/mcp',
-  version: '0.0.1',
+  version: PACKAGE_VERSION,
 };
 
 export interface ConnectOptions {
