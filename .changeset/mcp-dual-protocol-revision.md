@@ -17,6 +17,41 @@ and note `tokens()` now returns `StoredOAuthTokens` (same fields, so most provid
 unchanged). Type it with the newly exported `MCPOAuthClientProvider` to avoid depending on
 that path again.
 
+**Breaking:** `protocolNegotiation` defaults to `'auto'`, where the SDK defaults to
+`'legacy'`. Every connection's first request therefore becomes a `server/discover` probe. A
+server that hangs or 5xx's on an unknown method — proxies, WAFs, strict gateways — goes from
+working to failing on this upgrade, because a probe timeout over HTTP is treated as an
+outage and rejects, and the SSE fallback re-probes and fails the same way. Pass
+`protocolNegotiation: 'legacy'` to keep the previous behavior exactly.
+
+```ts
+import { createMCPTools, type MCPOAuthClientProvider } from '@openrouter/mcp';
+
+// Default: probes with `server/discover`, then speaks whichever revision the
+// server offers. New behavior — see the Breaking note above.
+const mcp = await createMCPTools({ url: 'https://mcp.example.com/mcp' });
+
+// Opt out: classic `initialize` handshake only, matching pre-upgrade behavior.
+// Use this if your server sits behind a gateway that rejects unknown methods.
+const legacy = await createMCPTools({
+  url: 'https://mcp.example.com/mcp',
+  protocolNegotiation: 'legacy',
+});
+
+// Or pin one revision explicitly.
+const pinned = await createMCPTools({
+  url: 'https://mcp.example.com/mcp',
+  protocolNegotiation: { pin: '2026-07-28' },
+});
+
+// OAuth providers: type against the new export rather than the SDK path.
+const provider: MCPOAuthClientProvider = myProvider;
+await createMCPTools({
+  url: 'https://mcp.example.com/mcp',
+  auth: { kind: 'oauth', provider },
+});
+```
+
 Also in this release:
 
 - Fixes a silent bug in the `callTool` bridge: SDK v2 dropped the middle argument, so the
