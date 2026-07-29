@@ -125,7 +125,11 @@ function isRecord(value: unknown): value is Record<string, unknown> {
  */
 function extractServerToolIdentity(item: ServerToolResultItem): Record<string, unknown> | null {
   const record = item as unknown as Record<string, unknown>;
-  const identity: Record<string, unknown> = {};
+  // Object.create(null), not `{}`: keys come from a JSON-parsed API response, so
+  // a `__proto__` key would hit the prototype setter instead of creating an own
+  // property and drop out of the fingerprint. Same reasoning as the field-list
+  // subset in resolveLoopKeyMaterial and the Map-backed streak store.
+  const identity: Record<string, unknown> = Object.create(null) as Record<string, unknown>;
   for (const [key, value] of Object.entries(record)) {
     if (
       key === 'id' ||
