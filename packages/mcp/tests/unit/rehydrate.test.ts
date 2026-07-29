@@ -60,6 +60,20 @@ function snapshotWithHeaders(): SerializedMCPServer {
   return snap;
 }
 
+function loopKeyOf(tool: unknown): unknown {
+  if (
+    typeof tool === 'object' &&
+    tool !== null &&
+    'function' in tool &&
+    typeof tool.function === 'object' &&
+    tool.function !== null &&
+    'loopKey' in tool.function
+  ) {
+    return tool.function.loopKey;
+  }
+  return undefined;
+}
+
 function nameOf(tool: unknown): string | undefined {
   if (
     typeof tool === 'object' &&
@@ -120,5 +134,49 @@ describe('rehydrateMCPTools', () => {
       kind: 'bearer',
       token: 'token-123',
     });
+  });
+});
+
+/**
+ * Regression: options `createMCPTools` forwards into `rehydrateMCPTools`.
+ *
+ * The forwarding is an explicit allowlist (`FORWARDED_REHYDRATE_KEYS`).
+ * `loopKeys` was missing from it, so with caching enabled the cache-hit path
+ * silently dropped the caller's doom-loop identities — detection went dead on
+ * warm handles only, with no error and no failing test. Asserting on the
+ * resulting tool def rather than the internal list keeps this honest regardless
+ * of how forwarding is implemented.
+ */
+describe('createMCPTools cache-hit option forwarding', () => {
+  beforeEach(() => {
+    connectCalls.length = 0;
+  });
+
+  it('forwards client-configured loopKeys into the rehydrated handle', async () => {
+    const { createMCPTools } = await import('../../src/create-mcp-tools.js');
+    const { InMemoryMCPCacheStore } = await import('../../src/cache/cache-store.js');
+
+    const store = new InMemoryMCPCacheStore();
+    store.set('warm', snapshotWithHeaders());
+
+    const handle = await createMCPTools({
+      url: 'https://mcp.example.com/mcp',
+      cache: {
+        store,
+        key: 'warm',
+      },
+      loopKeys: {
+        alpha: [
+          'command',
+        ],
+      },
+    });
+
+    // Served from cache, not a fresh list.
+    expect(connectCalls).toHaveLength(1);
+    const alpha = handle.tools.find((t) => nameOf(t) === 'alpha');
+    expect(loopKeyOf(alpha)).toEqual([
+      'command',
+    ]);
   });
 });
