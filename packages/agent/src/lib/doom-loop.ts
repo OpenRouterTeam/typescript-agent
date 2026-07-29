@@ -366,9 +366,14 @@ export function resolveDoomLoopOption(
   // mechanism without the rung) is probably a config mistake — warn, and
   // treat the rung as absent so verdicts fall through to weaker rungs.
   const escalationInput = config.escalation;
+  // `advisor: false` is an explicit opt-out, not a mechanism. The recovery step
+  // skips a disabled advisor (see model-result.ts), so counting it here would
+  // resolve an escalation rung that consumes budget and announces recovery
+  // without applying any override — `{ advisor: false }` alone must read the
+  // same as `{}`.
+  const hasAdvisor = escalationInput?.advisor !== undefined && escalationInput.advisor !== false;
   const hasMechanism =
-    escalationInput !== undefined &&
-    (escalationInput.model !== undefined || escalationInput.advisor !== undefined);
+    escalationInput !== undefined && (escalationInput.model !== undefined || hasAdvisor);
   let escalation: ResolvedEscalationConfig | null = null;
   if (hasMechanism) {
     const cap = escalationInput.maxEscalations;
@@ -376,7 +381,7 @@ export function resolveDoomLoopOption(
       ...(escalationInput.model !== undefined && {
         model: escalationInput.model,
       }),
-      ...(escalationInput.advisor !== undefined && {
+      ...(hasAdvisor && {
         advisor: escalationInput.advisor,
       }),
       maxEscalations:

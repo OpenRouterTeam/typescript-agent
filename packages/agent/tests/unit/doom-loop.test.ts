@@ -478,6 +478,45 @@ describe('resolveDoomLoopOption', () => {
     expect(resolved?.ladder.observe).toBe(DEFAULT_DOOM_LOOP_LADDER.observe);
   });
 
+  /*
+   * `advisor: false` is an explicit opt-out. The recovery step skips a disabled
+   * advisor, so if config resolution counted it as a mechanism the escalate rung
+   * would resolve, consume one of the limited escalations, and announce recovery
+   * while applying no override at all. `{ advisor: false }` must read as `{}`.
+   */
+  it('advisor: false is not a recovery mechanism', () => {
+    expect(
+      resolveDoomLoopOption({
+        escalation: {
+          advisor: false,
+        },
+      })?.escalation,
+    ).toBeNull();
+  });
+
+  it('advisor: false does not resolve alongside a real mechanism', () => {
+    const resolved = resolveDoomLoopOption({
+      escalation: {
+        model: 'stronger-model',
+        advisor: false,
+      },
+    });
+    expect(resolved?.escalation?.model).toBe('stronger-model');
+    // Carried through, the disabled advisor would still be inert at recovery —
+    // but it should not appear in the resolved config at all.
+    expect(resolved?.escalation).not.toHaveProperty('advisor');
+  });
+
+  it('advisor: true IS a recovery mechanism', () => {
+    expect(
+      resolveDoomLoopOption({
+        escalation: {
+          advisor: true,
+        },
+      })?.escalation?.advisor,
+    ).toBe(true);
+  });
+
   it('text: false disables text detection', () => {
     expect(
       resolveDoomLoopOption({
