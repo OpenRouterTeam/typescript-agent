@@ -1284,6 +1284,83 @@ describe('H2: server-tool repetition at the step checkpoint', () => {
     expect(text).toBe('done');
     expect(detections).toEqual([]);
   });
+
+  /*
+   * Server-tool output items are JSON-parsed API responses, so a `__proto__`
+   * key is a real own property rather than an inherited one. The identity
+   * object is built with Object.create(null) so such a field lands as an own
+   * property and participates in the fingerprint; with a plain `{}` it would
+   * hit the prototype setter, vanish from Object.keys, and make two calls that
+   * differ ONLY in that field collide onto one fingerprint — a false positive.
+   */
+  it('a __proto__ field on a server-tool item participates in the fingerprint', async () => {
+    const hooks = new HooksManager();
+    const detections = collectDetections(hooks);
+    const clientTool = tool({
+      name: 'note',
+      inputSchema: z.object({
+        n: z.number(),
+      }),
+      outputSchema: z.object({
+        ok: z.boolean(),
+      }),
+      execute: async () => ({
+        ok: true,
+      }),
+    });
+
+    // Same query, differing only in a __proto__-named field. Parsed from JSON
+    // so it is an own data property, exactly as it would arrive over the wire.
+    function protoItem(marker: string): Record<string, unknown> {
+      callCounter++;
+      return {
+        ...(JSON.parse(`{"__proto__":"${marker}"}`) as Record<string, unknown>),
+        type: 'web_search_call',
+        id: `ws_${callCounter}`,
+        status: 'completed',
+        action: {
+          type: 'search',
+          query: 'same query',
+        },
+      };
+    }
+
+    scriptModelTurns(
+      turn(
+        protoItem('a'),
+        functionCallItem('note', {
+          n: 1,
+        }),
+      ),
+      turn(
+        protoItem('b'),
+        functionCallItem('note', {
+          n: 2,
+        }),
+      ),
+      turn(
+        protoItem('c'),
+        functionCallItem('note', {
+          n: 3,
+        }),
+      ),
+      textTurn('done'),
+    );
+
+    const text = await callModel(client, {
+      model: 'test-model',
+      input: 'search',
+      tools: [
+        clientTool,
+      ] as const,
+      doomLoop: true,
+      hooks,
+    }).getText();
+
+    expect(text).toBe('done');
+    // Distinct __proto__ values => distinct fingerprints => no streak.
+    expect(detections).toEqual([]);
+  });
 });
 
 // ---------------------------------------------------------------------------
