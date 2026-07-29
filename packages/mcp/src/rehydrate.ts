@@ -241,6 +241,9 @@ export async function rehydrateMCPTools(
         cacheKey,
       },
       initialToolDefs: snapshotToToolDefs(snapshot),
+      // Replay, not a listTools() — keep the snapshot's original age so
+      // staleness.maxAgeMs stays measurable across repeated rehydrates.
+      replayedCachedAt: snapshot.cachedAt,
     });
   } catch (err) {
     if (reconnectOnExpiry) {

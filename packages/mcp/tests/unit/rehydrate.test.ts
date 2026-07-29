@@ -185,3 +185,43 @@ describe('staleness on the direct rehydrate path', () => {
     await handle.close();
   });
 });
+
+/**
+ * Regression: a replay must not reset the staleness clock.
+ *
+ * `makeHandle` writes the snapshot back to the cache on construction, and
+ * `serializeArgs` stamped `cachedAt: Date.now()` unconditionally. On the replay
+ * path that restamped a tool set that was never re-listed, so every rehydrate
+ * pushed the age back to zero and `staleness.maxAgeMs` could never fire on a
+ * repeatedly-rehydrated snapshot — silently serving unbounded-age tools.
+ */
+describe('replay preserves snapshot age', () => {
+  beforeEach(() => {
+    connectCalls.length = 0;
+  });
+
+  it('does not restamp cachedAt when tool defs come from a snapshot', async () => {
+    const { InMemoryMCPCacheStore } = await import('../../src/cache/cache-store.js');
+    const store = new InMemoryMCPCacheStore();
+    const snap = snapshotWithHeaders();
+    const originalCachedAt = snap.cachedAt - 60_000; // an hour-old-ish snapshot
+    store.set('warm', {
+      ...snap,
+      cachedAt: originalCachedAt,
+    });
+
+    await rehydrateMCPTools({
+      snapshot: {
+        ...snap,
+        cachedAt: originalCachedAt,
+      },
+      cache: {
+        store,
+        key: 'warm',
+      },
+    });
+
+    const written = await store.get('warm');
+    expect(written?.cachedAt).toBe(originalCachedAt);
+  });
+});

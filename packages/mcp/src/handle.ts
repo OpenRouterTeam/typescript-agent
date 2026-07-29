@@ -92,6 +92,19 @@ export interface MakeHandleArgs {
   options: CreateMCPToolsOptions;
   context: HandleContext;
   initialToolDefs: McpToolDef[];
+  /**
+   * `cachedAt` to carry forward when `initialToolDefs` came from a snapshot
+   * rather than a live `listTools()`. Omit on a cold connect so the write
+   * stamps now.
+   *
+   * Without this a replay would restamp `cachedAt` on the write-back below,
+   * resetting the staleness clock on a tool set that was never re-listed —
+   * so `staleness.maxAgeMs` could never fire on a repeatedly-rehydrated
+   * snapshot. Age tracks when the tools were last actually discovered, not
+   * when they were last replayed. `refresh()` clears it, because that path
+   * does re-list.
+   */
+  replayedCachedAt?: number;
 }
 
 /**
@@ -158,6 +171,8 @@ export async function makeHandle(args: MakeHandleArgs): Promise<MCPToolsHandle> 
   const { connection, options, context, initialToolDefs } = args;
   const listeners = new Set<(tools: readonly Tool[]) => void>();
   let toolDefs = initialToolDefs;
+  // Cleared by refresh(): once we have re-listed, age is measured from now.
+  let replayedCachedAt = args.replayedCachedAt;
   const serverInfo = connection.client.getServerVersion();
 
   const rebuild = (): Tool[] => buildTools(buildToolsArgs(connection, toolDefs, options));
@@ -172,6 +187,9 @@ export async function makeHandle(args: MakeHandleArgs): Promise<MCPToolsHandle> 
         toolDefs,
         serverInfo,
         options,
+        ...(replayedCachedAt !== undefined && {
+          cachedAt: replayedCachedAt,
+        }),
       }),
     );
 
@@ -185,6 +203,8 @@ export async function makeHandle(args: MakeHandleArgs): Promise<MCPToolsHandle> 
 
   const refresh = async (): Promise<readonly Tool[]> => {
     toolDefs = await listToolDefs(connection, options.signal);
+    // Re-listed, so the snapshot is genuinely current from here on.
+    replayedCachedAt = undefined;
     tools = rebuild();
     await writeCache();
     return tools;
@@ -266,6 +286,8 @@ interface SerializeArgsInput {
       }
     | undefined;
   options: CreateMCPToolsOptions;
+  /** Carried forward on a snapshot replay; defaults to now on a cold connect. */
+  cachedAt?: number;
 }
 
 /** Assemble the {@link serializeServer} input, threading only the defined fields. */
@@ -276,7 +298,7 @@ function serializeArgs(args: SerializeArgsInput): SerializeInput {
     transport: connection.transport,
     toolDefs,
     cacheCredentials: options.cacheCredentials ?? false,
-    cachedAt: Date.now(),
+    cachedAt: args.cachedAt ?? Date.now(),
     ...(serverInfo !== undefined && {
       serverInfo,
     }),
