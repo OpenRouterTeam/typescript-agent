@@ -5,14 +5,16 @@
         "hooks": [
           {
             "type": "command",
-            "command": "jq -e '.stop_hook_active == true' >/dev/null 2>&1 && exit 0; pnpm run lint >&2 || exit 2",
+            "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/stop-check.sh",
+            "args": ["lint"],
             "asyncRewake": true,
             "statusMessage": "Linting…",
             "timeout": 120
           },
           {
             "type": "command",
-            "command": "jq -e '.stop_hook_active == true' >/dev/null 2>&1 && exit 0; pnpm run typecheck >&2 || exit 2",
+            "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/stop-check.sh",
+            "args": ["typecheck"],
             "asyncRewake": true,
             "statusMessage": "Typechecking…",
             "timeout": 120
