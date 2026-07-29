@@ -35,13 +35,19 @@ fi
 script="$1"
 input=$(cat)
 
+# Both fallbacks use bash's own `[[ =~ ]]` rather than a `grep` pipeline.
+# `grep -q` exits on first match, which can kill the upstream `printf` with
+# SIGPIPE (141); under `set -o pipefail` the pipeline then reports 141 even
+# though grep matched, inverting the test. Here that would mean skipping the
+# check on a payload that DID carry the field, or missing the re-entrancy guard
+# — both silent. No pipe, no subshell, no inversion.
 reentrant() {
   if command -v jq > /dev/null 2>&1; then
     [ "$(printf '%s' "$input" | jq -r '.stop_hook_active // false' 2> /dev/null)" = "true" ]
     return
   fi
   # No jq: match the field directly. Tolerates arbitrary whitespace.
-  printf '%s' "$input" | grep -Eq '"stop_hook_active"[[:space:]]*:[[:space:]]*true'
+  [[ $input =~ \"stop_hook_active\"[[:space:]]*:[[:space:]]*true ]]
 }
 
 if reentrant; then
@@ -52,7 +58,7 @@ fi
 # turn to end rather than risk a loop we cannot detect — but say so on stderr,
 # because a silent skip here is indistinguishable from a passing check and the
 # hook block would look healthy in /hooks while doing nothing.
-if ! printf '%s' "$input" | grep -q 'stop_hook_active'; then
+if [[ $input != *stop_hook_active* ]]; then
   echo "stop-check: no stop_hook_active in payload; skipping $script" >&2
   exit 0
 fi
