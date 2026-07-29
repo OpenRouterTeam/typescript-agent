@@ -1,4 +1,4 @@
-import type { OAuthClientProvider } from '@modelcontextprotocol/sdk/client/auth.js';
+import type { OAuthClientProvider } from '@modelcontextprotocol/client';
 
 /**
  * Authentication for a remote MCP server. Supplied once and reused by the

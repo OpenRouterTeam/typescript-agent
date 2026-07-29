@@ -18,6 +18,8 @@ interface SdkState {
   /** sessionId the fake Streamable HTTP transport reports after connecting. */
   httpSessionId: string | undefined;
   clientsCreated: number;
+  /** `versionNegotiation.mode` seen by each constructed Client, in order. */
+  negotiationModes: unknown[];
 }
 
 const state: SdkState = {
@@ -25,6 +27,7 @@ const state: SdkState = {
   failing: new Set(),
   httpSessionId: undefined,
   clientsCreated: 0,
+  negotiationModes: [],
 };
 
 /** Explicit marker so the fake client can tell the two transports apart. */
@@ -35,7 +38,9 @@ interface Marked {
   sessionId: string | undefined;
 }
 
-vi.mock('@modelcontextprotocol/sdk/client/streamableHttp.js', () => ({
+// SDK v2 ships Client and both transports from one package, so the three
+// separate v1 module mocks collapse into this single factory.
+vi.mock('@modelcontextprotocol/client', () => ({
   StreamableHTTPClientTransport: class {
     [KIND] = 'streamableHttp' as const;
     sessionId: string | undefined;
@@ -57,9 +62,6 @@ vi.mock('@modelcontextprotocol/sdk/client/streamableHttp.js', () => ({
       return Promise.resolve();
     }
   },
-}));
-
-vi.mock('@modelcontextprotocol/sdk/client/sse.js', () => ({
   SSEClientTransport: class {
     [KIND] = 'sse' as const;
     sessionId: string | undefined = undefined;
@@ -73,15 +75,21 @@ vi.mock('@modelcontextprotocol/sdk/client/sse.js', () => ({
       return Promise.resolve();
     }
   },
-}));
-
-vi.mock('@modelcontextprotocol/sdk/client/index.js', () => ({
   Client: class {
-    constructor() {
+    constructor(
+      _info: unknown,
+      opts?: {
+        versionNegotiation?: {
+          mode?: unknown;
+        };
+      },
+    ) {
       state.clientsCreated += 1;
+      state.negotiationModes.push(opts?.versionNegotiation?.mode);
     }
-    setRequestHandler(): void {}
-    setNotificationHandler(): void {}
+    // v2 registration is method-name-first; the fakes accept and ignore both args.
+    setRequestHandler(_method: string, _handler: unknown): void {}
+    setNotificationHandler(_method: string, _handler: unknown): void {}
     connect(transport: Marked): Promise<void> {
       const kind = transport[KIND];
       const attempt: Attempt = {
@@ -114,6 +122,7 @@ beforeEach(() => {
   state.failing = new Set();
   state.httpSessionId = undefined;
   state.clientsCreated = 0;
+  state.negotiationModes = [];
 });
 
 describe('connect transport selection', () => {

@@ -1,4 +1,4 @@
-import type { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import type { Client } from '@modelcontextprotocol/client';
 import { describe, expect, it } from 'vitest';
 import { buildResourceTools } from '../../src/resource-tools.js';
 

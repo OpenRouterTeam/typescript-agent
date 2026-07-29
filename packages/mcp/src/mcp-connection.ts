@@ -1,13 +1,10 @@
-import { Client } from '@modelcontextprotocol/sdk/client/index.js';
-// SSEClientTransport is deprecated upstream but intentionally supported here for
-// legacy MCP servers that haven't migrated to Streamable HTTP.
-import { SSEClientTransport } from '@modelcontextprotocol/sdk/client/sse.js';
-import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
-import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js';
+// SSEClientTransport is deprecated upstream (SEP-2596) but intentionally
+// supported here for legacy MCP servers that haven't migrated to Streamable HTTP.
 import {
-  ElicitRequestSchema,
-  ToolListChangedNotificationSchema,
-} from '@modelcontextprotocol/sdk/types.js';
+  Client,
+  SSEClientTransport,
+  StreamableHTTPClientTransport,
+} from '@modelcontextprotocol/client';
 import { resolveAuth } from './auth/auth-resolver.js';
 import type { MCPAuth } from './auth/auth-types.js';
 import { makeElicitationRequestHandler } from './elicitation.js';
@@ -80,21 +77,6 @@ function buildSse(options: ConnectOptions): SSEClientTransport {
   });
 }
 
-/**
- * Runtime narrowing to `Transport`. The SDK's transport classes implement the
- * interface, but their `.d.ts` types `sessionId` as `string | undefined` rather
- * than `sessionId?: string`, which `exactOptionalPropertyTypes` rejects at the
- * `connect()` call site. We confirm the structural contract at runtime instead
- * of asserting past the variance with `as`.
- */
-function isTransport(value: { start: unknown; send: unknown; close: unknown }): value is Transport {
-  return (
-    typeof value.start === 'function' &&
-    typeof value.send === 'function' &&
-    typeof value.close === 'function'
-  );
-}
-
 interface MutableListChanged {
   handler: (() => void) | undefined;
 }
@@ -106,26 +88,24 @@ function makeClient(options: ConnectOptions, listChanged: MutableListChanged): C
     },
   });
 
+  // Method-name-first in SDK v2; spec methods supply their own schema. This one
+  // handler serves both protocol eras: on 2025-era connections the server sends
+  // `elicitation/create` directly, and on 2026-07-28 the multi-round-trip driver
+  // dispatches `input_required` through this same handler, then retries the
+  // original call with the collected `inputResponses`.
   client.setRequestHandler(
-    ElicitRequestSchema,
+    'elicitation/create',
     makeElicitationRequestHandler(options.onElicitation),
   );
 
-  client.setNotificationHandler(ToolListChangedNotificationSchema, () => {
+  // Kept as a notification handler rather than `ClientOptions.listChanged`: the
+  // latter re-lists tools itself, duplicating the handle's own `refresh()` and
+  // its cache write. Notification handlers are era-transparent.
+  client.setNotificationHandler('notifications/tools/list_changed', () => {
     listChanged.handler?.();
   });
 
   return client;
-}
-
-async function connectWith(
-  client: Client,
-  transport: StreamableHTTPClientTransport | SSEClientTransport,
-): Promise<void> {
-  if (!isTransport(transport)) {
-    throw new MCPConnectionError('MCP transport does not implement the Transport contract');
-  }
-  await client.connect(transport);
 }
 
 /**
@@ -143,7 +123,7 @@ export async function connect(options: ConnectOptions): Promise<MCPConnection> {
 
   if (preferred === 'sse') {
     const client = makeClient(options, listChanged);
-    await connectWith(client, buildSse(options));
+    await client.connect(buildSse(options));
     return wrap({
       client,
       transport: 'sse',
@@ -155,7 +135,7 @@ export async function connect(options: ConnectOptions): Promise<MCPConnection> {
   const client = makeClient(options, listChanged);
   try {
     const http = buildStreamableHttp(options);
-    await connectWith(client, http);
+    await client.connect(http);
     return wrap({
       client,
       transport: 'streamableHttp',
@@ -173,7 +153,7 @@ export async function connect(options: ConnectOptions): Promise<MCPConnection> {
     // Fall back to SSE on a fresh client (the failed one may be half-initialized).
     const sseClient = makeClient(options, listChanged);
     try {
-      await connectWith(sseClient, buildSse(options));
+      await sseClient.connect(buildSse(options));
       return wrap({
         client: sseClient,
         transport: 'sse',

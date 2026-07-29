@@ -1,4 +1,4 @@
-import type { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import type { Client } from '@modelcontextprotocol/client';
 import { markMcp, tool } from '@openrouter/agent/tool';
 import type { McpBranded } from '@openrouter/agent/tool-types';
 import * as z from 'zod';

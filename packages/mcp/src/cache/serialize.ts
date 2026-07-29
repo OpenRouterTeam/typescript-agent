@@ -1,4 +1,4 @@
-import type { OAuthClientProvider } from '@modelcontextprotocol/sdk/client/auth.js';
+import type { OAuthClientProvider } from '@modelcontextprotocol/client';
 import { resolveAuth } from '../auth/auth-resolver.js';
 import type { MCPAuth } from '../auth/auth-types.js';
 import type { McpToolDef } from '../tool-wrapper.js';
