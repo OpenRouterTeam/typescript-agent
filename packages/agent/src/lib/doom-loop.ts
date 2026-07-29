@@ -787,6 +787,23 @@ interface StreakEntry extends DoomLoopStreak {
    * always increment on its first record, whatever its round numbering.
    */
   round?: number;
+  /**
+   * Fingerprints this tool has been called with during {@link round}, in
+   * sorted order. A round's identity is the whole set, not its last call, so
+   * a fan-out of *distinct* arguments (`read(a), read(b), read(c)`) reissued
+   * verbatim is a repeat. Comparing only the last call let each round's first
+   * call reset the streak, so a repeating fan-out never accumulated evidence.
+   * Never serialized: it is meaningful only within one round.
+   */
+  roundFingerprints?: readonly string[];
+  /**
+   * The previous round's completed fingerprint set — what this round is being
+   * compared against — and the streak that round earned. Held so a fan-out can
+   * be re-evaluated as each of its calls arrives without losing the baseline.
+   * Never serialized: meaningful only within one run.
+   */
+  priorRoundFingerprints?: readonly string[];
+  priorStreak?: number;
 }
 
 /**
@@ -890,6 +907,10 @@ export class DoomLoopMonitor {
             fingerprint: entry.fingerprint,
             streak: entry.streak,
             // round intentionally absent: first resumed record increments.
+            roundFingerprints: [
+              entry.fingerprint,
+            ],
+            priorStreak: entry.streak,
           });
         }
       }
@@ -944,22 +965,79 @@ export class DoomLoopMonitor {
   ): Promise<DoomLoopCallRecord> {
     const fingerprint = await fingerprintToolCall(toolName, keyMaterial);
     const previous = this.tools.get(toolName);
+    const isSameRound = previous?.round !== undefined && previous.round === round;
+
+    /*
+     * A round's identity for one tool is the *set* of fingerprints it was
+     * called with, so the streak compares whole rounds. Within the current
+     * round we accumulate; across rounds we compare the completed set. The
+     * `fingerprint` field keeps holding the latest call so persisted state and
+     * verdict payloads are unchanged.
+     */
     let streak: number;
     let duplicateInRound = false;
-    if (previous && previous.fingerprint === fingerprint) {
-      if (previous.round !== undefined && previous.round === round) {
-        streak = previous.streak;
-        duplicateInRound = true;
-      } else {
-        streak = previous.streak + 1;
-      }
+    let roundFingerprints: readonly string[];
+
+    if (isSameRound && previous) {
+      /*
+       * Still inside the round being compared. Extend its set and re-evaluate:
+       * a fan-out only matches the previous round once every member has been
+       * seen, so the streak lands on the call that completes the match. The
+       * round's earlier calls already reported the pre-match streak, which is
+       * correct — a partial fan-out is not yet a repeat.
+       */
+      const seen = previous.roundFingerprints ?? [
+        previous.fingerprint,
+      ];
+      roundFingerprints = mergeFingerprint(seen, fingerprint);
+      duplicateInRound = seen.includes(fingerprint);
+      streak =
+        previous.priorRoundFingerprints !== undefined &&
+        setsMatch(previous.priorRoundFingerprints, roundFingerprints)
+          ? (previous.priorStreak ?? 0) + 1
+          : 1;
     } else {
-      streak = 1;
+      /*
+       * A new round opens with one call. It repeats the previous round only if
+       * that round was also a single call with this fingerprint; a multi-call
+       * previous round cannot be matched yet and resolves as the fan-out fills
+       * in above.
+       */
+      roundFingerprints = [
+        fingerprint,
+      ];
+      streak =
+        previous !== undefined &&
+        setsMatch(
+          previous.roundFingerprints ?? [
+            previous.fingerprint,
+          ],
+          roundFingerprints,
+        )
+          ? previous.streak + 1
+          : 1;
     }
+
+    /* The completed set this round is measured against, and the streak it earned. */
+    const priorRoundFingerprints = isSameRound
+      ? previous?.priorRoundFingerprints
+      : (previous?.roundFingerprints ??
+        (previous
+          ? [
+              previous.fingerprint,
+            ]
+          : undefined));
     this.tools.set(toolName, {
       fingerprint,
       streak,
       round,
+      roundFingerprints,
+      ...(priorRoundFingerprints !== undefined
+        ? {
+            priorRoundFingerprints,
+          }
+        : {}),
+      priorStreak: isSameRound ? (previous?.priorStreak ?? 0) : (previous?.streak ?? 0),
     });
 
     const allowBlock = options?.allowBlock ?? true;
@@ -1086,3 +1164,18 @@ function strongerVerdict(
 }
 
 //#endregion
+
+/** Adds a fingerprint to a round's sorted set, ignoring duplicates. */
+function mergeFingerprint(existing: readonly string[], fingerprint: string): readonly string[] {
+  return existing.includes(fingerprint)
+    ? existing
+    : [
+        ...existing,
+        fingerprint,
+      ].sort();
+}
+
+/** Set equality over two sorted fingerprint lists. */
+function setsMatch(left: readonly string[], right: readonly string[]): boolean {
+  return left.length === right.length && left.every((value, index) => value === right[index]);
+}
