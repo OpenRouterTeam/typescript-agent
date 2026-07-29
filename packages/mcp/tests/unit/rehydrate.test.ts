@@ -14,6 +14,12 @@ vi.mock('../../src/mcp-connection.js', () => ({
       client: {
         getServerVersion: () => undefined,
         getServerCapabilities: () => undefined,
+        // Reached only when rehydrate falls through to a full freshConnect
+        // (expired tokens, missing credentials, or a stale snapshot).
+        listTools: () =>
+          Promise.resolve({
+            tools: [],
+          }),
       } as never,
       transport: 'streamableHttp',
       setToolListChangedHandler: () => {},
@@ -120,5 +126,62 @@ describe('rehydrateMCPTools', () => {
       kind: 'bearer',
       token: 'token-123',
     });
+  });
+});
+
+describe('staleness on the direct rehydrate path', () => {
+  beforeEach(() => {
+    connectCalls.length = 0;
+  });
+
+  it('replays a snapshot that is within maxAgeMs', async () => {
+    const snapshot = snapshotWithHeaders();
+    snapshot.cachedAt = Date.now() - 1_000;
+
+    const handle = await rehydrateMCPTools({
+      snapshot,
+      staleness: {
+        maxAgeMs: 60_000,
+      },
+    });
+
+    // Replayed from the snapshot: both cached tools, no re-list.
+    expect(handle.tools.map(nameOf)).toEqual([
+      'alpha',
+      'beta',
+    ]);
+    await handle.close();
+  });
+
+  it('re-lists instead of replaying when the snapshot is older than maxAgeMs', async () => {
+    const snapshot = snapshotWithHeaders();
+    snapshot.cachedAt = Date.now() - 120_000;
+
+    const handle = await rehydrateMCPTools({
+      snapshot,
+      staleness: {
+        maxAgeMs: 60_000,
+      },
+    });
+
+    // The fake client reports no tools, so a fresh listTools() yields an empty
+    // set — proving we went through freshConnect rather than the snapshot.
+    expect(handle.tools).toHaveLength(0);
+    await handle.close();
+  });
+
+  it('replays regardless of age when no maxAgeMs is given', async () => {
+    const snapshot = snapshotWithHeaders();
+    snapshot.cachedAt = Date.now() - 10 * 24 * 60 * 60 * 1000;
+
+    const handle = await rehydrateMCPTools({
+      snapshot,
+    });
+
+    expect(handle.tools.map(nameOf)).toEqual([
+      'alpha',
+      'beta',
+    ]);
+    await handle.close();
   });
 });

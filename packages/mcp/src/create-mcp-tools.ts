@@ -47,6 +47,7 @@ const FORWARDED_REHYDRATE_KEYS = [
   'autoRefreshOnListChanged',
   'cacheCredentials',
   'protocolNegotiation',
+  'staleness',
 ] as const satisfies readonly (keyof CreateMCPToolsOptions & keyof RehydrateMCPToolsOptions)[];
 
 /** Copy the defined forwarded options from `createMCPTools` into a rehydrate base. */

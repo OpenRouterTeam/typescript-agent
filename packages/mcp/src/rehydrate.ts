@@ -29,6 +29,10 @@ export interface RehydrateMCPToolsOptions {
   signal?: AbortSignal;
   /** Protocol-revision negotiation policy; defaults to `'auto'`. */
   protocolNegotiation?: MCPProtocolNegotiation;
+  /** Re-list tools instead of replaying a snapshot older than this. */
+  staleness?: {
+    maxAgeMs?: number;
+  };
   /** Cache to refresh on reconnect/fallback. */
   cache?: {
     store: MCPCacheStore;
@@ -66,6 +70,14 @@ function snapshotToToolDefs(snapshot: SerializedMCPServer): McpToolDef[] {
       },
     }),
   }));
+}
+
+/** A snapshot older than `maxAgeMs` should be re-listed rather than replayed. */
+function snapshotIsStale(snapshot: SerializedMCPServer, maxAgeMs: number | undefined): boolean {
+  if (maxAgeMs === undefined) {
+    return false;
+  }
+  return Date.now() - snapshot.cachedAt > maxAgeMs;
 }
 
 /** Cached tokens are unusable if they have a known expiry within the skew window. */
@@ -187,7 +199,13 @@ export async function rehydrateMCPTools(
   // writes the refreshed result back to the cache via `makeHandle`.
   const createOptions = toCreateOptions(options, snapshot, effectiveAuth);
 
-  if ((tokensExpired(snapshot) || !hasCredentials) && reconnectOnExpiry) {
+  // Staleness is checked here as well as in `createMCPTools`'s cache-hit path,
+  // so a direct `rehydrateMCPTools()` call honours `staleness.maxAgeMs` too.
+  // Previously only the `createMCPTools` route checked it, meaning callers who
+  // held their own snapshot silently got unbounded-age tools.
+  const staleSnapshot = snapshotIsStale(snapshot, options.staleness?.maxAgeMs);
+
+  if ((tokensExpired(snapshot) || !hasCredentials || staleSnapshot) && reconnectOnExpiry) {
     return freshConnect(createOptions, url, cacheKey);
   }
 
