@@ -29,6 +29,7 @@ export type {
   CreateMCPToolsOptions,
   ElicitationHandler,
   ElicitationResponse,
+  MCPProtocolNegotiation,
   MCPToolsHandle,
   MCPTransportKind,
   ResourcesOption,

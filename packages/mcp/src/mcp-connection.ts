@@ -9,7 +9,8 @@ import { resolveAuth } from './auth/auth-resolver.js';
 import type { MCPAuth } from './auth/auth-types.js';
 import { makeElicitationRequestHandler } from './elicitation.js';
 import { MCPConnectionError } from './errors.js';
-import type { ElicitationHandler, MCPTransportKind } from './types.js';
+import type { MCPProtocolNegotiation, MCPTransportKind } from './transport-types.js';
+import type { ElicitationHandler } from './types.js';
 import { PACKAGE_VERSION } from './version.js';
 
 // Self-reported to every MCP server we connect to as `clientInfo`. The version
@@ -30,6 +31,7 @@ export interface ConnectOptions {
   };
   sessionId?: string;
   onElicitation?: ElicitationHandler;
+  protocolNegotiation?: MCPProtocolNegotiation;
 }
 
 export interface MCPConnection {
@@ -85,6 +87,15 @@ function makeClient(options: ConnectOptions, listChanged: MutableListChanged): C
   const client = new Client(options.clientInfo ?? DEFAULT_CLIENT_INFO, {
     capabilities: {
       elicitation: {},
+    },
+    // The SDK defaults to 'legacy'; we default to 'auto' so callers reach both
+    // 2025-era and 2026-07-28 servers without configuring anything.
+    //
+    // `inputRequired` is deliberately left unset: its defaults (auto-fulfil on,
+    // 10 rounds) are what we want, and pinning them here would freeze values
+    // the SDK may tune.
+    versionNegotiation: {
+      mode: options.protocolNegotiation ?? 'auto',
     },
   });
 
@@ -151,6 +162,10 @@ export async function connect(options: ConnectOptions): Promise<MCPConnection> {
       });
     }
     // Fall back to SSE on a fresh client (the failed one may be half-initialized).
+    // Note this also catches version-probe failures under `'auto'`: on HTTP a
+    // probe timeout is an outage, so the SSE attempt below will usually fail too
+    // and surface the combined error. Callers on flaky servers can skip the
+    // probe entirely with `protocolNegotiation: 'legacy'`.
     const sseClient = makeClient(options, listChanged);
     try {
       await sseClient.connect(buildSse(options));

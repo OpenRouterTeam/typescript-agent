@@ -125,6 +125,9 @@ export async function freshConnect(
     ...(options.onElicitation !== undefined && {
       onElicitation: options.onElicitation,
     }),
+    ...(options.protocolNegotiation !== undefined && {
+      protocolNegotiation: options.protocolNegotiation,
+    }),
   });
 
   // Tear the connection down if discovery or the initial cache write throws —

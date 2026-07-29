@@ -8,6 +8,7 @@ import { freshConnect, makeHandle } from './handle.js';
 import { connect } from './mcp-connection.js';
 import type { UnconvertibleSchemaMode } from './schema/json-schema-to-zod.js';
 import type { McpToolDef } from './tool-wrapper.js';
+import type { MCPProtocolNegotiation } from './transport-types.js';
 import type {
   CreateMCPToolsOptions,
   ElicitationHandler,
@@ -26,6 +27,8 @@ export interface RehydrateMCPToolsOptions {
   onUnconvertibleSchema?: UnconvertibleSchemaMode;
   onElicitation?: ElicitationHandler;
   signal?: AbortSignal;
+  /** Protocol-revision negotiation policy; defaults to `'auto'`. */
+  protocolNegotiation?: MCPProtocolNegotiation;
   /** Cache to refresh on reconnect/fallback. */
   cache?: {
     store: MCPCacheStore;
@@ -120,6 +123,9 @@ function toCreateOptions(
     ...(options.onElicitation !== undefined && {
       onElicitation: options.onElicitation,
     }),
+    ...(options.protocolNegotiation !== undefined && {
+      protocolNegotiation: options.protocolNegotiation,
+    }),
     ...(options.signal !== undefined && {
       signal: options.signal,
     }),
@@ -203,6 +209,9 @@ export async function rehydrateMCPTools(
       }),
       ...(options.onElicitation !== undefined && {
         onElicitation: options.onElicitation,
+      }),
+      ...(options.protocolNegotiation !== undefined && {
+        protocolNegotiation: options.protocolNegotiation,
       }),
     });
 

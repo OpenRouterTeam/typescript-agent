@@ -248,3 +248,60 @@ describe('connect session handling', () => {
     await conn.close();
   });
 });
+
+describe('protocol negotiation', () => {
+  it("defaults to 'auto' so both protocol revisions work without configuration", async () => {
+    const conn = await connect({
+      url: URL_UNDER_TEST,
+    });
+
+    expect(state.negotiationModes).toEqual([
+      'auto',
+    ]);
+    await conn.close();
+  });
+
+  it("honours an explicit 'legacy' policy", async () => {
+    const conn = await connect({
+      url: URL_UNDER_TEST,
+      protocolNegotiation: 'legacy',
+    });
+
+    expect(state.negotiationModes).toEqual([
+      'legacy',
+    ]);
+    await conn.close();
+  });
+
+  it('passes a pinned revision through untouched', async () => {
+    const conn = await connect({
+      url: URL_UNDER_TEST,
+      protocolNegotiation: {
+        pin: '2026-07-28',
+      },
+    });
+
+    expect(state.negotiationModes).toEqual([
+      {
+        pin: '2026-07-28',
+      },
+    ]);
+    await conn.close();
+  });
+
+  it('applies the policy to the SSE fallback client too', async () => {
+    state.failing.add('streamableHttp');
+
+    const conn = await connect({
+      url: URL_UNDER_TEST,
+      protocolNegotiation: 'legacy',
+    });
+
+    // Both the failed Streamable HTTP client and the fresh SSE one.
+    expect(state.negotiationModes).toEqual([
+      'legacy',
+      'legacy',
+    ]);
+    await conn.close();
+  });
+});

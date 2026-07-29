@@ -2,9 +2,9 @@ import type { Tool } from '@openrouter/agent/tool-types';
 import type { MCPAuth } from './auth/auth-types.js';
 import type { MCPCacheStore } from './cache/cache-store.js';
 import type { UnconvertibleSchemaMode } from './schema/json-schema-to-zod.js';
-import type { MCPTransportKind } from './transport-types.js';
+import type { MCPProtocolNegotiation, MCPTransportKind } from './transport-types.js';
 
-export type { MCPTransportKind };
+export type { MCPProtocolNegotiation, MCPTransportKind };
 
 /**
  * Response to a server-initiated elicitation request. `accept` must carry
@@ -44,6 +44,11 @@ export interface CreateMCPToolsOptions {
   url: string | URL;
   /** Transport to use; defaults to `streamableHttp` with SSE fallback. */
   transport?: MCPTransportKind;
+  /**
+   * Protocol-revision negotiation policy. Defaults to `'auto'`, which probes
+   * the server and speaks either 2025-11-25 or 2026-07-28 as appropriate.
+   */
+  protocolNegotiation?: MCPProtocolNegotiation;
   /** Authentication, supplied once and reused for discovery + every call. */
   auth?: MCPAuth;
   /** Custom fetch implementation for all network requests. */
