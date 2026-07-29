@@ -60,16 +60,19 @@ export function isFiniteEpoch(value: unknown): value is number {
 }
 
 function isSerializedToolDef(value: unknown): value is SerializedMCPToolDef {
-  const loopKey = isJsonSchemaObject(value) ? value['loopKey'] : undefined;
+  if (!isJsonSchemaObject(value)) {
+    return false;
+  }
+  const loopKey = value['loopKey'];
+  // Absent is valid (the field is optional); present must be `false` or a
+  // string array. Anything else — a truthy scalar, a mixed array, a nested
+  // object — is a poisoned or stale snapshot and rejects the whole entry.
   const hasValidLoopKey =
     loopKey === undefined ||
     loopKey === false ||
     (Array.isArray(loopKey) && loopKey.every((field) => typeof field === 'string'));
   return (
-    isJsonSchemaObject(value) &&
-    typeof value['name'] === 'string' &&
-    isJsonSchemaObject(value['inputSchema']) &&
-    hasValidLoopKey
+    typeof value['name'] === 'string' && isJsonSchemaObject(value['inputSchema']) && hasValidLoopKey
   );
 }
 
