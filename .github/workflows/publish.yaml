@@ -93,8 +93,15 @@ jobs:
       # `changeset publish` only creates release tags locally; on the push path
       # changesets/action pushes them, but nothing does here. Push them so the
       # HOP C dispatch below names a ref the port repos can actually resolve.
+      #
+      # Best-effort: the packages are already on npm by the time this runs, so a
+      # rejected push (tag protection ruleset, or a re-run where the tag exists
+      # on origin at a different commit) must not turn a successful publish red
+      # — and must not skip the HOP B/C dispatch steps below. HOP C independently
+      # verifies the tag is on the remote and falls back to the commit SHA.
       - name: Push release tags (manual publish)
         if: github.event_name == 'workflow_dispatch' && inputs.mode == 'publish' && !inputs.dry-run
+        continue-on-error: true
         run: git push origin --tags
 
       # `changeset publish` has no native --dry-run. Fall back to pnpm's
@@ -166,7 +173,9 @@ jobs:
       # release boundary instead of a mid-flight commit.
       #
       # `ref` is the release tag changesets created, so a port reproduces the exact
-      # published tree rather than whatever main has drifted to since.
+      # published tree rather than whatever main has drifted to since. If that tag
+      # never reached origin, the step falls back to this run's commit SHA — same
+      # tree, still resolvable.
       #
       # This step must not fail the release: the packages are already on npm by
       # now, so a red job here would misreport a successful publish. A failed
@@ -190,6 +199,19 @@ jobs:
           TAG="@openrouter/agent@${VERSION}"
           FAILED=""
 
+          # The tag is only usable as a ref if it actually reached origin. On the
+          # push path changesets/action pushes it; on the manual publish path the
+          # push is best-effort and may have been rejected or skipped. Dispatching
+          # an unresolvable ref would make the ports fail on checkout rather than
+          # degrade, so fall back to this run's commit SHA — which points at the
+          # same published tree.
+          if git ls-remote --exit-code --tags origin "refs/tags/${TAG}" >/dev/null 2>&1; then
+            REF="$TAG"
+          else
+            REF="${{ github.sha }}"
+            echo "::warning::${TAG} is not on origin; dispatching ref=${REF} instead."
+          fi
+
           for REPO in python-agent go-agent; do
             # -f (--raw-field) everywhere: -F treats values starting with `@`
             # (like TAG) as filenames to read, which would error out before the
@@ -197,11 +219,11 @@ jobs:
             if gh api "repos/OpenRouterTeam/${REPO}/dispatches" \
                  -f event_type=openrouter-agent-published \
                  -f "client_payload[version]=${VERSION}" \
-                 -f "client_payload[ref]=${TAG}" \
+                 -f "client_payload[ref]=${REF}" \
                  -f "client_payload[source_run_url]=${SOURCE_RUN_URL}"; then
-              echo "Dispatched openrouter-agent-published ($TAG) to ${REPO}"
+              echo "Dispatched openrouter-agent-published (ref ${REF}) to ${REPO}"
             else
-              echo "::warning::Failed to dispatch to OpenRouterTeam/${REPO}. Trigger its Upstreamer Port workflow manually with ref=${TAG}, or wait for its weekly cron."
+              echo "::warning::Failed to dispatch to OpenRouterTeam/${REPO}. Trigger its Upstreamer Port workflow manually with ref=${REF}, or wait for its weekly cron."
               FAILED="$FAILED ${REPO}"
             fi
           done
