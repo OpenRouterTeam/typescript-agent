@@ -12,6 +12,7 @@
     "lint:fix": "biome check --write packages/*/src packages/*/tests",
     "typecheck": "turbo run typecheck",
     "changeset": "changeset",
+    "version": "changeset version && turbo run gen:version && pnpm install --lockfile-only",
     "prepare": "husky"
   },
   "devDependencies": {

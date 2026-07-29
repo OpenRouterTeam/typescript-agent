@@ -1,24 +1,57 @@
 {
   "$schema": "https://turbo.build/schema.json",
   "ui": "stream",
-  "globalDependencies": ["tsconfig.base.json"],
+  "globalDependencies": [
+    "tsconfig.base.json"
+  ],
   "tasks": {
     "build": {
-      "dependsOn": ["^build"],
-      "inputs": ["$TURBO_DEFAULT$", "src/**", "scripts/**", "tsconfig.json"],
-      "outputs": ["esm/**"]
+      "dependsOn": [
+        "^build"
+      ],
+      "inputs": [
+        "$TURBO_DEFAULT$",
+        "src/**",
+        "scripts/**",
+        "tsconfig.json"
+      ],
+      "outputs": [
+        "esm/**"
+      ]
+    },
+    "gen:version": {
+      "cache": false,
+      "inputs": [
+        "package.json"
+      ],
+      "outputs": [
+        "src/version.ts"
+      ]
     },
     "typecheck": {
-      "dependsOn": ["^build"],
-      "inputs": ["$TURBO_DEFAULT$", "src/**", "tests/**", "tsconfig.json"],
+      "dependsOn": [
+        "^build"
+      ],
+      "inputs": [
+        "$TURBO_DEFAULT$",
+        "src/**",
+        "tests/**",
+        "tsconfig.json"
+      ],
       "outputs": []
     },
     "lint": {
-      "inputs": ["$TURBO_DEFAULT$", "src/**", "tests/**"],
+      "inputs": [
+        "$TURBO_DEFAULT$",
+        "src/**",
+        "tests/**"
+      ],
       "outputs": []
     },
     "test": {
-      "dependsOn": ["^build"],
+      "dependsOn": [
+        "^build"
+      ],
       "inputs": [
         "$TURBO_DEFAULT$",
         "src/**",
@@ -31,10 +64,14 @@
     "test:watch": {
       "cache": false,
       "persistent": true,
-      "env": ["OPENROUTER_API_KEY"]
+      "env": [
+        "OPENROUTER_API_KEY"
+      ]
     },
     "test:e2e": {
-      "dependsOn": ["^build"],
+      "dependsOn": [
+        "^build"
+      ],
       "inputs": [
         "$TURBO_DEFAULT$",
         "src/**",
@@ -44,7 +81,9 @@
       ],
       "outputs": [],
       "cache": false,
-      "env": ["OPENROUTER_API_KEY"]
+      "env": [
+        "OPENROUTER_API_KEY"
+      ]
     }
   }
 }
