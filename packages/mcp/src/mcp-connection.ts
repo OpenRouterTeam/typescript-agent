@@ -29,6 +29,12 @@ export interface ConnectOptions {
     name: string;
     version: string;
   };
+  /**
+   * Streamable HTTP session id to resume.
+   *
+   * @deprecated Ignored by 2026-07-28 servers — protocol-level sessions are
+   * removed (SEP-2567). Still honoured on 2025-era connections.
+   */
   sessionId?: string;
   onElicitation?: ElicitationHandler;
   protocolNegotiation?: MCPProtocolNegotiation;
@@ -37,6 +43,12 @@ export interface ConnectOptions {
 export interface MCPConnection {
   client: Client;
   transport: MCPTransportKind;
+  /**
+   * Session id reported by the transport, when there is one.
+   *
+   * @deprecated `undefined` on 2026-07-28 connections (SEP-2567) and on SSE,
+   * which never had a protocol-level session.
+   */
   sessionId?: string;
   /**
    * Register a callback for `tools/list_changed`. Settable after connect so the

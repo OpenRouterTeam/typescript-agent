@@ -36,12 +36,11 @@ export interface SerializedMCPServer {
   /**
    * Streamable HTTP session id, replayed on reconnect.
    *
-   * @deprecated Protocol-level sessions and the `Mcp-Session-Id` header are
-   * removed in MCP protocol revision 2026-07-28 (SEP-2567); cross-call state
-   * moves to server-minted handles passed as ordinary tool arguments. Snapshots
-   * written by this version still carry it (only when `cacheCredentials` is
-   * enabled) and older snapshots must keep deserializing, so this field will
-   * outlive its protocol usefulness. See the README.
+   * @deprecated Only populated on 2025-era connections. Protocol-level sessions
+   * and the `Mcp-Session-Id` header are removed in revision 2026-07-28
+   * (SEP-2567), where cross-call state moves to server-minted handles passed as
+   * ordinary tool arguments — so this is `undefined` on modern connections. The
+   * field stays because older snapshots must keep deserializing. See the README.
    */
   sessionId?: string;
   tools: SerializedMCPToolDef[];

@@ -1,6 +1,15 @@
 import type { OAuthClientProvider } from '@modelcontextprotocol/client';
 
 /**
+ * The OAuth provider contract expected by {@link MCPAuth}'s `oauth` variant.
+ *
+ * Re-exported under our own name so consumers can type their provider without
+ * importing from `@modelcontextprotocol/client` directly — that import path is
+ * an implementation detail of this package and has changed once already.
+ */
+export type MCPOAuthClientProvider = OAuthClientProvider;
+
+/**
  * Authentication for a remote MCP server. Supplied once and reused by the
  * connected client for tool discovery and every subsequent tool call.
  *

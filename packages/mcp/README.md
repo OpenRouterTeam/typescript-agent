@@ -9,6 +9,7 @@ Expose the tools of a remote [Model Context Protocol](https://modelcontextprotoc
 - Faithful JSON Schema → Zod conversion so the model sees real parameters.
 - Serializable, rehydratable cache so you can skip re-listing (and, opt-in, re-authenticating).
 - Progress streaming, `tools/list_changed` auto-refresh, cancellation, resources, and elicitation.
+- Speaks both MCP protocol revisions (`2025-11-25` and `2026-07-28`), negotiated per server.
 
 > stdio servers are intentionally out of scope.
 
@@ -55,8 +56,8 @@ auth: { kind: 'headers', headers: { 'X-API-Key': key } }
 auth: { kind: 'oauth', provider }
 ```
 
-Prefer an `OAuthClientProvider` over caching static tokens — the transport refreshes through it
-automatically.
+Prefer an OAuth provider over caching static tokens — the transport refreshes through it
+automatically. Type yours with `MCPOAuthClientProvider`, re-exported from this package.
 
 ## Caching & rehydration
 
@@ -111,6 +112,7 @@ const result = callModel(client, {
 | --- | --- |
 | `url` | Remote MCP server endpoint. |
 | `transport` | `'streamableHttp'` (default, falls back to SSE) or `'sse'` (deprecated upstream). |
+| `protocolNegotiation` | `'auto'` (default), `'legacy'`, or `{ pin }`. See Protocol revisions. |
 | `auth` | Bearer token, headers, or an `OAuthClientProvider`. |
 | `toolNamePrefix` | Prefix every wrapped tool name. |
 | `includeTools` / `excludeTools` | Allow/deny lists by MCP tool name. |
@@ -119,7 +121,7 @@ const result = callModel(client, {
 | `resources` | Expose synthetic `list_resources` / `read_resource` tools (default on). |
 | `emitProgress` | Stream MCP progress as generator-tool events (default on). |
 | `autoRefreshOnListChanged` | Re-list on `tools/list_changed` (default on). |
-| `onElicitation` | Handle server elicitation requests; auto-declines when omitted. |
+| `onElicitation` | Handle elicitation requests (both revisions); auto-declines when omitted. |
 | `signal` | Abort signal threaded into every tool call. |
 
 ## Client identity
@@ -140,38 +142,61 @@ The generated file is committed rather than gitignored, because CI's lint, typec
 unit-test jobs compile `src` without running a build. `tests/unit/version.test.ts` fails
 if the committed constant drifts from `package.json`, so a stale value cannot merge.
 
-## Protocol revision
+## Protocol revisions
 
-This package delegates protocol version negotiation entirely to
-`@modelcontextprotocol/sdk` (pinned `^1.29.0`), which negotiates **`2025-11-25`** and
-supports `2025-06-18`, `2025-03-26`, `2024-11-05`, and `2024-10-07`. There are no
-hardcoded protocol version strings here.
+Both current MCP revisions are supported, and the right one is chosen for you. Point this
+at any server and it works:
 
-MCP revision **`2026-07-28`** is published but this package does not speak it yet, and
-that is deliberate: as of this writing no released SDK negotiates it by default.
-`@modelcontextprotocol/client@2.0.0` still sends the `initialize` handshake with
-`protocolVersion: "2025-11-25"` and omits the `Mcp-Method` / `Mcp-Name` headers the new
-revision requires, so migrating today would change our dependency tree without changing
-a single byte on the wire.
+```ts
+const mcp = await createMCPTools({ url: 'https://mcp.example.com/mcp' });
+```
 
-Three parts of this package's surface target primitives `2026-07-28` removes. They keep
-working against the revisions the pinned SDK negotiates, and are marked `@deprecated` so
-the eventual break is not a surprise:
+By default (`protocolNegotiation: 'auto'`) the client probes with `server/discover` and
+then speaks whichever revision the server offers:
 
-| Surface | Fate under `2026-07-28` |
+| Server | What goes on the wire |
 | --- | --- |
-| `sessionId` (snapshot field, reconnect replay) | Protocol-level sessions and `Mcp-Session-Id` **removed** (SEP-2567); cross-call state becomes server-minted handles passed as tool arguments. |
-| `onElicitation` | Server-initiated `elicitation/create` **removed**, replaced by Multi Round-Trip Requests (SEP-2322): an `input_required` result plus a client retry carrying `inputResponses`. |
-| `transport: 'sse'` | HTTP+SSE reclassified **Deprecated** (SEP-2596). |
+| **`2026-07-28`** | `server/discover`, then requests carrying the per-request `_meta` envelope and `Mcp-Method` / `Mcp-Name` headers. No `initialize` — the handshake is removed in this revision (SEP-2575). |
+| **`2025-11-25`** and earlier | `server/discover`, then a fallback to the classic `initialize` + `notifications/initialized` handshake, byte-equivalent to a 2025-only client. |
 
-Also relevant when the migration happens: `resultType` and `ttlMs`/`cacheScope` become
-required result fields, `resources/subscribe` gives way to `subscriptions/listen`, and
-resource-not-found renumbers from `-32002` to `-32602`. Sampling and Roots are deprecated
-in the new revision and were never implemented here, so they need no migration.
+Override when you need to:
 
-Snapshots written by earlier versions must keep deserializing — `isSerializedMCPServer`
-validates untrusted snapshots, so any format change is a data-compatibility concern, not
-only a code one.
+```ts
+// Skip the probe. Useful on flaky servers: over HTTP a probe timeout is treated
+// as an outage and rejects, where 'legacy' may still connect.
+await createMCPTools({ url, protocolNegotiation: 'legacy' });
+
+// Require a specific revision; fail loudly rather than falling back.
+await createMCPTools({ url, protocolNegotiation: { pin: '2026-07-28' } });
+```
+
+`'auto'` costs one extra round trip against legacy servers. There are no hardcoded
+protocol version strings in this package — negotiation is delegated to
+`@modelcontextprotocol/client`.
+
+### What differs between the revisions
+
+Mostly nothing you need to care about, with three exceptions:
+
+| Surface | Behavior |
+| --- | --- |
+| `onElicitation` | **Works on both.** On 2025-era servers it handles `elicitation/create`; on 2026-07-28 that request is gone, but the SDK's multi-round-trip driver (SEP-2322) routes `input_required` results through the same handler and retries the call. |
+| `sessionId` | 2025-era only. Protocol sessions and `Mcp-Session-Id` are removed in 2026-07-28 (SEP-2567), so it is `undefined` there. Snapshots keep the field so older ones still deserialize. |
+| `transport: 'sse'` | Still supported for legacy servers, but HTTP+SSE is reclassified Deprecated (SEP-2596). Prefer `streamableHttp`. |
+
+Sampling and Roots are deprecated in the new revision and were never implemented here, so
+there is nothing to migrate.
+
+The SDK also keeps its own per-client response cache (24h ceiling), independent of the
+`MCPCacheStore` described above. The two are unrelated: `MCPCacheStore` persists a tool
+snapshot across processes and, opt-in, credentials.
+
+### OAuth provider types
+
+If you pass `{ kind: 'oauth', provider }`, type your provider with
+`MCPOAuthClientProvider` from this package rather than importing from
+`@modelcontextprotocol/client` — that import path is an implementation detail and has
+changed once already.
 
 ## License
 

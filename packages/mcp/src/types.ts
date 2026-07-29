@@ -92,14 +92,14 @@ export interface CreateMCPToolsOptions {
   /** Auto-refresh tools on `tools/list_changed`. Default true when connected. */
   autoRefreshOnListChanged?: boolean;
   /**
-   * Handler for server-initiated elicitation; auto-declines when omitted.
+   * Handler for elicitation requests; auto-declines when omitted.
    *
-   * @deprecated Server-initiated `elicitation/create` is removed in MCP
-   * protocol revision 2026-07-28, replaced by Multi Round-Trip Requests
-   * (SEP-2322): servers return an `input_required` result and the client
-   * retries with `inputResponses`. This option keeps working against
-   * 2025-11-25 and earlier servers, which is what the pinned SDK negotiates,
-   * but will be reshaped when this package migrates. See the README.
+   * Works against both protocol revisions. On 2025-11-25 the server sends
+   * `elicitation/create` directly. On 2026-07-28 that request no longer
+   * exists — the server answers with an `input_required` result instead
+   * (SEP-2322) — but the SDK's multi-round-trip driver dispatches it through
+   * this same handler and then retries the original call, so callers see
+   * identical behavior either way.
    */
   onElicitation?: ElicitationHandler;
   /** Abort signal threaded into every underlying `callTool`. */

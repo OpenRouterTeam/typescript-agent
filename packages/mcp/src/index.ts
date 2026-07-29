@@ -1,7 +1,7 @@
 // Main factory + rehydration
 
 // Auth
-export type { MCPAuth } from './auth/auth-types.js';
+export type { MCPAuth, MCPOAuthClientProvider } from './auth/auth-types.js';
 export type { MCPCacheStore } from './cache/cache-store.js';
 // Cache
 export { defaultCacheKey, InMemoryMCPCacheStore } from './cache/cache-store.js';
