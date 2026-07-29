@@ -9,3 +9,32 @@ Catches runs that stop making progress while continuing to spend: the model re-i
 Streaks are round-scoped: N identical calls fanned out in parallel within one round count once (a streak measures the model re-issuing a call after seeing its result). Tools declare call identity via `loopKey` on the tool definition — a function computing key material (`null` exempts a call), a declarative field list (`['command', 'cwd']` — data, not code), or `false` (statically exempt); absent means the full validated arguments. MCP-wrapped tools accept `loopKey` via `markMcp(tool, { loopKey })`. Fingerprints are a cross-port contract: RFC 8785 (JCS) canonicalization + SHA-256 over UTF-8 via WebCrypto, with conformance vectors in `tests/vectors/doom-loop-fingerprints.json` for the Python/Go ports. Unhashable key material (bigint, circular, >64 deep) falls back to the full-arguments identity — detection never fails a run.
 
 Detector state persists inside `ConversationState.doomLoop`: streaks survive serialize → resume, a `stop` verdict survives decision-only resumes (approve/reject) and clears on a fresh conversational turn, and queued steer guidance is delivered on resume. Ladder configs warn on dead rungs and on `block` with `stop: false` (unbounded block/re-issue). Documented, test-locked limits: varying-input (nonce) loops evade the default identity without a `loopKey`; paraphrased text repetition is not detected; manual/client-executed calls are not recorded. New `@openrouter/agent/doom-loop` subpath exports the primitives; `ModelResult.getDoomLoopVerdict()` reports a stopping verdict.
+
+```ts
+import { tool } from '@openrouter/agent/tool';
+import * as z from 'zod';
+
+const runCommand = tool({
+  name: 'run_command',
+  inputSchema: z.object({ command: z.string(), cwd: z.string().optional() }),
+  // Call identity: two calls with the same command+cwd are "the same call",
+  // so a nonce or timestamp argument won't defeat detection.
+  // Also accepts `false` (exempt) or a function computing key material.
+  loopKey: ['command', 'cwd'],
+  execute: async ({ command }) => runInShell(command),
+});
+
+const result = client.callModel({
+  model: 'z-ai/glm-5.2',
+  input: 'Get the build passing.',
+  tools: [runCommand],
+  // `true` uses the default ladder. An object tunes it:
+  doomLoop: {
+    ladder: { observe: 2, steer: 3, block: 4, stop: 5 },
+    text: false, // text-repetition detection on by default
+  },
+});
+
+// Non-null when a `stop` verdict halted the run.
+const verdict = await result.getDoomLoopVerdict();
+```

@@ -7,3 +7,26 @@ Doom-loop escalation recovery: a new `escalate` ladder rung between `steer` and 
 Configure via `doomLoop.escalation`: `model` runs the NEXT turn on a stronger model (one-turn override, automatic revert), and/or `advisor` forces an `openrouter:advisor` consult (the advisor server tool is appended with `forwardTranscript: true` and loop-diagnosing instructions, and `toolChoice` is pinned to it via `allowed_tools`/`required` so the stuck model must ask for guidance first; an object form passes through as advisor parameters). A user notice naming the detected loop accompanies the escalated turn.
 
 Escalations are real spend on a run already suspected of wasting it, so they are budgeted: `maxEscalations` (default 2) caps recoveries per conversation, budget is consumed when a recovery is *applied* (not at verdict time), `escalationsUsed` persists in `ConversationState.doomLoop` so resumes cannot reset it, and concurrent detector verdicts in one window escalate once. Exhausted or unconfigured escalations fall through to the weaker rungs; resolve-time warnings flag an `escalate` rung without a mechanism (and vice versa). The `DoomLoopDetected` hook's `action`/`overrideAction` enums gain `'escalate'` — an override without config/budget downgrades to `observe`, never silently to a stronger action.
+
+```ts
+const result = client.callModel({
+  model: 'z-ai/glm-5.2',
+  input: 'Get the build passing.',
+  tools: [runCommand],
+  doomLoop: {
+    ladder: { observe: 2, steer: 3, escalate: 4, block: 5, stop: 6 },
+    escalation: {
+      // Run the NEXT turn on a stronger model; reverts automatically after.
+      model: 'anthropic/claude-opus-5',
+      // And/or force an `openrouter:advisor` consult before anything else.
+      // `true` uses defaults; an object passes through as advisor parameters.
+      advisor: true,
+      maxEscalations: 2, // default 2; persists across resumes
+    },
+  },
+});
+```
+
+At least one of `model` / `advisor` must be set — an `escalate` rung with no
+mechanism warns at resolve time and is skipped. `advisor: false` is an explicit
+opt-out and does not count as a mechanism.
