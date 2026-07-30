@@ -3,7 +3,7 @@ import type { MCPCacheStore } from './cache/cache-store.js';
 import { defaultCacheKey } from './cache/cache-store.js';
 import type { SerializedMCPServer } from './cache/cache-types.js';
 import { isSerializedMCPServer } from './cache/cache-types.js';
-import { MCPCacheError } from './errors.js';
+import { MCPCacheError, MCPStaleSnapshotError } from './errors.js';
 import { freshConnect, makeHandle } from './handle.js';
 import type { MCPConnection } from './mcp-connection.js';
 import { connect } from './mcp-connection.js';
@@ -259,17 +259,40 @@ export async function rehydrateMCPTools(
     // transport needs rebuilding. `refresh()` also clears the carried
     // `cachedAt`, so the write-back records the new age.
     if (staleSnapshot) {
-      await handle.refresh();
+      try {
+        await handle.refresh();
+      } catch (refreshErr) {
+        // The connection is live and the snapshot's tools would work, but they
+        // are older than the caller's own `maxAgeMs` — serving them anyway is
+        // exactly the unbounded-age bug this check exists to prevent, so fail
+        // instead. The message names staleness specifically rather than reusing
+        // the generic rehydrate wording below, because the rehydrate itself
+        // succeeded and a reader chasing "failed to rehydrate" would look in the
+        // wrong place.
+        await handle.close().catch(() => {});
+        throw new MCPStaleSnapshotError(
+          'Snapshot is older than staleness.maxAgeMs and re-listing tools failed',
+          {
+            cause: refreshErr,
+          },
+        );
+      }
     }
 
     return handle;
   } catch (err) {
+    // The stale re-list above already closed and reported; let its verdict stand
+    // rather than re-wrapping it as a generic rehydrate failure (and
+    // double-closing). It is a deliberate refusal, not a rehydrate that broke.
+    if (err instanceof MCPStaleSnapshotError) {
+      throw err;
+    }
     // Tear down the replay connection before leaving this path, mirroring
     // `freshConnect`'s guarantee in handle.ts. Whether we fall back (which opens
     // its own connection) or rethrow, nothing else holds a reference to this
     // one, so without the close its transport leaks. Reachable via `buildTools`
-    // rejecting on a duplicate tool name, a caller's `cache.store.set` throwing
-    // during the initial write, or the stale re-list above failing.
+    // rejecting on a duplicate tool name, or a caller's `cache.store.set`
+    // throwing during the initial write.
     await connection?.close().catch(() => {});
     if (reconnectOnExpiry) {
       return freshConnect(createOptions, url, cacheKey);

@@ -63,7 +63,10 @@ Also in this release:
   `createMCPTools()`'s cache-hit path — a direct rehydrate previously replayed snapshots of
   any age. This holds under `reconnectOnExpiry: false` as well: a stale snapshot re-lists
   over the replayed connection rather than being served as-is, since "stale" means the tool
-  set needs re-reading, not that the transport needs rebuilding.
+  set needs re-reading, not that the transport needs rebuilding. If that re-list fails, the
+  call rejects with the new `MCPStaleSnapshotError` rather than quietly serving tools the
+  caller declared too old — catch it specifically to opt into stale-but-usable tools. It
+  subclasses `MCPCacheError`, so existing catch sites are unaffected.
 - `onElicitation` is no longer deprecated: it works on both revisions, since the
   multi-round-trip driver routes `input_required` through the same handler.
 - A failed `connect()` no longer leaks its transport. The SDK does not close a transport

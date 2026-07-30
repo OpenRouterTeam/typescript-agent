@@ -15,6 +15,8 @@ interface SdkState {
   attempts: Attempt[];
   /** Transport kinds whose `start()` should reject. */
   failing: Set<'streamableHttp' | 'sse'>;
+  /** When true, the fake Client's `close()` throws synchronously. */
+  closeThrows: boolean;
   /** sessionId the fake Streamable HTTP transport reports after connecting. */
   httpSessionId: string | undefined;
   clientsCreated: number;
@@ -33,6 +35,7 @@ interface SdkState {
 const state: SdkState = {
   attempts: [],
   failing: new Set(),
+  closeThrows: false,
   httpSessionId: undefined,
   clientsCreated: 0,
   negotiationModes: [],
@@ -123,6 +126,11 @@ vi.mock('@modelcontextprotocol/client', () => ({
     }
     close(): Promise<void> {
       state.closedClients.push(this.attached ?? 'unattached');
+      if (state.closeThrows) {
+        // Synchronous throw, not a rejected promise — the case a bare
+        // `.catch()` on the call would fail to intercept.
+        throw new Error('close exploded');
+      }
       return Promise.resolve();
     }
   },
@@ -135,6 +143,7 @@ const URL_UNDER_TEST = new URL('https://example.invalid/mcp');
 beforeEach(() => {
   state.attempts = [];
   state.failing = new Set();
+  state.closeThrows = false;
   state.httpSessionId = undefined;
   state.clientsCreated = 0;
   state.negotiationModes = [];
@@ -302,6 +311,48 @@ describe('connect releases failed clients', () => {
     expect(state.closedClients).toEqual([
       'sse',
     ]);
+  });
+
+  /**
+   * The release must never become the error the caller sees. A `close()` that
+   * throws synchronously produces no rejected promise, so a bare
+   * `.catch(() => {})` on the call would not intercept it — the teardown failure
+   * would escape and replace the useful "couldn't reach the server" diagnosis
+   * with a misleading one, on the path where the diagnosis matters most.
+   */
+  it('surfaces the connect error even when close() throws synchronously', async () => {
+    state.failing.add('streamableHttp');
+    state.closeThrows = true;
+
+    await expect(
+      connect({
+        url: URL_UNDER_TEST,
+        transport: 'streamableHttp',
+      }),
+    ).rejects.toThrow(MCPConnectionError);
+
+    // The close was attempted; its explosion was swallowed.
+    expect(state.closedClients).toEqual([
+      'streamableHttp',
+    ]);
+  });
+
+  it('still falls back to SSE when the failed client close() throws', async () => {
+    state.failing.add('streamableHttp');
+    state.closeThrows = true;
+
+    const conn = await connect({
+      url: URL_UNDER_TEST,
+    });
+
+    // A teardown failure on the HTTP client must not prevent the fallback.
+    expect(conn.transport).toBe('sse');
+    expect(state.closedClients).toEqual([
+      'streamableHttp',
+    ]);
+    // Not closing `conn` here: the flag would make the caller-facing close throw
+    // too, which is that method's contract (it does not swallow) and not what
+    // this test is about.
   });
 
   it('does not close the client on a successful connect', async () => {

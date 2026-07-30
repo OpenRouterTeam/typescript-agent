@@ -49,6 +49,27 @@ export class MCPCacheError extends MCPError {
 }
 
 /**
+ * Raised when a snapshot is older than `staleness.maxAgeMs` and the re-list that
+ * would have refreshed it failed — so the only tools available are ones the
+ * caller declared too old to use.
+ *
+ * Subclasses {@link MCPCacheError}, so existing `catch (e instanceof
+ * MCPCacheError)` sites keep working. Catch this specifically to fall back to
+ * stale-but-usable tools instead of failing.
+ */
+export class MCPStaleSnapshotError extends MCPCacheError {
+  constructor(
+    message: string,
+    options?: {
+      cause?: unknown;
+    },
+  ) {
+    super(message, options);
+    this.name = 'MCPStaleSnapshotError';
+  }
+}
+
+/**
  * Raised when connecting to the MCP server fails across all attempted transports.
  */
 export class MCPConnectionError extends MCPError {

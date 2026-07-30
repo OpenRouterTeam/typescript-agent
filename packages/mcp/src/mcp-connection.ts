@@ -152,6 +152,25 @@ function makeClient(options: ConnectOptions, listChanged: MutableListChanged): C
 }
 
 /**
+ * Release a client whose `connect()` rejected, swallowing anything `close()`
+ * does on the way out.
+ *
+ * The `try` matters as much as the `.catch()`: a synchronous throw from
+ * `close()` would never produce a rejected promise to catch, so it would
+ * escape and mask the original connection error — replacing a useful
+ * "couldn't reach the server" with a teardown failure. Since this only ever
+ * runs on a path that is already failing, the close outcome is never the
+ * interesting one.
+ */
+async function releaseFailedClient(client: Client): Promise<void> {
+  try {
+    await client.close();
+  } catch {
+    // Nothing actionable: we are already unwinding a failed connect.
+  }
+}
+
+/**
  * Connect a `Client` to the MCP server. Defaults to Streamable HTTP and falls
  * back to SSE on connection failure (legacy servers), unless a transport is
  * pinned explicitly. Auth, the elicitation handler, and the list_changed
@@ -170,7 +189,7 @@ export async function connect(options: ConnectOptions): Promise<MCPConnection> {
       await client.connect(buildSse(options));
     } catch (sseErr) {
       // Same transport-release reason as the Streamable HTTP path below.
-      await client.close().catch(() => {});
+      await releaseFailedClient(client);
       throw sseErr;
     }
     return wrap({
@@ -200,7 +219,7 @@ export async function connect(options: ConnectOptions): Promise<MCPConnection> {
     // without teardown, leaking a keep-alive socket. `close()` is idempotent
     // (`this._transport?.close()`, and each transport guards on a `_closed`
     // flag), so covering the one uncovered path cannot double-close the others.
-    await client.close().catch(() => {});
+    await releaseFailedClient(client);
     if (options.transport === 'streamableHttp') {
       throw new MCPConnectionError('Failed to connect over Streamable HTTP', {
         cause: httpErr,
@@ -220,7 +239,7 @@ export async function connect(options: ConnectOptions): Promise<MCPConnection> {
         listChanged,
       });
     } catch (sseErr) {
-      await sseClient.close().catch(() => {});
+      await releaseFailedClient(sseClient);
       throw new MCPConnectionError('Failed to connect over Streamable HTTP and SSE', {
         cause: sseErr,
       });

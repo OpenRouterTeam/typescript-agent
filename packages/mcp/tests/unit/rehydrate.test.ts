@@ -10,6 +10,10 @@ const connectCalls: ConnectOptions[] = [];
 // a failure after `connect()` must not leave the transport open.
 let closeCount = 0;
 
+// When true, the fake client's `listTools` rejects — used to drive the
+// stale-snapshot re-list into failure.
+let listToolsRejects = false;
+
 vi.mock('../../src/mcp-connection.js', () => ({
   connect: (options: ConnectOptions): Promise<MCPConnection> => {
     connectCalls.push(options);
@@ -22,9 +26,11 @@ vi.mock('../../src/mcp-connection.js', () => ({
         // Reached only when rehydrate falls through to a full freshConnect
         // (expired tokens, missing credentials, or a stale snapshot).
         listTools: () =>
-          Promise.resolve({
-            tools: [],
-          }),
+          listToolsRejects
+            ? Promise.reject(new Error('server unavailable'))
+            : Promise.resolve({
+                tools: [],
+              }),
       } as never,
       transport: 'streamableHttp',
       setToolListChangedHandler: () => {},
@@ -93,6 +99,7 @@ describe('rehydrateMCPTools', () => {
   beforeEach(() => {
     connectCalls.length = 0;
     closeCount = 0;
+    listToolsRejects = false;
   });
 
   it('applies toolNamePrefix and excludeTools on a cache hit', async () => {
@@ -142,6 +149,7 @@ describe('staleness on the direct rehydrate path', () => {
   beforeEach(() => {
     connectCalls.length = 0;
     closeCount = 0;
+    listToolsRejects = false;
   });
 
   it('replays a snapshot that is within maxAgeMs', async () => {
@@ -255,6 +263,31 @@ describe('staleness on the direct rehydrate path', () => {
     expect(closeCount).toBe(1);
   });
 
+  /**
+   * Devin flagged that the re-list above turns a previously-survivable replay
+   * into a hard failure. That is deliberate — serving tools the caller declared
+   * too old is the bug `maxAgeMs` exists to prevent — but the error has to say
+   * *why*, and the connection still has to be released.
+   */
+  it('fails with a staleness-specific error when the re-list rejects', async () => {
+    const snapshot = snapshotWithHeaders();
+    snapshot.cachedAt = Date.now() - 120_000;
+    listToolsRejects = true;
+
+    await expect(
+      rehydrateMCPTools({
+        snapshot,
+        staleness: {
+          maxAgeMs: 60_000,
+        },
+        reconnectOnExpiry: false,
+      }),
+    ).rejects.toThrow(/older than staleness\.maxAgeMs/);
+
+    // Released rather than leaked, same guarantee as the other failure paths.
+    expect(closeCount).toBe(1);
+  });
+
   it('still replays a fresh snapshot when reconnectOnExpiry is false', async () => {
     const snapshot = snapshotWithHeaders();
     snapshot.cachedAt = Date.now() - 1_000;
@@ -289,6 +322,7 @@ describe('replay preserves snapshot age', () => {
   beforeEach(() => {
     connectCalls.length = 0;
     closeCount = 0;
+    listToolsRejects = false;
   });
 
   it('does not restamp cachedAt when tool defs come from a snapshot', async () => {
