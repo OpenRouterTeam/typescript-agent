@@ -112,7 +112,9 @@ try {
 ```
 
 It subclasses `MCPCacheError`, so existing `catch (e instanceof MCPCacheError)` sites keep
-working. `handle.refresh()` also always reaches the server: SDK v2 caches `tools/list` per
+working. Writing a snapshot back to your store is best-effort: a store outage leaves you with a
+working handle and a stale cache entry rather than a failed call. Catch `MCPCacheWriteError`
+from `handle.refresh()` if you would rather treat that as fatal. `handle.refresh()` also always reaches the server: SDK v2 caches `tools/list` per
 client up to the server's `ttlMs`, and every internal list read bypasses that so a refresh
 cannot hand back the previous tool set.
 

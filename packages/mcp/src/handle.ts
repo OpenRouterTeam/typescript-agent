@@ -5,6 +5,7 @@ import type { SerializedMCPServer } from './cache/cache-types.js';
 import type { SerializeInput } from './cache/serialize.js';
 import { serializeServer } from './cache/serialize.js';
 import { closeQuietly } from './close-quietly.js';
+import { MCPCacheWriteError } from './errors.js';
 import type { MCPConnection } from './mcp-connection.js';
 import { connect } from './mcp-connection.js';
 import type { McpToolDef } from './tool-wrapper.js';
@@ -214,7 +215,17 @@ export async function makeHandle(args: MakeHandleArgs): Promise<MCPToolsHandle> 
     if (store === undefined) {
       return;
     }
-    await store.set(context.cacheKey, await snapshot());
+    try {
+      await store.set(context.cacheKey, await snapshot());
+    } catch (writeErr) {
+      // Tagged so callers can tell a store outage from a failed read. The two
+      // look identical coming out of `refresh()` but mean opposite things: a
+      // failed read leaves the tool set unknown, while a failed write leaves a
+      // live connection with current tools and only a stale cache entry.
+      throw new MCPCacheWriteError('Failed to write the MCP snapshot to the cache store', {
+        cause: writeErr,
+      });
+    }
   };
 
   const refresh = async (): Promise<readonly Tool[]> => {
@@ -240,7 +251,12 @@ export async function makeHandle(args: MakeHandleArgs): Promise<MCPToolsHandle> 
     });
   }
 
-  await writeCache();
+  // Best-effort: the handle is fully usable without its cache entry, so a store
+  // outage should not stop a connection that already succeeded. Failing here
+  // would also break the documented recovery for a stale snapshot, which
+  // rehydrates through the same store and would hit the same outage. `refresh()`
+  // reports write failures as `MCPCacheWriteError` for callers that do care.
+  await writeCache().catch(() => {});
 
   return {
     get tools() {

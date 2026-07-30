@@ -1019,10 +1019,10 @@ describe('legacy degradation under an implicit auto default', () => {
       }),
     ).rejects.toThrow(MCPConnectionError);
 
-    // Both transports tried once; no legacy retry behind them.
-    expect(state.negotiationModes).toEqual([
-      'auto',
-      'auto',
+    // Stops at the HTTP auth failure: no SSE fallback (which would re-drive the
+    // OAuth flow) and no legacy retry behind it.
+    expect(state.attempts.map((a) => a.kind)).toEqual([
+      'streamableHttp',
     ]);
     expect(state.negotiationModes).not.toContain('legacy');
   });
@@ -1043,14 +1043,14 @@ describe('legacy degradation under an implicit auto default', () => {
       }),
     ).rejects.toThrow(MCPConnectionError);
 
-    // The transport ladder still runs — that is about reachability, not
-    // credentials — but no `'legacy'` retry follows it, so the OAuth flow is
-    // driven once rather than twice.
+    // One attempt only. The ladder short-circuits too: an SSE fallback would
+    // carry the same `authProvider` into the SDK's auth path and drive a second
+    // `redirectToAuthorization`, which is the duplicated side effect this guard
+    // exists to prevent — inside a single pass the caller didn't even opt into.
     expect(state.negotiationModes).toEqual([
       'auto',
-      'auto',
     ]);
-    expect(state.negotiationModes).not.toContain('legacy');
+    expect(state.attempts).toHaveLength(1);
   });
 
   it('detects an auth failure nested inside the wrapper error', async () => {

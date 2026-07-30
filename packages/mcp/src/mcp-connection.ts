@@ -253,7 +253,14 @@ async function connectWithNegotiation(options: ConnectOptions): Promise<MCPConne
     // `closeQuietly`, which tolerates any close outcome rather than depending on
     // what the SDK does internally.
     await closeQuietly(client);
-    if (options.transport === 'streamableHttp') {
+    if (options.transport === 'streamableHttp' || isAuthFailure(httpErr)) {
+      // Auth failures stop here rather than falling through. The SSE attempt
+      // would carry the same `authProvider` into the SDK's auth path — a second
+      // `redirectToAuthorization`, a second `saveCodeVerifier` overwriting the
+      // first — which is the duplicated side effect `connect()`'s retry guard
+      // exists to prevent. Guarding one and not the other left the hazard inside
+      // a single pass, where it is arguably worse: the caller did not even opt
+      // into a second negotiation mode.
       throw new MCPConnectionError('Failed to connect over Streamable HTTP', {
         cause: httpErr,
       });

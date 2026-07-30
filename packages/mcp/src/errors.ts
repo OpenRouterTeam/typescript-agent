@@ -49,6 +49,29 @@ export class MCPCacheError extends MCPError {
 }
 
 /**
+ * Raised when the tool list was read successfully but writing the snapshot back
+ * to the caller's `MCPCacheStore` failed.
+ *
+ * Distinct from the read failing, because the consequences differ completely: the
+ * connection is live and its tools are current, so the only thing lost is a cache
+ * entry. Callers who treat a store outage as fatal can catch this; callers who
+ * would rather keep working with a warm handle can ignore it.
+ *
+ * Subclasses {@link MCPCacheError}, so existing catch sites keep working.
+ */
+export class MCPCacheWriteError extends MCPCacheError {
+  constructor(
+    message: string,
+    options?: {
+      cause?: unknown;
+    },
+  ) {
+    super(message, options);
+    this.name = 'MCPCacheWriteError';
+  }
+}
+
+/**
  * Raised when a snapshot is older than `staleness.maxAgeMs` and the re-list that
  * would have refreshed it failed — so the only tools available are ones the
  * caller declared too old to use.

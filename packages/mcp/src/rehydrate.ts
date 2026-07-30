@@ -4,7 +4,7 @@ import { defaultCacheKey } from './cache/cache-store.js';
 import type { SerializedMCPServer } from './cache/cache-types.js';
 import { isSerializedMCPServer } from './cache/cache-types.js';
 import { closeQuietly } from './close-quietly.js';
-import { MCPCacheError, MCPStaleSnapshotError } from './errors.js';
+import { MCPCacheError, MCPCacheWriteError, MCPStaleSnapshotError } from './errors.js';
 import { freshConnect, makeHandle } from './handle.js';
 import type { ConnectOptions, MCPConnection } from './mcp-connection.js';
 import { connect } from './mcp-connection.js';
@@ -239,12 +239,18 @@ async function refreshStaleReplay(handle: MCPToolsHandle): Promise<void> {
   try {
     await handle.refresh();
   } catch (refreshErr) {
-    // The connection is live and the snapshot's tools would work, but they are
-    // older than the caller's own `maxAgeMs` — serving them anyway is exactly the
-    // unbounded-age bug that check exists to prevent, so fail instead. Named
-    // after staleness rather than reusing the generic rehydrate wording, because
-    // the rehydrate itself succeeded and a reader chasing "failed to rehydrate"
-    // would look in the wrong place.
+    // A failed *write* is survivable and must not fail the call. `refresh()`
+    // re-lists and then writes back, so a transient outage in the caller's own
+    // store used to discard a connection whose tools had just been read
+    // successfully — and report it as a re-list failure, sending a reader to the
+    // wrong layer. The tools are current either way; only the cache entry is
+    // stale, and the next rehydrate re-reads it.
+    if (refreshErr instanceof MCPCacheWriteError) {
+      return;
+    }
+    // A failed read is not. The connection is live and the snapshot's tools would
+    // work, but they are older than the caller's own `maxAgeMs` — serving them
+    // anyway is exactly the unbounded-age bug that check exists to prevent.
     await closeQuietly(handle);
     throw new MCPStaleSnapshotError(
       'Snapshot is older than staleness.maxAgeMs and re-listing tools failed',

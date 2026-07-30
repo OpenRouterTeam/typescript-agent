@@ -15,6 +15,7 @@ export { createMCPTools } from './create-mcp-tools.js';
 // Errors
 export {
   MCPCacheError,
+  MCPCacheWriteError,
   MCPConnectionError,
   MCPError,
   MCPStaleSnapshotError,

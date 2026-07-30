@@ -87,6 +87,22 @@ function snapshotWithHeaders(): SerializedMCPServer {
   return snap;
 }
 
+/**
+ * A snapshot whose two tools share a name. `buildTools` rejects duplicates, so
+ * this is a genuine post-connect failure — unlike a failing cache write, which is
+ * now best-effort and no longer aborts handle construction.
+ */
+function snapshotWithDuplicateToolNames(): SerializedMCPServer {
+  const snap = snapshotWithHeaders();
+  return {
+    ...snap,
+    tools: snap.tools.map((t) => ({
+      ...t,
+      name: 'collide',
+    })),
+  };
+}
+
 function nameOf(tool: unknown): string | undefined {
   if (
     typeof tool === 'object' &&
@@ -269,20 +285,10 @@ describe('staleness on the direct rehydrate path', () => {
    * path's mirror. A caller's `cache.store.set` throwing during the initial
    * write-back is the cheapest way in.
    */
-  it('closes the replay connection when the initial cache write fails', async () => {
-    const failingStore = {
-      get: () => Promise.resolve(undefined),
-      set: () => Promise.reject(new Error('disk full')),
-      delete: () => Promise.resolve(),
-    };
-
+  it('closes the replay connection when building the tool set fails', async () => {
     await expect(
       rehydrateMCPTools({
-        snapshot: snapshotWithHeaders(),
-        cache: {
-          store: failingStore,
-          key: 'warm',
-        },
+        snapshot: snapshotWithDuplicateToolNames(),
         // Without this the failure falls back to freshConnect, which opens its
         // own connection and muddies the count.
         reconnectOnExpiry: false,
@@ -328,27 +334,13 @@ describe('staleness on the direct rehydrate path', () => {
    * so neither happens.
    */
   it('still falls back to freshConnect when the teardown close() throws synchronously', async () => {
-    // Fails the replay's write only, so the fallback can still succeed — the
-    // point is that the teardown throw doesn't prevent reaching it.
-    let writes = 0;
-    const flakyStore = {
-      get: () => Promise.resolve(undefined),
-      set: () => {
-        writes += 1;
-        return writes === 1 ? Promise.reject(new Error('disk full')) : Promise.resolve();
-      },
-      delete: () => Promise.resolve(),
-    };
     closeThrowsSync = true;
 
-    // reconnectOnExpiry defaults to true, so the write failure should self-heal
-    // through freshConnect rather than surfacing the teardown error.
+    // reconnectOnExpiry defaults to true, so the build failure should self-heal
+    // through freshConnect (which re-lists and gets the fake's empty tool set)
+    // rather than surfacing the teardown error.
     const handle = await rehydrateMCPTools({
-      snapshot: snapshotWithHeaders(),
-      cache: {
-        store: flakyStore,
-        key: 'warm',
-      },
+      snapshot: snapshotWithDuplicateToolNames(),
     });
 
     // Two connects: the failed replay, then the fallback that self-healed.
@@ -357,24 +349,52 @@ describe('staleness on the direct rehydrate path', () => {
   });
 
   it('reports the original failure, not the teardown failure, when close() throws', async () => {
-    const failingStore = {
-      get: () => Promise.resolve(undefined),
-      set: () => Promise.reject(new Error('disk full')),
-      delete: () => Promise.resolve(),
-    };
     closeThrowsSync = true;
 
     await expect(
       rehydrateMCPTools({
-        snapshot: snapshotWithHeaders(),
-        cache: {
-          store: failingStore,
-          key: 'warm',
-        },
+        snapshot: snapshotWithDuplicateToolNames(),
         reconnectOnExpiry: false,
       }),
       // 'close exploded' would mean the teardown error had masked the real one.
     ).rejects.toThrow(MCPCacheError);
+  });
+
+  /**
+   * A cache-store outage must not fail a rehydrate whose tools were just read.
+   *
+   * `refresh()` re-lists and *then* writes back, so both steps used to surface
+   * identically — and the stale path converted either into
+   * `MCPStaleSnapshotError`, discarding a live connection with current tools and
+   * blaming the re-list. Worse, the documented recovery (`rehydrateMCPTools`
+   * without `staleness`) writes through the same broken store, so it failed too:
+   * the escape hatch was as broken as the thing it escaped.
+   */
+  it('survives a cache-store write failure on the stale path', async () => {
+    const snapshot = snapshotWithHeaders();
+    snapshot.cachedAt = Date.now() - 120_000;
+    const writeOnlyFailure = {
+      get: () => Promise.resolve(undefined),
+      set: () => Promise.reject(new Error('store unavailable')),
+      delete: () => Promise.resolve(),
+    };
+
+    const handle = await rehydrateMCPTools({
+      snapshot,
+      cache: {
+        store: writeOnlyFailure,
+        key: 'warm',
+      },
+      staleness: {
+        maxAgeMs: 60_000,
+      },
+      reconnectOnExpiry: false,
+    });
+
+    // Re-listed successfully (the fake reports no tools), so the handle is usable
+    // even though the snapshot could not be persisted.
+    expect(handle.tools).toHaveLength(0);
+    expect(closeCount).toBe(0);
   });
 
   it('still replays a fresh snapshot when reconnectOnExpiry is false', async () => {

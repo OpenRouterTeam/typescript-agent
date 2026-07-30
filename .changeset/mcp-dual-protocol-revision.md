@@ -169,6 +169,15 @@ Also in this release:
   subclasses `MCPCacheError`, so existing catch sites are unaffected.
 - `onElicitation` is no longer deprecated: it works on both revisions, since the
   multi-round-trip driver routes `input_required` through the same handler.
+- Writing a snapshot to your `MCPCacheStore` is now best-effort. A store outage previously
+  failed the whole call, discarding a live connection whose tools had been read successfully —
+  and broke the documented stale-snapshot recovery, which writes through the same store.
+  `handle.refresh()` reports a write failure as the new `MCPCacheWriteError` (a subclass of
+  `MCPCacheError`) for callers who do want to treat it as fatal.
+- An auth failure no longer falls through the transport ladder. A 401 on Streamable HTTP used
+  to try SSE with the same `authProvider`, re-entering the SDK's auth path for a second
+  `redirectToAuthorization` and overwriting the saved PKCE verifier — the same duplicated side
+  effect the negotiation retry already guarded against, one layer down.
 - `handle.refresh()` genuinely re-reads the tool list again. SDK v2 added a per-client
   response cache honouring the server's `ttlMs` on `tools/list` (up to 24h), so a refresh
   inside that window would have returned the cached list — an app calling `refresh()` to
