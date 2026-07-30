@@ -31,7 +31,7 @@ export interface RehydrateMCPToolsOptions {
   signal?: AbortSignal;
   /** Protocol-revision negotiation policy; defaults to `'auto'`. */
   protocolNegotiation?: MCPProtocolNegotiation;
-  /** Ceiling on the `server/discover` probe, in ms; defaults to 5000. */
+  /** Ceiling on the `server/discover` probe, in ms; defaults to 30000. */
   probeTimeoutMs?: number;
   /** Re-list tools instead of replaying a snapshot older than this. */
   staleness?: {

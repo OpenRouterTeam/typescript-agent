@@ -54,7 +54,8 @@ export interface CreateMCPToolsOptions {
    */
   protocolNegotiation?: MCPProtocolNegotiation;
   /**
-   * Ceiling on the `server/discover` probe, in ms. Defaults to 5000.
+   * Ceiling on the `server/discover` probe, in ms. Defaults to 30000 —
+   * `DEFAULT_PROBE_TIMEOUT_MS` in `mcp-connection.ts` is the source of truth.
    *
    * Raise it for a server slow to answer its first request. The SDK's own default
    * is the full request timeout, which makes a hanging gateway far slower to fail

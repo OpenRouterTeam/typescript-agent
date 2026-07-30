@@ -67,7 +67,8 @@ export interface ConnectOptions {
   onElicitation?: ElicitationHandler;
   protocolNegotiation?: MCPProtocolNegotiation;
   /**
-   * Ceiling on the `server/discover` probe, in ms. Defaults to 5000.
+   * Ceiling on the `server/discover` probe, in ms. Defaults to
+   * `DEFAULT_PROBE_TIMEOUT_MS` (30000).
    *
    * Raise it for a server that is slow to answer its first request; the SDK's own
    * default is the full request timeout, which makes a hanging gateway far slower
@@ -330,10 +331,15 @@ function flattenAttempts(err: unknown): readonly unknown[] {
  * some other error shape.
  */
 function isAuthStatus(err: unknown): boolean {
-  if (typeof err !== 'object' || err === null || !('status' in err)) {
+  // Errors only. A plain object carrying a `status` is far more likely to be a
+  // response, a log record, or some other payload that happens to travel in a
+  // `cause` than an authoritative rejection — the SDK itself builds log entries
+  // with `status: 0`, and treating one of those as a credential failure would
+  // silently suppress the retry and make a probe-hostile server unreachable.
+  if (!(err instanceof Error) || !('status' in err)) {
     return false;
   }
-  const { status } = err as {
+  const { status } = err as unknown as {
     status: unknown;
   };
   return status === 401 || status === 403;

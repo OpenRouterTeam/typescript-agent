@@ -807,6 +807,40 @@ describe('legacy degradation under an implicit auto default', () => {
     await conn.close();
   });
 
+  /**
+   * The default is stated in four places — the constant, two JSDoc sites, the
+   * README, and the changeset — and it has already drifted once: it moved 5s → 30s
+   * while three JSDoc comments kept saying 5000. This pins the source files
+   * against the constant so the next change to it fails here rather than shipping
+   * hover text that is six times wrong.
+   */
+  it('documents the same probe default that the code applies', async () => {
+    const { readFileSync } = await import('node:fs');
+    const { dirname, join } = await import('node:path');
+    const { fileURLToPath } = await import('node:url');
+    const srcDir = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'src');
+
+    const conn = await connect({
+      url: URL_UNDER_TEST,
+    });
+    const applied = state.probeTimeouts[0];
+    await conn.close();
+
+    expect(typeof applied).toBe('number');
+    for (const file of [
+      'types.ts',
+      'rehydrate.ts',
+      'mcp-connection.ts',
+    ]) {
+      const text = readFileSync(join(srcDir, file), 'utf8');
+      // Every `Defaults to <n>` / `defaults to <n>` near the probe option must
+      // name the value the code actually passes.
+      for (const match of text.matchAll(/probe[^\n]*\n?[^\n]*?efaults to (\d+)/gi)) {
+        expect(Number(match[1])).toBe(applied);
+      }
+    }
+  });
+
   it('lets a caller raise the probe timeout for a slow server', async () => {
     const conn = await connect({
       url: URL_UNDER_TEST,
@@ -921,6 +955,34 @@ describe('legacy degradation under an implicit auto default', () => {
     ).rejects.toThrow();
 
     expect(state.negotiationModes).not.toContain('legacy');
+  });
+
+  /**
+   * A non-Error payload carrying `status: 401` must not suppress the retry.
+   *
+   * The guard is duck-typed on `status`, which is the stable half of the SDK's
+   * contract — but a plain object with that field is far more likely to be a
+   * response or a log record riding along in a `cause` than an authoritative
+   * rejection (the SDK builds log entries with `status: 0`). Treating one as a
+   * credential failure would silently suppress the retry and make a
+   * probe-hostile-but-authenticated server unreachable — the regression the
+   * retry exists to prevent.
+   */
+  it('ignores a status on a non-Error payload', async () => {
+    state.connectError = Object.assign(new Error('gateway barfed'), {
+      cause: {
+        status: 401,
+        note: 'upstream response, not our rejection',
+      },
+    });
+
+    await expect(
+      connect({
+        url: URL_UNDER_TEST,
+      }),
+    ).rejects.toThrow();
+
+    expect(state.negotiationModes).toContain('legacy');
   });
 
   it('still retries a non-auth HTTP status', async () => {
