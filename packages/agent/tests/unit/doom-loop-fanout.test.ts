@@ -21,7 +21,7 @@
  * that; the subset case alone did not catch it.
  */
 import { describe, expect, it } from 'vitest';
-
+import type { DoomLoopCallRecord } from '../../src/lib/doom-loop.js';
 import { DoomLoopMonitor, resolveDoomLoopOption } from '../../src/lib/doom-loop.js';
 
 type RecordedAction = string;
@@ -482,6 +482,79 @@ describe('same-tool fan-out streaks', () => {
     /* The non-member does not inherit it. */
     expect(dropped.streak).toBe(1);
     expect(dropped.verdict).toBeUndefined();
+  });
+
+  it('keeps accumulating when an unhashable call rides along every round', async () => {
+    /*
+     * A non-member must not write the round's identity. It used to store its
+     * own single-fingerprint set as `roundFingerprints`, so the NEXT round's
+     * declared member compared against that singleton, failed to match, and
+     * reset to 1 — permanently, for as long as the unhashable call recurred.
+     * One unhashable argument therefore disabled detection for that tool for
+     * the rest of the run, which is the opposite of the fail-open guarantee
+     * (an unhashable value may only cost detection for ITS OWN call).
+     *
+     * Asserted in both emission orders, since which call opens the round is
+     * up to the model.
+     */
+    const streaksFor = async (droppedFirst: boolean): Promise<number[]> => {
+      const detector = monitor();
+      const streaks: number[] = [];
+      for (const round of [
+        0,
+        1,
+        2,
+        3,
+      ]) {
+        await detector.declareRound(round, [
+          {
+            toolName: 'read',
+            keyMaterial: {
+              path: 'a',
+            },
+          },
+          {
+            toolName: 'read',
+            keyMaterial: {
+              size: 1n,
+            },
+          },
+        ]);
+        const recordDropped = (): Promise<DoomLoopCallRecord> =>
+          detector.recordToolCall(
+            'read',
+            {
+              size: 'fallback-identity',
+            },
+            round,
+          );
+        if (droppedFirst) {
+          await recordDropped();
+        }
+        const member = await detector.recordToolCall(
+          'read',
+          {
+            path: 'a',
+          },
+          round,
+        );
+        if (!droppedFirst) {
+          await recordDropped();
+        }
+        streaks.push(member.streak);
+      }
+      return streaks;
+    };
+
+    const expected = [
+      1,
+      2,
+      3,
+      4,
+    ];
+    expect(await streaksFor(false)).toEqual(expected);
+    /* Order must not matter: the streak is a function of the sets, not arrival. */
+    expect(await streaksFor(true)).toEqual(expected);
   });
 
   it('gives every call of a repeating round the SAME message so steer dedupes', async () => {

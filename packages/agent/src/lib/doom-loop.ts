@@ -1098,36 +1098,10 @@ export class DoomLoopMonitor {
     const duplicateInRound = seen.includes(fingerprint);
 
     /*
-     * Compare this round's whole set against the previous round's whole set.
-     * When the round was declared, every call in it scores the SAME streak —
-     * a repeating fan-out is one piece of evidence per round, and the ladder
-     * applies to the round as a unit rather than to whichever call happened to
-     * complete the match. Calls outside a declaration (undeclared rounds, or a
-     * member dropped as unhashable) have no shared set to inherit, so each is
-     * compared individually (per-call semantics, as before).
-     */
-    let streak: number;
-    if (isSameRound && previous && declaredMember) {
-      streak = previous.streak;
-    } else {
-      const priorSet = isSameRound
-        ? previous?.priorRoundFingerprints
-        : (previous?.roundFingerprints ??
-          (previous
-            ? [
-                previous.fingerprint,
-              ]
-            : undefined));
-      streak =
-        priorSet !== undefined && setsMatch(priorSet, roundFingerprints)
-          ? (isSameRound ? (previous?.priorStreak ?? 0) : previous!.streak) + 1
-          : 1;
-    }
-
-    /*
-     * The set the NEXT call of this round must compare against. Within one
-     * round every call is measured against the round before it, so this is
-     * carried unchanged across the round rather than overwritten per call.
+     * What this call is measured against: the set the PREVIOUS round was
+     * called with, and the streak that round earned. Carried unchanged for the
+     * length of the current round, so every call in a round compares against
+     * the same baseline regardless of the order the calls arrive in.
      */
     const priorRoundFingerprints = isSameRound
       ? previous?.priorRoundFingerprints
@@ -1137,18 +1111,70 @@ export class DoomLoopMonitor {
               previous.fingerprint,
             ]
           : undefined));
+    const priorStreak = isSameRound ? (previous?.priorStreak ?? 0) : (previous?.streak ?? 0);
+
+    /*
+     * A round's streak is a pure function of (this round's set, the previous
+     * round's set, the streak that round earned) — never of whichever call of
+     * this round happened to be recorded first. Every call sharing a declared
+     * set therefore scores the same streak by construction: a repeating
+     * fan-out is one piece of evidence per round, and the ladder applies to
+     * the round as a unit rather than to one member. Calls outside a
+     * declaration carry their own single-fingerprint set through the same
+     * formula, which is the per-call comparison.
+     */
+    const streak =
+      priorRoundFingerprints !== undefined && setsMatch(priorRoundFingerprints, roundFingerprints)
+        ? priorStreak + 1
+        : 1;
+
+    /*
+     * Round-level bookkeeping belongs to the round's declared set, so a call
+     * that is NOT part of the declaration must not write it: overwriting
+     * `roundFingerprints` with its own singleton would leave the next round's
+     * members comparing against that singleton and resetting to 1 forever, so
+     * one unhashable argument would disable detection for the tool for the
+     * rest of the run. Non-members still record `fingerprint`/`seenThisRound`
+     * (identity for persistence, and in-round dedupe) and still receive their
+     * own per-call verdict — they just cannot move the round's counters.
+     */
+    const isNonMemberOfDeclaredRound = declared !== undefined && !declaredMember;
+    /*
+     * A non-member does not define the round, so the round's own set/streak
+     * stay unset by it — but the round TRANSITION still has to be recorded, or
+     * the baseline would never advance. `priorRoundFingerprints`/`priorStreak`
+     * are therefore written from the same computation every call uses; only
+     * `roundFingerprints` and `streak` (the round's identity and its score)
+     * are withheld, to be filled in by the round's first declared member.
+     */
+    const roundState = isNonMemberOfDeclaredRound
+      ? {
+          ...(declared !== undefined
+            ? {
+                roundFingerprints: declared,
+              }
+            : {}),
+          streak:
+            priorRoundFingerprints !== undefined &&
+            setsMatch(priorRoundFingerprints, declared ?? [])
+              ? priorStreak + 1
+              : 1,
+        }
+      : {
+          roundFingerprints,
+          streak,
+        };
     this.tools.set(toolName, {
       fingerprint,
-      streak,
       round,
-      roundFingerprints,
       seenThisRound: mergeFingerprint(seen, fingerprint),
+      ...roundState,
       ...(priorRoundFingerprints !== undefined
         ? {
             priorRoundFingerprints,
           }
         : {}),
-      priorStreak: isSameRound ? (previous?.priorStreak ?? 0) : (previous?.streak ?? 0),
+      priorStreak,
     });
 
     const allowBlock = options?.allowBlock ?? true;

@@ -21,6 +21,9 @@ fan-out stops spending rather than only its last call being refused.
 Paths that cannot know a round's membership up front — server-tool records, and
 direct/port callers — are scored per call against the previous round, the same
 as before this change: a fan-out there goes undetected rather than mis-scored.
+A call that a round's declaration could not include (unhashable key material)
+is likewise scored on its own, and cannot move the round's counters — one
+unhashable argument costs detection for its own call only, never for the tool.
 
 Single-call rounds, in-round duplicate collapsing, resumed streaks, persisted
 state shape, verdict payloads, and the number of times a tool's `loopKey` is
