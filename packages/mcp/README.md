@@ -217,11 +217,15 @@ re-walks the same transport ladder under `'legacy'`, so an unreachable server is
 four times before erroring — the price of guaranteeing that a legacy server reachable only
 over SSE still connects when its probe is refused.
 
-An auth failure skips the retry, including one raised by a different transport than the final
-error: rejected credentials are not something a different protocol revision fixes, and
-retrying would drive an OAuth authorization flow twice and overwrite the saved PKCE verifier.
-`MCPConnectionError` exposes every underlying failure on `errors` (like `AggregateError`), so
-both transport attempts are visible rather than only the last.
+An auth failure skips the retry, whether it surfaced as the SDK's `UnauthorizedError` or as a
+401/403 status (the negotiation probe reports those as an `SdkHttpError` rather than routing
+them through the OAuth flow), and whether it came from the final attempt or an earlier one.
+Rejected credentials are not something a different protocol revision fixes, and retrying would
+drive an OAuth authorization flow twice and overwrite the saved PKCE verifier.
+
+`MCPConnectionError` exposes every underlying failure on `errors` (like `AggregateError`), flat
+and in attempt order across both negotiation passes, so nothing is hidden behind `cause` —
+which holds only the last attempt.
 
 There are no hardcoded protocol version strings in this package — negotiation is delegated to
 `@modelcontextprotocol/client`.

@@ -27,6 +27,11 @@ interface SdkState {
   authFailure: boolean;
   /** When set, only that transport rejects with `UnauthorizedError`. */
   authFailOn: 'streamableHttp' | 'sse' | undefined;
+  /**
+   * When set, every connect rejects with an error carrying this `status` — the
+   * shape the SDK's probe uses for HTTP failures instead of `UnauthorizedError`.
+   */
+  httpErrorStatus: number | undefined;
   /** sessionId the fake Streamable HTTP transport reports after connecting. */
   httpSessionId: string | undefined;
   clientsCreated: number;
@@ -49,6 +54,7 @@ const state: SdkState = {
   closeThrows: false,
   authFailure: false,
   authFailOn: undefined,
+  httpErrorStatus: undefined,
   httpSessionId: undefined,
   clientsCreated: 0,
   negotiationModes: [],
@@ -142,6 +148,13 @@ vi.mock('@modelcontextprotocol/client', () => ({
       if (state.authFailure || state.authFailOn === kind) {
         return Promise.reject(new FakeUnauthorizedError('unauthorized'));
       }
+      if (state.httpErrorStatus !== undefined) {
+        return Promise.reject(
+          Object.assign(new Error(`http ${state.httpErrorStatus}`), {
+            status: state.httpErrorStatus,
+          }),
+        );
+      }
       if (state.failing.has(kind)) {
         return Promise.reject(new Error(`${kind} refused`));
       }
@@ -179,6 +192,7 @@ beforeEach(() => {
   state.closeThrows = false;
   state.authFailure = false;
   state.authFailOn = undefined;
+  state.httpErrorStatus = undefined;
   state.httpSessionId = undefined;
   state.clientsCreated = 0;
   state.negotiationModes = [];
@@ -730,6 +744,69 @@ describe('legacy degradation under an implicit auto default', () => {
     // of the attempt that preceded it.
     expect(state.clientsCreated).toBe(4);
     expect(state.closedClients).toHaveLength(4);
+  });
+
+  /**
+   * `errors` has to span both negotiation passes, not just the last.
+   *
+   * `MCPConnectionError.errors` documents itself as every failure in attempt
+   * order. If the retry's rejection propagated untouched, the `'auto'` pass's
+   * failures would vanish — half the attempts, plus any auth-shaped rejection
+   * `isAuthFailure` didn't match — and someone debugging an unreachable server
+   * would be reading a partial record while the docs promised a complete one.
+   */
+  it('reports every attempt across both negotiation passes', async () => {
+    state.failing.add('streamableHttp');
+    state.failing.add('sse');
+
+    const err = await connect({
+      url: URL_UNDER_TEST,
+    }).catch((e: unknown) => e);
+
+    expect(err).toBeInstanceOf(MCPConnectionError);
+    // Four attempts: two transports × two negotiation modes, flat rather than a
+    // tree of wrappers so a caller can iterate without recursing.
+    expect((err as MCPConnectionError).errors).toHaveLength(4);
+    for (const nested of (err as MCPConnectionError).errors) {
+      expect(nested).not.toBeInstanceOf(MCPConnectionError);
+    }
+    // `cause` still points at the last thing tried.
+    expect((err as MCPConnectionError).cause).toBeInstanceOf(Error);
+  });
+
+  /**
+   * An auth rejection does not always arrive as `UnauthorizedError`.
+   *
+   * The version-negotiation probe doesn't route 401/403 through the OAuth flow —
+   * `classifyHttpError` turns them into an `SdkHttpError` with
+   * `ClientHttpAuthentication` / `ClientHttpForbidden`. So a probe rejected for
+   * auth reasons is a different type entirely, and a guard keyed only on
+   * `UnauthorizedError` would retry it and re-drive the flow.
+   */
+  it('suppresses the retry for an auth-shaped HTTP status', async () => {
+    state.httpErrorStatus = 403;
+
+    await expect(
+      connect({
+        url: URL_UNDER_TEST,
+      }),
+    ).rejects.toThrow();
+
+    expect(state.negotiationModes).not.toContain('legacy');
+  });
+
+  it('still retries a non-auth HTTP status', async () => {
+    // 404 is the SSE-endpoint-doesn't-exist case, not a credentials problem —
+    // guards against the status check over-matching and disabling degradation.
+    state.httpErrorStatus = 404;
+
+    await expect(
+      connect({
+        url: URL_UNDER_TEST,
+      }),
+    ).rejects.toThrow();
+
+    expect(state.negotiationModes).toContain('legacy');
   });
 
   /**

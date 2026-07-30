@@ -30,12 +30,16 @@ two. The retry deliberately does *not* pin one transport — a legacy server rea
 over SSE, behind probe-hostile infrastructure, needs SSE offered again under `'legacy'` or it
 stops connecting entirely, which is the regression this mechanism exists to prevent.
 
-The retry is skipped on an auth failure, including one that came from a different transport
-than the last error: rejected credentials are not something a different protocol revision
-fixes, and re-running the attempt would drive an OAuth provider's authorization flow a second
-time and overwrite the stored PKCE verifier. `MCPConnectionError` now carries every
-underlying failure in `errors` (matching `AggregateError`) so a caller can see both transport
-attempts rather than only the last.
+The retry is skipped on an auth failure — whether it arrives as the SDK's `UnauthorizedError`
+or as a 401/403 status (the negotiation probe reports those as an `SdkHttpError` instead of
+routing them through the OAuth flow), and whether it came from the last attempt or an earlier
+one. Rejected credentials are not something a different protocol revision fixes, and re-running
+the attempt would drive an OAuth provider's authorization flow a second time and overwrite the
+stored PKCE verifier.
+
+`MCPConnectionError` now carries every underlying failure in `errors` (matching
+`AggregateError`), flat and in attempt order across both negotiation passes, so a caller sees
+all of them rather than only the last — which is all `cause` holds.
 
 An **explicit** `protocolNegotiation` is honoured exactly, including `'auto'` — asking for a
 mode means asking for its failures too, and silently overriding a `{ pin }` would defeat the

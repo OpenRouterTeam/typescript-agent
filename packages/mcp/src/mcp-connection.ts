@@ -246,6 +246,46 @@ async function connectWithNegotiation(options: ConnectOptions): Promise<MCPConne
 }
 
 /**
+ * Reduce one pass's failure to the list of attempts behind it.
+ *
+ * A pass that tried both transports is already an `MCPConnectionError` carrying
+ * them in `errors`; unwrapping keeps `errors` a flat list of real attempts rather
+ * than a tree of wrappers, so a caller can iterate it without recursing. A pass
+ * that tried one transport contributes itself.
+ */
+function flattenAttempts(err: unknown): readonly unknown[] {
+  if (err instanceof MCPConnectionError && err.errors.length > 0) {
+    return err.errors;
+  }
+  return [
+    err,
+  ];
+}
+
+/**
+ * Does this error carry an HTTP status that means "your credentials were the
+ * problem"?
+ *
+ * `UnauthorizedError` alone is not enough. The version-negotiation probe does
+ * not route 401/403 through the OAuth flow — `classifyHttpError` turns them into
+ * an `SdkHttpError` with `ClientHttpAuthentication` / `ClientHttpForbidden` — so
+ * a probe rejected for auth reasons arrives as a different type entirely. Read
+ * via a duck-typed `status` rather than `instanceof SdkHttpError` plus an
+ * `SdkErrorCode` comparison: the numeric status is the stable part of that
+ * contract, and matching on it also catches a gateway that surfaces 401/403 as
+ * some other error shape.
+ */
+function isAuthStatus(err: unknown): boolean {
+  if (typeof err !== 'object' || err === null || !('status' in err)) {
+    return false;
+  }
+  const { status } = err as {
+    status: unknown;
+  };
+  return status === 401 || status === 403;
+}
+
+/**
  * Did any attempt behind this failure end in the server rejecting our
  * credentials?
  *
@@ -264,7 +304,7 @@ function isAuthFailure(err: unknown, depth = 0): boolean {
   if (depth >= 8) {
     return false;
   }
-  if (err instanceof UnauthorizedError) {
+  if (err instanceof UnauthorizedError || isAuthStatus(err)) {
     return true;
   }
   if (!(err instanceof Error)) {
@@ -345,10 +385,25 @@ export async function connect(options: ConnectOptions): Promise<MCPConnection> {
     // because there the cost of retrying is a duplicated side effect rather than
     // a wasted dial — and if that check ever stops matching we merely retry,
     // which is the pre-existing behavior rather than a silent loss of function.
-    return await connectWithNegotiation({
-      ...options,
-      protocolNegotiation: 'legacy',
-    });
+    try {
+      return await connectWithNegotiation({
+        ...options,
+        protocolNegotiation: 'legacy',
+      });
+    } catch (legacyErr) {
+      // Carry both passes. Letting `legacyErr` propagate untouched would drop
+      // everything the `'auto'` pass learned — up to half the attempts, and any
+      // auth-shaped rejection that `isAuthFailure` did not match — which would
+      // also make `MCPConnectionError.errors` a lie about being every failure in
+      // attempt order.
+      throw new MCPConnectionError('Failed to connect over any transport or protocol revision', {
+        cause: legacyErr,
+        errors: [
+          ...flattenAttempts(autoErr),
+          ...flattenAttempts(legacyErr),
+        ],
+      });
+    }
   }
 }
 
