@@ -389,6 +389,18 @@ warning — detection never fails a run. Without any `loopKey`, the full
 validated arguments object is the identity. MCP-wrapped tools accept a
 `loopKey` via `markMcp(tool, { loopKey })` (prefer the field-list form).
 
+> **Exempt tools that repeat by design — including repeating *fan-outs*.**
+> The detector compares arguments, not results, so a call whose arguments are
+> stable while its results change is indistinguishable from a loop. Since a
+> round's identity is now the whole *set* of a tool's calls, this covers
+> parallel shapes too: an agent that re-reads the same context files at the
+> start of every turn, or fans out a fixed set of pollers, accumulates a streak
+> and is refused at the default `block` rung from round 3 — and because every
+> call in the round gets the verdict, that is N synthesized error outputs per
+> round, not one. These shapes were invisible before this behavior existed, so
+> `loopKey: false` (or a `loopKey` returning `null`) is the opt-out for any
+> tool whose repetition is legitimate.
+
 **Fingerprints are a cross-port contract**: key material is canonicalized
 per RFC 8785 (JCS) and hashed with SHA-256 over the UTF-8 bytes, so the
 Python/Go ports produce identical fingerprints — they MUST use an RFC 8785

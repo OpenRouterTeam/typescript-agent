@@ -1,5 +1,5 @@
 ---
-'@openrouter/agent': patch
+'@openrouter/agent': minor
 ---
 
 Fix doom-loop detection missing a repeated same-tool fan-out.
@@ -25,13 +25,38 @@ A call that a round's declaration could not include (unhashable key material)
 is likewise scored on its own, and cannot move the round's counters — one
 unhashable argument costs detection for its own call only, never for the tool.
 
-Single-call rounds, in-round duplicate collapsing, resumed streaks, persisted
-state shape, verdict payloads, and the number of times a tool's `loopKey` is
-invoked (once per call) are unchanged.
+**Resumed runs**: a *multi-call* round's streak now restarts after a
+save/resume. The persisted shape carries one fingerprint per tool and cannot
+express which set earned a count, so keeping it would attach a fan-out's
+evidence to whichever member was recorded last — a resumed round of just that
+one call would then be refused on its first appearance, despite the model doing
+less work than before the save. A repeating fan-out is re-detected from a clean
+baseline instead (observe at the second repeat after resume). Single-call
+streaks still continue across a resume exactly as before.
+
+**New API**: `DoomLoopMonitor.declareRound(round, calls)` — declares a round's
+complete call set before any of it is scored. `DoomLoopMonitor` is exported, so
+this is a new public method, additive only. Callers using `callModel` need not
+touch it (the engine calls it); direct `DoomLoopMonitor` users and SDK ports
+should, since an undeclared multi-call round falls back to per-call scoring and
+its fan-out goes undetected.
+
+Single-call round timing, in-round duplicate collapsing, persisted state
+*shape*, verdict payloads, and the number of times a tool's `loopKey` is invoked
+(once per checked call) are unchanged.
 
 Known limit, unchanged by this fix: a call that repeats inside a round whose
 other members keep varying (`[a,b]`, `[a,c]`, `[a,d]`) does not accumulate,
 since round identity requires the whole set to match.
+
+**Newly reachable false positive.** The detector compares arguments, not
+results, so a tool invoked with a stable *set* of parallel arguments every round
+now accumulates a streak where it previously could not — an agent re-reading the
+same context files each turn, or a fixed fan-out of pollers, is refused at the
+default `block` rung from round 3, with one synthesized error per call in the
+round. Exempt such tools with `loopKey: false` (or a `loopKey` returning `null`
+for the call). This class was invisible to the detector before, so no existing
+exemption covered it.
 
 No API surface changed — `doomLoop` is configured exactly as before. What
 changed is when it fires:
