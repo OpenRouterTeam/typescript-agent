@@ -1086,6 +1086,14 @@ export class DoomLoopMonitor {
      * the set, but still resolves an identity at record time via the caller's
      * fallback chain — it must not be scored as part of the round, or it would
      * inherit the round's count and could be blocked on its first appearance.
+     *
+     * KNOWN LIMIT: such a call is compared against its tool's declared set,
+     * which by construction it is not in, so it never matches and holds at
+     * streak 1 even when reissued verbatim every round. It costs detection for
+     * itself only — the round's members keep accumulating — which is the
+     * fail-open contract. (A tool whose calls are ALL unhashable has no
+     * declared set at all, so those calls fall through to the ordinary
+     * per-call comparison and do accumulate.)
      */
     const declaredMember = declared?.includes(fingerprint) === true;
     const roundFingerprints = declaredMember

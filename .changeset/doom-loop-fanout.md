@@ -32,3 +32,35 @@ invoked (once per call) are unchanged.
 Known limit, unchanged by this fix: a call that repeats inside a round whose
 other members keep varying (`[a,b]`, `[a,c]`, `[a,d]`) does not accumulate,
 since round identity requires the whole set to match.
+
+No API surface changed — `doomLoop` is configured exactly as before. What
+changed is when it fires:
+
+```ts
+import { callModel } from '@openrouter/agent';
+
+const result = callModel(client, {
+  model: 'z-ai/glm-5.2',
+  input: 'Summarize these files.',
+  tools: [readTool],
+  // Unchanged config; the ladder default is observe@2, block@3, stop@6.
+  doomLoop: true,
+});
+
+// Say the model reissues the SAME three-call fan-out every round:
+//   round 1: read(a), read(b), read(c)
+//   round 2: read(a), read(b), read(c)   <- identical set
+//
+// was: no detection, ever. Each round's first call reset the streak, so
+//      a fan-out could spin indefinitely while single calls tripped at
+//      round 2.
+// now: round 2 is streak 2 (observe), round 3 is streak 3 (block) — and
+//      EVERY call of the round is refused at the block rung, not just one,
+//      so the fan-out stops spending.
+//
+// A round that ADDS work is progress and resets to 1:
+//   round 3: read(a), read(b), read(c), read(d)   <- no verdict
+//
+// `loopKey` still runs exactly once per checked call, and persisted
+// `ConversationState.doomLoop` is byte-identical to before.
+```

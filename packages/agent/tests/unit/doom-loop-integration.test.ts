@@ -107,6 +107,35 @@ function textTurn(text: string): models.OpenResponsesResult {
   ]);
 }
 
+/** A turn with two parallel tool calls, for mixed-batch scenarios. */
+function twoToolCallTurn(
+  first: [
+    string,
+    unknown,
+  ],
+  second: [
+    string,
+    unknown,
+  ],
+): models.OpenResponsesResult {
+  return baseResponse(
+    [
+      first,
+      second,
+    ].map(([name, args]) => {
+      callCounter++;
+      return {
+        type: 'function_call',
+        id: `fc_${callCounter}`,
+        callId: `call_${callCounter}`,
+        name,
+        arguments: JSON.stringify(args),
+        status: 'completed',
+      };
+    }),
+  );
+}
+
 /** Queue scripted turns; the "LLM" plays them back in order. */
 function scriptModelTurns(...turns: models.OpenResponsesResult[]) {
   for (const turn of turns) {
@@ -1117,5 +1146,80 @@ describe('doom-loop state persistence', () => {
 
     /* Two calls issued, so exactly two invocations — not four. */
     expect(loopKeySpy).toHaveBeenCalledTimes(2);
+  });
+
+  it('never invokes loopKey for a manual call the detector will not check', async () => {
+    /*
+     * A manual tool (no `execute`, no `onToolCalled`) is handed to the caller
+     * to resolve externally and is never recorded as loop evidence. Declaring
+     * a round must therefore skip it: `loopKey` is user code, and running it
+     * for a call the detector never evaluates is activity the caller cannot
+     * account for. Every execution path skips these with the same
+     * `isAutoResolvableTool` predicate the declaration now uses.
+     */
+    const manualLoopKey = vi.fn(({ query }: { query: string }) => query);
+    const manualTool = tool({
+      name: 'ask_human',
+      inputSchema: z.object({
+        query: z.string(),
+      }),
+      outputSchema: z.object({
+        answer: z.string(),
+      }),
+      loopKey: manualLoopKey,
+    });
+    const executableLoopKey = vi.fn(({ query }: { query: string }) => query);
+    const executableTool = tool({
+      name: 'web_search',
+      inputSchema: z.object({
+        query: z.string(),
+      }),
+      outputSchema: z.object({
+        results: z.array(z.string()),
+      }),
+      loopKey: executableLoopKey,
+      execute: async ({ query }) => ({
+        results: [
+          query,
+        ],
+      }),
+    });
+
+    /*
+     * MIXED batch: an all-manual round never reaches the doom-loop round at
+     * all (`hasExecutableToolCalls` guards it), so the manual call has to ride
+     * alongside an executable one for the declaration to be reached.
+     */
+    scriptModelTurns(
+      twoToolCallTurn(
+        [
+          'web_search',
+          {
+            query: 'go',
+          },
+        ],
+        [
+          'ask_human',
+          {
+            query: 'what now?',
+          },
+        ],
+      ),
+    );
+
+    await callModel(client, {
+      model: 'test-model',
+      input: 'Search, and ask me something.',
+      tools: [
+        executableTool,
+        manualTool,
+      ] as const,
+      doomLoop: true,
+    }).getText();
+
+    /* The executable call is checked, so its loopKey runs exactly once. */
+    expect(executableLoopKey).toHaveBeenCalledTimes(1);
+    /* The manual call is never recorded, so its loopKey must not run at all. */
+    expect(manualLoopKey).not.toHaveBeenCalled();
   });
 });

@@ -1306,6 +1306,14 @@ export class ModelResult<
    * material is exempt or unhashable is simply left out, and the per-call
    * fallback chain in `enqueueDoomLoopEvaluation` still governs identity at
    * record time.
+   *
+   * Only calls that the round will actually CHECK are declared. A `loopKey`
+   * function is user code that may count or log, so it must not run for a call
+   * the detector never evaluates: manual tool calls (no `execute`, no
+   * `onToolCalled`) are handed to the caller and never recorded, and every
+   * execution path skips them with the same `isAutoResolvableTool` predicate
+   * used here. Their absence from the declared set is also correct on its own
+   * terms — they are not evidence, so they are not part of the round.
    */
   private async beginDoomLoopRound(batch: readonly ParsedToolCall<Tool>[] = []): Promise<void> {
     const monitor = this.doomLoopMonitor;
@@ -1333,8 +1341,12 @@ export class ModelResult<
       const tool = this.options.tools?.find(
         (t) => isClientTool(t) && t.function.name === toolCall.name,
       );
+      // Never checked => never recorded => `loopKey` must not run for it.
+      if (tool === undefined || !isAutoResolvableTool(tool)) {
+        continue;
+      }
       const resolution = resolveLoopKeyMaterial(
-        tool !== undefined && isClientTool(tool) ? tool.function.loopKey : undefined,
+        isClientTool(tool) ? tool.function.loopKey : undefined,
         (toolCall.arguments ?? {}) as Record<string, unknown>,
       );
       // Cache so the per-call checkpoint does not invoke `loopKey` a second

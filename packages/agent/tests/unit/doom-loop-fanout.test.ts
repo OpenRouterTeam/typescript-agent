@@ -557,6 +557,111 @@ describe('same-tool fan-out streaks', () => {
     expect(await streaksFor(true)).toEqual(expected);
   });
 
+  it('holds an unhashable call at streak 1 without stalling its round-mates', async () => {
+    /*
+     * Bounds the cost of an unhashable argument. Such a call is compared
+     * against its tool's declared set, which it is not a member of, so it
+     * cannot match and stays at 1 however often it recurs — it is invisible to
+     * detection. That is the fail-open contract: the price is paid by that call
+     * alone, and its round-mates keep accumulating normally (the regression
+     * above covers the case where it used to zero them too).
+     *
+     * Also pins the asymmetry: a tool whose calls are ALL unhashable has no
+     * declared set, so it falls through to the ordinary per-call comparison
+     * and DOES accumulate.
+     */
+    const detector = monitor();
+    const memberStreaks: number[] = [];
+    const droppedStreaks: number[] = [];
+    for (const round of [
+      0,
+      1,
+      2,
+    ]) {
+      await detector.declareRound(round, [
+        {
+          toolName: 'read',
+          keyMaterial: {
+            path: 'a',
+          },
+        },
+        {
+          toolName: 'read',
+          keyMaterial: {
+            size: 1n,
+          },
+        },
+      ]);
+      memberStreaks.push(
+        (
+          await detector.recordToolCall(
+            'read',
+            {
+              path: 'a',
+            },
+            round,
+          )
+        ).streak,
+      );
+      droppedStreaks.push(
+        (
+          await detector.recordToolCall(
+            'read',
+            {
+              size: 'fallback-identity',
+            },
+            round,
+          )
+        ).streak,
+      );
+    }
+
+    expect(memberStreaks).toEqual([
+      1,
+      2,
+      3,
+    ]);
+    expect(droppedStreaks).toEqual([
+      1,
+      1,
+      1,
+    ]);
+
+    /* No declared set for the tool at all: ordinary per-call accumulation. */
+    const allUnhashable = monitor();
+    const soloStreaks: number[] = [];
+    for (const round of [
+      0,
+      1,
+      2,
+    ]) {
+      await allUnhashable.declareRound(round, [
+        {
+          toolName: 'read',
+          keyMaterial: {
+            size: 1n,
+          },
+        },
+      ]);
+      soloStreaks.push(
+        (
+          await allUnhashable.recordToolCall(
+            'read',
+            {
+              size: 'fallback-identity',
+            },
+            round,
+          )
+        ).streak,
+      );
+    }
+    expect(soloStreaks).toEqual([
+      1,
+      2,
+      3,
+    ]);
+  });
+
   it('gives every call of a repeating round the SAME message so steer dedupes', async () => {
     /*
      * `queueDoomLoopSteer` dedupes queued guidance by exact message text. Now
