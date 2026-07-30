@@ -378,32 +378,81 @@ describe('same-tool fan-out streaks', () => {
     expect(record.streak).toBe(3);
   });
 
-  it('degrades safely when a round is never declared', async () => {
+  it('falls back to per-call scoring when a round is never declared', async () => {
     /*
-     * The engine declares every round (see beginDoomLoopRound), so this is
-     * the direct-caller / port path. Without a declaration a multi-call round
-     * falls back to per-call sets, i.e. the pre-fix last-call behavior: a
-     * growing fan-out can still score the weakest rung. Pinned to bound what
-     * the fallback may do — `observe` is hook-only, so an undeclared round
-     * never refuses a call the declared path would have allowed.
+     * The engine declares every executed batch, but server-tool records go
+     * through `checkDoomLoopForResponse` undeclared, as do direct callers and
+     * ports. A round's membership is unknowable there, so each call is scored
+     * on its own identity against the previous round — the pre-fan-out
+     * semantics. Sharing a round streak here instead let a brand-new call
+     * inherit an earlier call's count: `[a]` then `[a, b]` scored `b` as a
+     * 2-round repeat and emitted a verdict quoting `b`'s own fingerprint,
+     * for a call the model had just made for the first time.
      */
     const detector = monitor();
-    const actions: RecordedAction[][] = [];
-    for (const [round, paths] of [
-      [
-        'a',
-      ],
-      [
-        'a',
-        'b',
-      ],
-      [
-        'a',
-        'b',
-        'c',
-      ],
-    ].entries()) {
-      const roundActions: RecordedAction[] = [];
+    await detector.recordToolCall(
+      'server:web_search',
+      {
+        q: 'x',
+      },
+      0,
+    );
+    const repeated = await detector.recordToolCall(
+      'server:web_search',
+      {
+        q: 'x',
+      },
+      1,
+    );
+    const fresh = await detector.recordToolCall(
+      'server:web_search',
+      {
+        q: 'y',
+      },
+      1,
+    );
+
+    /* The genuine repeat still accumulates. */
+    expect(repeated.streak).toBe(2);
+    /* The first-ever call does not inherit it. */
+    expect(fresh.streak).toBe(1);
+    expect(fresh.verdict).toBeUndefined();
+  });
+
+  it('gives every call of a repeating round the SAME message so steer dedupes', async () => {
+    /*
+     * `queueDoomLoopSteer` dedupes queued guidance by exact message text. Now
+     * that every call of a repeating round emits a verdict, quoting the
+     * individual call's fingerprint would queue one near-identical correction
+     * per call — three user messages for one round of evidence. A multi-call
+     * round therefore quotes the ROUND's identity instead.
+     */
+    const detector = new DoomLoopMonitor(
+      resolveDoomLoopOption({
+        ladder: {
+          steer: 2,
+        },
+      }),
+    );
+    const paths = [
+      'a',
+      'b',
+      'c',
+    ];
+    const messages: string[] = [];
+    for (const round of [
+      0,
+      1,
+    ]) {
+      await detector.declareRound(
+        round,
+        paths.map((path) => ({
+          toolName: 'read',
+          keyMaterial: {
+            path,
+          },
+        })),
+      );
       for (const path of paths) {
         const record = await detector.recordToolCall(
           'read',
@@ -412,12 +461,16 @@ describe('same-tool fan-out streaks', () => {
           },
           round,
         );
-        roundActions.push(record.verdict?.action ?? 'none');
+        if (round === 1 && record.verdict) {
+          messages.push(record.verdict.message);
+        }
       }
-      actions.push(roundActions);
     }
 
-    expect(actions.flat().every((action) => action === 'none' || action === 'observe')).toBe(true);
+    expect(messages).toHaveLength(3);
+    expect(new Set(messages).size).toBe(1);
+    /* Names the shape rather than one member's hash. */
+    expect(messages[0]).toContain('3 parallel calls');
   });
 
   it('restarts a resumed FAN-OUT streak at 1, unlike a single-call streak', async () => {
