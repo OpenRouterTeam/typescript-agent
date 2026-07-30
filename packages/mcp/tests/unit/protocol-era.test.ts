@@ -29,6 +29,8 @@ interface ServerBehavior {
   seen: string[];
   /** When set, `tools/call` demands input once via an input_required result. */
   demandInput?: boolean;
+  /** `ttlMs` the fake reports on `tools/list`; defaults to 0 (uncacheable). */
+  toolsListTtlMs?: number;
 }
 
 /**
@@ -113,7 +115,9 @@ function startFakeServer(serverSide: Transport, behavior: ServerBehavior): void 
     if (method === 'tools/list') {
       reply({
         resultType: 'complete',
-        ttlMs: 0,
+        // Non-zero for the cache-invalidation test below, which needs the SDK to
+        // actually cache the response so we can prove the notification evicts it.
+        ttlMs: behavior.toolsListTtlMs ?? 0,
         cacheScope: 'public',
         tools: [
           {
@@ -399,16 +403,24 @@ describe('pinning', () => {
  * covers our registration rather than a restatement of the SDK's.
  */
 describe('tools/list_changed dispatch', () => {
-  async function connectRealClient(modern: boolean): Promise<{
+  async function connectRealClient(
+    modern: boolean,
+    toolsListTtlMs?: number,
+  ): Promise<{
     client: Client;
     serverSide: Transport;
     fired: () => number;
+    seen: string[];
   }> {
     const { makeClientForTest } = await import('../../src/mcp-connection.js');
     const [clientSide, serverSide] = InMemoryTransport.createLinkedPair();
+    const seen: string[] = [];
     startFakeServer(serverSide, {
       modern,
-      seen: [],
+      seen,
+      ...(toolsListTtlMs !== undefined && {
+        toolsListTtlMs,
+      }),
     });
 
     let count = 0;
@@ -425,6 +437,7 @@ describe('tools/list_changed dispatch', () => {
       client,
       serverSide,
       fired: () => count,
+      seen,
     };
   }
 
@@ -460,6 +473,45 @@ describe('tools/list_changed dispatch', () => {
     // One handler serves both revisions — the same guarantee the elicitation
     // tests above establish for requests.
     expect(fired()).toBe(1);
+    await client.close();
+  });
+
+  /**
+   * The SDK keeps a per-client response cache (24h ceiling), and `makeClient`
+   * deliberately opts out of `ClientOptions.listChanged` so the handle's own
+   * `refresh()` owns the re-list. Devin raised the question that follows: if the
+   * cache were invalidated by the SDK's `listChanged` machinery — the machinery
+   * we opt out of — then `refresh()`'s `listTools()` would be served from cache
+   * and `autoRefreshOnListChanged` would silently do nothing.
+   *
+   * It isn't. Eviction lives in the base `_onnotification` dispatcher, keyed off
+   * the notification method (`notifications/tools/list_changed` → evict
+   * `tools/list`), so it fires for any inbound notification regardless of how the
+   * handler was registered. This test is the executable form of that claim,
+   * because reading the SDK proves it today and a test proves it after the next
+   * version bump.
+   *
+   * `ttlMs` must be non-zero here: with the default 0 the response is
+   * uncacheable, so a cache bug would be invisible.
+   */
+  it('evicts the SDK response cache so a post-notification re-list hits the wire', async () => {
+    const { client, serverSide, seen } = await connectRealClient(true, 60_000);
+
+    await client.listTools();
+    const afterFirst = seen.filter((m) => m === 'tools/list').length;
+    expect(afterFirst).toBe(1);
+
+    // Second call with no notification in between: served from the SDK cache.
+    await client.listTools();
+    expect(seen.filter((m) => m === 'tools/list')).toHaveLength(1);
+
+    await emitListChanged(serverSide);
+
+    // Now it must reach the server again — otherwise `refresh()` would return
+    // the stale tool set and auto-refresh would be a silent no-op.
+    await client.listTools();
+    expect(seen.filter((m) => m === 'tools/list')).toHaveLength(2);
+
     await client.close();
   });
 

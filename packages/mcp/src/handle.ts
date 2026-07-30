@@ -4,6 +4,7 @@ import { buildTools } from './build-tools.js';
 import type { SerializedMCPServer } from './cache/cache-types.js';
 import type { SerializeInput } from './cache/serialize.js';
 import { serializeServer } from './cache/serialize.js';
+import { closeQuietly } from './close-quietly.js';
 import type { MCPConnection } from './mcp-connection.js';
 import { connect } from './mcp-connection.js';
 import type { McpToolDef } from './tool-wrapper.js';
@@ -158,7 +159,7 @@ export async function freshConnect(
       initialToolDefs,
     });
   } catch (err) {
-    await connection.close().catch(() => {});
+    await closeQuietly(connection);
     throw err;
   }
 }

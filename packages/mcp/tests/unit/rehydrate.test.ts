@@ -14,6 +14,10 @@ let closeCount = 0;
 // stale-snapshot re-list into failure.
 let listToolsRejects = false;
 
+// When true, the connection's `close()` throws synchronously rather than
+// returning a rejected promise — the case a bare `.catch()` cannot intercept.
+let closeThrowsSync = false;
+
 vi.mock('../../src/mcp-connection.js', () => ({
   connect: (options: ConnectOptions): Promise<MCPConnection> => {
     connectCalls.push(options);
@@ -36,6 +40,9 @@ vi.mock('../../src/mcp-connection.js', () => ({
       setToolListChangedHandler: () => {},
       close: () => {
         closeCount += 1;
+        if (closeThrowsSync) {
+          throw new Error('close exploded');
+        }
         return Promise.resolve();
       },
     };
@@ -100,6 +107,7 @@ describe('rehydrateMCPTools', () => {
     connectCalls.length = 0;
     closeCount = 0;
     listToolsRejects = false;
+    closeThrowsSync = false;
   });
 
   it('applies toolNamePrefix and excludeTools on a cache hit', async () => {
@@ -150,6 +158,7 @@ describe('staleness on the direct rehydrate path', () => {
     connectCalls.length = 0;
     closeCount = 0;
     listToolsRejects = false;
+    closeThrowsSync = false;
   });
 
   it('replays a snapshot that is within maxAgeMs', async () => {
@@ -288,6 +297,64 @@ describe('staleness on the direct rehydrate path', () => {
     expect(closeCount).toBe(1);
   });
 
+  /**
+   * A synchronous throw from `close()` never produces a rejected promise, so a
+   * bare `.catch()` on the call would let it escape from inside the `catch (err)`
+   * block — replacing the real failure and, worse, skipping the `freshConnect`
+   * fallback below it. A rehydrate that used to self-heal would start rejecting
+   * because its *teardown* misbehaved. `closeQuietly` wraps the call in a `try`
+   * so neither happens.
+   */
+  it('still falls back to freshConnect when the teardown close() throws synchronously', async () => {
+    // Fails the replay's write only, so the fallback can still succeed — the
+    // point is that the teardown throw doesn't prevent reaching it.
+    let writes = 0;
+    const flakyStore = {
+      get: () => Promise.resolve(undefined),
+      set: () => {
+        writes += 1;
+        return writes === 1 ? Promise.reject(new Error('disk full')) : Promise.resolve();
+      },
+      delete: () => Promise.resolve(),
+    };
+    closeThrowsSync = true;
+
+    // reconnectOnExpiry defaults to true, so the write failure should self-heal
+    // through freshConnect rather than surfacing the teardown error.
+    const handle = await rehydrateMCPTools({
+      snapshot: snapshotWithHeaders(),
+      cache: {
+        store: flakyStore,
+        key: 'warm',
+      },
+    });
+
+    // Two connects: the failed replay, then the fallback that self-healed.
+    expect(connectCalls).toHaveLength(2);
+    expect(handle.tools).toHaveLength(0);
+  });
+
+  it('reports the original failure, not the teardown failure, when close() throws', async () => {
+    const failingStore = {
+      get: () => Promise.resolve(undefined),
+      set: () => Promise.reject(new Error('disk full')),
+      delete: () => Promise.resolve(),
+    };
+    closeThrowsSync = true;
+
+    await expect(
+      rehydrateMCPTools({
+        snapshot: snapshotWithHeaders(),
+        cache: {
+          store: failingStore,
+          key: 'warm',
+        },
+        reconnectOnExpiry: false,
+      }),
+      // 'close exploded' would mean the teardown error had masked the real one.
+    ).rejects.toThrow(MCPCacheError);
+  });
+
   it('still replays a fresh snapshot when reconnectOnExpiry is false', async () => {
     const snapshot = snapshotWithHeaders();
     snapshot.cachedAt = Date.now() - 1_000;
@@ -323,6 +390,7 @@ describe('replay preserves snapshot age', () => {
     connectCalls.length = 0;
     closeCount = 0;
     listToolsRejects = false;
+    closeThrowsSync = false;
   });
 
   it('does not restamp cachedAt when tool defs come from a snapshot', async () => {

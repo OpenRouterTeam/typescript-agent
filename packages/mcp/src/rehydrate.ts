@@ -3,6 +3,7 @@ import type { MCPCacheStore } from './cache/cache-store.js';
 import { defaultCacheKey } from './cache/cache-store.js';
 import type { SerializedMCPServer } from './cache/cache-types.js';
 import { isSerializedMCPServer } from './cache/cache-types.js';
+import { closeQuietly } from './close-quietly.js';
 import { MCPCacheError, MCPStaleSnapshotError } from './errors.js';
 import { freshConnect, makeHandle } from './handle.js';
 import type { ConnectOptions, MCPConnection } from './mcp-connection.js';
@@ -231,7 +232,7 @@ async function refreshStaleReplay(handle: MCPToolsHandle): Promise<void> {
     // after staleness rather than reusing the generic rehydrate wording, because
     // the rehydrate itself succeeded and a reader chasing "failed to rehydrate"
     // would look in the wrong place.
-    await handle.close().catch(() => {});
+    await closeQuietly(handle);
     throw new MCPStaleSnapshotError(
       'Snapshot is older than staleness.maxAgeMs and re-listing tools failed',
       {
@@ -326,7 +327,9 @@ export async function rehydrateMCPTools(
     // one, so without the close its transport leaks. Reachable via `buildTools`
     // rejecting on a duplicate tool name, or a caller's `cache.store.set`
     // throwing during the initial write.
-    await connection?.close().catch(() => {});
+    if (connection !== undefined) {
+      await closeQuietly(connection);
+    }
     if (reconnectOnExpiry) {
       return freshConnect(createOptions, url, cacheKey);
     }
