@@ -315,9 +315,6 @@ function serializeArgs(args: SerializeArgsInput): SerializeInput {
     ...(serverInfo !== undefined && {
       serverInfo,
     }),
-    ...(connection.sessionId !== undefined && {
-      sessionId: connection.sessionId,
-    }),
     ...(options.auth !== undefined && {
       auth: options.auth,
     }),

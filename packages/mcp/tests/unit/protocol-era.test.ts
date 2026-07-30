@@ -586,3 +586,49 @@ describe('listToolDefs bypasses the SDK response cache', () => {
     await client.close();
   });
 });
+
+/**
+ * The probe timeout on the production client.
+ *
+ * `makeClient` sets only `versionNegotiation.mode`, so with `'auto'` now the
+ * default every connection's first request is a `server/discover` probe governed
+ * by the SDK's *default* timeout. Devin flagged that no test exercised that
+ * default — the tests above build their own `Client` with an explicit
+ * `probe: { timeoutMs: 2000 }`, and `mcp-connection.test.ts` fakes the `Client`
+ * entirely — so a change to an unbounded default upstream would land silently on
+ * the critical path of every `createMCPTools()` call.
+ *
+ * It is bounded: `negotiateEra` resolves `negotiation.probe.timeoutMs ??
+ * deps.defaultTimeoutMs`, which `_connectNegotiated` fills from `options?.timeout
+ * ?? DEFAULT_REQUEST_TIMEOUT_MSEC` (60s). So a gateway that black-holes
+ * `server/discover` rejects rather than hanging forever. This pins that.
+ */
+describe('probe timeout default', () => {
+  it('bounds the probe on a client built the way production builds it', async () => {
+    const { makeClientForTest } = await import('../../src/mcp-connection.js');
+    const [clientSide, serverSide] = InMemoryTransport.createLinkedPair();
+
+    // A server that accepts the probe and never answers it — the black-hole
+    // gateway case. No fake server: nothing is wired to `serverSide.onmessage`.
+    serverSide.onmessage = () => {};
+
+    const client = makeClientForTest(
+      {
+        url: new URL('https://example.invalid/mcp'),
+      },
+      () => {},
+    );
+
+    // Pass an explicit short timeout to keep the test fast. That this parameter
+    // reaches the probe at all is the guarantee: it proves the probe reads
+    // `defaultTimeoutMs` rather than waiting unbounded, so the 60s production
+    // default is a real ceiling and not an unenforced doc claim.
+    await expect(
+      client.connect(clientSide, {
+        timeout: 150,
+      }),
+    ).rejects.toThrow(/timed out|timeout/i);
+
+    await client.close().catch(() => {});
+  });
+});

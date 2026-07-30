@@ -15,7 +15,6 @@ export interface SerializeInput {
     version?: string;
   };
   capabilities?: Readonly<Record<string, unknown>>;
-  sessionId?: string;
   auth?: MCPAuth;
   cacheCredentials: boolean;
   cachedAt: number;
@@ -103,9 +102,14 @@ export async function serializeServer(input: SerializeInput): Promise<Serialized
     if (auth !== undefined) {
       snapshot.auth = auth;
     }
-    if (input.sessionId !== undefined) {
-      snapshot.sessionId = input.sessionId;
-    }
+    // `sessionId` is deliberately NOT persisted. A Streamable HTTP
+    // `Mcp-Session-Id` is a bearer-equivalent handle to an authenticated server
+    // session, and nothing reads it back: the replay path stopped forwarding it
+    // once we found that a transport reporting a sessionId makes SDK v2 skip
+    // negotiation entirely, silently losing server capabilities. Writing it to an
+    // external store (Redis, a database, a file) would be attack surface for no
+    // functionality. That it was gated behind `cacheCredentials` at all reflects
+    // that it was always credential-grade.
   }
 
   return snapshot;

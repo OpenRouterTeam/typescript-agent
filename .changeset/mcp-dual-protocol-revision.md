@@ -81,6 +81,11 @@ Also in this release:
   skips negotiation entirely and leaves server capabilities and version undefined without
   erroring — so the replayed handle would silently lose its resource tools. Sessions are
   removed in 2026-07-28 anyway (SEP-2567), so the replay does a fresh handshake.
+- Snapshots no longer persist `sessionId` at all. A Streamable HTTP `Mcp-Session-Id` is
+  bearer-equivalent to an authenticated server session, and with the replay path no longer
+  reading it, writing it to a cache store was attack surface for no functionality. The field
+  stays on the snapshot type so existing cache entries keep deserializing; treat any value
+  found there as untrusted legacy data.
 - A failed `connect()` no longer leaks its transport. The SDK does not close a transport
   whose `start()` threw, so a rejected connection left an open keep-alive socket — most
   visibly on the new probe-failure path, where a strict gateway leaked one per attempt.
