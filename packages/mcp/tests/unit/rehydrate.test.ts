@@ -224,4 +224,42 @@ describe('replay preserves snapshot age', () => {
     const written = await store.get('warm');
     expect(written?.cachedAt).toBe(originalCachedAt);
   });
+
+  /**
+   * The mirror of the case above. `refresh()` clears `replayedCachedAt`, so a
+   * genuine re-list stamps the write with the current time. Without that clear
+   * a replayed handle would keep writing the original snapshot timestamp
+   * forever, and every later rehydrate would read a permanently-stale age and
+   * take the `freshConnect` path — the cache would never warm again.
+   */
+  it('restamps cachedAt once a replayed handle genuinely re-lists', async () => {
+    const { InMemoryMCPCacheStore } = await import('../../src/cache/cache-store.js');
+    const store = new InMemoryMCPCacheStore();
+    const snap = snapshotWithHeaders();
+    const originalCachedAt = snap.cachedAt - 60_000;
+    const replayed = {
+      ...snap,
+      cachedAt: originalCachedAt,
+    };
+    store.set('warm', replayed);
+
+    const handle = await rehydrateMCPTools({
+      snapshot: replayed,
+      cache: {
+        store,
+        key: 'warm',
+      },
+    });
+
+    // Precondition: the replay wrote the original age through (case above).
+    expect((await store.get('warm'))?.cachedAt).toBe(originalCachedAt);
+
+    const before = Date.now();
+    await handle.refresh();
+    const written = await store.get('warm');
+
+    expect(written?.cachedAt).not.toBe(originalCachedAt);
+    expect(written?.cachedAt).toBeGreaterThanOrEqual(before);
+    expect(written?.cachedAt).toBeLessThanOrEqual(Date.now());
+  });
 });
