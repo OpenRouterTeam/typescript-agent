@@ -24,10 +24,13 @@ once with `'legacy'`, so a proxy, WAF, or gateway that hangs or 5xx's on an unkn
 still connects exactly as it did before. Modern servers get `2026-07-28`, everything else
 lands where it always did.
 
-The `server/discover` probe is bounded at **5s** (`probeTimeoutMs` to change it). The SDK
+The `server/discover` probe is bounded at **30s** (`probeTimeoutMs` to change it). The SDK
 otherwise gives the probe the full 60s request timeout, which under `'auto'` — where the probe
 is the first request of every connection — would mean minutes of hang against a gateway that
-black-holes requests.
+black-holes requests. It is not tighter than that on purpose: on HTTP a probe *timeout* is
+classified as an outage and the legacy retry sends an `initialize` that revision 2026-07-28
+removed, so a modern-only server slower than the ceiling would fail to connect rather than
+merely take longer. Serverless cold starts make an aggressive value a correctness problem.
 
 The cost lands only on already-failing connects: the retry re-walks the same transport ladder
 under `'legacy'`, so a genuinely unreachable server is dialled up to four times rather than

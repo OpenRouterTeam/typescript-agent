@@ -19,19 +19,27 @@ import { PACKAGE_VERSION } from './version.js';
  * Ceiling on the `server/discover` probe, in ms.
  *
  * The SDK falls back to the full request timeout (60s) when this is unset, which
- * is far too long for a liveness question: under the `'auto'` default the probe
- * is the first request of every connection, and a gateway that black-holes it
- * would burn 60s per attempt — up to four attempts once the legacy retry
- * re-walks the transport ladder, so ~4 minutes before `createMCPTools()` rejects
- * on the no-configuration path.
+ * is a long time to spend on a liveness question: under the `'auto'` default the
+ * probe is the first request of every connection, and a gateway that black-holes
+ * it burns the whole budget per attempt — up to four attempts once the legacy
+ * retry re-walks the transport ladder, so minutes before `createMCPTools()`
+ * rejects on the no-configuration path.
  *
- * 5s is generous for a single round trip to a server that is actually answering,
- * and a probe that misses the window is not lost: on HTTP it surfaces as a
- * failure that the legacy retry then handles, which is the same path a probe
- * refusal takes. Override with `probeTimeoutMs` when a server is genuinely slow
- * to answer.
+ * **But a probe timeout is not recoverable, so this cannot be tight.** On HTTP
+ * the SDK classifies a timed-out probe as an outage and rejects (only stdio
+ * treats it as a legacy verdict), and the legacy retry that follows sends
+ * `initialize` — which revision 2026-07-28 removed (SEP-2575). So a
+ * modern-only server slower than this ceiling fails *both* passes and does not
+ * connect at all, where the SDK's own default would have waited and succeeded.
+ * Serverless cold starts routinely exceed a few seconds, which makes an
+ * aggressive value a correctness bug rather than a latency tradeoff.
+ *
+ * 30s splits the difference: comfortably past a cold start, while capping the
+ * unreachable-gateway case at roughly half the SDK default rather than four
+ * times it. Raise it with `probeTimeoutMs` for a server known to be slower;
+ * lower it when you control the server and want to fail fast.
  */
-const DEFAULT_PROBE_TIMEOUT_MS = 5_000;
+const DEFAULT_PROBE_TIMEOUT_MS = 30_000;
 
 // Self-reported to every MCP server we connect to as `clientInfo`. The version
 // is generated from package.json (scripts/gen-version.mjs) so it cannot drift.
@@ -207,7 +215,13 @@ async function connectWithNegotiation(options: ConnectOptions): Promise<MCPConne
     } catch (sseErr) {
       // Same transport-release reason as the Streamable HTTP path below.
       await closeQuietly(client);
-      throw sseErr;
+      // Wrapped like every other path. Rethrowing raw here made the error type a
+      // caller sees depend on whether `protocolNegotiation` happened to be set —
+      // unset, the outer retry aggregated it into an `MCPConnectionError`; set, the
+      // transport error escaped. Same server, same failure, different `catch`.
+      throw new MCPConnectionError('Failed to connect over SSE', {
+        cause: sseErr,
+      });
     }
     return wrap({
       client,

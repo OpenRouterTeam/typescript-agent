@@ -144,7 +144,7 @@ const result = callModel(client, {
 | `url` | Remote MCP server endpoint. |
 | `transport` | `'streamableHttp'` (default, falls back to SSE) or `'sse'` (deprecated upstream). |
 | `protocolNegotiation` | `'auto'` (default), `'legacy'`, or `{ pin }`. See Protocol revisions. |
-| `probeTimeoutMs` | Ceiling on the `server/discover` probe (default 5000). |
+| `probeTimeoutMs` | Ceiling on the `server/discover` probe (default 30000). |
 | `auth` | Bearer token, headers, or an `OAuthClientProvider`. |
 | `toolNamePrefix` | Prefix every wrapped tool name. |
 | `includeTools` / `excludeTools` | Allow/deny lists by MCP tool name. |
@@ -213,9 +213,12 @@ await createMCPTools({ url, protocolNegotiation: { pin: '2026-07-28' } });
 > automatic legacy retry. Naming a mode means you want that mode's failures too, and
 > silently overriding a `{ pin }` would defeat the point of pinning.
 
-The probe is bounded at 5s; pass `probeTimeoutMs` to raise it for a server slow to answer its
-first request. Without that bound the SDK gives the probe the full 60s request timeout, so a
-black-holing gateway would take minutes to fail rather than seconds.
+The probe is bounded at 30s; pass `probeTimeoutMs` to change it. Without a bound the SDK gives
+the probe the full 60s request timeout, so a black-holing gateway takes minutes to fail. The
+ceiling is not tighter because a probe timeout is *not* recoverable — on HTTP it counts as an
+outage, and the legacy retry speaks a handshake that `2026-07-28` removed — so a modern-only
+server slower than the ceiling would fail outright rather than just take longer. Lower it when
+you control the server and want to fail fast; raise it for known-slow cold starts.
 
 `'auto'` costs one extra round trip against legacy servers. When a connect fails, the retry
 re-walks the same transport ladder under `'legacy'`, so an unreachable server is dialled up to

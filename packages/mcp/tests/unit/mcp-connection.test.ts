@@ -294,6 +294,28 @@ describe('connect transport selection', () => {
     ]);
   });
 
+  /**
+   * Pinned SSE wraps like every other path.
+   *
+   * It used to rethrow the raw transport error, which made the type a caller sees
+   * depend on an unrelated option: with `protocolNegotiation` unset the outer
+   * retry aggregated it into an `MCPConnectionError`, with it set the raw error
+   * escaped. Same server, same failure, different `catch`.
+   */
+  it('wraps a pinned SSE failure in MCPConnectionError', async () => {
+    state.failing.add('sse');
+
+    const err = await connect({
+      url: URL_UNDER_TEST,
+      transport: 'sse',
+      protocolNegotiation: 'auto',
+    }).catch((e: unknown) => e);
+
+    expect(err).toBeInstanceOf(MCPConnectionError);
+    expect((err as Error).cause).toBeInstanceOf(Error);
+    expect(((err as Error).cause as Error).message).toMatch(/sse refused/);
+  });
+
   it('propagates the SSE failure when SSE is pinned and fails', async () => {
     state.failing.add('sse');
 
@@ -770,13 +792,17 @@ describe('legacy degradation under an implicit auto default', () => {
    * to four attempts — roughly four minutes before `createMCPTools()` rejects, on
    * the path a caller gets with no configuration at all.
    */
-  it('bounds the probe well under the SDK request timeout', async () => {
+  it('bounds the probe below the SDK request timeout', async () => {
     const conn = await connect({
       url: URL_UNDER_TEST,
     });
 
+    // Half the SDK's 60s default rather than a tight cap: a probe timeout is not
+    // recoverable (HTTP treats it as an outage, and the legacy retry sends an
+    // `initialize` that 2026-07-28 removed), so a value tight enough to trip a
+    // cold start would make a modern-only server unreachable rather than slow.
     expect(state.probeTimeouts).toEqual([
-      5_000,
+      30_000,
     ]);
     await conn.close();
   });

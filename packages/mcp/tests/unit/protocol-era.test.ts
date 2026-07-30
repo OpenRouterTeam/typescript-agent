@@ -615,19 +615,17 @@ describe('probe timeout default', () => {
     const client = makeClientForTest(
       {
         url: new URL('https://example.invalid/mcp'),
+        probeTimeoutMs: 150,
       },
       () => {},
     );
 
-    // Pass an explicit short timeout to keep the test fast. That this parameter
-    // reaches the probe at all is the guarantee: it proves the probe reads
-    // `defaultTimeoutMs` rather than waiting unbounded, so the 60s production
-    // default is a real ceiling and not an unenforced doc claim.
-    await expect(
-      client.connect(clientSide, {
-        timeout: 150,
-      }),
-    ).rejects.toThrow(/timed out|timeout/i);
+    // The bound is asserted via `probeTimeoutMs` rather than `connect`'s
+    // `timeout`: this package now sets `probe.timeoutMs` explicitly, which takes
+    // precedence over the per-request timeout, so passing the latter would leave
+    // the test waiting out the real 30s default. A short override keeps it fast
+    // while still proving the probe honours the ceiling instead of hanging.
+    await expect(client.connect(clientSide)).rejects.toThrow(/timed out|timeout/i);
 
     await client.close().catch(() => {});
   });
