@@ -64,5 +64,8 @@ Also in this release:
   any age.
 - `onElicitation` is no longer deprecated: it works on both revisions, since the
   multi-round-trip driver routes `input_required` through the same handler.
+- A failed `connect()` no longer leaks its transport. The SDK does not close a transport
+  whose `start()` threw, so a rejected connection left an open keep-alive socket — most
+  visibly on the new probe-failure path, where a strict gateway leaked one per attempt.
 - New test coverage for both protocol eras over `InMemoryTransport`, and for the
   Streamable HTTP → SSE fallback.
