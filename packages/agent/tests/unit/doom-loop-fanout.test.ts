@@ -9,9 +9,16 @@
  * tripped at round 2.
  *
  * A round's identity for one tool is therefore the *set* of fingerprints it
- * was called with. The set is only complete once every call has arrived, so a
- * fan-out scores on the call that completes the match — the round's earlier
- * calls legitimately report the pre-match streak.
+ * was called with. The engine declares that set before scoring any of the
+ * round's calls, so every call in a round reports the round's streak and the
+ * comparison is between whole rounds.
+ *
+ * Scoring the set as it accumulated instead — the first attempt at this fix —
+ * made a round that is a strict *superset* of the previous one transiently
+ * equal it while filling, so `[a,b]`, `[a,b]`, `[a,b,c]` blocked the `b` call
+ * of a round that had added new work, and did so only for that emission order.
+ * The superset, order-permutation, and expanding-fan-out cases below guard
+ * that; the subset case alone did not catch it.
  */
 import { describe, expect, it } from 'vitest';
 
@@ -21,10 +28,24 @@ type RecordedAction = string;
 
 const monitor = (): DoomLoopMonitor => new DoomLoopMonitor(resolveDoomLoopOption(true));
 
+/**
+ * Plays each fan-out as one round, declaring the round's calls first — the
+ * engine does the same at every execution-batch boundary, so the round's
+ * fingerprint set is complete before any of its calls is scored.
+ */
 async function playRounds(fanouts: readonly (readonly string[])[]): Promise<RecordedAction[][]> {
   const detector = monitor();
   const actions: RecordedAction[][] = [];
   for (const [round, paths] of fanouts.entries()) {
+    await detector.declareRound(
+      round,
+      paths.map((path) => ({
+        toolName: 'read',
+        keyMaterial: {
+          path,
+        },
+      })),
+    );
     const roundActions: RecordedAction[] = [];
     for (const path of paths) {
       const record = await detector.recordToolCall(
@@ -61,20 +82,26 @@ describe('same-tool fan-out streaks', () => {
       ],
     ]);
 
-    /* Round 0 is the baseline; each later round scores as its set completes. */
+    /*
+     * Round 0 is the baseline. Every call in a repeating round reports that
+     * round's streak — the round is the unit of evidence, so the ladder
+     * applies to the whole fan-out rather than only to whichever call
+     * happened to complete the match. At the block rung that means the
+     * repeating fan-out stops spending, not just its last call.
+     */
     expect(actions[0]).toEqual([
       'none',
       'none',
       'none',
     ]);
     expect(actions[1]).toEqual([
-      'none',
-      'none',
+      'observe',
+      'observe',
       'observe',
     ]);
     expect(actions[2]).toEqual([
-      'none',
-      'none',
+      'block',
+      'block',
       'block',
     ]);
   });
@@ -98,8 +125,17 @@ describe('same-tool fan-out streaks', () => {
       ],
     ]);
 
-    expect(actions[1]?.at(-1)).toBe('observe');
-    expect(actions[2]?.at(-1)).toBe('block');
+    /* Whole round, not just its last call: the set is what matched. */
+    expect(actions[1]).toEqual([
+      'observe',
+      'observe',
+      'observe',
+    ]);
+    expect(actions[2]).toEqual([
+      'block',
+      'block',
+      'block',
+    ]);
   });
 
   it('resets when the fan-out membership changes', async () => {
@@ -122,13 +158,19 @@ describe('same-tool fan-out streaks', () => {
       ],
     ]);
 
-    expect(actions[1]?.at(-1)).toBe('observe');
+    expect(actions[1]).toEqual([
+      'observe',
+      'observe',
+    ]);
     /* Different set: this is progress, not repetition. */
     expect(actions[2]).toEqual([
       'none',
       'none',
     ]);
-    expect(actions[3]?.at(-1)).toBe('observe');
+    expect(actions[3]).toEqual([
+      'observe',
+      'observe',
+    ]);
   });
 
   it('does not treat a partial repeat as a repeat', async () => {
@@ -149,6 +191,116 @@ describe('same-tool fan-out streaks', () => {
       'none',
       'none',
     ]);
+  });
+
+  it('does not treat a superset round as a repeat', async () => {
+    const actions = await playRounds([
+      [
+        'a',
+        'b',
+      ],
+      [
+        'a',
+        'b',
+      ],
+      [
+        'a',
+        'b',
+        'c',
+      ],
+    ]);
+
+    /*
+     * The third round added new work, so it is progress and nothing fires.
+     * Scoring the set as it accumulated used to make this round transiently
+     * equal `[a,b]` on its `b` call and score streak 3 -> block, refusing a
+     * legitimate call. Guards the direction the subset test above does not.
+     */
+    expect(actions[1]).toEqual([
+      'observe',
+      'observe',
+    ]);
+    expect(actions[2]).toEqual([
+      'none',
+      'none',
+      'none',
+    ]);
+  });
+
+  it('scores a superset round the same whatever order it is emitted in', async () => {
+    const inOrder = await playRounds([
+      [
+        'a',
+        'b',
+      ],
+      [
+        'a',
+        'b',
+      ],
+      [
+        'a',
+        'b',
+        'c',
+      ],
+    ]);
+    const permuted = await playRounds([
+      [
+        'a',
+        'b',
+      ],
+      [
+        'a',
+        'b',
+      ],
+      [
+        'c',
+        'a',
+        'b',
+      ],
+    ]);
+
+    /*
+     * Emission order must not decide whether a call is refused. While the set
+     * accumulated, `[a,b,c]` blocked its `b` call and `[c,a,b]` fired nothing
+     * — same calls, same history, different outcome.
+     */
+    expect(permuted[2]).toEqual(inOrder[2]);
+    expect(inOrder[2]).toEqual([
+      'none',
+      'none',
+      'none',
+    ]);
+  });
+
+  it('does not accumulate a streak while a fan-out keeps expanding', async () => {
+    const actions = await playRounds([
+      [
+        'a',
+      ],
+      [
+        'a',
+        'b',
+      ],
+      [
+        'a',
+        'b',
+        'c',
+      ],
+      [
+        'a',
+        'b',
+        'c',
+        'd',
+      ],
+    ]);
+
+    /* Every round adds work, so no round repeats its predecessor. */
+    expect(
+      actions
+        .slice(1)
+        .flat()
+        .every((action) => action === 'none'),
+    ).toBe(true);
   });
 
   it('leaves single-call rounds behaving exactly as before', async () => {
@@ -224,5 +376,109 @@ describe('same-tool fan-out streaks', () => {
     );
 
     expect(record.streak).toBe(3);
+  });
+
+  it('degrades safely when a round is never declared', async () => {
+    /*
+     * The engine declares every round (see beginDoomLoopRound), so this is
+     * the direct-caller / port path. Without a declaration a multi-call round
+     * falls back to per-call sets, i.e. the pre-fix last-call behavior: a
+     * growing fan-out can still score the weakest rung. Pinned to bound what
+     * the fallback may do — `observe` is hook-only, so an undeclared round
+     * never refuses a call the declared path would have allowed.
+     */
+    const detector = monitor();
+    const actions: RecordedAction[][] = [];
+    for (const [round, paths] of [
+      [
+        'a',
+      ],
+      [
+        'a',
+        'b',
+      ],
+      [
+        'a',
+        'b',
+        'c',
+      ],
+    ].entries()) {
+      const roundActions: RecordedAction[] = [];
+      for (const path of paths) {
+        const record = await detector.recordToolCall(
+          'read',
+          {
+            path,
+          },
+          round,
+        );
+        roundActions.push(record.verdict?.action ?? 'none');
+      }
+      actions.push(roundActions);
+    }
+
+    expect(actions.flat().every((action) => action === 'none' || action === 'observe')).toBe(true);
+  });
+
+  it('restarts a resumed FAN-OUT streak at 1, unlike a single-call streak', async () => {
+    const detector = monitor();
+    for (const round of [
+      0,
+      1,
+    ]) {
+      const paths = [
+        'a',
+        'b',
+      ];
+      await detector.declareRound(
+        round,
+        paths.map((path) => ({
+          toolName: 'read',
+          keyMaterial: {
+            path,
+          },
+        })),
+      );
+      for (const path of paths) {
+        await detector.recordToolCall(
+          'read',
+          {
+            path,
+          },
+          round,
+        );
+      }
+    }
+
+    /*
+     * Only the last fingerprint survives serialization, so the round SET is
+     * lost across a resume and the fan-out starts over — a doom loop spanning
+     * a serialize/resume boundary gets a fresh grace window before it trips
+     * again. Pinned deliberately: the round set is run-local by design
+     * (persisting it would change the state shape), and the single-call case
+     * above shows the contrast.
+     */
+    const resumed = new DoomLoopMonitor(resolveDoomLoopOption(true), detector.getState());
+    await resumed.declareRound(
+      0,
+      [
+        'a',
+        'b',
+      ].map((path) => ({
+        toolName: 'read',
+        keyMaterial: {
+          path,
+        },
+      })),
+    );
+    const record = await resumed.recordToolCall(
+      'read',
+      {
+        path: 'a',
+      },
+      0,
+    );
+
+    expect(record.streak).toBe(1);
   });
 });

@@ -1285,17 +1285,59 @@ export class ModelResult<
   }
 
   /**
-   * Advance the doom-loop round counter. Called at every execution-batch
-   * boundary (main tool round, auto-approve batch while pausing, approved-
-   * on-resume batch). Identical calls WITHIN one round are duplicates —
-   * one piece of loop evidence, one shared decision.
+   * Advance the doom-loop round counter and declare the round's calls. Called
+   * at every execution-batch boundary (main tool round, auto-approve batch
+   * while pausing, approved-on-resume batch). Identical calls WITHIN one round
+   * are duplicates — one piece of loop evidence, one shared decision.
+   *
+   * `batch` is every call the round will make. A round's identity for one tool
+   * is the *set* of fingerprints it was called with, and that set has to be
+   * complete before any of the round's calls is scored: accumulating it call
+   * by call made a round that is a superset of the previous one transiently
+   * match it, blocking calls that represented real progress, with the outcome
+   * depending on emission order. Declaration is best-effort — a call whose key
+   * material is exempt or unhashable is simply left out, and the per-call
+   * fallback chain in `enqueueDoomLoopEvaluation` still governs identity at
+   * record time.
    */
-  private beginDoomLoopRound(): void {
-    if (!this.doomLoopMonitor) {
+  private async beginDoomLoopRound(batch: readonly ParsedToolCall<Tool>[] = []): Promise<void> {
+    const monitor = this.doomLoopMonitor;
+    if (!monitor) {
       return;
     }
     this.doomLoopRound++;
     this.doomLoopRoundDecisions.clear();
+
+    const declared: {
+      toolName: string;
+      keyMaterial: unknown;
+    }[] = [];
+    for (const toolCall of batch) {
+      const rawArgs: unknown = toolCall.arguments;
+      if (typeof rawArgs === 'string') {
+        // Malformed call: its identity is the raw string (see runToolWithHooks).
+        declared.push({
+          toolName: String(toolCall.name),
+          keyMaterial: rawArgs,
+        });
+        continue;
+      }
+      const tool = this.options.tools?.find(
+        (t) => isClientTool(t) && t.function.name === toolCall.name,
+      );
+      const resolution = resolveLoopKeyMaterial(
+        tool !== undefined && isClientTool(tool) ? tool.function.loopKey : undefined,
+        (toolCall.arguments ?? {}) as Record<string, unknown>,
+      );
+      if (resolution.kind === 'exempt') {
+        continue;
+      }
+      declared.push({
+        toolName: String(toolCall.name),
+        keyMaterial: resolution.keyMaterial,
+      });
+    }
+    await monitor.declareRound(this.doomLoopRound, declared);
   }
 
   /**
@@ -2132,7 +2174,7 @@ export class ModelResult<
   ): Promise<UnsentToolResult<TTools>[]> {
     // Auto-approved batch = one doom-loop round: identical parallel calls
     // count once (see beginDoomLoopRound).
-    this.beginDoomLoopRound();
+    await this.beginDoomLoopRound(toolCalls as ParsedToolCall<Tool>[]);
     const toolCallPromises = toolCalls.map(async (tc) => {
       const tool = this.options.tools?.find((t) => isClientTool(t) && t.function.name === tc.name);
       if (!tool || !isAutoResolvableTool(tool)) {
@@ -2572,7 +2614,7 @@ export class ModelResult<
   }> {
     // One executed batch = one doom-loop round: identical parallel calls in
     // this batch count as ONE piece of loop evidence and share a decision.
-    this.beginDoomLoopRound();
+    await this.beginDoomLoopRound(toolCalls);
     const toolCallPromises = toolCalls.map((toolCall) =>
       this.executeSingleToolCall(toolCall, turnContext),
     );
@@ -3495,7 +3537,15 @@ export class ModelResult<
     // The approved batch is one doom-loop round: N approved duplicates of
     // the same call count once (the sequential loop below still evaluates
     // in order; restored streaks from the persisted state carry forward).
-    this.beginDoomLoopRound();
+    // Declared from the approved calls only — a pending call the user did not
+    // approve is not part of this round.
+    await this.beginDoomLoopRound(
+      [
+        ...this.approvedToolCalls,
+      ]
+        .map((callId) => pendingCalls.find((tc) => tc.id === callId))
+        .filter((tc): tc is ParsedToolCall<Tool> => tc !== undefined),
+    );
 
     // Process approvals - execute the approved tools. Route through
     // runToolWithHooks so PreToolUse/PostToolUse fire even on this path.

@@ -11,6 +11,12 @@ produced zero detections, while single-call rounds tripped at round 2 — and
 distinct-argument fan-out is the dominant shape in parallel-tool-calling agents.
 
 A round's identity for one tool is now the *set* of fingerprints it was called
-with, compared across rounds. Order within the round does not matter, a changed
-member resets the streak, and a strict subset is not a repeat. Single-call
-rounds, in-round duplicate collapsing, and resumed streaks are unchanged.
+with, compared across rounds. The engine declares a round's complete set before
+any of its calls is scored, so ordering within the round does not matter, a
+changed member resets the streak, and neither a strict subset nor a superset is
+a repeat — a round that adds new work is progress, not repetition. Every call in
+a repeating round reports that round's streak, so at the block rung a repeating
+fan-out stops spending rather than only its last call being refused.
+
+Single-call rounds, in-round duplicate collapsing, resumed streaks, persisted
+state shape, and verdict payloads are unchanged.
