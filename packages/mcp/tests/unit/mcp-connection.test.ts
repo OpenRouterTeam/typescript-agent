@@ -20,6 +20,8 @@ interface SdkState {
   clientsCreated: number;
   /** `versionNegotiation.mode` seen by each constructed Client, in order. */
   negotiationModes: unknown[];
+  /** `clientInfo` seen by each constructed Client, in order. */
+  clientInfos: unknown[];
   /**
    * Transport kinds whose Client had `close()` called on it. Guards the
    * release of a client whose `connect()` rejected — the SDK does not close a
@@ -34,6 +36,7 @@ const state: SdkState = {
   httpSessionId: undefined,
   clientsCreated: 0,
   negotiationModes: [],
+  clientInfos: [],
   closedClients: [],
 };
 
@@ -84,7 +87,7 @@ vi.mock('@modelcontextprotocol/client', () => ({
   },
   Client: class {
     constructor(
-      _info: unknown,
+      info: unknown,
       opts?: {
         versionNegotiation?: {
           mode?: unknown;
@@ -93,6 +96,7 @@ vi.mock('@modelcontextprotocol/client', () => ({
     ) {
       state.clientsCreated += 1;
       state.negotiationModes.push(opts?.versionNegotiation?.mode);
+      state.clientInfos.push(info);
     }
     // v2 registration is method-name-first; the fakes accept and ignore both args.
     setRequestHandler(_method: string, _handler: unknown): void {}
@@ -134,6 +138,7 @@ beforeEach(() => {
   state.httpSessionId = undefined;
   state.clientsCreated = 0;
   state.negotiationModes = [];
+  state.clientInfos = [];
   state.closedClients = [];
 });
 
@@ -394,6 +399,72 @@ describe('protocol negotiation', () => {
     expect(state.negotiationModes).toEqual([
       'legacy',
       'legacy',
+    ]);
+    await conn.close();
+  });
+});
+
+/**
+ * `clientInfo` is what every MCP server sees us as. The version half is
+ * generated from package.json and guarded by version.test.ts, but nothing
+ * asserted that the constant actually reaches the SDK constructor — so a
+ * refactor could drop it, or send a hardcoded value, with that guard still
+ * green. These close the loop between the generated constant and the wire.
+ */
+describe('connect clientInfo', () => {
+  it('self-reports the package name and generated version by default', async () => {
+    const { PACKAGE_VERSION } = await import('../../src/version.js');
+
+    const conn = await connect({
+      url: URL_UNDER_TEST,
+    });
+
+    expect(state.clientInfos).toEqual([
+      {
+        name: '@openrouter/mcp',
+        version: PACKAGE_VERSION,
+      },
+    ]);
+    await conn.close();
+  });
+
+  it('lets an explicit clientInfo override the default', async () => {
+    const conn = await connect({
+      url: URL_UNDER_TEST,
+      clientInfo: {
+        name: 'my-app',
+        version: '9.9.9',
+      },
+    });
+
+    expect(state.clientInfos).toEqual([
+      {
+        name: 'my-app',
+        version: '9.9.9',
+      },
+    ]);
+    await conn.close();
+  });
+
+  it('carries the same clientInfo onto the SSE fallback client', async () => {
+    state.failing.add('streamableHttp');
+    const { PACKAGE_VERSION } = await import('../../src/version.js');
+
+    const conn = await connect({
+      url: URL_UNDER_TEST,
+    });
+
+    // Both clients identify identically: a server that sees the fallback must
+    // not see a different client than the one that just probed it.
+    expect(state.clientInfos).toEqual([
+      {
+        name: '@openrouter/mcp',
+        version: PACKAGE_VERSION,
+      },
+      {
+        name: '@openrouter/mcp',
+        version: PACKAGE_VERSION,
+      },
     ]);
     await conn.close();
   });

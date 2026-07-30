@@ -28,5 +28,16 @@ export type MCPProtocolNegotiation =
   | 'legacy'
   | 'auto'
   | {
-      pin: string;
+      /**
+       * Exact revision to speak, skipping negotiation.
+       *
+       * The two known revisions autocomplete and typo-check; the `(string & {})`
+       * arm keeps any other value assignable, so pinning a revision this package
+       * predates still compiles rather than forcing a cast. A wrong string there
+       * fails at connect time, as before.
+       */
+      pin: MCPProtocolRevision | (string & {});
     };
+
+/** Protocol revisions this package knows by name. */
+export type MCPProtocolRevision = '2025-11-25' | '2026-07-28';

@@ -69,5 +69,10 @@ Also in this release:
 - A failed `connect()` no longer leaks its transport. The SDK does not close a transport
   whose `start()` threw, so a rejected connection left an open keep-alive socket — most
   visibly on the new probe-failure path, where a strict gateway leaked one per attempt.
-- New test coverage for both protocol eras over `InMemoryTransport`, and for the
-  Streamable HTTP → SSE fallback.
+- `protocolNegotiation: { pin }` now autocompletes and typo-checks the two known revisions
+  (`'2025-11-25'`, `'2026-07-28'`) while still accepting any other string, so pinning a
+  future revision compiles without a cast. The revision union is exported as
+  `MCPProtocolRevision`.
+- New test coverage for both protocol eras over `InMemoryTransport`, for the
+  Streamable HTTP → SSE fallback, for `tools/list_changed` dispatch end to end, and for the
+  `clientInfo` we self-report.

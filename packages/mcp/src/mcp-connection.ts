@@ -95,6 +95,26 @@ interface MutableListChanged {
   handler: (() => void) | undefined;
 }
 
+/**
+ * Build the configured `Client` — negotiation mode, elicitation handler, and the
+ * `tools/list_changed` subscription — without connecting it.
+ *
+ * Exported for tests only, and deliberately not re-exported from the package
+ * entrypoint. It is the seam that lets a test drive the real handler wiring over
+ * `InMemoryTransport`: the notification method name is compile-checked (it is a
+ * `NotificationMethod` literal union, so a typo fails `tsc`), but the *dispatch*
+ * — that an inbound notification actually reaches `setToolListChangedHandler`'s
+ * callback — is only observable end to end. Without this seam, default-on
+ * `autoRefreshOnListChanged` could be silently dead with every test green.
+ *
+ * @internal
+ */
+export function makeClientForTest(options: ConnectOptions, onListChanged: () => void): Client {
+  return makeClient(options, {
+    handler: onListChanged,
+  });
+}
+
 function makeClient(options: ConnectOptions, listChanged: MutableListChanged): Client {
   const client = new Client(options.clientInfo ?? DEFAULT_CLIENT_INFO, {
     capabilities: {

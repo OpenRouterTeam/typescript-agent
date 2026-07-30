@@ -377,3 +377,99 @@ describe('pinning', () => {
     await client.close();
   });
 });
+
+/**
+ * The `tools/list_changed` wiring, end to end over a real transport.
+ *
+ * `mcp-connection.ts` registers the subscription with a bare string method name
+ * rather than an SDK schema value. The name itself is compile-checked — the
+ * parameter is a `NotificationMethod` literal union, so a typo fails `tsc`
+ * (verified: mutating it to `'notifications/tools/list_changedX'` produces
+ * TS2345). What the type cannot check is *dispatch*: that an inbound
+ * notification actually reaches the callback registered via
+ * `setToolListChangedHandler`.
+ *
+ * That gap matters because `autoRefreshOnListChanged` defaults to on, so a
+ * broken dispatch path means tool-list refreshes silently never happen — the
+ * same failure shape as the `callTool` arity bug this PR fixes, which was also
+ * invisible to a green test suite.
+ *
+ * These drive the real `makeClient` from `mcp-connection.ts` (via the
+ * `makeClientForTest` seam), not a locally-built `Client`, so the assertion
+ * covers our registration rather than a restatement of the SDK's.
+ */
+describe('tools/list_changed dispatch', () => {
+  async function connectRealClient(modern: boolean): Promise<{
+    client: Client;
+    serverSide: Transport;
+    fired: () => number;
+  }> {
+    const { makeClientForTest } = await import('../../src/mcp-connection.js');
+    const [clientSide, serverSide] = InMemoryTransport.createLinkedPair();
+    startFakeServer(serverSide, {
+      modern,
+      seen: [],
+    });
+
+    let count = 0;
+    const client = makeClientForTest(
+      {
+        url: new URL('https://example.invalid/mcp'),
+      },
+      () => {
+        count += 1;
+      },
+    );
+    await client.connect(clientSide);
+    return {
+      client,
+      serverSide,
+      fired: () => count,
+    };
+  }
+
+  async function emitListChanged(serverSide: Transport): Promise<void> {
+    await serverSide.send({
+      jsonrpc: '2.0',
+      method: 'notifications/tools/list_changed',
+    } as never);
+    // Notifications are fire-and-forget in both directions; yield so the
+    // client's handler runs before we assert.
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+
+  it('routes the notification to the registered handler in the modern era', async () => {
+    const { client, serverSide, fired } = await connectRealClient(true);
+
+    expect(client.getProtocolEra()).toBe('modern');
+    expect(fired()).toBe(0);
+
+    await emitListChanged(serverSide);
+
+    expect(fired()).toBe(1);
+    await client.close();
+  });
+
+  it('routes the notification to the registered handler in the legacy era', async () => {
+    const { client, serverSide, fired } = await connectRealClient(false);
+
+    expect(client.getProtocolEra()).toBe('legacy');
+
+    await emitListChanged(serverSide);
+
+    // One handler serves both revisions — the same guarantee the elicitation
+    // tests above establish for requests.
+    expect(fired()).toBe(1);
+    await client.close();
+  });
+
+  it('fires once per notification', async () => {
+    const { client, serverSide, fired } = await connectRealClient(true);
+
+    await emitListChanged(serverSide);
+    await emitListChanged(serverSide);
+
+    expect(fired()).toBe(2);
+    await client.close();
+  });
+});
