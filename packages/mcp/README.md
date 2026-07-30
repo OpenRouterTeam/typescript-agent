@@ -190,20 +190,31 @@ then speaks whichever revision the server offers:
 | **`2026-07-28`** | `server/discover`, then requests carrying the per-request `_meta` envelope and `Mcp-Method` / `Mcp-Name` headers. No `initialize` — the handshake is removed in this revision (SEP-2575). |
 | **`2025-11-25`** and earlier | `server/discover`, then a fallback to the classic `initialize` + `notifications/initialized` handshake, byte-equivalent to a 2025-only client. |
 
+A probe is a new request, and some infrastructure dislikes new requests — a proxy, WAF, or
+strict gateway may hang or 5xx on an unknown method. **You don't need to configure anything
+for that case.** When you have not set `protocolNegotiation`, a failed connect is retried
+once with `'legacy'`, so such a server connects exactly as it did before this package
+probed at all. That covers the pinned `transport: 'sse'` path and the Streamable HTTP → SSE
+fallback too, since all three share one client factory.
+
 Override when you need to:
 
 ```ts
-// Skip the probe. Useful on flaky servers: over HTTP a probe timeout is treated
-// as an outage and rejects, where 'legacy' may still connect.
+// Skip the probe. A performance choice, not a compatibility one: saves the extra
+// round trip when you already know the server is 2025-era.
 await createMCPTools({ url, protocolNegotiation: 'legacy' });
 
 // Require a specific revision; fail loudly rather than falling back.
 await createMCPTools({ url, protocolNegotiation: { pin: '2026-07-28' } });
 ```
 
-`'auto'` costs one extra round trip against legacy servers. There are no hardcoded
-protocol version strings in this package — negotiation is delegated to
-`@modelcontextprotocol/client`.
+> Setting `protocolNegotiation` at all — **including to `'auto'`** — opts out of the
+> automatic legacy retry. Naming a mode means you want that mode's failures too, and
+> silently overriding a `{ pin }` would defeat the point of pinning.
+
+`'auto'` costs one extra round trip against legacy servers, plus a second connect attempt in
+the rare case the probe is refused. There are no hardcoded protocol version strings in this
+package — negotiation is delegated to `@modelcontextprotocol/client`.
 
 ### What differs between the revisions
 

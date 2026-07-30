@@ -14,11 +14,17 @@ export type MCPTransportKind = 'streamableHttp' | 'sse';
  *   whichever revision it offers. Definitive modern evidence selects
  *   2026-07-28; anything else falls back to the 2025-era `initialize`
  *   handshake. Costs one extra round trip against legacy servers.
- * - `'legacy'` — skip the probe and always use the `initialize` handshake.
- *   Useful when a server is flaky: on HTTP a probe timeout is treated as an
- *   outage and rejects, where `'legacy'` may still connect.
+ * - `'legacy'` — skip the probe and always use the `initialize` handshake. Saves
+ *   that round trip when you already know the server is 2025-era.
  * - `{ pin }` — require exactly that revision; fail loudly rather than
  *   falling back.
+ *
+ * **Setting this at all opts out of the automatic legacy retry.** When you leave
+ * it unset, a failed connect is retried once with `'legacy'`, so a server behind
+ * a probe-hostile proxy or gateway still connects. Naming a mode — including
+ * `'auto'` — means you want that mode's failures too, and silently overriding a
+ * `{ pin }` would defeat the point of pinning. So `'legacy'` is a performance
+ * choice here, not a compatibility one.
  *
  * This is a policy, not a version — `{ pin: '2026-07-28' }` is how you request
  * a specific revision. Declared here rather than re-exported from the SDK so

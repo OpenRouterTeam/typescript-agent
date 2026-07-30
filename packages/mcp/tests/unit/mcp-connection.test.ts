@@ -15,6 +15,12 @@ interface SdkState {
   attempts: Attempt[];
   /** Transport kinds whose `start()` should reject. */
   failing: Set<'streamableHttp' | 'sse'>;
+  /**
+   * When true, a connect rejects only while `versionNegotiation.mode` is
+   * `'auto'` — the probe-hostile gateway the legacy degradation exists for.
+   * Under `'legacy'` the same server connects fine.
+   */
+  probeHostile: boolean;
   /** When true, the fake Client's `close()` throws synchronously. */
   closeThrows: boolean;
   /** sessionId the fake Streamable HTTP transport reports after connecting. */
@@ -35,6 +41,7 @@ interface SdkState {
 const state: SdkState = {
   attempts: [],
   failing: new Set(),
+  probeHostile: false,
   closeThrows: false,
   httpSessionId: undefined,
   clientsCreated: 0,
@@ -100,10 +107,13 @@ vi.mock('@modelcontextprotocol/client', () => ({
       state.clientsCreated += 1;
       state.negotiationModes.push(opts?.versionNegotiation?.mode);
       state.clientInfos.push(info);
+      this.mode = opts?.versionNegotiation?.mode;
     }
     // v2 registration is method-name-first; the fakes accept and ignore both args.
     setRequestHandler(_method: string, _handler: unknown): void {}
     setNotificationHandler(_method: string, _handler: unknown): void {}
+    /** This client's `versionNegotiation.mode`, for probe-hostile simulation. */
+    mode: unknown;
     /** Set by `connect()` so `close()` can report which transport it released. */
     attached: 'streamableHttp' | 'sse' | undefined;
     connect(transport: Marked): Promise<void> {
@@ -118,6 +128,12 @@ vi.mock('@modelcontextprotocol/client', () => ({
       state.attempts.push(attempt);
       if (state.failing.has(kind)) {
         return Promise.reject(new Error(`${kind} refused`));
+      }
+      // A probe-hostile server breaks any mode that probes. `'auto'` probes, and
+      // so does `{ pin }` (it demands a specific revision via `server/discover`);
+      // only `'legacy'` skips it and uses the classic `initialize` handshake.
+      if (state.probeHostile && this.mode !== 'legacy') {
+        return Promise.reject(new Error('server/discover probe timed out'));
       }
       if (kind === 'streamableHttp' && state.httpSessionId !== undefined) {
         transport.sessionId = state.httpSessionId;
@@ -143,6 +159,7 @@ const URL_UNDER_TEST = new URL('https://example.invalid/mcp');
 beforeEach(() => {
   state.attempts = [];
   state.failing = new Set();
+  state.probeHostile = false;
   state.closeThrows = false;
   state.httpSessionId = undefined;
   state.clientsCreated = 0;
@@ -202,6 +219,9 @@ describe('connect transport selection', () => {
       connect({
         url: URL_UNDER_TEST,
         transport: 'streamableHttp',
+        // Explicit, so the legacy-degradation retry stays out of the way: this
+        // test is about transport selection, not negotiation.
+        protocolNegotiation: 'auto',
       }),
     ).rejects.toThrow(MCPConnectionError);
 
@@ -217,6 +237,7 @@ describe('connect transport selection', () => {
     await expect(
       connect({
         url: URL_UNDER_TEST,
+        protocolNegotiation: 'auto',
       }),
     ).rejects.toThrow(/Streamable HTTP and SSE/);
 
@@ -233,6 +254,7 @@ describe('connect transport selection', () => {
       connect({
         url: URL_UNDER_TEST,
         transport: 'sse',
+        protocolNegotiation: 'auto',
       }),
     ).rejects.toThrow();
 
@@ -274,6 +296,7 @@ describe('connect releases failed clients', () => {
       connect({
         url: URL_UNDER_TEST,
         transport: 'streamableHttp',
+        protocolNegotiation: 'auto',
       }),
     ).rejects.toThrow(MCPConnectionError);
 
@@ -289,6 +312,7 @@ describe('connect releases failed clients', () => {
     await expect(
       connect({
         url: URL_UNDER_TEST,
+        protocolNegotiation: 'auto',
       }),
     ).rejects.toThrow(/Streamable HTTP and SSE/);
 
@@ -305,6 +329,7 @@ describe('connect releases failed clients', () => {
       connect({
         url: URL_UNDER_TEST,
         transport: 'sse',
+        protocolNegotiation: 'auto',
       }),
     ).rejects.toThrow();
 
@@ -328,6 +353,7 @@ describe('connect releases failed clients', () => {
       connect({
         url: URL_UNDER_TEST,
         transport: 'streamableHttp',
+        protocolNegotiation: 'auto',
       }),
     ).rejects.toThrow(MCPConnectionError);
 
@@ -518,5 +544,142 @@ describe('connect clientInfo', () => {
       },
     ]);
     await conn.close();
+  });
+});
+
+/**
+ * `'auto'` degrades to the 2025-era handshake rather than failing.
+ *
+ * We default `protocolNegotiation` to `'auto'` where the SDK defaults to
+ * `'legacy'`, so every connection's first request is a `server/discover` probe.
+ * Alone that is a connectivity regression: a proxy, WAF, or strict gateway that
+ * hangs or 5xx's on an unknown method takes a working server to failing, and the
+ * SSE fallback re-probes and fails identically — so the two-transport fallback
+ * collapses to a single point of failure against exactly the infrastructure it
+ * should rescue.
+ *
+ * Retrying once with `'legacy'` makes `'auto'` strictly additive: modern servers
+ * get the new revision, everything else lands where it did before this package
+ * probed at all.
+ *
+ * The `probeHostile` fake models the real case precisely — it rejects only while
+ * `mode === 'auto'`, so a test that passes here would fail if the retry did not
+ * actually switch modes.
+ */
+describe('legacy degradation under an implicit auto default', () => {
+  it('retries with legacy and connects against a probe-hostile server', async () => {
+    state.probeHostile = true;
+
+    // No `protocolNegotiation` — the implicit default, which is what a consumer
+    // who never configured negotiation gets.
+    const conn = await connect({
+      url: URL_UNDER_TEST,
+    });
+
+    expect(conn.transport).toBe('streamableHttp');
+    // Modes in order: the 'auto' attempt, its SSE re-probe, then the legacy retry.
+    expect(state.negotiationModes).toEqual([
+      'auto',
+      'auto',
+      'legacy',
+    ]);
+  });
+
+  it('does not retry when the first attempt succeeds', async () => {
+    const conn = await connect({
+      url: URL_UNDER_TEST,
+    });
+
+    expect(state.negotiationModes).toEqual([
+      'auto',
+    ]);
+    await conn.close();
+  });
+
+  it('honours an explicit auto without degrading', async () => {
+    state.probeHostile = true;
+
+    await expect(
+      connect({
+        url: URL_UNDER_TEST,
+        protocolNegotiation: 'auto',
+      }),
+      // Asking for a mode means asking for its failures too.
+    ).rejects.toThrow(MCPConnectionError);
+
+    expect(state.negotiationModes).not.toContain('legacy');
+  });
+
+  it('honours an explicit pin without degrading', async () => {
+    state.probeHostile = true;
+
+    await expect(
+      connect({
+        url: URL_UNDER_TEST,
+        protocolNegotiation: {
+          pin: '2026-07-28',
+        },
+      }),
+      // Silently falling back would defeat the entire point of pinning.
+    ).rejects.toThrow(MCPConnectionError);
+
+    expect(state.negotiationModes).not.toContain('legacy');
+  });
+
+  it('degrades on a pinned SSE transport too', async () => {
+    state.probeHostile = true;
+
+    // Someone who pinned SSE did so because they have a legacy server — the most
+    // likely person to sit behind probe-hostile infrastructure, and the least
+    // likely to expect a probe.
+    const conn = await connect({
+      url: URL_UNDER_TEST,
+      transport: 'sse',
+    });
+
+    expect(conn.transport).toBe('sse');
+    expect(state.negotiationModes).toEqual([
+      'auto',
+      'legacy',
+    ]);
+    await conn.close();
+  });
+
+  it('surfaces the legacy failure when the server is genuinely unreachable', async () => {
+    // Not probe-hostile — the transport itself refuses, so the retry fails too.
+    state.failing.add('streamableHttp');
+    state.failing.add('sse');
+
+    await expect(
+      connect({
+        url: URL_UNDER_TEST,
+      }),
+      // The legacy attempt is the more informative failure: the server refused a
+      // plain `initialize`, so this is reachability rather than negotiation.
+    ).rejects.toThrow(/Streamable HTTP and SSE/);
+
+    // Both modes were tried before giving up.
+    expect(state.negotiationModes).toEqual([
+      'auto',
+      'auto',
+      'legacy',
+      'legacy',
+    ]);
+  });
+
+  it('releases every failed client across both attempts', async () => {
+    state.failing.add('streamableHttp');
+    state.failing.add('sse');
+
+    await expect(
+      connect({
+        url: URL_UNDER_TEST,
+      }),
+    ).rejects.toThrow(MCPConnectionError);
+
+    // Four clients built, four released — the retry must not leak the transports
+    // of the attempt that preceded it.
+    expect(state.clientsCreated).toBe(4);
+    expect(state.closedClients).toHaveLength(4);
   });
 });

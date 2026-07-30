@@ -1,5 +1,5 @@
 ---
-'@openrouter/mcp': minor
+'@openrouter/mcp': major
 ---
 
 Support both MCP protocol revisions. Any server now works out of the box, whether it
@@ -17,25 +17,39 @@ and note `tokens()` now returns `StoredOAuthTokens` (same fields, so most provid
 unchanged). Type it with the newly exported `MCPOAuthClientProvider` to avoid depending on
 that path again.
 
-**Breaking:** `protocolNegotiation` defaults to `'auto'`, where the SDK defaults to
-`'legacy'`. Every connection's first request therefore becomes a `server/discover` probe. A
-server that hangs or 5xx's on an unknown method — proxies, WAFs, strict gateways — goes from
-working to failing on this upgrade, because a probe timeout over HTTP is treated as an
-outage and rejects, and the SSE fallback re-probes and fails the same way. Pass
-`protocolNegotiation: 'legacy'` to keep the previous behavior exactly.
+`protocolNegotiation` defaults to `'auto'`, where the SDK defaults to `'legacy'`, so every
+connection's first request is a `server/discover` probe. **This is not a connectivity
+break:** when you have not set `protocolNegotiation` yourself, a failed connect is retried
+once with `'legacy'`, so a proxy, WAF, or gateway that hangs or 5xx's on an unknown method
+still connects exactly as it did before. Modern servers get `2026-07-28`, everything else
+lands where it always did; the only cost is one extra attempt on a path that was already
+failing.
+
+An **explicit** `protocolNegotiation` is honoured exactly, including `'auto'` — asking for a
+mode means asking for its failures too, and silently overriding a `{ pin }` would defeat the
+point of pinning. Pass `'legacy'` to skip the probe entirely.
 
 ```ts
 import { createMCPTools, type MCPOAuthClientProvider } from '@openrouter/mcp';
 
 // Default: probes with `server/discover`, then speaks whichever revision the
-// server offers. New behavior — see the Breaking note above.
+// server offers. If the probe fails — a gateway that rejects unknown methods —
+// this retries once with the classic `initialize` handshake, so a server that
+// worked before still connects.
 const mcp = await createMCPTools({ url: 'https://mcp.example.com/mcp' });
 
-// Opt out: classic `initialize` handshake only, matching pre-upgrade behavior.
-// Use this if your server sits behind a gateway that rejects unknown methods.
+// Skip the probe entirely. Saves the extra round trip if you already know the
+// server is 2025-era. Not required for compatibility — the default degrades on
+// its own.
 const legacy = await createMCPTools({
   url: 'https://mcp.example.com/mcp',
   protocolNegotiation: 'legacy',
+});
+
+// Explicit modes are honoured exactly — this one fails rather than degrading.
+const strict = await createMCPTools({
+  url: 'https://mcp.example.com/mcp',
+  protocolNegotiation: 'auto',
 });
 
 // Or pin one revision explicitly.
@@ -129,6 +143,9 @@ Also in this release:
 - A failed `connect()` no longer leaks its transport. The SDK does not close a transport
   whose `start()` threw, so a rejected connection left an open keep-alive socket — most
   visibly on the new probe-failure path, where a strict gateway leaked one per attempt.
+- The `'auto'` probe applies to SSE as well, including a pinned `transport: 'sse'` and the
+  Streamable HTTP → SSE fallback, since all three share one client factory. The legacy retry
+  covers each of them, so pinning SSE for a legacy server still connects.
 - `protocolNegotiation: { pin }` now autocompletes and typo-checks the two known revisions
   (`'2025-11-25'`, `'2026-07-28'`) while still accepting any other string, so pinning a
   future revision compiles without a cast. The revision union is exported as

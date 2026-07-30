@@ -153,13 +153,18 @@ function makeClient(options: ConnectOptions, listChanged: MutableListChanged): C
 }
 
 /**
- * Connect a `Client` to the MCP server. Defaults to Streamable HTTP and falls
- * back to SSE on connection failure (legacy servers), unless a transport is
- * pinned explicitly. Auth, the elicitation handler, and the list_changed
- * subscription are wired into the single connected client so they apply to
- * discovery and every tool call.
+ * Connect a `Client` to the MCP server.
+ *
+ * Defaults to Streamable HTTP and falls back to SSE on connection failure
+ * (legacy servers), unless a transport is pinned explicitly. Auth, the
+ * elicitation handler, and the list_changed subscription are wired into the
+ * single connected client so they apply to discovery and every tool call.
+ *
+ * When the caller does not set `protocolNegotiation`, a failed connect is
+ * retried once with `'legacy'` — see {@link connect} below, which owns that
+ * policy; this function performs exactly one negotiation mode.
  */
-export async function connect(options: ConnectOptions): Promise<MCPConnection> {
+async function connectWithNegotiation(options: ConnectOptions): Promise<MCPConnection> {
   const preferred = options.transport ?? 'streamableHttp';
   const listChanged: MutableListChanged = {
     handler: undefined,
@@ -209,10 +214,9 @@ export async function connect(options: ConnectOptions): Promise<MCPConnection> {
       });
     }
     // Fall back to SSE on a fresh client (the failed one may be half-initialized).
-    // Note this also catches version-probe failures under `'auto'`: on HTTP a
-    // probe timeout is an outage, so the SSE attempt below will usually fail too
-    // and surface the combined error. Callers on flaky servers can skip the
-    // probe entirely with `protocolNegotiation: 'legacy'`.
+    // Under `'auto'` this re-probes, so a probe-hostile server fails here too —
+    // which is why `connect()` retries the whole thing under `'legacy'` when the
+    // caller did not pin a negotiation mode.
     const sseClient = makeClient(options, listChanged);
     try {
       await sseClient.connect(buildSse(options));
@@ -227,6 +231,53 @@ export async function connect(options: ConnectOptions): Promise<MCPConnection> {
         cause: sseErr,
       });
     }
+  }
+}
+
+/**
+ * Connect a `Client` to the MCP server, degrading to the 2025-era handshake if
+ * protocol negotiation gets in the way.
+ *
+ * We default `protocolNegotiation` to `'auto'` where the SDK defaults to
+ * `'legacy'`, so every connection's first request is a `server/discover` probe.
+ * On its own that would be a connectivity regression: a proxy, WAF, or strict
+ * gateway that hangs or 5xx's on an unknown method takes a server from working
+ * to failing, and the SSE fallback re-probes and fails identically — so the
+ * two-transport fallback, which looks like defense in depth, collapses to a
+ * single point of failure against exactly the infrastructure it should rescue.
+ *
+ * So when the caller left `protocolNegotiation` unset, a failed connect is
+ * retried once with `'legacy'`. That makes `'auto'` strictly additive: modern
+ * servers get the new revision, everything else lands exactly where it did
+ * before this package started probing. The cost is one extra attempt on a path
+ * that is already failing, which is where latency matters least.
+ *
+ * The retry fires on **any** failure rather than only on ones that look like
+ * probe timeouts. Inspecting the cause would avoid a wasted attempt against a
+ * genuinely dead server, but it would couple this to SDK error codes — and a
+ * reshaped error would silently disable the degradation, which is the failure
+ * mode this package keeps getting bitten by.
+ *
+ * An **explicit** `protocolNegotiation` is honoured exactly, including
+ * `'auto'`: asking for a mode means asking for its failures too, and silently
+ * ignoring a caller's `{ pin }` would defeat the point of pinning.
+ */
+export async function connect(options: ConnectOptions): Promise<MCPConnection> {
+  if (options.protocolNegotiation !== undefined) {
+    return connectWithNegotiation(options);
+  }
+  try {
+    return await connectWithNegotiation(options);
+  } catch {
+    // Deliberately not inspecting the `'auto'` error — see above. It is dropped
+    // rather than chained because the legacy retry that follows is the more
+    // informative failure: if that also fails, the server refused a plain
+    // `initialize`, so the problem is reachability rather than negotiation, and
+    // leading with a probe timeout would point debugging at the wrong layer.
+    return await connectWithNegotiation({
+      ...options,
+      protocolNegotiation: 'legacy',
+    });
   }
 }
 
