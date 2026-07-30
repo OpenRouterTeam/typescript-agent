@@ -73,7 +73,10 @@ Also in this release:
   response cache honouring the server's `ttlMs` on `tools/list` (up to 24h), so a refresh
   inside that window would have returned the cached list — an app calling `refresh()` to
   pick up new server tools could have kept the old set. Every internal `tools/list` now
-  sends `cacheMode: 'refresh'`.
+  sends `cacheMode: 'refresh'`, as does `list_resources` — a listing's job is to report what
+  exists now, and a cached one reads to the model like its write silently failed.
+  `read_resource` deliberately still honours the server's TTL: contents can be large, and
+  the SDK already evicts per-URI on `notifications/resources/updated`.
 - `rehydrateMCPTools()` no longer replays a snapshot's `sessionId`. With one present, SDK v2
   skips negotiation entirely and leaves server capabilities and version undefined without
   erroring — so the replayed handle would silently lose its resource tools. Sessions are

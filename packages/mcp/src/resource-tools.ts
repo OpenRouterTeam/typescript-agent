@@ -13,9 +13,15 @@ export interface ResourceToolsOptions {
 // chain by omitting `nextCursor`; this bounds a misbehaving one that never does.
 const MAX_LIST_PAGES = 1000;
 
+/**
+ * The subset of the SDK's per-call request options this module passes through.
+ * `cacheMode` is threaded rather than dropped so `collectPages` preserves the
+ * caller's cache disposition on every page, not just the first.
+ */
 type RequestOptions =
   | {
-      signal: AbortSignal;
+      signal?: AbortSignal;
+      cacheMode?: 'use' | 'refresh' | 'bypass';
     }
   | undefined;
 
@@ -98,6 +104,29 @@ export function buildResourceTools(options: ResourceToolsOptions): McpBranded[] 
         }
       : undefined;
 
+  // `list_resources` always re-reads; `read_resource` honours the server's TTL.
+  //
+  // The asymmetry is deliberate. A listing is cheap and its whole purpose is to
+  // tell the model what exists *now* — a model that creates a resource via a
+  // tool call and immediately lists must see it, and being handed a cached
+  // listing looks to the model like the write silently failed. The SDK does evict
+  // `resources/list` on `notifications/resources/list_changed`, but that only
+  // covers servers which both advertise and send it; a server with a non-trivial
+  // `ttlMs` and no notification would serve a stale listing for the full TTL.
+  //
+  // Resource *contents* are the opposite: potentially large, and a
+  // server-declared `ttlMs` on `resources/read` is a deliberate statement that
+  // the bytes are reusable for that long. Overriding it would turn every model
+  // read into a fetch and discard the caching the spec intends. Freshness there
+  // is already handled per-URI — the SDK evicts on
+  // `notifications/resources/updated`.
+  const listRequestOptions = {
+    cacheMode: 'refresh' as const,
+    ...(options.signal !== undefined && {
+      signal: options.signal,
+    }),
+  };
+
   const listResources = tool({
     name: `${prefix}list_resources`,
     description: 'List the resources and resource templates exposed by the MCP server.',
@@ -110,7 +139,7 @@ export function buildResourceTools(options: ResourceToolsOptions): McpBranded[] 
             items: page.resources,
             nextCursor: page.nextCursor,
           };
-        }, requestOptions),
+        }, listRequestOptions),
         // Templates are optional: a server may not support them. The whole
         // paginated fetch degrades gracefully to an empty list on any error.
         collectPages<ListedResourceTemplate>(async (params, opts) => {
@@ -122,7 +151,7 @@ export function buildResourceTools(options: ResourceToolsOptions): McpBranded[] 
             items: page.resourceTemplates,
             nextCursor: page.nextCursor,
           };
-        }, requestOptions).catch(() => []),
+        }, listRequestOptions).catch(() => []),
       ]);
       return {
         resources: resources.map((r) => ({
