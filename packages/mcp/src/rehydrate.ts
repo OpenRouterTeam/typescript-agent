@@ -199,9 +199,16 @@ function toReplayConnectOptions(args: {
     ...(options.clientInfo !== undefined && {
       clientInfo: options.clientInfo,
     }),
-    ...(snapshot.sessionId !== undefined && {
-      sessionId: snapshot.sessionId,
-    }),
+    // `sessionId` is deliberately NOT forwarded. When a transport reports one,
+    // SDK v2 skips negotiation entirely — no `server/discover` probe and no
+    // `initialize` — and returns with `getProtocolEra()`,
+    // `getServerCapabilities()` and `getServerVersion()` all left undefined. It
+    // does not error, which is what makes it dangerous: `serverHasResources()`
+    // reads those capabilities, so a snapshot carrying a `sessionId` would
+    // silently replay with resource tools missing and no server info. Sessions
+    // are also removed outright in 2026-07-28 (SEP-2567), so a fresh handshake
+    // is both correct and cheap — one round trip on a path that already opens a
+    // connection.
     ...(options.onElicitation !== undefined && {
       onElicitation: options.onElicitation,
     }),

@@ -33,17 +33,29 @@ function nextCursorOrUndefined(value: string | undefined): string | undefined {
  * `tools/list` is paginated: each response may carry a `nextCursor` that must be
  * passed back as `{ cursor }` to fetch the next page. We accumulate every page so
  * servers that paginate their tool list aren't silently truncated.
+ *
+ * Always `cacheMode: 'refresh'`. SDK v2 keeps a per-client response cache
+ * honouring the server's `ttlMs` on `tools/list` (up to 24h), so the default
+ * `'use'` would serve a still-fresh cached list without a round trip. That is
+ * fine for an opportunistic read but wrong for every caller here: `refresh()`
+ * documents a forced re-read, `freshConnect` is establishing the tool set for the
+ * first time, and the stale-replay path exists precisely because the age of the
+ * cached list is no longer acceptable. `'refresh'` fetches and re-stores, so the
+ * cache stays warm for the SDK's own readers.
+ *
+ * `'refresh'` rather than `'bypass'` deliberately — bypass would skip the write
+ * too, leaving a stale entry behind for anything that later reads with `'use'`.
  */
 export async function listToolDefs(
   connection: MCPConnection,
   signal: AbortSignal | undefined,
 ): Promise<McpToolDef[]> {
-  const requestOptions =
-    signal !== undefined
-      ? {
-          signal,
-        }
-      : undefined;
+  const requestOptions = {
+    cacheMode: 'refresh' as const,
+    ...(signal !== undefined && {
+      signal,
+    }),
+  };
   const collected: McpToolDef[] = [];
   let cursor: string | undefined;
   for (let page = 0; page < MAX_LIST_PAGES; page += 1) {

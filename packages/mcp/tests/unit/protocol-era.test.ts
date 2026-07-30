@@ -1,6 +1,7 @@
 import type { Transport } from '@modelcontextprotocol/client';
 import { Client, InMemoryTransport } from '@modelcontextprotocol/client';
 import { describe, expect, it } from 'vitest';
+import type { MCPConnection } from '../../src/mcp-connection.js';
 
 // Proves the SDK negotiates BOTH protocol revisions — 2025-11-25 ("legacy",
 // `initialize` handshake) and 2026-07-28 ("modern", per-request `_meta`
@@ -522,6 +523,66 @@ describe('tools/list_changed dispatch', () => {
     await emitListChanged(serverSide);
 
     expect(fired()).toBe(2);
+    await client.close();
+  });
+});
+
+/**
+ * `listToolDefs` must reach the server every time, even inside the SDK's
+ * response-cache TTL.
+ *
+ * SDK v2 caches `tools/list` per client, honouring the server's `ttlMs` up to a
+ * 24h ceiling. Under the default `cacheMode: 'use'` that makes
+ * `MCPToolsHandle.refresh()` a liar — it documents a forced re-read but would
+ * return the cached list, so an app calling `refresh()` to pick up newly added
+ * server tools could keep the old set for as long as the server allows reuse.
+ * A behavior change introduced by the v1 → v2 migration, since v1 had no
+ * response cache.
+ *
+ * The `tools/list_changed` path was already safe (the SDK evicts in its
+ * notification dispatcher), so this covers the consumer-initiated path that has
+ * no notification to trigger eviction.
+ */
+describe('listToolDefs bypasses the SDK response cache', () => {
+  it('hits the wire on every call despite a live cache entry', async () => {
+    const { makeClientForTest } = await import('../../src/mcp-connection.js');
+    const { listToolDefs } = await import('../../src/handle.js');
+    const [clientSide, serverSide] = InMemoryTransport.createLinkedPair();
+    const seen: string[] = [];
+    startFakeServer(serverSide, {
+      modern: true,
+      seen,
+      // Long enough that a cached read would definitely be served.
+      toolsListTtlMs: 60_000,
+    });
+
+    const client = makeClientForTest(
+      {
+        url: new URL('https://example.invalid/mcp'),
+      },
+      () => {},
+    );
+    await client.connect(clientSide);
+    const connection: MCPConnection = {
+      client,
+      transport: 'streamableHttp',
+      setToolListChangedHandler: () => {},
+      close: () => client.close(),
+    };
+
+    await listToolDefs(connection, undefined);
+    expect(seen.filter((m) => m === 'tools/list')).toHaveLength(1);
+
+    // The assertion that matters: a second read inside the TTL. A plain
+    // `client.listTools()` here would still be 1 (proven by the eviction test
+    // above), so this only passes because `listToolDefs` sends
+    // `cacheMode: 'refresh'`.
+    await listToolDefs(connection, undefined);
+    expect(seen.filter((m) => m === 'tools/list')).toHaveLength(2);
+
+    await listToolDefs(connection, undefined);
+    expect(seen.filter((m) => m === 'tools/list')).toHaveLength(3);
+
     await client.close();
   });
 });

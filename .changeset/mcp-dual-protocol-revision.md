@@ -69,6 +69,15 @@ Also in this release:
   subclasses `MCPCacheError`, so existing catch sites are unaffected.
 - `onElicitation` is no longer deprecated: it works on both revisions, since the
   multi-round-trip driver routes `input_required` through the same handler.
+- `handle.refresh()` genuinely re-reads the tool list again. SDK v2 added a per-client
+  response cache honouring the server's `ttlMs` on `tools/list` (up to 24h), so a refresh
+  inside that window would have returned the cached list — an app calling `refresh()` to
+  pick up new server tools could have kept the old set. Every internal `tools/list` now
+  sends `cacheMode: 'refresh'`.
+- `rehydrateMCPTools()` no longer replays a snapshot's `sessionId`. With one present, SDK v2
+  skips negotiation entirely and leaves server capabilities and version undefined without
+  erroring — so the replayed handle would silently lose its resource tools. Sessions are
+  removed in 2026-07-28 anyway (SEP-2567), so the replay does a fresh handshake.
 - A failed `connect()` no longer leaks its transport. The SDK does not close a transport
   whose `start()` threw, so a rejected connection left an open keep-alive socket — most
   visibly on the new probe-failure path, where a strict gateway leaked one per attempt.

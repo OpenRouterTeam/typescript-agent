@@ -136,6 +136,28 @@ describe('rehydrateMCPTools', () => {
     });
   });
 
+  /**
+   * A snapshot's `sessionId` must not be forwarded into `connect()`.
+   *
+   * When a transport reports a sessionId, SDK v2 skips negotiation entirely — no
+   * probe, no `initialize` — and returns with `getProtocolEra()`,
+   * `getServerCapabilities()` and `getServerVersion()` all undefined. It does not
+   * throw, which is what makes it dangerous: `serverHasResources()` reads those
+   * capabilities, so the replay would silently come back without resource tools.
+   * Protocol sessions are also gone in 2026-07-28 (SEP-2567).
+   */
+  it('does not replay a snapshot sessionId onto the new connection', async () => {
+    const snap = snapshotWithHeaders();
+    snap.sessionId = 'resumed-session-123';
+
+    await rehydrateMCPTools({
+      snapshot: snap,
+    });
+
+    expect(connectCalls).toHaveLength(1);
+    expect(connectCalls[0]?.sessionId).toBeUndefined();
+  });
+
   it('reconstructs a bearer token from snapshot tokens', async () => {
     const snap = snapshotWithHeaders();
     snap.auth = {
