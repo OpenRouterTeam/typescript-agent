@@ -52,6 +52,46 @@ await createMCPTools({
 });
 ```
 
+Rehydrating a snapshot now enforces `staleness.maxAgeMs` on every path, including
+`reconnectOnExpiry: false`. If the re-list that would refresh an over-age snapshot fails,
+the call rejects rather than quietly serving tools you declared too old — catch
+`MCPStaleSnapshotError` to opt back into stale-but-usable tools:
+
+```ts
+import {
+  rehydrateMCPTools,
+  MCPStaleSnapshotError,
+  type MCPProtocolRevision,
+} from '@openrouter/mcp';
+
+async function load(snapshot: SerializedMCPServer) {
+  try {
+    // Over-age snapshots re-list over the replayed connection. New: this holds
+    // under `reconnectOnExpiry: false` too, where it previously replayed silently.
+    return await rehydrateMCPTools({
+      snapshot,
+      staleness: { maxAgeMs: 60_000 },
+      reconnectOnExpiry: false,
+    });
+  } catch (err) {
+    if (err instanceof MCPStaleSnapshotError) {
+      // The connection is fine; only the re-list failed. Accept the cached
+      // tool set rather than failing the request.
+      return await rehydrateMCPTools({ snapshot, reconnectOnExpiry: false });
+    }
+    throw err;
+  }
+}
+
+// The two known revisions autocomplete and typo-check; any other string still
+// compiles, so pinning a future revision needs no cast.
+const revision: MCPProtocolRevision = '2026-07-28';
+await createMCPTools({
+  url: 'https://mcp.example.com/mcp',
+  protocolNegotiation: { pin: revision },
+});
+```
+
 Also in this release:
 
 - Fixes a silent bug in the `callTool` bridge: SDK v2 dropped the middle argument, so the

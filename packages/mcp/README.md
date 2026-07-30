@@ -87,9 +87,40 @@ const mcp = await createMCPTools({
 });
 ```
 
+`staleness.maxAgeMs` is honoured by `rehydrateMCPTools()` as well as by `createMCPTools()`'s
+cache-hit path, and on every path — including `reconnectOnExpiry: false`, which opts out of
+rebuilding the transport, not out of bounded-age tools. An over-age snapshot re-lists over
+the replayed connection. If that re-list fails, the call rejects with `MCPStaleSnapshotError`
+rather than quietly serving tools you declared too old; catch it to opt back in:
+
+```ts
+import { rehydrateMCPTools, MCPStaleSnapshotError } from '@openrouter/mcp';
+
+try {
+  return await rehydrateMCPTools({
+    snapshot,
+    staleness: { maxAgeMs: 60_000 },
+    reconnectOnExpiry: false,
+  });
+} catch (err) {
+  if (err instanceof MCPStaleSnapshotError) {
+    // Connection was fine, only the re-list failed — take the cached tool set.
+    return await rehydrateMCPTools({ snapshot, reconnectOnExpiry: false });
+  }
+  throw err;
+}
+```
+
+It subclasses `MCPCacheError`, so existing `catch (e instanceof MCPCacheError)` sites keep
+working. `handle.refresh()` also always reaches the server: SDK v2 caches `tools/list` per
+client up to the server's `ttlMs`, and every internal list read bypasses that so a refresh
+cannot hand back the previous tool set.
+
 > **Security:** `cacheCredentials` is `false` by default. When enabled, snapshots contain bearer
 > tokens/headers — treat the store as a secret store and namespace cache keys by principal in
-> multi-tenant setups.
+> multi-tenant setups. Session ids are never persisted: an `Mcp-Session-Id` is
+> bearer-equivalent to an authenticated server session, and nothing reads it back, so it would
+> be attack surface for no functionality. A `sessionId` found in an old snapshot is ignored.
 
 ## Multiple servers
 

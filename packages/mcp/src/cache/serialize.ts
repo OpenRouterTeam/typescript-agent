@@ -1,4 +1,4 @@
-import type { OAuthClientProvider } from '@modelcontextprotocol/client';
+import type { OAuthClientProvider, StoredOAuthTokens } from '@modelcontextprotocol/client';
 import { resolveAuth } from '../auth/auth-resolver.js';
 import type { MCPAuth } from '../auth/auth-types.js';
 import type { McpToolDef } from '../tool-wrapper.js';
@@ -19,6 +19,23 @@ export interface SerializeInput {
   cacheCredentials: boolean;
   cachedAt: number;
 }
+
+/**
+ * Compile-time guard that the SDK still expresses token lifetime as a relative
+ * `expires_in` (seconds).
+ *
+ * `tokensFromProvider` narrows `expires_in` with a runtime `typeof` check, which
+ * degrades silently: if a future SDK replaced it with an absolute field, the
+ * check would simply never match, snapshots would carry no `expiresAt`, and
+ * `tokensExpired()` would treat expired credentials as usable forever — a
+ * security-relevant failure with no error anywhere. This assignment fails
+ * `tsc` instead, at the version bump that causes it.
+ */
+type _AssertExpiresInIsSeconds = StoredOAuthTokens['expires_in'] extends number | undefined
+  ? true
+  : never;
+const _expiresInStillRelative: _AssertExpiresInIsSeconds = true;
+void _expiresInStillRelative;
 
 /** Pull a serializable token set from an OAuth provider, if it has tokens. */
 async function tokensFromProvider(
@@ -67,9 +84,10 @@ async function buildAuthBlock(auth: MCPAuth | undefined): Promise<SerializedMCPS
 }
 
 /**
- * Build a serializable snapshot. Credentials (tokens/headers, session id) are
- * included only when `cacheCredentials` is true; otherwise the snapshot holds
- * just the structural data needed to rebuild the tool set after a fresh auth.
+ * Build a serializable snapshot. Credentials (tokens/headers) are included only
+ * when `cacheCredentials` is true; otherwise the snapshot holds just the
+ * structural data needed to rebuild the tool set after a fresh auth. Session ids
+ * are never included — see the note in the `cacheCredentials` branch.
  */
 export async function serializeServer(input: SerializeInput): Promise<SerializedMCPServer> {
   const tools = input.toolDefs.map((def) => ({
