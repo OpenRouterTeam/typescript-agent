@@ -184,6 +184,53 @@ describe('staleness on the direct rehydrate path', () => {
     ]);
     await handle.close();
   });
+
+  /**
+   * `reconnectOnExpiry: false` opts out of rebuilding the transport, not out of
+   * bounded-age tools. A stale snapshot skips `freshConnect` on that setting, so
+   * without an explicit re-list it would replay unbounded-age tools with neither
+   * a refresh nor an error — the hole `staleness.maxAgeMs` exists to close.
+   */
+  it('re-lists a stale snapshot even when reconnectOnExpiry is false', async () => {
+    const snapshot = snapshotWithHeaders();
+    snapshot.cachedAt = Date.now() - 120_000;
+
+    const handle = await rehydrateMCPTools({
+      snapshot,
+      staleness: {
+        maxAgeMs: 60_000,
+      },
+      reconnectOnExpiry: false,
+    });
+
+    // Re-listed over the replayed connection: the fake reports no tools, so an
+    // empty set proves the snapshot's `alpha`/`beta` were not served.
+    expect(handle.tools).toHaveLength(0);
+    // And it did so without the reconnect the caller opted out of — one connect
+    // for the replay, no second one from `freshConnect`.
+    expect(connectCalls).toHaveLength(1);
+    await handle.close();
+  });
+
+  it('still replays a fresh snapshot when reconnectOnExpiry is false', async () => {
+    const snapshot = snapshotWithHeaders();
+    snapshot.cachedAt = Date.now() - 1_000;
+
+    const handle = await rehydrateMCPTools({
+      snapshot,
+      staleness: {
+        maxAgeMs: 60_000,
+      },
+      reconnectOnExpiry: false,
+    });
+
+    expect(handle.tools.map(nameOf)).toEqual([
+      'alpha',
+      'beta',
+    ]);
+    expect(connectCalls).toHaveLength(1);
+    await handle.close();
+  });
 });
 
 /**
@@ -204,7 +251,7 @@ describe('replay preserves snapshot age', () => {
     const { InMemoryMCPCacheStore } = await import('../../src/cache/cache-store.js');
     const store = new InMemoryMCPCacheStore();
     const snap = snapshotWithHeaders();
-    const originalCachedAt = snap.cachedAt - 60_000; // an hour-old-ish snapshot
+    const originalCachedAt = snap.cachedAt - 60_000; // a minute-old snapshot
     store.set('warm', {
       ...snap,
       cachedAt: originalCachedAt,

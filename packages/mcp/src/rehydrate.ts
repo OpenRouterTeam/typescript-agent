@@ -232,7 +232,7 @@ export async function rehydrateMCPTools(
     });
 
     // Rebuild tools from the snapshot — no listTools() round-trip.
-    return makeHandle({
+    const handle = await makeHandle({
       connection,
       options: createOptions,
       context: {
@@ -245,6 +245,19 @@ export async function rehydrateMCPTools(
       // staleness.maxAgeMs stays measurable across repeated rehydrates.
       replayedCachedAt: snapshot.cachedAt,
     });
+
+    // A stale snapshot that skipped `freshConnect` above (because
+    // `reconnectOnExpiry` is false) still must not be replayed as-is: the
+    // caller asked for bounded-age tools. Re-list over the connection we just
+    // opened, which honours `staleness.maxAgeMs` without the reconnect they
+    // opted out of — "stale" means the tool set needs re-reading, not that the
+    // transport needs rebuilding. `refresh()` also clears the carried
+    // `cachedAt`, so the write-back records the new age.
+    if (staleSnapshot) {
+      await handle.refresh();
+    }
+
+    return handle;
   } catch (err) {
     if (reconnectOnExpiry) {
       return freshConnect(createOptions, url, cacheKey);

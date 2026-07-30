@@ -61,7 +61,9 @@ Also in this release:
   `0.0.1`, and now generates it from `package.json` so it cannot drift.
 - `staleness.maxAgeMs` is now honoured by `rehydrateMCPTools()` too, not just by
   `createMCPTools()`'s cache-hit path — a direct rehydrate previously replayed snapshots of
-  any age.
+  any age. This holds under `reconnectOnExpiry: false` as well: a stale snapshot re-lists
+  over the replayed connection rather than being served as-is, since "stale" means the tool
+  set needs re-reading, not that the transport needs rebuilding.
 - `onElicitation` is no longer deprecated: it works on both revisions, since the
   multi-round-trip driver routes `input_required` through the same handler.
 - A failed `connect()` no longer leaks its transport. The SDK does not close a transport
