@@ -951,7 +951,21 @@ export class DoomLoopMonitor {
           name,
           {
             fingerprint: entry.fingerprint,
-            streak: entry.streak,
+            /*
+             * A MULTI-CALL round's streak is persisted as 1, because the shape
+             * carries one fingerprint and cannot express "this count was earned
+             * by the set {a,b,c}". Restoring it verbatim would attach the whole
+             * count to whichever call happened to be recorded last, so a
+             * resumed round consisting of just that one call would inherit a
+             * fan-out's evidence and could be refused on its first appearance —
+             * despite the model doing strictly LESS work than before the save.
+             * Under-counting on resume is the safe direction: the round is
+             * re-observed and re-accumulates from a correct baseline.
+             *
+             * Single-call rounds are unaffected: their fingerprint fully
+             * describes the round, so the streak survives intact.
+             */
+            streak: (entry.roundFingerprints?.length ?? 1) > 1 ? 1 : entry.streak,
           },
         ]),
       ),
@@ -988,9 +1002,13 @@ export class DoomLoopMonitor {
             streak: entry.streak,
             // `round` intentionally absent: the first resumed record is
             // always a new round, so it increments whatever the numbering.
-            // Only the last fingerprint survives serialization, so a resumed
-            // FAN-OUT streak restarts at 1 while a single-call streak
-            // continues — the round set is run-local by design.
+            //
+            // The round set is run-local, so only one fingerprint survives a
+            // save. A resumed round therefore compares against that single
+            // fingerprint: a single-call streak continues seamlessly, and a
+            // FAN-OUT streak restarts — enforced at save time by `getState`,
+            // which persists a multi-call round's streak as 1 rather than
+            // letting its last call carry the whole count into the next run.
             roundFingerprints: [
               entry.fingerprint,
             ],

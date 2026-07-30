@@ -777,4 +777,116 @@ describe('same-tool fan-out streaks', () => {
 
     expect(record.streak).toBe(1);
   });
+
+  it('does not refuse a resumed SINGLE call that inherits a fan-out streak', async () => {
+    /*
+     * The persisted shape holds one fingerprint per tool, so it cannot express
+     * "this count was earned by the set {a,b,c}". Restoring a fan-out's streak
+     * verbatim attached the whole count to whichever call was recorded last:
+     * a resumed round consisting of just that one call then matched, inherited
+     * the fan-out's evidence, and was BLOCKED on its first appearance — while
+     * the model had done strictly less work than before the save. It was also
+     * arbitrary, since it depended on which member happened to be last.
+     *
+     * `getState` therefore persists a multi-call round's streak as 1.
+     * Under-counting on resume is the safe direction; the loop is re-observed
+     * and re-accumulates from a correct baseline (asserted below).
+     */
+    const detector = monitor();
+    const paths = [
+      'a',
+      'b',
+      'c',
+    ];
+    for (const round of [
+      0,
+      1,
+    ]) {
+      await detector.declareRound(
+        round,
+        paths.map((path) => ({
+          toolName: 'read',
+          keyMaterial: {
+            path,
+          },
+        })),
+      );
+      for (const path of paths) {
+        await detector.recordToolCall(
+          'read',
+          {
+            path,
+          },
+          round,
+        );
+      }
+    }
+    /* Round 1 reached observe (streak 2) before the save. */
+    expect(
+      (
+        detector.getState() as {
+          tools: Record<
+            string,
+            {
+              streak: number;
+            }
+          >;
+        }
+      ).tools.read.streak,
+    ).toBe(1);
+
+    /* Resume with ONE call — the same one that was recorded last. */
+    const resumed = new DoomLoopMonitor(resolveDoomLoopOption(true), detector.getState());
+    await resumed.declareRound(0, [
+      {
+        toolName: 'read',
+        keyMaterial: {
+          path: 'c',
+        },
+      },
+    ]);
+    const solo = await resumed.recordToolCall(
+      'read',
+      {
+        path: 'c',
+      },
+      0,
+    );
+    expect(solo.streak).toBe(2);
+    expect(solo.verdict?.action).not.toBe('block');
+
+    /* Detection is not lost: a repeating fan-out trips again after the resume. */
+    const afterResume: number[] = [];
+    for (const round of [
+      1,
+      2,
+    ]) {
+      await resumed.declareRound(
+        round,
+        paths.map((path) => ({
+          toolName: 'read',
+          keyMaterial: {
+            path,
+          },
+        })),
+      );
+      let last = 0;
+      for (const path of paths) {
+        last = (
+          await resumed.recordToolCall(
+            'read',
+            {
+              path,
+            },
+            round,
+          )
+        ).streak;
+      }
+      afterResume.push(last);
+    }
+    expect(afterResume).toEqual([
+      1,
+      2,
+    ]);
+  });
 });
