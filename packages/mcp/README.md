@@ -144,6 +144,7 @@ const result = callModel(client, {
 | `url` | Remote MCP server endpoint. |
 | `transport` | `'streamableHttp'` (default, falls back to SSE) or `'sse'` (deprecated upstream). |
 | `protocolNegotiation` | `'auto'` (default), `'legacy'`, or `{ pin }`. See Protocol revisions. |
+| `probeTimeoutMs` | Ceiling on the `server/discover` probe (default 5000). |
 | `auth` | Bearer token, headers, or an `OAuthClientProvider`. |
 | `toolNamePrefix` | Prefix every wrapped tool name. |
 | `includeTools` / `excludeTools` | Allow/deny lists by MCP tool name. |
@@ -211,6 +212,10 @@ await createMCPTools({ url, protocolNegotiation: { pin: '2026-07-28' } });
 > Setting `protocolNegotiation` at all — **including to `'auto'`** — opts out of the
 > automatic legacy retry. Naming a mode means you want that mode's failures too, and
 > silently overriding a `{ pin }` would defeat the point of pinning.
+
+The probe is bounded at 5s; pass `probeTimeoutMs` to raise it for a server slow to answer its
+first request. Without that bound the SDK gives the probe the full 60s request timeout, so a
+black-holing gateway would take minutes to fail rather than seconds.
 
 `'auto'` costs one extra round trip against legacy servers. When a connect fails, the retry
 re-walks the same transport ladder under `'legacy'`, so an unreachable server is dialled up to

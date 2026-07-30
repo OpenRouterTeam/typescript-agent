@@ -15,6 +15,24 @@ import type { MCPProtocolNegotiation, MCPTransportKind } from './transport-types
 import type { ElicitationHandler } from './types.js';
 import { PACKAGE_VERSION } from './version.js';
 
+/**
+ * Ceiling on the `server/discover` probe, in ms.
+ *
+ * The SDK falls back to the full request timeout (60s) when this is unset, which
+ * is far too long for a liveness question: under the `'auto'` default the probe
+ * is the first request of every connection, and a gateway that black-holes it
+ * would burn 60s per attempt — up to four attempts once the legacy retry
+ * re-walks the transport ladder, so ~4 minutes before `createMCPTools()` rejects
+ * on the no-configuration path.
+ *
+ * 5s is generous for a single round trip to a server that is actually answering,
+ * and a probe that misses the window is not lost: on HTTP it surfaces as a
+ * failure that the legacy retry then handles, which is the same path a probe
+ * refusal takes. Override with `probeTimeoutMs` when a server is genuinely slow
+ * to answer.
+ */
+const DEFAULT_PROBE_TIMEOUT_MS = 5_000;
+
 // Self-reported to every MCP server we connect to as `clientInfo`. The version
 // is generated from package.json (scripts/gen-version.mjs) so it cannot drift.
 const DEFAULT_CLIENT_INFO = {
@@ -40,6 +58,14 @@ export interface ConnectOptions {
   sessionId?: string;
   onElicitation?: ElicitationHandler;
   protocolNegotiation?: MCPProtocolNegotiation;
+  /**
+   * Ceiling on the `server/discover` probe, in ms. Defaults to 5000.
+   *
+   * Raise it for a server that is slow to answer its first request; the SDK's own
+   * default is the full request timeout, which makes a hanging gateway far slower
+   * to fail than it needs to be.
+   */
+  probeTimeoutMs?: number;
 }
 
 export interface MCPConnection {
@@ -130,6 +156,9 @@ function makeClient(options: ConnectOptions, listChanged: MutableListChanged): C
     // the SDK may tune.
     versionNegotiation: {
       mode: options.protocolNegotiation ?? 'auto',
+      probe: {
+        timeoutMs: options.probeTimeoutMs ?? DEFAULT_PROBE_TIMEOUT_MS,
+      },
     },
   });
 
@@ -254,8 +283,19 @@ async function connectWithNegotiation(options: ConnectOptions): Promise<MCPConne
  * that tried one transport contributes itself.
  */
 function flattenAttempts(err: unknown): readonly unknown[] {
-  if (err instanceof MCPConnectionError && err.errors.length > 0) {
-    return err.errors;
+  if (err instanceof MCPConnectionError) {
+    if (err.errors.length > 0) {
+      return err.errors;
+    }
+    // A single-transport pass wraps its one failure with only `cause` set, so
+    // returning it as-is would put an opaque wrapper in a list documented as
+    // holding real attempts — and a caller scanning for a rejected token would
+    // have to know to dig through `cause` on some entries but not others.
+    if (err.cause !== undefined) {
+      return [
+        err.cause,
+      ];
+    }
   }
   return [
     err,
@@ -310,8 +350,15 @@ function isAuthFailure(err: unknown, depth = 0): boolean {
   if (!(err instanceof Error)) {
     return false;
   }
-  if (err instanceof MCPConnectionError) {
-    for (const nested of err.errors) {
+  // Covers our own `errors` and `AggregateError`'s alike — Node's
+  // happy-eyeballs path and some fetch implementations report a 401 as an
+  // `AggregateError` member rather than as a `cause`, which a spine-only walk
+  // would miss.
+  const { errors } = err as {
+    errors?: unknown;
+  };
+  if (Array.isArray(errors)) {
+    for (const nested of errors) {
       if (isAuthFailure(nested, depth + 1)) {
         return true;
       }

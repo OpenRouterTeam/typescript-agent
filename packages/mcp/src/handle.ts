@@ -154,6 +154,9 @@ export async function freshConnect(
     ...(options.protocolNegotiation !== undefined && {
       protocolNegotiation: options.protocolNegotiation,
     }),
+    ...(options.probeTimeoutMs !== undefined && {
+      probeTimeoutMs: options.probeTimeoutMs,
+    }),
   });
 
   // Tear the connection down if discovery or the initial cache write throws —

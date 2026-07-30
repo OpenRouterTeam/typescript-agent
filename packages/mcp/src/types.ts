@@ -53,6 +53,14 @@ export interface CreateMCPToolsOptions {
    * the server and speaks either 2025-11-25 or 2026-07-28 as appropriate.
    */
   protocolNegotiation?: MCPProtocolNegotiation;
+  /**
+   * Ceiling on the `server/discover` probe, in ms. Defaults to 5000.
+   *
+   * Raise it for a server slow to answer its first request. The SDK's own default
+   * is the full request timeout, which makes a hanging gateway far slower to fail
+   * than it needs to be.
+   */
+  probeTimeoutMs?: number;
   /** Authentication, supplied once and reused for discovery + every call. */
   auth?: MCPAuth;
   /** Custom fetch implementation for all network requests. */

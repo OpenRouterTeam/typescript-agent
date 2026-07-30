@@ -24,6 +24,11 @@ once with `'legacy'`, so a proxy, WAF, or gateway that hangs or 5xx's on an unkn
 still connects exactly as it did before. Modern servers get `2026-07-28`, everything else
 lands where it always did.
 
+The `server/discover` probe is bounded at **5s** (`probeTimeoutMs` to change it). The SDK
+otherwise gives the probe the full 60s request timeout, which under `'auto'` — where the probe
+is the first request of every connection — would mean minutes of hang against a gateway that
+black-holes requests.
+
 The cost lands only on already-failing connects: the retry re-walks the same transport ladder
 under `'legacy'`, so a genuinely unreachable server is dialled up to four times rather than
 two. The retry deliberately does *not* pin one transport — a legacy server reachable only

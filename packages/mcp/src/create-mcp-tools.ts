@@ -47,6 +47,7 @@ const FORWARDED_REHYDRATE_KEYS = [
   'autoRefreshOnListChanged',
   'cacheCredentials',
   'protocolNegotiation',
+  'probeTimeoutMs',
   'staleness',
 ] as const satisfies readonly (keyof CreateMCPToolsOptions & keyof RehydrateMCPToolsOptions)[];
 

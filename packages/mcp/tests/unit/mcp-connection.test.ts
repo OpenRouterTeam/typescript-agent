@@ -32,11 +32,15 @@ interface SdkState {
    * shape the SDK's probe uses for HTTP failures instead of `UnauthorizedError`.
    */
   httpErrorStatus: number | undefined;
+  /** When set, every connect rejects with exactly this error. */
+  connectError: unknown;
   /** sessionId the fake Streamable HTTP transport reports after connecting. */
   httpSessionId: string | undefined;
   clientsCreated: number;
   /** `versionNegotiation.mode` seen by each constructed Client, in order. */
   negotiationModes: unknown[];
+  /** `versionNegotiation.probe.timeoutMs` seen by each Client, in order. */
+  probeTimeouts: unknown[];
   /** `clientInfo` seen by each constructed Client, in order. */
   clientInfos: unknown[];
   /**
@@ -55,9 +59,11 @@ const state: SdkState = {
   authFailure: false,
   authFailOn: undefined,
   httpErrorStatus: undefined,
+  connectError: undefined,
   httpSessionId: undefined,
   clientsCreated: 0,
   negotiationModes: [],
+  probeTimeouts: [],
   clientInfos: [],
   closedClients: [],
 };
@@ -120,11 +126,15 @@ vi.mock('@modelcontextprotocol/client', () => ({
       opts?: {
         versionNegotiation?: {
           mode?: unknown;
+          probe?: {
+            timeoutMs?: unknown;
+          };
         };
       },
     ) {
       state.clientsCreated += 1;
       state.negotiationModes.push(opts?.versionNegotiation?.mode);
+      state.probeTimeouts.push(opts?.versionNegotiation?.probe?.timeoutMs);
       state.clientInfos.push(info);
       this.mode = opts?.versionNegotiation?.mode;
     }
@@ -147,6 +157,9 @@ vi.mock('@modelcontextprotocol/client', () => ({
       state.attempts.push(attempt);
       if (state.authFailure || state.authFailOn === kind) {
         return Promise.reject(new FakeUnauthorizedError('unauthorized'));
+      }
+      if (state.connectError !== undefined) {
+        return Promise.reject(state.connectError);
       }
       if (state.httpErrorStatus !== undefined) {
         return Promise.reject(
@@ -193,9 +206,11 @@ beforeEach(() => {
   state.authFailure = false;
   state.authFailOn = undefined;
   state.httpErrorStatus = undefined;
+  state.connectError = undefined;
   state.httpSessionId = undefined;
   state.clientsCreated = 0;
   state.negotiationModes = [];
+  state.probeTimeouts = [];
   state.clientInfos = [];
   state.closedClients = [];
 });
@@ -744,6 +759,93 @@ describe('legacy degradation under an implicit auto default', () => {
     // of the attempt that preceded it.
     expect(state.clientsCreated).toBe(4);
     expect(state.closedClients).toHaveLength(4);
+  });
+
+  /**
+   * A hanging gateway must not cost four full request timeouts.
+   *
+   * The SDK falls back to the whole request timeout (60s) for the probe when
+   * `probe.timeoutMs` is unset. Under `'auto'` the probe is the first request of
+   * every connection, and with the legacy retry re-walking the ladder that is up
+   * to four attempts — roughly four minutes before `createMCPTools()` rejects, on
+   * the path a caller gets with no configuration at all.
+   */
+  it('bounds the probe well under the SDK request timeout', async () => {
+    const conn = await connect({
+      url: URL_UNDER_TEST,
+    });
+
+    expect(state.probeTimeouts).toEqual([
+      5_000,
+    ]);
+    await conn.close();
+  });
+
+  it('lets a caller raise the probe timeout for a slow server', async () => {
+    const conn = await connect({
+      url: URL_UNDER_TEST,
+      probeTimeoutMs: 30_000,
+    });
+
+    expect(state.probeTimeouts).toEqual([
+      30_000,
+    ]);
+    await conn.close();
+  });
+
+  /**
+   * `errors` entries must be real failures, not wrappers.
+   *
+   * A single-transport pass wraps its one failure with only `cause` set, so
+   * without unwrapping that case the aggregated list becomes two opaque
+   * `MCPConnectionError`s — and a caller scanning for a rejected token would have
+   * to dig through `cause` on some entries but not others.
+   */
+  it('unwraps single-transport passes so errors holds real failures', async () => {
+    // Pinned Streamable HTTP: each pass wraps its single failure in an
+    // `MCPConnectionError` whose own `errors` is empty, so this is the case where
+    // the aggregated list would otherwise be two opaque wrappers. (Pinned SSE
+    // rethrows the raw error, so it never had the problem.)
+    state.failing.add('streamableHttp');
+
+    const err = await connect({
+      url: URL_UNDER_TEST,
+      transport: 'streamableHttp',
+    }).catch((e: unknown) => e);
+
+    expect(err).toBeInstanceOf(MCPConnectionError);
+    const { errors } = err as MCPConnectionError;
+    // One attempt per pass, both unwrapped to the underlying transport error.
+    expect(errors).toHaveLength(2);
+    for (const nested of errors) {
+      expect(nested).not.toBeInstanceOf(MCPConnectionError);
+      expect((nested as Error).message).toMatch(/streamableHttp refused/);
+    }
+  });
+
+  /**
+   * Node's happy-eyeballs path and some fetch implementations report a 401 as an
+   * `AggregateError` member rather than as a `cause`. A spine-only walk misses it
+   * and re-drives the OAuth flow.
+   */
+  it('finds an auth failure inside an AggregateError', async () => {
+    state.connectError = new AggregateError(
+      [
+        new Error('ipv6 refused'),
+        Object.assign(new Error('http 401'), {
+          status: 401,
+        }),
+      ],
+      'all addresses failed',
+    );
+
+    await expect(
+      connect({
+        url: URL_UNDER_TEST,
+      }),
+    ).rejects.toThrow();
+
+    expect(state.negotiationModes).not.toContain('legacy');
   });
 
   /**

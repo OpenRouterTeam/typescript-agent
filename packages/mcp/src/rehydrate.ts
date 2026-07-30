@@ -31,6 +31,8 @@ export interface RehydrateMCPToolsOptions {
   signal?: AbortSignal;
   /** Protocol-revision negotiation policy; defaults to `'auto'`. */
   protocolNegotiation?: MCPProtocolNegotiation;
+  /** Ceiling on the `server/discover` probe, in ms; defaults to 5000. */
+  probeTimeoutMs?: number;
   /** Re-list tools instead of replaying a snapshot older than this. */
   staleness?: {
     maxAgeMs?: number;
@@ -131,6 +133,7 @@ const PASS_THROUGH_CREATE_KEYS = [
   'onUnconvertibleSchema',
   'onElicitation',
   'protocolNegotiation',
+  'probeTimeoutMs',
   'signal',
   'clientInfo',
   'toolNamePrefix',
@@ -214,6 +217,9 @@ function toReplayConnectOptions(args: {
     }),
     ...(options.protocolNegotiation !== undefined && {
       protocolNegotiation: options.protocolNegotiation,
+    }),
+    ...(options.probeTimeoutMs !== undefined && {
+      probeTimeoutMs: options.probeTimeoutMs,
     }),
   };
 }
