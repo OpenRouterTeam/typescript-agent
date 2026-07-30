@@ -73,13 +73,29 @@ export class MCPStaleSnapshotError extends MCPCacheError {
  * Raised when connecting to the MCP server fails across all attempted transports.
  */
 export class MCPConnectionError extends MCPError {
+  /**
+   * Every failure behind this one, in attempt order, when more than one transport
+   * was tried.
+   *
+   * `cause` holds only the last attempt, which loses information: an
+   * `UnauthorizedError` from the Streamable HTTP attempt matters even when the
+   * SSE fallback then failed for an unrelated reason (a URL that simply isn't an
+   * SSE endpoint answering 404). Named `errors` to match `AggregateError`, so it
+   * reads the way callers expect rather than as a bespoke field.
+   *
+   * Empty when only one transport was attempted.
+   */
+  readonly errors: readonly unknown[];
+
   constructor(
     message: string,
     options?: {
       cause?: unknown;
+      errors?: readonly unknown[];
     },
   ) {
     super(message, options);
     this.name = 'MCPConnectionError';
+    this.errors = options?.errors ?? [];
   }
 }

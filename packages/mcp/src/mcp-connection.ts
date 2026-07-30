@@ -228,33 +228,56 @@ async function connectWithNegotiation(options: ConnectOptions): Promise<MCPConne
       });
     } catch (sseErr) {
       await closeQuietly(sseClient);
+      // Both failures are kept. `sseErr` is the `cause` because it is the last
+      // thing tried, but discarding `httpErr` loses information the caller needs:
+      // an `UnauthorizedError` from the HTTP attempt is what tells `connect()` not
+      // to retry, and a 404/405 from an endpoint that simply isn't an SSE URL
+      // would otherwise hide it. `errors` matches `AggregateError`'s shape so the
+      // pair is discoverable without a bespoke field.
       throw new MCPConnectionError('Failed to connect over Streamable HTTP and SSE', {
         cause: sseErr,
+        errors: [
+          httpErr,
+          sseErr,
+        ],
       });
     }
   }
 }
 
 /**
- * Was this failure the server rejecting our credentials?
+ * Did any attempt behind this failure end in the server rejecting our
+ * credentials?
  *
- * Walks the `cause` chain because `connectWithNegotiation` wraps transport
- * errors in `MCPConnectionError`, so the SDK's `UnauthorizedError` is nested
- * rather than thrown directly. Depth-capped: a cyclic `cause` would otherwise
- * hang, and legitimate chains here are two or three links.
+ * Searches the whole tree rather than the `cause` spine, because a single
+ * `connect()` can fail more than once: `connectWithNegotiation` wraps transport
+ * errors in `MCPConnectionError`, and on the two-transport path it records both
+ * attempts in `errors`. Checking only `cause` would miss an `UnauthorizedError`
+ * from the Streamable HTTP attempt whenever the SSE fallback then failed for an
+ * unrelated reason — a URL that isn't an SSE endpoint answering 404 never
+ * reaches the auth path — and the retry would re-drive the OAuth flow anyway.
+ *
+ * Depth-capped: a cyclic `cause` would otherwise hang, and real chains here are
+ * two or three links.
  */
-function isAuthFailure(err: unknown): boolean {
-  let current = err;
-  for (let depth = 0; depth < 8; depth += 1) {
-    if (current instanceof UnauthorizedError) {
-      return true;
-    }
-    if (!(current instanceof Error) || current.cause === undefined) {
-      return false;
-    }
-    current = current.cause;
+function isAuthFailure(err: unknown, depth = 0): boolean {
+  if (depth >= 8) {
+    return false;
   }
-  return false;
+  if (err instanceof UnauthorizedError) {
+    return true;
+  }
+  if (!(err instanceof Error)) {
+    return false;
+  }
+  if (err instanceof MCPConnectionError) {
+    for (const nested of err.errors) {
+      if (isAuthFailure(nested, depth + 1)) {
+        return true;
+      }
+    }
+  }
+  return err.cause !== undefined && isAuthFailure(err.cause, depth + 1);
 }
 
 /**
@@ -289,11 +312,18 @@ function isAuthFailure(err: unknown): boolean {
  *    provider's authorization flow: a second `redirectToAuthorization`, a second
  *    saved PKCE verifier overwriting the first. Replaying a failure that had
  *    side effects is worse than not retrying.
- * 2. **It reuses one transport, not another two-transport ladder.** Without
- *    this, an unreachable server is dialled four times where it used to be
- *    dialled twice, each dial carrying its own request timeout — enough to push
- *    a caller past its own deadline. Reusing the caller's transport preference
- *    keeps the worst case at three.
+ * 2. **It re-walks the same transport ladder the first pass did.** An earlier
+ *    revision pinned Streamable HTTP to cap the attempt count, which broke the
+ *    case this whole mechanism exists for: a legacy server reachable *only* over
+ *    SSE, behind infrastructure that chokes on the probe, would fail under
+ *    `'auto'` and then never be offered SSE again. Correctness wins over the
+ *    attempt count here — a server that used to connect must still connect.
+ *
+ * So the worst case for a genuinely unreachable server is four `connect()`
+ * calls, two per negotiation mode. That is the honest cost of guaranteeing no
+ * working setup regresses, and it is paid only on a path that was already going
+ * to fail. The bound that matters is that it is a fixed multiple rather than a
+ * retry loop.
  *
  * An **explicit** `protocolNegotiation` is honoured exactly, including
  * `'auto'`: asking for a mode means asking for its failures too, and silently
@@ -309,15 +339,14 @@ export async function connect(options: ConnectOptions): Promise<MCPConnection> {
     if (isAuthFailure(autoErr)) {
       throw autoErr;
     }
-    // Pin the transport the caller asked for — `'streamableHttp'` by default —
-    // so this is a single attempt rather than a second ladder. Not inspecting
-    // the error for *whether* the probe was at fault: that would couple us to
-    // SDK error codes, and a reshaped error would silently disable the whole
-    // degradation. `UnauthorizedError` above is the one exception, because there
-    // the cost of retrying is a duplicated side effect rather than a wasted dial.
+    // Not inspecting the error for *whether* the probe was at fault: that would
+    // couple us to SDK error codes, and a reshaped error would silently disable
+    // the whole degradation. `UnauthorizedError` above is the one exception,
+    // because there the cost of retrying is a duplicated side effect rather than
+    // a wasted dial — and if that check ever stops matching we merely retry,
+    // which is the pre-existing behavior rather than a silent loss of function.
     return await connectWithNegotiation({
       ...options,
-      transport: options.transport ?? 'streamableHttp',
       protocolNegotiation: 'legacy',
     });
   }

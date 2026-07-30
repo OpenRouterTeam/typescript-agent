@@ -24,12 +24,18 @@ once with `'legacy'`, so a proxy, WAF, or gateway that hangs or 5xx's on an unkn
 still connects exactly as it did before. Modern servers get `2026-07-28`, everything else
 lands where it always did.
 
-The cost lands only on already-failing connects. A probe-hostile server takes **two**
-attempts instead of one; a genuinely unreachable one takes **three** instead of two, since
-the retry is a single pinned attempt rather than a second Streamable HTTP → SSE ladder. The
-retry is skipped entirely on an auth failure — credentials being rejected is not something a
-different protocol revision fixes, and re-running it would drive an OAuth provider's
-authorization flow a second time.
+The cost lands only on already-failing connects: the retry re-walks the same transport ladder
+under `'legacy'`, so a genuinely unreachable server is dialled up to four times rather than
+two. The retry deliberately does *not* pin one transport — a legacy server reachable only
+over SSE, behind probe-hostile infrastructure, needs SSE offered again under `'legacy'` or it
+stops connecting entirely, which is the regression this mechanism exists to prevent.
+
+The retry is skipped on an auth failure, including one that came from a different transport
+than the last error: rejected credentials are not something a different protocol revision
+fixes, and re-running the attempt would drive an OAuth provider's authorization flow a second
+time and overwrite the stored PKCE verifier. `MCPConnectionError` now carries every
+underlying failure in `errors` (matching `AggregateError`) so a caller can see both transport
+attempts rather than only the last.
 
 An **explicit** `protocolNegotiation` is honoured exactly, including `'auto'` — asking for a
 mode means asking for its failures too, and silently overriding a `{ pin }` would defeat the
@@ -70,6 +76,28 @@ await createMCPTools({
   url: 'https://mcp.example.com/mcp',
   auth: { kind: 'oauth', provider },
 });
+```
+
+When more than one transport was tried, `MCPConnectionError` carries every underlying failure
+on `errors` — `cause` still holds the last one, which on its own hides an auth rejection from
+an earlier attempt:
+
+```ts
+import { createMCPTools, MCPConnectionError } from '@openrouter/mcp';
+
+try {
+  await createMCPTools({ url: 'https://mcp.example.com/mcp' });
+} catch (err) {
+  if (err instanceof MCPConnectionError) {
+    console.error('last attempt:', err.cause);
+    // Both the Streamable HTTP and SSE failures, in attempt order. Empty when
+    // only one transport was tried.
+    for (const attempt of err.errors) {
+      console.error('attempt:', attempt);
+    }
+  }
+  throw err;
+}
 ```
 
 Rehydrating a snapshot now enforces `staleness.maxAgeMs` on every path, including

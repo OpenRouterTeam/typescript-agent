@@ -23,8 +23,10 @@ interface SdkState {
   probeHostile: boolean;
   /** When true, the fake Client's `close()` throws synchronously. */
   closeThrows: boolean;
-  /** When true, a connect rejects with the SDK's `UnauthorizedError`. */
+  /** When true, every connect rejects with the SDK's `UnauthorizedError`. */
   authFailure: boolean;
+  /** When set, only that transport rejects with `UnauthorizedError`. */
+  authFailOn: 'streamableHttp' | 'sse' | undefined;
   /** sessionId the fake Streamable HTTP transport reports after connecting. */
   httpSessionId: string | undefined;
   clientsCreated: number;
@@ -46,6 +48,7 @@ const state: SdkState = {
   probeHostile: false,
   closeThrows: false,
   authFailure: false,
+  authFailOn: undefined,
   httpSessionId: undefined,
   clientsCreated: 0,
   negotiationModes: [],
@@ -136,7 +139,7 @@ vi.mock('@modelcontextprotocol/client', () => ({
         attempt.sessionId = transport.sessionId;
       }
       state.attempts.push(attempt);
-      if (state.authFailure) {
+      if (state.authFailure || state.authFailOn === kind) {
         return Promise.reject(new FakeUnauthorizedError('unauthorized'));
       }
       if (state.failing.has(kind)) {
@@ -175,6 +178,7 @@ beforeEach(() => {
   state.probeHostile = false;
   state.closeThrows = false;
   state.authFailure = false;
+  state.authFailOn = undefined;
   state.httpSessionId = undefined;
   state.clientsCreated = 0;
   state.negotiationModes = [];
@@ -660,16 +664,40 @@ describe('legacy degradation under an implicit auto default', () => {
   });
 
   /**
-   * The retry must not re-walk the two-transport ladder.
+   * The case the whole mechanism exists for, and the one an earlier revision of
+   * it broke: a legacy server reachable **only** over SSE, behind infrastructure
+   * that chokes on the probe.
    *
-   * `connectWithNegotiation` already tries Streamable HTTP then SSE when no
-   * transport is pinned. If the retry ran that ladder again, an unreachable
-   * server would be dialled four times where it used to be dialled twice — each
-   * dial carrying its own request timeout, which is enough to push a caller past
-   * its own deadline. Pinning the retry to the caller's transport preference
-   * caps the worst case at three.
+   * Under `'auto'` both transports fail — HTTP because the server doesn't speak
+   * it, SSE because the probe is refused. The retry therefore has to re-walk the
+   * ladder; pinning it to Streamable HTTP (which I did briefly, to cap the
+   * attempt count) means SSE is never offered again and a server that connected
+   * before this PR stops connecting.
    */
-  it('bounds a dead server to three attempts, not four', async () => {
+  it('reaches an SSE-only server whose probe is refused', async () => {
+    state.probeHostile = true;
+    state.failing.add('streamableHttp');
+
+    const conn = await connect({
+      url: URL_UNDER_TEST,
+    });
+
+    expect(conn.transport).toBe('sse');
+    expect(state.attempts.map((a) => a.kind)).toEqual([
+      'streamableHttp',
+      'sse',
+      'streamableHttp',
+      'sse',
+    ]);
+  });
+
+  /**
+   * The cost of that guarantee: a genuinely dead server is dialled four times,
+   * two per negotiation mode. Asserted so the number is a decision rather than an
+   * accident — the bound that matters is that it is a fixed multiple, not a retry
+   * loop.
+   */
+  it('caps a dead server at four attempts — two per mode', async () => {
     // Not probe-hostile — the transport itself refuses, so the retry fails too.
     state.failing.add('streamableHttp');
     state.failing.add('sse');
@@ -680,16 +708,11 @@ describe('legacy degradation under an implicit auto default', () => {
       }),
     ).rejects.toThrow(MCPConnectionError);
 
-    // 'auto' walks the full ladder; the legacy retry is one pinned attempt.
     expect(state.negotiationModes).toEqual([
       'auto',
       'auto',
       'legacy',
-    ]);
-    expect(state.attempts.map((a) => a.kind)).toEqual([
-      'streamableHttp',
-      'sse',
-      'streamableHttp',
+      'legacy',
     ]);
   });
 
@@ -703,10 +726,38 @@ describe('legacy degradation under an implicit auto default', () => {
       }),
     ).rejects.toThrow(MCPConnectionError);
 
-    // Three clients built, three released — the retry must not leak the
-    // transports of the attempt that preceded it.
-    expect(state.clientsCreated).toBe(3);
-    expect(state.closedClients).toHaveLength(3);
+    // Four clients built, four released — the retry must not leak the transports
+    // of the attempt that preceded it.
+    expect(state.clientsCreated).toBe(4);
+    expect(state.closedClients).toHaveLength(4);
+  });
+
+  /**
+   * The auth guard has to see *both* transport attempts, not just the last.
+   *
+   * When Streamable HTTP 401s (OAuth flow driven once) and the SSE fallback then
+   * fails for an unrelated reason — the same URL answering 404 to an SSE GET,
+   * which never reaches the auth path — the `cause` spine holds only the SSE
+   * error. A guard reading `cause` alone would miss the `UnauthorizedError` and
+   * retry, re-driving `redirectToAuthorization` and overwriting the stored PKCE
+   * verifier.
+   */
+  it('suppresses the retry when only the HTTP attempt was an auth failure', async () => {
+    state.authFailOn = 'streamableHttp';
+    state.failing.add('sse');
+
+    await expect(
+      connect({
+        url: URL_UNDER_TEST,
+      }),
+    ).rejects.toThrow(MCPConnectionError);
+
+    // Both transports tried once; no legacy retry behind them.
+    expect(state.negotiationModes).toEqual([
+      'auto',
+      'auto',
+    ]);
+    expect(state.negotiationModes).not.toContain('legacy');
   });
 
   /**
