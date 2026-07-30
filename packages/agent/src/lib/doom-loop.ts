@@ -1145,9 +1145,18 @@ export class DoomLoopMonitor {
      * this round happened to be recorded first. Every call sharing a declared
      * set therefore scores the same streak by construction: a repeating
      * fan-out is one piece of evidence per round, and the ladder applies to
-     * the round as a unit rather than to one member. Calls outside a
-     * declaration carry their own single-fingerprint set through the same
-     * formula, which is the per-call comparison.
+     * the round as a unit rather than to one member.
+     *
+     * Calls outside a declaration carry their own single-fingerprint set
+     * through the same formula. For a single-call round that is exactly the
+     * old per-call comparison. For an UNDECLARED multi-call round it is not:
+     * each call overwrites `roundFingerprints` with its own singleton, so the
+     * next round's matching call compares against the previous round's LAST
+     * recorded fingerprint. A repeating undeclared fan-out therefore does
+     * accumulate, but only on whichever member lands last, and which member
+     * that is depends on emission order. That is why the engine declares every
+     * executed batch; the undeclared path exists for records whose membership
+     * cannot be known up front (server tools) and for direct callers.
      */
     const streak =
       priorRoundFingerprints !== undefined && setsMatch(priorRoundFingerprints, roundFingerprints)

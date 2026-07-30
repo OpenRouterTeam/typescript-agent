@@ -383,11 +383,14 @@ describe('same-tool fan-out streaks', () => {
      * The engine declares every executed batch, but server-tool records go
      * through `checkDoomLoopForResponse` undeclared, as do direct callers and
      * ports. A round's membership is unknowable there, so each call is scored
-     * on its own identity against the previous round — the pre-fan-out
-     * semantics. Sharing a round streak here instead let a brand-new call
-     * inherit an earlier call's count: `[a]` then `[a, b]` scored `b` as a
-     * 2-round repeat and emitted a verdict quoting `b`'s own fingerprint,
-     * for a call the model had just made for the first time.
+     * on its own identity rather than as part of a set. Sharing a round streak
+     * here instead let a brand-new call inherit an earlier call's count: `[a]`
+     * then `[a, b]` scored `b` as a 2-round repeat and emitted a verdict
+     * quoting `b`'s own fingerprint, for a call the model had just made for
+     * the first time.
+     *
+     * Note this is NOT identical to the pre-fan-out per-call comparison for
+     * multi-call rounds — see the order-dependence test below.
      */
     const detector = monitor();
     await detector.recordToolCall(
@@ -417,6 +420,114 @@ describe('same-tool fan-out streaks', () => {
     /* The first-ever call does not inherit it. */
     expect(fresh.streak).toBe(1);
     expect(fresh.verdict).toBeUndefined();
+  });
+
+  it('scores an UNDECLARED multi-call round on its last member, order-dependently', async () => {
+    /*
+     * Pins the undeclared path's real semantics, because they are NOT the
+     * pre-fan-out per-call comparison for a multi-call round, and the docs
+     * previously claimed they were.
+     *
+     * Each call of an undeclared round overwrites `roundFingerprints` with its
+     * own singleton, so the next round's matching call compares against the
+     * previous round's LAST recorded fingerprint. A repeating undeclared
+     * fan-out therefore accumulates on whichever member lands last, and
+     * flipping the emission order moves the verdict to a different call.
+     *
+     * Consequences worth pinning: it reaches `stop` at the default ladder's
+     * streak 6 (server-tool verdicts cannot `block`, but they can stop a run),
+     * and a repeat inside a *varying* round accumulates here even though the
+     * declared path treats that as progress.
+     */
+    const undeclared = async (rounds: readonly (readonly string[])[]): Promise<string[][]> => {
+      const detector = monitor();
+      const out: string[][] = [];
+      for (const [round, paths] of rounds.entries()) {
+        const scored: string[] = [];
+        for (const path of paths) {
+          const record = await detector.recordToolCall(
+            'read',
+            {
+              path,
+            },
+            round,
+          );
+          scored.push(`${record.streak}:${record.verdict?.action ?? 'none'}`);
+        }
+        out.push(scored);
+      }
+      return out;
+    };
+
+    /* The last member accumulates; the first does not. */
+    expect(
+      await undeclared([
+        [
+          'a',
+          'b',
+        ],
+        [
+          'a',
+          'b',
+        ],
+      ]),
+    ).toEqual([
+      [
+        '1:none',
+        '1:none',
+      ],
+      [
+        '1:none',
+        '2:observe',
+      ],
+    ]);
+
+    /* Flipping the order moves the verdict onto the other call. */
+    expect(
+      await undeclared([
+        [
+          'a',
+          'b',
+        ],
+        [
+          'b',
+          'a',
+        ],
+      ]),
+    ).toEqual([
+      [
+        '1:none',
+        '1:none',
+      ],
+      [
+        '2:observe',
+        '1:none',
+      ],
+    ]);
+
+    /* A varying round still accumulates on the stable last member. */
+    expect(
+      (
+        await undeclared([
+          [
+            'a',
+            'b',
+          ],
+          [
+            'c',
+            'b',
+          ],
+          [
+            'd',
+            'b',
+          ],
+        ])
+      ).map((round) => round.at(-1)),
+    ).toEqual([
+      '1:none',
+      '2:observe',
+      '3:block',
+    ]);
   });
 
   it('does not let a call outside the declared set inherit the round streak', async () => {

@@ -19,8 +19,12 @@ a repeating round reports that round's streak, so at the block rung a repeating
 fan-out stops spending rather than only its last call being refused.
 
 Paths that cannot know a round's membership up front — server-tool records, and
-direct/port callers — are scored per call against the previous round, the same
-as before this change: a fan-out there goes undetected rather than mis-scored.
+direct/port callers — are scored per call against the previous round rather than
+as a set. A repeating multi-call round there still accumulates, but only on
+whichever call is recorded *last*, so the verdict lands on one member and which
+member depends on emission order. Declare the round (see below) for
+order-independent, whole-round scoring.
+
 A call that a round's declaration could not include (unhashable key material)
 is likewise scored on its own, and cannot move the round's counters — one
 unhashable argument costs detection for its own call only, never for the tool.
@@ -58,8 +62,9 @@ round. Exempt such tools with `loopKey: false` (or a `loopKey` returning `null`
 for the call). This class was invisible to the detector before, so no existing
 exemption covered it.
 
-No API surface changed — `doomLoop` is configured exactly as before. What
-changed is when it fires:
+For `callModel` users, nothing to change — `doomLoop` is configured exactly as
+before, and the engine declares each round for you. What changed is when it
+fires:
 
 ```ts
 import { callModel } from '@openrouter/agent';
@@ -89,3 +94,31 @@ const result = callModel(client, {
 // `loopKey` still runs exactly once per checked call, and persisted
 // `ConversationState.doomLoop` is byte-identical to before.
 ```
+
+Driving `DoomLoopMonitor` directly (or porting it) is the case that needs the
+new call — declare a round's whole batch before recording any of it:
+
+```ts
+import { DoomLoopMonitor } from '@openrouter/agent';
+
+for (const [round, batch] of batches.entries()) {
+  // NEW: declare the round's complete set BEFORE recording any of its calls.
+  // Without this a multi-call round is scored per call, so a repeating fan-out
+  // accumulates only on whichever call is recorded last — and which one that
+  // is depends on emission order.
+  await monitor.declareRound(
+    round,
+    batch.map((call) => ({ toolName: call.name, keyMaterial: call.arguments })),
+  );
+
+  for (const call of batch) {
+    const { verdict } = await monitor.recordToolCall(call.name, call.arguments, round);
+    if (verdict?.action === 'block') refuse(call, verdict.message);
+  }
+}
+```
+
+Note for direct users: `DoomLoopMonitor` is exported but its config resolver is
+not, so constructing one outside `callModel` means hand-building the resolved
+config shape. That predates this change and is unrelated to `declareRound`;
+worth exporting `resolveDoomLoopOption` as a follow-up.

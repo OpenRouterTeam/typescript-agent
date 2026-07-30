@@ -440,12 +440,19 @@ block to observe for a known-chatty tool, or escalate straight to stop.
   `read(a)` reissued alongside a different second call every round
   (`[a,b]`, `[a,c]`, `[a,d]`) never accumulates. This is the flip side of
   "a changed member is progress"; a model retrying one failing call while
-  probing around it is not caught.
-- **Fan-outs on paths that can't declare a round up front.** Server-tool
-  records (web search, advisor) are recorded as the response streams, so
-  their round membership isn't known in advance and they fall back to
-  per-call identity — a repeating server-tool *fan-out* goes unseen, though
-  a repeated single call still trips.
+  probing around it is not caught. Applies to *declared* rounds — i.e.
+  every batch the tool loop executes.
+- **Order-dependent scoring where a round can't be declared up front.**
+  Server-tool records (web search, advisor) arrive as the response streams,
+  so their membership isn't known in advance and they are scored per call
+  rather than per set. A repeating multi-call round there still accumulates,
+  but only on whichever call is recorded *last* — so the verdict lands on one
+  member, which member depends on emission order, and a repeat inside a
+  varying round *does* accumulate if it happens to be last
+  (`[a,b]`, `[c,b]`, `[d,b]` trips on `b`). Server-tool verdicts cannot
+  `block`, but they can reach `stop`. Client tool calls always go through a
+  declared round, so this affects server tools and direct
+  `DoomLoopMonitor` callers only.
 
 ### Tool Approval
 
