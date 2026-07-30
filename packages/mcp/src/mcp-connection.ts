@@ -213,12 +213,13 @@ export async function connect(options: ConnectOptions): Promise<MCPConnection> {
       }),
     });
   } catch (httpErr) {
-    // Release the failed client's transport. The SDK closes it when the probe
-    // or the `initialize` handshake rejects, but not when `transport.start()`
-    // itself throws — there it has already stored the transport and returns
-    // without teardown, leaking a keep-alive socket. `close()` is idempotent
-    // (`this._transport?.close()`, and each transport guards on a `_closed`
-    // flag), so covering the one uncovered path cannot double-close the others.
+    // Release the failed client's transport. The SDK cleans up after a failed
+    // probe or `initialize` handshake, but not when `transport.start()` itself
+    // throws: the base connect stores the transport before starting it and
+    // propagates without teardown, leaving a keep-alive socket open. Releasing
+    // unconditionally is safe on the paths the SDK already handles — see
+    // `releaseFailedClient`, which tolerates any close outcome rather than
+    // depending on what the SDK does internally.
     await releaseFailedClient(client);
     if (options.transport === 'streamableHttp') {
       throw new MCPConnectionError('Failed to connect over Streamable HTTP', {

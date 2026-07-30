@@ -5,7 +5,7 @@ import type { SerializedMCPServer } from './cache/cache-types.js';
 import { isSerializedMCPServer } from './cache/cache-types.js';
 import { MCPCacheError, MCPStaleSnapshotError } from './errors.js';
 import { freshConnect, makeHandle } from './handle.js';
-import type { MCPConnection } from './mcp-connection.js';
+import type { ConnectOptions, MCPConnection } from './mcp-connection.js';
 import { connect } from './mcp-connection.js';
 import type { UnconvertibleSchemaMode } from './schema/json-schema-to-zod.js';
 import type { McpToolDef } from './tool-wrapper.js';
@@ -171,6 +171,77 @@ function toCreateOptions(
 }
 
 /**
+ * Connect options for the snapshot-replay path.
+ *
+ * Distinct from {@link toCreateOptions}, which builds the *fallback*
+ * `createMCPTools` options: this one carries the snapshot's own `transport` and
+ * `sessionId` because the point is to re-establish the connection the snapshot
+ * describes, and it deliberately omits the tool-shaping keys, which are applied
+ * by `makeHandle` rather than at connect time.
+ */
+function toReplayConnectOptions(args: {
+  options: RehydrateMCPToolsOptions;
+  snapshot: SerializedMCPServer;
+  url: URL;
+  effectiveAuth: MCPAuth | undefined;
+}): ConnectOptions {
+  const { options, snapshot, url, effectiveAuth } = args;
+  return {
+    url,
+    transport: snapshot.transport,
+    ...(effectiveAuth !== undefined && {
+      auth: effectiveAuth,
+    }),
+    ...(options.fetch !== undefined && {
+      fetch: options.fetch,
+    }),
+    ...(options.clientInfo !== undefined && {
+      clientInfo: options.clientInfo,
+    }),
+    ...(snapshot.sessionId !== undefined && {
+      sessionId: snapshot.sessionId,
+    }),
+    ...(options.onElicitation !== undefined && {
+      onElicitation: options.onElicitation,
+    }),
+    ...(options.protocolNegotiation !== undefined && {
+      protocolNegotiation: options.protocolNegotiation,
+    }),
+  };
+}
+
+/**
+ * Re-list tools on a handle built from a snapshot older than the caller's
+ * `staleness.maxAgeMs`.
+ *
+ * Reached only when `reconnectOnExpiry` is false — otherwise a stale snapshot
+ * has already gone to `freshConnect`. Re-listing over the connection just opened
+ * honours `maxAgeMs` without the reconnect the caller declined: "stale" means the
+ * tool set needs re-reading, not that the transport needs rebuilding.
+ * `refresh()` also clears the carried `cachedAt`, so the write-back records the
+ * new age rather than carrying the snapshot's forward.
+ */
+async function refreshStaleReplay(handle: MCPToolsHandle): Promise<void> {
+  try {
+    await handle.refresh();
+  } catch (refreshErr) {
+    // The connection is live and the snapshot's tools would work, but they are
+    // older than the caller's own `maxAgeMs` — serving them anyway is exactly the
+    // unbounded-age bug that check exists to prevent, so fail instead. Named
+    // after staleness rather than reusing the generic rehydrate wording, because
+    // the rehydrate itself succeeded and a reader chasing "failed to rehydrate"
+    // would look in the wrong place.
+    await handle.close().catch(() => {});
+    throw new MCPStaleSnapshotError(
+      'Snapshot is older than staleness.maxAgeMs and re-listing tools failed',
+      {
+        cause: refreshErr,
+      },
+    );
+  }
+}
+
+/**
  * Rebuild an {@link MCPToolsHandle} from a cached snapshot. On the happy path we
  * reconnect the transport and rebuild tools directly from the snapshot —
  * skipping `listTools()`. If cached tokens are expired, credentials are missing,
@@ -213,28 +284,14 @@ export async function rehydrateMCPTools(
   // a post-connect failure has something to close.
   let connection: MCPConnection | undefined;
   try {
-    connection = await connect({
-      url,
-      transport: snapshot.transport,
-      ...(effectiveAuth !== undefined && {
-        auth: effectiveAuth,
+    connection = await connect(
+      toReplayConnectOptions({
+        options,
+        snapshot,
+        url,
+        effectiveAuth,
       }),
-      ...(options.fetch !== undefined && {
-        fetch: options.fetch,
-      }),
-      ...(options.clientInfo !== undefined && {
-        clientInfo: options.clientInfo,
-      }),
-      ...(snapshot.sessionId !== undefined && {
-        sessionId: snapshot.sessionId,
-      }),
-      ...(options.onElicitation !== undefined && {
-        onElicitation: options.onElicitation,
-      }),
-      ...(options.protocolNegotiation !== undefined && {
-        protocolNegotiation: options.protocolNegotiation,
-      }),
-    });
+    );
 
     // Rebuild tools from the snapshot — no listTools() round-trip.
     const handle = await makeHandle({
@@ -251,32 +308,8 @@ export async function rehydrateMCPTools(
       replayedCachedAt: snapshot.cachedAt,
     });
 
-    // A stale snapshot that skipped `freshConnect` above (because
-    // `reconnectOnExpiry` is false) still must not be replayed as-is: the
-    // caller asked for bounded-age tools. Re-list over the connection we just
-    // opened, which honours `staleness.maxAgeMs` without the reconnect they
-    // opted out of — "stale" means the tool set needs re-reading, not that the
-    // transport needs rebuilding. `refresh()` also clears the carried
-    // `cachedAt`, so the write-back records the new age.
     if (staleSnapshot) {
-      try {
-        await handle.refresh();
-      } catch (refreshErr) {
-        // The connection is live and the snapshot's tools would work, but they
-        // are older than the caller's own `maxAgeMs` — serving them anyway is
-        // exactly the unbounded-age bug this check exists to prevent, so fail
-        // instead. The message names staleness specifically rather than reusing
-        // the generic rehydrate wording below, because the rehydrate itself
-        // succeeded and a reader chasing "failed to rehydrate" would look in the
-        // wrong place.
-        await handle.close().catch(() => {});
-        throw new MCPStaleSnapshotError(
-          'Snapshot is older than staleness.maxAgeMs and re-listing tools failed',
-          {
-            cause: refreshErr,
-          },
-        );
-      }
+      await refreshStaleReplay(handle);
     }
 
     return handle;
