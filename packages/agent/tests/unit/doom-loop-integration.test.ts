@@ -1069,4 +1069,53 @@ describe('doom-loop state persistence', () => {
     const roundTripped = JSON.parse(JSON.stringify(state)) as ConversationState<readonly Tool[]>;
     expect(roundTripped.doomLoop).toEqual(state.doomLoop);
   });
+
+  it('invokes a tool-supplied loopKey exactly once per call', async () => {
+    /*
+     * `loopKey` is user code: it may count, log, or return a fresh value each
+     * time. Declaring a round's identity up front resolves it once for the
+     * batch, and the per-call checkpoint must reuse that resolution rather
+     * than invoking the callback a second time — otherwise a callback with
+     * side effects sees double the activity, and a non-repeatable one makes
+     * the declared and recorded identities disagree.
+     */
+    const loopKeySpy = vi.fn(({ query }: { query: string }) => query.trim().toLowerCase());
+    const countedSearch = tool({
+      name: 'web_search',
+      inputSchema: z.object({
+        query: z.string(),
+      }),
+      outputSchema: z.object({
+        results: z.array(z.string()),
+      }),
+      loopKey: loopKeySpy,
+      execute: async ({ query }) => ({
+        results: [
+          `result for ${query}`,
+        ],
+      }),
+    });
+
+    scriptModelTurns(
+      toolCallTurn('web_search', {
+        query: 'first',
+      }),
+      toolCallTurn('web_search', {
+        query: 'second',
+      }),
+      textTurn('Done.'),
+    );
+
+    await callModel(client, {
+      model: 'test-model',
+      input: 'Search twice.',
+      tools: [
+        countedSearch,
+      ] as const,
+      doomLoop: true,
+    }).getText();
+
+    /* Two calls issued, so exactly two invocations — not four. */
+    expect(loopKeySpy).toHaveBeenCalledTimes(2);
+  });
 });

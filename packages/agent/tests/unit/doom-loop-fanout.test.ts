@@ -419,6 +419,71 @@ describe('same-tool fan-out streaks', () => {
     expect(fresh.verdict).toBeUndefined();
   });
 
+  it('does not let a call outside the declared set inherit the round streak', async () => {
+    /*
+     * `declareRound` drops a call whose key material is unhashable (bigint,
+     * NaN, circular), but at record time that call still resolves an identity
+     * through the caller's fallback chain. Sharing the round's streak is keyed
+     * on the call being a MEMBER of the declaration, not merely on the tool
+     * having one — otherwise the dropped call inherits the round's accumulated
+     * count and can be blocked on its first ever appearance, which is the
+     * failure mode declared/undeclared scoring exists to prevent.
+     */
+    const detector = monitor();
+    const hashable = {
+      path: 'a',
+    };
+    /* Establish a streak on the declared member across two rounds. */
+    for (const round of [
+      0,
+      1,
+    ]) {
+      await detector.declareRound(round, [
+        {
+          toolName: 'read',
+          keyMaterial: hashable,
+        },
+        /* Unhashable: dropped from the declared set. */
+        {
+          toolName: 'read',
+          keyMaterial: {
+            size: 1n,
+          },
+        },
+      ]);
+      await detector.recordToolCall('read', hashable, round);
+    }
+
+    /* Round 2: the declared member repeats, then the dropped call arrives. */
+    await detector.declareRound(2, [
+      {
+        toolName: 'read',
+        keyMaterial: hashable,
+      },
+      {
+        toolName: 'read',
+        keyMaterial: {
+          size: 1n,
+        },
+      },
+    ]);
+    const member = await detector.recordToolCall('read', hashable, 2);
+    /* Recorded with a fallback identity, as the engine would. */
+    const dropped = await detector.recordToolCall(
+      'read',
+      {
+        size: 'fallback-identity',
+      },
+      2,
+    );
+
+    /* The real repeat accumulates. */
+    expect(member.streak).toBe(3);
+    /* The non-member does not inherit it. */
+    expect(dropped.streak).toBe(1);
+    expect(dropped.verdict).toBeUndefined();
+  });
+
   it('gives every call of a repeating round the SAME message so steer dedupes', async () => {
     /*
      * `queueDoomLoopSteer` dedupes queued guidance by exact message text. Now

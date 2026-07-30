@@ -18,5 +18,14 @@ a repeat — a round that adds new work is progress, not repetition. Every call 
 a repeating round reports that round's streak, so at the block rung a repeating
 fan-out stops spending rather than only its last call being refused.
 
+Paths that cannot know a round's membership up front — server-tool records, and
+direct/port callers — are scored per call against the previous round, the same
+as before this change: a fan-out there goes undetected rather than mis-scored.
+
 Single-call rounds, in-round duplicate collapsing, resumed streaks, persisted
-state shape, and verdict payloads are unchanged.
+state shape, verdict payloads, and the number of times a tool's `loopKey` is
+invoked (once per call) are unchanged.
+
+Known limit, unchanged by this fix: a call that repeats inside a round whose
+other members keep varying (`[a,b]`, `[a,c]`, `[a,d]`) does not accumulate,
+since round identity requires the whole set to match.

@@ -22,6 +22,7 @@ import type {
   DoomLoopOption,
   DoomLoopSerializedState,
   DoomLoopVerdict,
+  LoopKeyResolution,
   ResolvedEscalationConfig,
 } from './doom-loop.js';
 import { DoomLoopMonitor, resolveDoomLoopOption, resolveLoopKeyMaterial } from './doom-loop.js';
@@ -533,6 +534,12 @@ export class ModelResult<
       message?: string;
     }
   >();
+  // Loop-key resolutions computed while declaring the current round, keyed by
+  // tool-call id. A `loopKey` function is user code that may count, log, or
+  // return something different each time, so it must run at most once per
+  // call: the per-call checkpoint reuses what the declaration resolved instead
+  // of resolving again. Cleared with the round.
+  private readonly doomLoopRoundKeyMaterial = new Map<string, LoopKeyResolution>();
   // Serialization chain for doom evaluations: parallel tool executions
   // append their evaluation here in call order (the .map() over a round's
   // calls runs synchronously to the first await), so streak recording
@@ -1307,6 +1314,7 @@ export class ModelResult<
     }
     this.doomLoopRound++;
     this.doomLoopRoundDecisions.clear();
+    this.doomLoopRoundKeyMaterial.clear();
 
     const declared: {
       toolName: string;
@@ -1329,6 +1337,11 @@ export class ModelResult<
         tool !== undefined && isClientTool(tool) ? tool.function.loopKey : undefined,
         (toolCall.arguments ?? {}) as Record<string, unknown>,
       );
+      // Cache so the per-call checkpoint does not invoke `loopKey` a second
+      // time; keyed by call id, which is unique within a round.
+      if (toolCall.id !== undefined) {
+        this.doomLoopRoundKeyMaterial.set(String(toolCall.id), resolution);
+      }
       if (resolution.kind === 'exempt') {
         continue;
       }
@@ -1501,8 +1514,20 @@ export class ModelResult<
     // arguments, so what remains is the parsed record (or null/undefined for
     // no-args calls — coerced to {} the same way the PreToolUse payload is).
     const callArguments = (toolCall.arguments ?? {}) as Record<string, unknown>;
-    const loopKey = isClientTool(tool) ? tool.function.loopKey : undefined;
-    const resolution = resolveLoopKeyMaterial(loopKey, callArguments);
+    /*
+     * Reuse what `beginDoomLoopRound` resolved for this call when it declared
+     * the round. `loopKey` is user code — it may count, log, or return a fresh
+     * value each time — so it must run at most once per call. Resolving here
+     * as well would double-invoke it and, for a non-repeatable callback, make
+     * the declared identity and the recorded identity disagree.
+     */
+    const cached =
+      toolCall.id !== undefined
+        ? this.doomLoopRoundKeyMaterial.get(String(toolCall.id))
+        : undefined;
+    const resolution =
+      cached ??
+      resolveLoopKeyMaterial(isClientTool(tool) ? tool.function.loopKey : undefined, callArguments);
     if (resolution.kind === 'exempt') {
       return {
         blocked: false,

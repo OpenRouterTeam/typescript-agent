@@ -285,11 +285,24 @@ if (verdict) console.warn(verdict.message);
 
 Detection is **deterministic** — a verdict is a pure function of the
 transcript, so the same sequence of calls/text always fires at the same
-point. Identical calls in consecutive **rounds** build a per-tool streak:
-interleaved calls to *other* tools don't reset it, and N identical calls
-fanned out in parallel within ONE round count once (a streak measures the
-model re-issuing a call *after seeing its result*, which requires a round
-trip). The streak crosses a graduated ladder — strongest crossed rung wins:
+point. Repeated **rounds** build a per-tool streak: interleaved calls to
+*other* tools don't reset it, and N identical calls fanned out in parallel
+within ONE round count once (a streak measures the model re-issuing a call
+*after seeing its result*, which requires a round trip).
+
+A round's identity for one tool is the **set** of calls it made, not its last
+call, so a fan-out of *distinct* arguments reissued verbatim counts:
+`read(a), read(b), read(c)` every round accumulates a streak. Ordering within
+the round is irrelevant, and a round whose membership *changes* — in either
+direction — resets the streak to 1, since adding or dropping work is progress
+rather than repetition. One consequence worth knowing: a call that repeats
+inside a round whose other members keep changing (`[a,b]`, `[a,c]`, `[a,d]`)
+does **not** accumulate, because the round differs each time.
+
+When a repeating fan-out crosses a rung, every call in the round gets the
+verdict (so `block` stops the whole fan-out, not just one member) and they
+share one message, so the `steer` rung injects a single correction. The streak
+crosses a graduated ladder — strongest crossed rung wins:
 
 | Action | Effect |
 |---|---|
@@ -411,6 +424,16 @@ block to observe for a known-chatty tool, or escalate straight to stop.
 - **Manual/client-executed calls** pause the loop for the caller and are
   not recorded (only executed, blocked, and parse-error calls are
   evidence).
+- **A repeat inside a varying round.** Round identity is the whole set, so
+  `read(a)` reissued alongside a different second call every round
+  (`[a,b]`, `[a,c]`, `[a,d]`) never accumulates. This is the flip side of
+  "a changed member is progress"; a model retrying one failing call while
+  probing around it is not caught.
+- **Fan-outs on paths that can't declare a round up front.** Server-tool
+  records (web search, advisor) are recorded as the response streams, so
+  their round membership isn't known in advance and they fall back to
+  per-call identity — a repeating server-tool *fan-out* goes unseen, though
+  a repeated single call still trips.
 
 ### Tool Approval
 
@@ -519,7 +542,7 @@ const result = callModel(client, { model, input, tools, hooks });
 | `SessionStart` | Once per run, before the initial request. `config` summarizes the session (`hasTools`, `hasApproval`, `hasState`) | none (void) |
 | `SessionEnd` | Once per run, on every exit path — completion, approval pause, interruption, error, and the no-tools streaming paths. `reason` is `'complete' \| 'error' \| 'max_turns' \| 'user' \| 'doom_loop'`. When at least one model call completed, `totalUsage` aggregates tokens/cost across all of them (`modelCalls`, `inputTokens`, `outputTokens`, `totalTokens`, `cachedTokens`, `reasoningTokens`, and `cost` when the server reported it) | none (void) |
 | `PostModelCall` | Once per completed model response, on **every** request the loop makes — initial, each tool-round follow-up, the empty-final retry, the `allowFinalResponse` final turn, and approval-resume requests. Payload: `responseId` (the OpenRouter generation id), `model`, `durationMs` (dispatch → fully materialized response, including stream consumption), `turnType` (`'initial' \| 'resume' \| 'tool_round' \| 'final' \| 'retry'`), `turnNumber`, and `usage` (`inputTokens`, `outputTokens`, `totalTokens`, `cachedTokens`, `reasoningTokens`, `cost?`) when the server reported usage accounting. Purely observational — the telemetry primitive for tracing/benchmark consumers: one span per model call | none (void) |
-| `DoomLoopDetected` | Every time doom-loop detection crosses a ladder rung, once per `(tool, fingerprint)` per round — parallel duplicates in one round share the event (requires the `doomLoop` option). Payload: `detector` (`'tool-fingerprint' \| 'server-tool-fingerprint' \| 'text-repetition' \| 'text-streak'`), the resolved `action` (`'observe' \| 'steer' \| 'escalate' \| 'block' \| 'stop'`), the `streak`, the `fingerprint`, `toolName`/`toolInput` for tool verdicts, and the explanatory `message` | `overrideAction` replaces the engine's resolved action for this event (last handler wins); `block` on a text or server-tool verdict downgrades to `observe`; `escalate` without an `escalation` config or remaining budget downgrades to `observe` |
+| `DoomLoopDetected` | Every time doom-loop detection crosses a ladder rung, once per `(tool, fingerprint)` per round — *identical* parallel duplicates in one round share the event, but a repeating fan-out of DISTINCT arguments emits one event per member, since each is its own `(tool, fingerprint)` (requires the `doomLoop` option). Payload: `detector` (`'tool-fingerprint' \| 'server-tool-fingerprint' \| 'text-repetition' \| 'text-streak'`), the resolved `action` (`'observe' \| 'steer' \| 'escalate' \| 'block' \| 'stop'`), the `streak`, the `fingerprint`, `toolName`/`toolInput` for tool verdicts, and the explanatory `message` | `overrideAction` replaces the engine's resolved action for this event (last handler wins); `block` on a text or server-tool verdict downgrades to `observe`; `escalate` without an `escalation` config or remaining budget downgrades to `observe` |
 
 Notes on lifecycle pairing: `SessionEnd` only fires when a matching
 `SessionStart` succeeded, and at most once per run. Pending async hook work is

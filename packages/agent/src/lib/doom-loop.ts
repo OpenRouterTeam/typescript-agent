@@ -1080,9 +1080,19 @@ export class DoomLoopMonitor {
       this.declaredRound?.round === round
         ? this.declaredRound.fingerprints.get(toolName)
         : undefined;
-    const roundFingerprints = declared ?? [
-      fingerprint,
-    ];
+    /*
+     * A declaration only speaks for the calls it actually contains. A call
+     * whose key material was unhashable at declaration time was dropped from
+     * the set, but still resolves an identity at record time via the caller's
+     * fallback chain — it must not be scored as part of the round, or it would
+     * inherit the round's count and could be blocked on its first appearance.
+     */
+    const declaredMember = declared?.includes(fingerprint) === true;
+    const roundFingerprints = declaredMember
+      ? (declared as readonly string[])
+      : [
+          fingerprint,
+        ];
 
     const seen = isSameRound ? (previous?.seenThisRound ?? []) : [];
     const duplicateInRound = seen.includes(fingerprint);
@@ -1092,11 +1102,12 @@ export class DoomLoopMonitor {
      * When the round was declared, every call in it scores the SAME streak —
      * a repeating fan-out is one piece of evidence per round, and the ladder
      * applies to the round as a unit rather than to whichever call happened to
-     * complete the match. Undeclared rounds have no shared set to inherit, so
-     * each call is compared individually (per-call semantics, as before).
+     * complete the match. Calls outside a declaration (undeclared rounds, or a
+     * member dropped as unhashable) have no shared set to inherit, so each is
+     * compared individually (per-call semantics, as before).
      */
     let streak: number;
-    if (isSameRound && previous && declared !== undefined) {
+    if (isSameRound && previous && declaredMember) {
       streak = previous.streak;
     } else {
       const priorSet = isSameRound
