@@ -1329,6 +1329,32 @@ export class ModelResult<
       keyMaterial: unknown;
     }[] = [];
     for (const toolCall of batch) {
+      const tool = this.options.tools?.find(
+        (t) => isClientTool(t) && t.function.name === toolCall.name,
+      );
+      /*
+       * Never checked => never recorded => must not be declared. Declaring a
+       * call that never arrives inflates the round's identity: a sibling that
+       * IS recorded gets scored against a set containing a phantom member, and
+       * the streak resets spuriously once the phantom stops appearing (e.g. the
+       * model drops a malformed call while still repeating the valid one).
+       * Keeping `loopKey` from running for such a call is the same check.
+       *
+       * This gate deliberately precedes the malformed-arguments branch below:
+       * a raw-string call to an unknown or manual tool is still never recorded.
+       */
+      if (tool === undefined || !isAutoResolvableTool(tool)) {
+        continue;
+      }
+      /*
+       * Same reasoning for a call the PermissionRequest hook denied without
+       * pausing: `hookDeniedCalls` is populated before the round begins, and
+       * `runToolWithHooks` synthesizes the rejection before reaching the
+       * doom-loop checkpoint, so the call is never recorded either.
+       */
+      if (toolCall.id !== undefined && this.hookDeniedCalls.has(String(toolCall.id))) {
+        continue;
+      }
       const rawArgs: unknown = toolCall.arguments;
       if (typeof rawArgs === 'string') {
         // Malformed call: its identity is the raw string (see runToolWithHooks).
@@ -1336,13 +1362,6 @@ export class ModelResult<
           toolName: String(toolCall.name),
           keyMaterial: rawArgs,
         });
-        continue;
-      }
-      const tool = this.options.tools?.find(
-        (t) => isClientTool(t) && t.function.name === toolCall.name,
-      );
-      // Never checked => never recorded => `loopKey` must not run for it.
-      if (tool === undefined || !isAutoResolvableTool(tool)) {
         continue;
       }
       const resolution = resolveLoopKeyMaterial(

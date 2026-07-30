@@ -557,6 +557,75 @@ describe('same-tool fan-out streaks', () => {
     expect(await streaksFor(true)).toEqual(expected);
   });
 
+  it('resets a streak when a declared-but-never-recorded member disappears', async () => {
+    /*
+     * Pins WHY the engine must not declare a call it will never record (a
+     * manual tool, a PermissionRequest denial, a malformed call to either).
+     * Such a member is a phantom: it inflates the round's identity, so the
+     * sibling that IS recorded gets scored against a set it never matches on
+     * its own — and the streak resets the moment the phantom stops being
+     * emitted, even though the recorded call never changed.
+     *
+     * This test drives the monitor directly with an over-broad declaration to
+     * show the consequence; `beginDoomLoopRound` is what prevents it, by
+     * filtering the batch through `isAutoResolvableTool` and `hookDeniedCalls`
+     * before declaring.
+     */
+    const detector = monitor();
+    const streaks: number[] = [];
+    for (const round of [
+      0,
+      1,
+      2,
+      3,
+    ]) {
+      /* Rounds 0-1 declare a phantom alongside the real call; 2-3 do not. */
+      const declaredCalls = [
+        {
+          toolName: 'read',
+          keyMaterial: {
+            path: 'a',
+          },
+        },
+        ...(round < 2
+          ? [
+              {
+                toolName: 'read',
+                keyMaterial: {
+                  path: 'phantom',
+                },
+              },
+            ]
+          : []),
+      ];
+      await detector.declareRound(round, declaredCalls);
+      /* Only the real call is ever recorded. */
+      streaks.push(
+        (
+          await detector.recordToolCall(
+            'read',
+            {
+              path: 'a',
+            },
+            round,
+          )
+        ).streak,
+      );
+    }
+
+    /*
+     * The recorded call was identical in all four rounds, yet the streak
+     * restarts at round 2 when the phantom disappears. An over-broad
+     * declaration therefore costs real detection — hence the filtering.
+     */
+    expect(streaks).toEqual([
+      1,
+      2,
+      1,
+      2,
+    ]);
+  });
+
   it('holds an unhashable call at streak 1 without stalling its round-mates', async () => {
     /*
      * Bounds the cost of an unhashable argument. Such a call is compared
