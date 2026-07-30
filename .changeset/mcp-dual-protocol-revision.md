@@ -134,8 +134,8 @@ try {
 } catch (err) {
   if (err instanceof MCPConnectionError) {
     console.error('last attempt:', err.cause);
-    // Both the Streamable HTTP and SSE failures, in attempt order. Empty when
-    // only one transport was tried.
+    // Every attempt's failure, flat and in order — a single-attempt failure
+    // contributes its one underlying error, so this is never empty.
     for (const attempt of err.errors) {
       console.error('attempt:', attempt);
     }

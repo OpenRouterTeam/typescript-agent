@@ -97,8 +97,7 @@ export class MCPStaleSnapshotError extends MCPCacheError {
  */
 export class MCPConnectionError extends MCPError {
   /**
-   * Every failure behind this one, in attempt order, when more than one transport
-   * was tried.
+   * Every failure behind this one, in attempt order.
    *
    * `cause` holds only the last attempt, which loses information: an
    * `UnauthorizedError` from the Streamable HTTP attempt matters even when the
@@ -106,7 +105,11 @@ export class MCPConnectionError extends MCPError {
    * SSE endpoint answering 404). Named `errors` to match `AggregateError`, so it
    * reads the way callers expect rather than as a bespoke field.
    *
-   * Empty when only one transport was attempted.
+   * Always populated: a single-attempt failure contributes its one underlying
+   * error, so `errors[errors.length - 1]` and `cause` agree and a caller can
+   * iterate `errors` alone without special-casing the single-attempt shape —
+   * which matters most on the auth short-circuit, where exactly one attempt was
+   * made and its rejection is the thing worth finding.
    */
   readonly errors: readonly unknown[];
 
@@ -119,6 +122,14 @@ export class MCPConnectionError extends MCPError {
   ) {
     super(message, options);
     this.name = 'MCPConnectionError';
-    this.errors = options?.errors ?? [];
+    // Default a single-attempt failure to its own cause, so `errors` is a
+    // uniform "every attempt" list rather than empty-unless-multi.
+    this.errors =
+      options?.errors ??
+      (options?.cause !== undefined
+        ? [
+            options.cause,
+          ]
+        : []);
   }
 }

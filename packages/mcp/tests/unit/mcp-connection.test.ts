@@ -937,6 +937,28 @@ describe('legacy degradation under an implicit auto default', () => {
    * `isAuthFailure` didn't match — and someone debugging an unreachable server
    * would be reading a partial record while the docs promised a complete one.
    */
+  /**
+   * `errors` is never empty — a single-attempt failure carries its own cause.
+   *
+   * The auth short-circuit rethrows the first pass's error untouched, and for a
+   * single-transport pass that error used to have `errors: []` while the docs
+   * promised "every underlying failure". A caller iterating `errors` alone saw
+   * nothing precisely in the auth case, where the rejection is the one thing
+   * worth finding.
+   */
+  it('populates errors even on the single-attempt auth short-circuit', async () => {
+    state.authFailure = true;
+
+    const err = await connect({
+      url: URL_UNDER_TEST,
+    }).catch((e: unknown) => e);
+
+    expect(err).toBeInstanceOf(MCPConnectionError);
+    const { errors } = err as MCPConnectionError;
+    expect(errors).toHaveLength(1);
+    expect(errors[0]).toBeInstanceOf(FakeUnauthorizedError);
+  });
+
   it('reports every attempt across both negotiation passes', async () => {
     state.failing.add('streamableHttp');
     state.failing.add('sse');
