@@ -1,9 +1,14 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { MCPCacheError } from '../../src/errors.js';
 import type { ConnectOptions, MCPConnection } from '../../src/mcp-connection.js';
 
 // Capture the options every `connect` call receives so we can assert on the auth
 // that rehydrate forwards into the transport.
 const connectCalls: ConnectOptions[] = [];
+
+// How many of those connections were closed. Guards the replay path's teardown:
+// a failure after `connect()` must not leave the transport open.
+let closeCount = 0;
 
 vi.mock('../../src/mcp-connection.js', () => ({
   connect: (options: ConnectOptions): Promise<MCPConnection> => {
@@ -23,7 +28,10 @@ vi.mock('../../src/mcp-connection.js', () => ({
       } as never,
       transport: 'streamableHttp',
       setToolListChangedHandler: () => {},
-      close: () => Promise.resolve(),
+      close: () => {
+        closeCount += 1;
+        return Promise.resolve();
+      },
     };
     return Promise.resolve(connection);
   },
@@ -84,6 +92,7 @@ function nameOf(tool: unknown): string | undefined {
 describe('rehydrateMCPTools', () => {
   beforeEach(() => {
     connectCalls.length = 0;
+    closeCount = 0;
   });
 
   it('applies toolNamePrefix and excludeTools on a cache hit', async () => {
@@ -132,6 +141,7 @@ describe('rehydrateMCPTools', () => {
 describe('staleness on the direct rehydrate path', () => {
   beforeEach(() => {
     connectCalls.length = 0;
+    closeCount = 0;
   });
 
   it('replays a snapshot that is within maxAgeMs', async () => {
@@ -212,6 +222,39 @@ describe('staleness on the direct rehydrate path', () => {
     await handle.close();
   });
 
+  /**
+   * The replay path opens a connection, so a failure after that point has to
+   * tear it down — otherwise the transport (HTTP keep-alive / SSE stream) leaks
+   * for the process lifetime, and a service that retries exhausts its sockets.
+   * `freshConnect` already guarantees this on the cold path; this is the replay
+   * path's mirror. A caller's `cache.store.set` throwing during the initial
+   * write-back is the cheapest way in.
+   */
+  it('closes the replay connection when the initial cache write fails', async () => {
+    const failingStore = {
+      get: () => Promise.resolve(undefined),
+      set: () => Promise.reject(new Error('disk full')),
+      delete: () => Promise.resolve(),
+    };
+
+    await expect(
+      rehydrateMCPTools({
+        snapshot: snapshotWithHeaders(),
+        cache: {
+          store: failingStore,
+          key: 'warm',
+        },
+        // Without this the failure falls back to freshConnect, which opens its
+        // own connection and muddies the count.
+        reconnectOnExpiry: false,
+      }),
+    ).rejects.toThrow(MCPCacheError);
+
+    // One connection opened for the replay, and it was closed rather than leaked.
+    expect(connectCalls).toHaveLength(1);
+    expect(closeCount).toBe(1);
+  });
+
   it('still replays a fresh snapshot when reconnectOnExpiry is false', async () => {
     const snapshot = snapshotWithHeaders();
     snapshot.cachedAt = Date.now() - 1_000;
@@ -245,6 +288,7 @@ describe('staleness on the direct rehydrate path', () => {
 describe('replay preserves snapshot age', () => {
   beforeEach(() => {
     connectCalls.length = 0;
+    closeCount = 0;
   });
 
   it('does not restamp cachedAt when tool defs come from a snapshot', async () => {

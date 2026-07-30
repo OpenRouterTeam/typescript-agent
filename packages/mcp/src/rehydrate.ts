@@ -5,6 +5,7 @@ import type { SerializedMCPServer } from './cache/cache-types.js';
 import { isSerializedMCPServer } from './cache/cache-types.js';
 import { MCPCacheError } from './errors.js';
 import { freshConnect, makeHandle } from './handle.js';
+import type { MCPConnection } from './mcp-connection.js';
 import { connect } from './mcp-connection.js';
 import type { UnconvertibleSchemaMode } from './schema/json-schema-to-zod.js';
 import type { McpToolDef } from './tool-wrapper.js';
@@ -207,8 +208,12 @@ export async function rehydrateMCPTools(
     return freshConnect(createOptions, url, cacheKey);
   }
 
+  // Held outside the `try` so the `catch` can tear it down. `connect()` releases
+  // its own client when it fails, so this stays undefined on that path and only
+  // a post-connect failure has something to close.
+  let connection: MCPConnection | undefined;
   try {
-    const connection = await connect({
+    connection = await connect({
       url,
       transport: snapshot.transport,
       ...(effectiveAuth !== undefined && {
@@ -259,6 +264,13 @@ export async function rehydrateMCPTools(
 
     return handle;
   } catch (err) {
+    // Tear down the replay connection before leaving this path, mirroring
+    // `freshConnect`'s guarantee in handle.ts. Whether we fall back (which opens
+    // its own connection) or rethrow, nothing else holds a reference to this
+    // one, so without the close its transport leaks. Reachable via `buildTools`
+    // rejecting on a duplicate tool name, a caller's `cache.store.set` throwing
+    // during the initial write, or the stale re-list above failing.
+    await connection?.close().catch(() => {});
     if (reconnectOnExpiry) {
       return freshConnect(createOptions, url, cacheKey);
     }
