@@ -7,7 +7,7 @@ import { closeQuietly } from './close-quietly.js';
 import { MCPCacheError, MCPCacheWriteError, MCPStaleSnapshotError } from './errors.js';
 import { freshConnect, makeHandle } from './handle.js';
 import type { ConnectOptions, MCPConnection } from './mcp-connection.js';
-import { connect } from './mcp-connection.js';
+import { connect, isAuthFailure } from './mcp-connection.js';
 import type { UnconvertibleSchemaMode } from './schema/json-schema-to-zod.js';
 import type { McpToolDef } from './tool-wrapper.js';
 import type {
@@ -349,7 +349,12 @@ export async function rehydrateMCPTools(
     if (connection !== undefined) {
       await closeQuietly(connection);
     }
-    if (reconnectOnExpiry) {
+    // The fallback is a third reconnect layer, and it reuses the same auth. If
+    // the replay's connect ended in a credential rejection, `freshConnect` would
+    // re-drive the OAuth flow — a third `redirectToAuthorization` behind the two
+    // layers below that already guard against exactly this. Rejected credentials
+    // are not something a fresh connection fixes.
+    if (reconnectOnExpiry && !isAuthFailure(err)) {
       return freshConnect(createOptions, url, cacheKey);
     }
     throw new MCPCacheError('Failed to rehydrate MCP connection from snapshot', {

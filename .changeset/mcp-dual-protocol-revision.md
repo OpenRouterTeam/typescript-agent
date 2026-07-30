@@ -90,6 +90,38 @@ await createMCPTools({
 });
 ```
 
+Cache writes are best-effort, the probe is tunable, and multi-attempt failures carry every
+underlying error:
+
+```ts
+import {
+  createMCPTools,
+  MCPCacheWriteError,
+} from '@openrouter/mcp';
+
+// New option: ceiling on the `server/discover` probe (default 30s). Raise for a
+// server slow to answer its first request; lower to fail fast on infrastructure
+// you control.
+const mcp = await createMCPTools({
+  url: 'https://mcp.example.com/mcp',
+  probeTimeoutMs: 60_000,
+});
+
+// New export: a store outage no longer fails the call — the handle stays usable
+// and only the cache entry is stale. Catch it from refresh() to treat a write
+// failure as fatal anyway.
+try {
+  await mcp.refresh();
+} catch (err) {
+  if (err instanceof MCPCacheWriteError) {
+    // Tools were re-read successfully; only persisting the snapshot failed.
+    metrics.increment('mcp.cache_write_failed');
+  } else {
+    throw err;
+  }
+}
+```
+
 When more than one transport was tried, `MCPConnectionError` carries every underlying failure
 on `errors` — `cause` still holds the last one, which on its own hides an auth rejection from
 an earlier attempt:

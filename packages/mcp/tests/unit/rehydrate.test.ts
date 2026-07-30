@@ -14,13 +14,28 @@ let closeCount = 0;
 // stale-snapshot re-list into failure.
 let listToolsRejects = false;
 
+// When true, `connect` itself rejects with an auth-marked error, exercising the
+// fallback guard: rejected credentials must not trigger a third reconnect.
+let connectRejectsAuth = false;
+
 // When true, the connection's `close()` throws synchronously rather than
 // returning a rejected promise — the case a bare `.catch()` cannot intercept.
 let closeThrowsSync = false;
 
 vi.mock('../../src/mcp-connection.js', () => ({
+  // Minimal stand-in for the real guard: these tests drive auth failures with a
+  // `FakeUnauthorized` whose marker the walk below recognises.
+  isAuthFailure: (err: unknown): boolean =>
+    typeof err === 'object' && err !== null && 'isFakeAuthFailure' in err,
   connect: (options: ConnectOptions): Promise<MCPConnection> => {
     connectCalls.push(options);
+    if (connectRejectsAuth) {
+      return Promise.reject(
+        Object.assign(new Error('unauthorized'), {
+          isFakeAuthFailure: true,
+        }),
+      );
+    }
     const connection: MCPConnection = {
       // Minimal client stand-in: buildTools stores the reference but these tests
       // never invoke a wrapped tool, and capabilities/version are read as absent.
@@ -123,6 +138,7 @@ describe('rehydrateMCPTools', () => {
     connectCalls.length = 0;
     closeCount = 0;
     listToolsRejects = false;
+    connectRejectsAuth = false;
     closeThrowsSync = false;
   });
 
@@ -196,6 +212,7 @@ describe('staleness on the direct rehydrate path', () => {
     connectCalls.length = 0;
     closeCount = 0;
     listToolsRejects = false;
+    connectRejectsAuth = false;
     closeThrowsSync = false;
   });
 
@@ -397,6 +414,28 @@ describe('staleness on the direct rehydrate path', () => {
     expect(closeCount).toBe(0);
   });
 
+  /**
+   * A credential rejection must not trigger the freshConnect fallback.
+   *
+   * The fallback is a third reconnect layer reusing the same auth. connect()'s
+   * internal ladder and its legacy retry both already refuse to continue past an
+   * auth failure, because re-entering the SDK's auth path drives a second
+   * `redirectToAuthorization` and overwrites the saved PKCE verifier — so letting
+   * the rehydrate fallback do the same one layer up would defeat both guards.
+   */
+  it('does not fall back to freshConnect on an auth failure', async () => {
+    connectRejectsAuth = true;
+
+    await expect(
+      rehydrateMCPTools({
+        snapshot: snapshotWithHeaders(),
+      }),
+    ).rejects.toThrow(MCPCacheError);
+
+    // One connect only: the replay attempt. No freshConnect behind it.
+    expect(connectCalls).toHaveLength(1);
+  });
+
   it('still replays a fresh snapshot when reconnectOnExpiry is false', async () => {
     const snapshot = snapshotWithHeaders();
     snapshot.cachedAt = Date.now() - 1_000;
@@ -432,6 +471,7 @@ describe('replay preserves snapshot age', () => {
     connectCalls.length = 0;
     closeCount = 0;
     listToolsRejects = false;
+    connectRejectsAuth = false;
     closeThrowsSync = false;
   });
 

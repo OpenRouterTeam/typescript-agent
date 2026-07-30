@@ -366,8 +366,12 @@ function isAuthStatus(err: unknown): boolean {
  *
  * Depth-capped: a cyclic `cause` would otherwise hang, and real chains here are
  * two or three links.
+ *
+ * Exported for `rehydrateMCPTools`, whose fallback-to-`freshConnect` is a third
+ * reconnect layer with the same duplicated-OAuth hazard; deliberately not
+ * re-exported from the package entrypoint.
  */
-function isAuthFailure(err: unknown, depth = 0): boolean {
+export function isAuthFailure(err: unknown, depth = 0): boolean {
   if (depth >= 8) {
     return false;
   }
