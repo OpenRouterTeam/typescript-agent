@@ -20,6 +20,12 @@ interface SdkState {
   clientsCreated: number;
   /** `versionNegotiation.mode` seen by each constructed Client, in order. */
   negotiationModes: unknown[];
+  /**
+   * Transport kinds whose Client had `close()` called on it. Guards the
+   * release of a client whose `connect()` rejected — the SDK does not close a
+   * transport whose `start()` threw, so `connect()` has to.
+   */
+  closedClients: ('streamableHttp' | 'sse' | 'unattached')[];
 }
 
 const state: SdkState = {
@@ -28,6 +34,7 @@ const state: SdkState = {
   httpSessionId: undefined,
   clientsCreated: 0,
   negotiationModes: [],
+  closedClients: [],
 };
 
 /** Explicit marker so the fake client can tell the two transports apart. */
@@ -90,8 +97,11 @@ vi.mock('@modelcontextprotocol/client', () => ({
     // v2 registration is method-name-first; the fakes accept and ignore both args.
     setRequestHandler(_method: string, _handler: unknown): void {}
     setNotificationHandler(_method: string, _handler: unknown): void {}
+    /** Set by `connect()` so `close()` can report which transport it released. */
+    attached: 'streamableHttp' | 'sse' | undefined;
     connect(transport: Marked): Promise<void> {
       const kind = transport[KIND];
+      this.attached = kind;
       const attempt: Attempt = {
         kind,
       };
@@ -108,6 +118,7 @@ vi.mock('@modelcontextprotocol/client', () => ({
       return Promise.resolve();
     }
     close(): Promise<void> {
+      state.closedClients.push(this.attached ?? 'unattached');
       return Promise.resolve();
     }
   },
@@ -123,6 +134,7 @@ beforeEach(() => {
   state.httpSessionId = undefined;
   state.clientsCreated = 0;
   state.negotiationModes = [];
+  state.closedClients = [];
 });
 
 describe('connect transport selection', () => {
@@ -213,6 +225,87 @@ describe('connect transport selection', () => {
     expect(state.attempts.map((a) => a.kind)).toEqual([
       'sse',
     ]);
+  });
+});
+
+/**
+ * A client whose `connect()` rejected still holds its transport: the SDK stores
+ * the transport before calling `start()`, and when `start()` itself throws it
+ * returns without teardown — so nothing closes the socket. `connect()` releases
+ * it explicitly on every failure path. Without that, a probe timeout against a
+ * strict gateway leaks a keep-alive connection, and the `'auto'` default makes
+ * that the expected failure mode rather than a rare one.
+ */
+describe('connect releases failed clients', () => {
+  it('closes the failed Streamable HTTP client before falling back to SSE', async () => {
+    state.failing.add('streamableHttp');
+
+    const conn = await connect({
+      url: URL_UNDER_TEST,
+    });
+
+    expect(conn.transport).toBe('sse');
+    // The failed HTTP client is released; the successful SSE one is left open
+    // for the caller, who closes it through the returned connection.
+    expect(state.closedClients).toEqual([
+      'streamableHttp',
+    ]);
+    await conn.close();
+  });
+
+  it('closes the failed client when Streamable HTTP was pinned', async () => {
+    state.failing.add('streamableHttp');
+
+    await expect(
+      connect({
+        url: URL_UNDER_TEST,
+        transport: 'streamableHttp',
+      }),
+    ).rejects.toThrow(MCPConnectionError);
+
+    expect(state.closedClients).toEqual([
+      'streamableHttp',
+    ]);
+  });
+
+  it('closes both clients when Streamable HTTP and SSE fall through', async () => {
+    state.failing.add('streamableHttp');
+    state.failing.add('sse');
+
+    await expect(
+      connect({
+        url: URL_UNDER_TEST,
+      }),
+    ).rejects.toThrow(/Streamable HTTP and SSE/);
+
+    expect(state.closedClients).toEqual([
+      'streamableHttp',
+      'sse',
+    ]);
+  });
+
+  it('closes the failed client when SSE was pinned', async () => {
+    state.failing.add('sse');
+
+    await expect(
+      connect({
+        url: URL_UNDER_TEST,
+        transport: 'sse',
+      }),
+    ).rejects.toThrow();
+
+    expect(state.closedClients).toEqual([
+      'sse',
+    ]);
+  });
+
+  it('does not close the client on a successful connect', async () => {
+    const conn = await connect({
+      url: URL_UNDER_TEST,
+    });
+
+    expect(state.closedClients).toEqual([]);
+    await conn.close();
   });
 });
 

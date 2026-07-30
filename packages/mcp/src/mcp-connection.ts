@@ -146,7 +146,13 @@ export async function connect(options: ConnectOptions): Promise<MCPConnection> {
 
   if (preferred === 'sse') {
     const client = makeClient(options, listChanged);
-    await client.connect(buildSse(options));
+    try {
+      await client.connect(buildSse(options));
+    } catch (sseErr) {
+      // Same transport-release reason as the Streamable HTTP path below.
+      await client.close().catch(() => {});
+      throw sseErr;
+    }
     return wrap({
       client,
       transport: 'sse',
@@ -168,6 +174,13 @@ export async function connect(options: ConnectOptions): Promise<MCPConnection> {
       }),
     });
   } catch (httpErr) {
+    // Release the failed client's transport. The SDK closes it when the probe
+    // or the `initialize` handshake rejects, but not when `transport.start()`
+    // itself throws — there it has already stored the transport and returns
+    // without teardown, leaking a keep-alive socket. `close()` is idempotent
+    // (`this._transport?.close()`, and each transport guards on a `_closed`
+    // flag), so covering the one uncovered path cannot double-close the others.
+    await client.close().catch(() => {});
     if (options.transport === 'streamableHttp') {
       throw new MCPConnectionError('Failed to connect over Streamable HTTP', {
         cause: httpErr,
@@ -187,6 +200,7 @@ export async function connect(options: ConnectOptions): Promise<MCPConnection> {
         listChanged,
       });
     } catch (sseErr) {
+      await sseClient.close().catch(() => {});
       throw new MCPConnectionError('Failed to connect over Streamable HTTP and SSE', {
         cause: sseErr,
       });
