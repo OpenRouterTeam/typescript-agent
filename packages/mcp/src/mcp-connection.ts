@@ -8,6 +8,7 @@ import {
 } from '@modelcontextprotocol/client';
 import { resolveAuth } from './auth/auth-resolver.js';
 import type { MCPAuth } from './auth/auth-types.js';
+import { isOAuthAuth } from './auth/auth-types.js';
 import { closeQuietly } from './close-quietly.js';
 import { makeElicitationRequestHandler } from './elicitation.js';
 import { MCPConnectionError } from './errors.js';
@@ -253,7 +254,7 @@ async function connectWithNegotiation(options: ConnectOptions): Promise<MCPConne
     // `closeQuietly`, which tolerates any close outcome rather than depending on
     // what the SDK does internally.
     await closeQuietly(client);
-    if (options.transport === 'streamableHttp' || isAuthFailure(httpErr)) {
+    if (options.transport === 'streamableHttp' || isAuthFailure(httpErr, options.auth)) {
       // Auth failures stop here rather than falling through. The SSE attempt
       // would carry the same `authProvider` into the SDK's auth path — a second
       // `redirectToAuthorization`, a second `saveCodeVerifier` overwriting the
@@ -328,14 +329,17 @@ function flattenAttempts(err: unknown): readonly unknown[] {
  * Does this error carry an HTTP status that means "your credentials were the
  * problem"?
  *
- * `UnauthorizedError` alone is not enough. The version-negotiation probe does
- * not route 401/403 through the OAuth flow — `classifyHttpError` turns them into
- * an `SdkHttpError` with `ClientHttpAuthentication` / `ClientHttpForbidden` — so
- * a probe rejected for auth reasons arrives as a different type entirely. Read
- * via a duck-typed `status` rather than `instanceof SdkHttpError` plus an
- * `SdkErrorCode` comparison: the numeric status is the stable part of that
- * contract, and matching on it also catches a gateway that surfaces 401/403 as
- * some other error shape.
+ * `UnauthorizedError` alone is not enough when an OAuth provider is in play. The
+ * version-negotiation probe does not route 401/403 through the OAuth flow —
+ * `classifyHttpError` turns them into an `SdkHttpError` with
+ * `ClientHttpAuthentication` / `ClientHttpForbidden` — so a probe rejected for
+ * auth reasons arrives as a different type entirely. Read via a duck-typed
+ * `status` rather than `instanceof SdkHttpError` plus an `SdkErrorCode`
+ * comparison: the numeric status is the stable part of that contract, and
+ * matching on it also catches a gateway that surfaces 401/403 as some other
+ * error shape.
+ *
+ * Only consulted when the caller configured OAuth — see {@link isAuthFailure}.
  */
 function isAuthStatus(err: unknown): boolean {
   // Errors only. A plain object carrying a `status` is far more likely to be a
@@ -371,11 +375,24 @@ function isAuthStatus(err: unknown): boolean {
  * reconnect layer with the same duplicated-OAuth hazard; deliberately not
  * re-exported from the package entrypoint.
  */
-export function isAuthFailure(err: unknown, depth = 0): boolean {
+export function isAuthFailure(err: unknown, auth: MCPAuth | undefined, depth = 0): boolean {
   if (depth >= 8) {
     return false;
   }
-  if (err instanceof UnauthorizedError || isAuthStatus(err)) {
+  // `UnauthorizedError` is unconditional: the SDK only throws it from the
+  // provider-wrapped fetch and the authorization flow itself, so it inherently
+  // means an OAuth provider is in play and its flow would be re-driven.
+  if (err instanceof UnauthorizedError) {
+    return true;
+  }
+  // A bare 401/403 status counts only when the caller configured OAuth. That is
+  // the one auth kind where a retry has side effects (a second
+  // `redirectToAuthorization`, an overwritten PKCE verifier). With bearer,
+  // headers, or no auth, retrying merely re-sends a request — and suppressing it
+  // would be a regression, because proxies and WAFs commonly answer an unknown
+  // method like `server/discover` with 403: exactly the probe-hostile
+  // infrastructure the retry exists to rescue.
+  if (isOAuthAuth(auth) && isAuthStatus(err)) {
     return true;
   }
   if (!(err instanceof Error)) {
@@ -390,12 +407,12 @@ export function isAuthFailure(err: unknown, depth = 0): boolean {
   };
   if (Array.isArray(errors)) {
     for (const nested of errors) {
-      if (isAuthFailure(nested, depth + 1)) {
+      if (isAuthFailure(nested, auth, depth + 1)) {
         return true;
       }
     }
   }
-  return err.cause !== undefined && isAuthFailure(err.cause, depth + 1);
+  return err.cause !== undefined && isAuthFailure(err.cause, auth, depth + 1);
 }
 
 /**
@@ -454,7 +471,7 @@ export async function connect(options: ConnectOptions): Promise<MCPConnection> {
   try {
     return await connectWithNegotiation(options);
   } catch (autoErr) {
-    if (isAuthFailure(autoErr)) {
+    if (isAuthFailure(autoErr, options.auth)) {
       throw autoErr;
     }
     // Not inspecting the error for *whether* the probe was at fault: that would

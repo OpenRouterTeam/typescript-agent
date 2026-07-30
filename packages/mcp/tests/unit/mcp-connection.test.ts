@@ -198,6 +198,14 @@ const { connect } = await import('../../src/mcp-connection.js');
 
 const URL_UNDER_TEST = new URL('https://example.invalid/mcp');
 
+// Minimal OAuth auth: the 401/403 status check only counts when a provider is
+// configured, since that is the one auth kind where a retry replays a side
+// effect. The provider itself is never invoked by the fake transports.
+const OAUTH_AUTH = {
+  kind: 'oauth',
+  provider: {} as never,
+} as const;
+
 beforeEach(() => {
   state.attempts = [];
   state.failing = new Set();
@@ -902,6 +910,7 @@ describe('legacy degradation under an implicit auto default', () => {
     await expect(
       connect({
         url: URL_UNDER_TEST,
+        auth: OAUTH_AUTH,
       }),
     ).rejects.toThrow();
 
@@ -945,7 +954,29 @@ describe('legacy degradation under an implicit auto default', () => {
    * auth reasons is a different type entirely, and a guard keyed only on
    * `UnauthorizedError` would retry it and re-drive the flow.
    */
-  it('suppresses the retry for an auth-shaped HTTP status', async () => {
+  it('suppresses the retry for an auth-shaped HTTP status under OAuth', async () => {
+    state.httpErrorStatus = 403;
+
+    await expect(
+      connect({
+        url: URL_UNDER_TEST,
+        auth: OAUTH_AUTH,
+      }),
+    ).rejects.toThrow();
+
+    expect(state.negotiationModes).not.toContain('legacy');
+  });
+
+  /**
+   * Without OAuth, a 401/403 must NOT suppress the degradation.
+   *
+   * Proxies and WAFs commonly answer an unknown method like `server/discover`
+   * with 403 — the probe-hostile infrastructure the legacy retry exists to
+   * rescue. With bearer, headers, or no auth there is no side effect to replay,
+   * so suppressing there turns the retry's own target scenario into a hard
+   * failure: the guard would cancel the recovery precisely where it was needed.
+   */
+  it('still degrades on a 403 when no OAuth provider is configured', async () => {
     state.httpErrorStatus = 403;
 
     await expect(
@@ -954,7 +985,25 @@ describe('legacy degradation under an implicit auto default', () => {
       }),
     ).rejects.toThrow();
 
-    expect(state.negotiationModes).not.toContain('legacy');
+    // The retry ran: the gateway rejects every mode in this fake, but the
+    // degradation was attempted rather than suppressed.
+    expect(state.negotiationModes).toContain('legacy');
+  });
+
+  it('still degrades on a 403 under bearer auth', async () => {
+    state.httpErrorStatus = 403;
+
+    await expect(
+      connect({
+        url: URL_UNDER_TEST,
+        auth: {
+          kind: 'bearer',
+          token: 'tok',
+        },
+      }),
+    ).rejects.toThrow();
+
+    expect(state.negotiationModes).toContain('legacy');
   });
 
   /**

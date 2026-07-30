@@ -354,7 +354,7 @@ export async function rehydrateMCPTools(
     // re-drive the OAuth flow — a third `redirectToAuthorization` behind the two
     // layers below that already guard against exactly this. Rejected credentials
     // are not something a fresh connection fixes.
-    if (reconnectOnExpiry && !isAuthFailure(err)) {
+    if (reconnectOnExpiry && !isAuthFailure(err, effectiveAuth)) {
       return freshConnect(createOptions, url, cacheKey);
     }
     throw new MCPCacheError('Failed to rehydrate MCP connection from snapshot', {
