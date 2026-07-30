@@ -99,4 +99,116 @@ describe('createMCPTools setup teardown', () => {
       process.off('unhandledRejection', onRejection);
     }
   });
+
+  /**
+   * A failed cache WRITE must not silence the list_changed announcement.
+   *
+   * `refresh()` adopts the new tools before it writes the snapshot back, so by
+   * the time a store outage surfaces as `MCPCacheWriteError`, `handle.tools`
+   * already returns the new set. Skipping notification there left subscribers
+   * permanently out of sync with the handle — and contradicted the best-effort
+   * write policy every other path follows.
+   */
+  it('notifies subscribers of new tools even when the cache write fails', async () => {
+    let calls = 0;
+    state.listTools = () => {
+      calls += 1;
+      return Promise.resolve({
+        tools:
+          calls === 1
+            ? []
+            : [
+                {
+                  name: 'brand_new',
+                  inputSchema: {
+                    type: 'object',
+                    properties: {},
+                  },
+                },
+              ],
+      });
+    };
+
+    const failingStore = {
+      get: () => Promise.resolve(undefined),
+      set: () => Promise.reject(new Error('store unavailable')),
+      delete: () => Promise.resolve(),
+    };
+    const handle = await createMCPTools({
+      url: 'https://mcp.example.com/mcp',
+      cache: {
+        store: failingStore,
+        key: 'k',
+      },
+    });
+
+    const seen: number[] = [];
+    handle.onToolsChanged((next) => {
+      seen.push(next.length);
+    });
+
+    state.listChangedHandler?.();
+    await new Promise((resolve) => setTimeout(resolve, 10));
+
+    // The write failed, the re-list did not: subscribers hear about the new set.
+    expect(seen).toEqual([
+      1,
+    ]);
+    expect(handle.tools).toHaveLength(1);
+  });
+
+  /**
+   * A store outage on the READ is a miss, not a failure.
+   *
+   * The write side became best-effort everywhere in this PR; leaving the read
+   * fatal meant "a store outage leaves you with a working handle" only held if
+   * the outage arrived after the lookup. A failing `store.get` now falls through
+   * to a fresh connect, exactly as a plain miss would.
+   */
+  it('treats a failing cache read as a miss and connects fresh', async () => {
+    const brokenStore = {
+      get: () => Promise.reject(new Error('store unavailable')),
+      set: () => Promise.resolve(),
+      delete: () => Promise.resolve(),
+    };
+
+    const handle = await createMCPTools({
+      url: 'https://mcp.example.com/mcp',
+      cache: {
+        store: brokenStore,
+        key: 'k',
+      },
+    });
+
+    // Fresh connect succeeded despite the unreadable cache.
+    expect(handle.tools).toHaveLength(0);
+  });
+
+  it('does not notify subscribers when the re-list itself fails', async () => {
+    let calls = 0;
+    state.listTools = () => {
+      calls += 1;
+      if (calls === 1) {
+        return Promise.resolve({
+          tools: [],
+        });
+      }
+      return Promise.reject(new Error('server gone'));
+    };
+
+    const handle = await createMCPTools({
+      url: 'https://mcp.example.com/mcp',
+    });
+    const seen: number[] = [];
+    handle.onToolsChanged((next) => {
+      seen.push(next.length);
+    });
+
+    state.listChangedHandler?.();
+    await new Promise((resolve) => setTimeout(resolve, 10));
+
+    // Tools were never swapped, so silence is correct here.
+    expect(seen).toEqual([]);
+    expect(handle.tools).toHaveLength(0);
+  });
 });

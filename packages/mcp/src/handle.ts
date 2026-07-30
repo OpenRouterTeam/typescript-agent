@@ -240,9 +240,23 @@ export async function makeHandle(args: MakeHandleArgs): Promise<MCPToolsHandle> 
   if (options.autoRefreshOnListChanged ?? true) {
     connection.setToolListChangedHandler(() => {
       // Fire-and-forget, but never let a failed refresh escape as an unhandled
-      // rejection. On failure listeners keep the last good tool set.
+      // rejection. On a failed *re-list*, `tools` was never swapped, so
+      // subscribers correctly keep the last good set. A failed cache *write* is
+      // different: `refresh()` has already adopted the new tools by then, and
+      // skipping notification would leave subscribers permanently out of sync
+      // with `handle.tools` — the write is best-effort everywhere else, so it
+      // must not gate the announcement here either.
       void refresh()
+        .catch((err: unknown) => {
+          if (err instanceof MCPCacheWriteError) {
+            return tools;
+          }
+          return undefined;
+        })
         .then((next) => {
+          if (next === undefined) {
+            return;
+          }
           for (const listener of listeners) {
             listener(next);
           }
