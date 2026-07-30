@@ -212,9 +212,14 @@ await createMCPTools({ url, protocolNegotiation: { pin: '2026-07-28' } });
 > automatic legacy retry. Naming a mode means you want that mode's failures too, and
 > silently overriding a `{ pin }` would defeat the point of pinning.
 
-`'auto'` costs one extra round trip against legacy servers, plus a second connect attempt in
-the rare case the probe is refused. There are no hardcoded protocol version strings in this
-package — negotiation is delegated to `@modelcontextprotocol/client`.
+`'auto'` costs one extra round trip against legacy servers. When a connect fails, the retry
+adds one more attempt — pinned to a single transport rather than re-walking the Streamable
+HTTP → SSE ladder, so an unreachable server is dialled three times rather than four. An auth
+failure skips the retry: rejected credentials are not something a different protocol revision
+fixes, and retrying would drive an OAuth authorization flow twice.
+
+There are no hardcoded protocol version strings in this package — negotiation is delegated to
+`@modelcontextprotocol/client`.
 
 ### What differs between the revisions
 

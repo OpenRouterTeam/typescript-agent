@@ -4,6 +4,7 @@ import {
   Client,
   SSEClientTransport,
   StreamableHTTPClientTransport,
+  UnauthorizedError,
 } from '@modelcontextprotocol/client';
 import { resolveAuth } from './auth/auth-resolver.js';
 import type { MCPAuth } from './auth/auth-types.js';
@@ -235,6 +236,28 @@ async function connectWithNegotiation(options: ConnectOptions): Promise<MCPConne
 }
 
 /**
+ * Was this failure the server rejecting our credentials?
+ *
+ * Walks the `cause` chain because `connectWithNegotiation` wraps transport
+ * errors in `MCPConnectionError`, so the SDK's `UnauthorizedError` is nested
+ * rather than thrown directly. Depth-capped: a cyclic `cause` would otherwise
+ * hang, and legitimate chains here are two or three links.
+ */
+function isAuthFailure(err: unknown): boolean {
+  let current = err;
+  for (let depth = 0; depth < 8; depth += 1) {
+    if (current instanceof UnauthorizedError) {
+      return true;
+    }
+    if (!(current instanceof Error) || current.cause === undefined) {
+      return false;
+    }
+    current = current.cause;
+  }
+  return false;
+}
+
+/**
  * Connect a `Client` to the MCP server, degrading to the 2025-era handshake if
  * protocol negotiation gets in the way.
  *
@@ -258,6 +281,20 @@ async function connectWithNegotiation(options: ConnectOptions): Promise<MCPConne
  * reshaped error would silently disable the degradation, which is the failure
  * mode this package keeps getting bitten by.
  *
+ * Two bounds keep the retry from making a bad situation worse:
+ *
+ * 1. **It is skipped on an auth failure.** `UnauthorizedError` means the
+ *    transport reached the server and the credentials were rejected — nothing a
+ *    different protocol revision changes. Retrying would re-drive the OAuth
+ *    provider's authorization flow: a second `redirectToAuthorization`, a second
+ *    saved PKCE verifier overwriting the first. Replaying a failure that had
+ *    side effects is worse than not retrying.
+ * 2. **It reuses one transport, not another two-transport ladder.** Without
+ *    this, an unreachable server is dialled four times where it used to be
+ *    dialled twice, each dial carrying its own request timeout — enough to push
+ *    a caller past its own deadline. Reusing the caller's transport preference
+ *    keeps the worst case at three.
+ *
  * An **explicit** `protocolNegotiation` is honoured exactly, including
  * `'auto'`: asking for a mode means asking for its failures too, and silently
  * ignoring a caller's `{ pin }` would defeat the point of pinning.
@@ -268,14 +305,19 @@ export async function connect(options: ConnectOptions): Promise<MCPConnection> {
   }
   try {
     return await connectWithNegotiation(options);
-  } catch {
-    // Deliberately not inspecting the `'auto'` error — see above. It is dropped
-    // rather than chained because the legacy retry that follows is the more
-    // informative failure: if that also fails, the server refused a plain
-    // `initialize`, so the problem is reachability rather than negotiation, and
-    // leading with a probe timeout would point debugging at the wrong layer.
+  } catch (autoErr) {
+    if (isAuthFailure(autoErr)) {
+      throw autoErr;
+    }
+    // Pin the transport the caller asked for — `'streamableHttp'` by default —
+    // so this is a single attempt rather than a second ladder. Not inspecting
+    // the error for *whether* the probe was at fault: that would couple us to
+    // SDK error codes, and a reshaped error would silently disable the whole
+    // degradation. `UnauthorizedError` above is the one exception, because there
+    // the cost of retrying is a duplicated side effect rather than a wasted dial.
     return await connectWithNegotiation({
       ...options,
+      transport: options.transport ?? 'streamableHttp',
       protocolNegotiation: 'legacy',
     });
   }

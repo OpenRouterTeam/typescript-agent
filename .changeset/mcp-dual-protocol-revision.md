@@ -22,8 +22,14 @@ connection's first request is a `server/discover` probe. **This is not a connect
 break:** when you have not set `protocolNegotiation` yourself, a failed connect is retried
 once with `'legacy'`, so a proxy, WAF, or gateway that hangs or 5xx's on an unknown method
 still connects exactly as it did before. Modern servers get `2026-07-28`, everything else
-lands where it always did; the only cost is one extra attempt on a path that was already
-failing.
+lands where it always did.
+
+The cost lands only on already-failing connects. A probe-hostile server takes **two**
+attempts instead of one; a genuinely unreachable one takes **three** instead of two, since
+the retry is a single pinned attempt rather than a second Streamable HTTP → SSE ladder. The
+retry is skipped entirely on an auth failure — credentials being rejected is not something a
+different protocol revision fixes, and re-running it would drive an OAuth provider's
+authorization flow a second time.
 
 An **explicit** `protocolNegotiation` is honoured exactly, including `'auto'` — asking for a
 mode means asking for its failures too, and silently overriding a `{ pin }` would defeat the

@@ -23,6 +23,8 @@ interface SdkState {
   probeHostile: boolean;
   /** When true, the fake Client's `close()` throws synchronously. */
   closeThrows: boolean;
+  /** When true, a connect rejects with the SDK's `UnauthorizedError`. */
+  authFailure: boolean;
   /** sessionId the fake Streamable HTTP transport reports after connecting. */
   httpSessionId: string | undefined;
   clientsCreated: number;
@@ -43,6 +45,7 @@ const state: SdkState = {
   failing: new Set(),
   probeHostile: false,
   closeThrows: false,
+  authFailure: false,
   httpSessionId: undefined,
   clientsCreated: 0,
   negotiationModes: [],
@@ -60,7 +63,14 @@ interface Marked {
 
 // SDK v2 ships Client and both transports from one package, so the three
 // separate v1 module mocks collapse into this single factory.
+// The real one is brand-based rather than prototype-based; a plain Error
+// subclass is enough for the `cause`-chain walk under test, and keeps the fake
+// self-contained. Safe to declare after `vi.mock` despite vitest hoisting that
+// call, because the factory body only runs on first import of the mocked module.
+class FakeUnauthorizedError extends Error {}
+
 vi.mock('@modelcontextprotocol/client', () => ({
+  UnauthorizedError: FakeUnauthorizedError,
   StreamableHTTPClientTransport: class {
     [KIND] = 'streamableHttp' as const;
     sessionId: string | undefined;
@@ -126,6 +136,9 @@ vi.mock('@modelcontextprotocol/client', () => ({
         attempt.sessionId = transport.sessionId;
       }
       state.attempts.push(attempt);
+      if (state.authFailure) {
+        return Promise.reject(new FakeUnauthorizedError('unauthorized'));
+      }
       if (state.failing.has(kind)) {
         return Promise.reject(new Error(`${kind} refused`));
       }
@@ -161,6 +174,7 @@ beforeEach(() => {
   state.failing = new Set();
   state.probeHostile = false;
   state.closeThrows = false;
+  state.authFailure = false;
   state.httpSessionId = undefined;
   state.clientsCreated = 0;
   state.negotiationModes = [];
@@ -645,7 +659,17 @@ describe('legacy degradation under an implicit auto default', () => {
     await conn.close();
   });
 
-  it('surfaces the legacy failure when the server is genuinely unreachable', async () => {
+  /**
+   * The retry must not re-walk the two-transport ladder.
+   *
+   * `connectWithNegotiation` already tries Streamable HTTP then SSE when no
+   * transport is pinned. If the retry ran that ladder again, an unreachable
+   * server would be dialled four times where it used to be dialled twice — each
+   * dial carrying its own request timeout, which is enough to push a caller past
+   * its own deadline. Pinning the retry to the caller's transport preference
+   * caps the worst case at three.
+   */
+  it('bounds a dead server to three attempts, not four', async () => {
     // Not probe-hostile — the transport itself refuses, so the retry fails too.
     state.failing.add('streamableHttp');
     state.failing.add('sse');
@@ -654,16 +678,18 @@ describe('legacy degradation under an implicit auto default', () => {
       connect({
         url: URL_UNDER_TEST,
       }),
-      // The legacy attempt is the more informative failure: the server refused a
-      // plain `initialize`, so this is reachability rather than negotiation.
-    ).rejects.toThrow(/Streamable HTTP and SSE/);
+    ).rejects.toThrow(MCPConnectionError);
 
-    // Both modes were tried before giving up.
+    // 'auto' walks the full ladder; the legacy retry is one pinned attempt.
     expect(state.negotiationModes).toEqual([
       'auto',
       'auto',
       'legacy',
-      'legacy',
+    ]);
+    expect(state.attempts.map((a) => a.kind)).toEqual([
+      'streamableHttp',
+      'sse',
+      'streamableHttp',
     ]);
   });
 
@@ -677,9 +703,51 @@ describe('legacy degradation under an implicit auto default', () => {
       }),
     ).rejects.toThrow(MCPConnectionError);
 
-    // Four clients built, four released — the retry must not leak the transports
-    // of the attempt that preceded it.
-    expect(state.clientsCreated).toBe(4);
-    expect(state.closedClients).toHaveLength(4);
+    // Three clients built, three released — the retry must not leak the
+    // transports of the attempt that preceded it.
+    expect(state.clientsCreated).toBe(3);
+    expect(state.closedClients).toHaveLength(3);
+  });
+
+  /**
+   * An auth rejection means the transport reached the server and the credentials
+   * were refused — nothing a different protocol revision changes. Retrying would
+   * re-drive an OAuth provider's authorization flow: a second
+   * `redirectToAuthorization`, a second saved PKCE verifier overwriting the
+   * first. Replaying a failure that had side effects is worse than not retrying.
+   */
+  it('does not retry an auth failure', async () => {
+    state.authFailure = true;
+
+    await expect(
+      connect({
+        url: URL_UNDER_TEST,
+      }),
+    ).rejects.toThrow(MCPConnectionError);
+
+    // The transport ladder still runs — that is about reachability, not
+    // credentials — but no `'legacy'` retry follows it, so the OAuth flow is
+    // driven once rather than twice.
+    expect(state.negotiationModes).toEqual([
+      'auto',
+      'auto',
+    ]);
+    expect(state.negotiationModes).not.toContain('legacy');
+  });
+
+  it('detects an auth failure nested inside the wrapper error', async () => {
+    // Guards the `cause`-chain walk specifically: `connectWithNegotiation` wraps
+    // transport errors in `MCPConnectionError`, so a bare top-level `instanceof`
+    // check would miss the nested `UnauthorizedError` and retry anyway —
+    // re-driving the authorization flow these tests exist to prevent.
+    state.authFailure = true;
+
+    const err = await connect({
+      url: URL_UNDER_TEST,
+    }).catch((e: unknown) => e);
+
+    // Wrapped, not bare — which is exactly why the walk is needed.
+    expect(err).toBeInstanceOf(MCPConnectionError);
+    expect((err as Error).cause).toBeInstanceOf(FakeUnauthorizedError);
   });
 });
