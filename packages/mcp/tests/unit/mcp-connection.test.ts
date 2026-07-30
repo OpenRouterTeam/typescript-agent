@@ -841,10 +841,21 @@ describe('legacy degradation under an implicit auto default', () => {
       'mcp-connection.ts',
     ]) {
       const text = readFileSync(join(srcDir, file), 'utf8');
-      // Every `Defaults to <n>` / `defaults to <n>` near the probe option must
-      // name the value the code actually passes.
-      for (const match of text.matchAll(/probe[^\n]*\n?[^\n]*?efaults to (\d+)/gi)) {
-        expect(Number(match[1])).toBe(applied);
+      // Every number stated near a probe-default sentence must be the value the
+      // code actually passes. The pattern tolerates a symbol name and parens
+      // between "efaults to" and the digits — `mcp-connection.ts` writes
+      // "Defaults to `DEFAULT_PROBE_TIMEOUT_MS` (30000)".
+      const matches = [
+        ...text.matchAll(/probe[\s\S]{0,120}?efaults to[^\d]{0,80}(\d[\d_]*)/gi),
+      ];
+      // Vacuous passes defeat the point: each of these files documents the
+      // default, so zero matches means the regex has drifted from the prose, not
+      // that the file went silent.
+      expect(matches.length, `no probe-default sentence matched in ${file}`).toBeGreaterThan(0);
+      for (const match of matches) {
+        expect(Number(match[1]?.replaceAll('_', '')), `stale probe default in ${file}`).toBe(
+          applied,
+        );
       }
     }
   });
