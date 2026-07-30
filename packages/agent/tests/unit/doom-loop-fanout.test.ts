@@ -557,6 +557,85 @@ describe('same-tool fan-out streaks', () => {
     expect(await streaksFor(true)).toEqual(expected);
   });
 
+  it('persists the streak against the member that earned it, not a non-member', async () => {
+    /*
+     * `fingerprint` is the identity that pairs with `streak` in persisted
+     * state. A non-member recorded LAST in the round used to overwrite it, so
+     * the saved count was attached to a call that never earned it. Both halves
+     * then went wrong on resume: the non-member (a call detection is meant to
+     * ignore) matched, inherited the count, and was BLOCKED on its first
+     * appearance, while the genuinely repeating call was no longer the saved
+     * identity and reset to 1, losing its evidence.
+     */
+    const detector = monitor();
+    for (const round of [
+      0,
+      1,
+    ]) {
+      await detector.declareRound(round, [
+        {
+          toolName: 'read',
+          keyMaterial: {
+            path: 'a',
+          },
+        },
+        /* Unhashable: dropped from the declared set. */
+        {
+          toolName: 'read',
+          keyMaterial: {
+            size: 1n,
+          },
+        },
+      ]);
+      await detector.recordToolCall(
+        'read',
+        {
+          path: 'a',
+        },
+        round,
+      );
+      /* Recorded LAST, so it used to become the persisted identity. */
+      await detector.recordToolCall(
+        'read',
+        {
+          size: 'fallback-identity',
+        },
+        round,
+      );
+    }
+
+    /* The ignored call must not be refused the first time it is seen. */
+    const resumedNonMember = new DoomLoopMonitor(resolveDoomLoopOption(true), detector.getState());
+    const firstSighting = await resumedNonMember.recordToolCall(
+      'read',
+      {
+        size: 'fallback-identity',
+      },
+      0,
+    );
+    expect(firstSighting.streak).toBe(1);
+    expect(firstSighting.verdict).toBeUndefined();
+
+    /* And the real repeat keeps the evidence it earned. */
+    const resumedMember = new DoomLoopMonitor(resolveDoomLoopOption(true), detector.getState());
+    await resumedMember.declareRound(0, [
+      {
+        toolName: 'read',
+        keyMaterial: {
+          path: 'a',
+        },
+      },
+    ]);
+    const realRepeat = await resumedMember.recordToolCall(
+      'read',
+      {
+        path: 'a',
+      },
+      0,
+    );
+    expect(realRepeat.streak).toBe(3);
+  });
+
   it('resets a streak when a declared-but-never-recorded member disappears', async () => {
     /*
      * Pins WHY the engine must not declare a call it will never record (a

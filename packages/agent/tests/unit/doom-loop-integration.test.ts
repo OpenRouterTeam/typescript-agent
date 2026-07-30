@@ -21,6 +21,7 @@ vi.mock('@openrouter/sdk/funcs/betaResponsesSend', () => ({
 }));
 
 import { callModel } from '../../src/inner-loop/call-model.js';
+import { resolveLoopKeyMaterial } from '../../src/lib/doom-loop.js';
 import { HooksManager } from '../../src/lib/hooks-manager.js';
 import type { DoomLoopDetectedPayload } from '../../src/lib/hooks-schemas.js';
 import { tool } from '../../src/lib/tool.js';
@@ -904,6 +905,60 @@ describe('tool-declared loopKey', () => {
     } finally {
       warn.mockRestore();
     }
+  });
+
+  it('resolveLoopKeyMaterial can throw, so its callers must guard it', async () => {
+    /*
+     * `resolveLoopKeyMaterial` catches a throwing `loopKey`, but it can still
+     * throw on its own: the field-list form does `field in args` and
+     * `args[field]`, so a getter or proxy trap on the arguments object escapes
+     * it uncaught. Pinned here because `beginDoomLoopRound` resolves the WHOLE
+     * batch up front — an unguarded throw there fails the round and the run
+     * over one odd call, instead of costing detection for that call alone,
+     * which would break the invariant that detection only ever affects a run
+     * through a ladder action.
+     *
+     * NOT reachable through `callModel` today: tool arguments come from
+     * `JSON.parse` (stream-transformers.ts), so they are always plain objects,
+     * and `PreToolUse` argument mutation happens after the round is declared.
+     * It IS reachable for direct callers — `resolveLoopKeyMaterial` and
+     * `DoomLoopMonitor` are both exported — and for SDK ports that construct
+     * key material differently. Both call sites are guarded regardless; this
+     * test pins the throw itself so a future refactor cannot quietly remove
+     * the need for those guards.
+     */
+    const throwingGetter = {} as Record<string, unknown>;
+    Object.defineProperty(throwingGetter, 'command', {
+      enumerable: true,
+      get() {
+        throw new Error('getter boom');
+      },
+    });
+    expect(() =>
+      resolveLoopKeyMaterial(
+        [
+          'command',
+        ],
+        throwingGetter,
+      ),
+    ).toThrow('getter boom');
+
+    const hostileProxy = new Proxy(
+      {},
+      {
+        has() {
+          throw new Error('has boom');
+        },
+      },
+    ) as Record<string, unknown>;
+    expect(() =>
+      resolveLoopKeyMaterial(
+        [
+          'command',
+        ],
+        hostileProxy,
+      ),
+    ).toThrow('has boom');
   });
 });
 

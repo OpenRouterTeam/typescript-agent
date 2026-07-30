@@ -1190,8 +1190,22 @@ export class DoomLoopMonitor {
           roundFingerprints,
           streak,
         };
+    /*
+     * `fingerprint` is the identity that PAIRS with `streak` in persisted state
+     * (see `getState`/`restore`), so a non-member must not overwrite it: the
+     * saved count would then be attached to a call that did not earn it. On
+     * resume that call matched, inherited the count, and was refused on its
+     * first appearance — while the genuinely repeating call, no longer the
+     * saved identity, reset to 1 and lost its evidence. Keep the last DECLARED
+     * member's fingerprint instead; a non-member is still tracked for in-round
+     * dedupe via `seenThisRound`.
+     */
+    const identityFingerprint =
+      isNonMemberOfDeclaredRound && previous?.fingerprint !== undefined
+        ? previous.fingerprint
+        : fingerprint;
     this.tools.set(toolName, {
-      fingerprint,
+      fingerprint: identityFingerprint,
       round,
       seenThisRound: mergeFingerprint(seen, fingerprint),
       ...roundState,

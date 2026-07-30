@@ -1364,10 +1364,30 @@ export class ModelResult<
         });
         continue;
       }
-      const resolution = resolveLoopKeyMaterial(
-        isClientTool(tool) ? tool.function.loopKey : undefined,
-        (toolCall.arguments ?? {}) as Record<string, unknown>,
-      );
+      /*
+       * `resolveLoopKeyMaterial` catches a throwing `loopKey`, but not every
+       * throw: the field-list form reads `args[field]`, so a getter on the
+       * arguments object throws out of it uncaught. Declaration runs once for
+       * the whole batch, so letting that escape would fail the entire round —
+       * and the run — over one odd call, breaking the invariant that detection
+       * never affects a run except through its ladder actions. Skip just that
+       * call; the per-call checkpoint hits the same throw inside its own
+       * try/catch and applies the documented fallback chain there.
+       */
+      let resolution: LoopKeyResolution;
+      try {
+        resolution = resolveLoopKeyMaterial(
+          isClientTool(tool) ? tool.function.loopKey : undefined,
+          (toolCall.arguments ?? {}) as Record<string, unknown>,
+        );
+      } catch (error) {
+        console.warn(
+          `[DoomLoop] could not resolve loop identity for "${toolCall.name}" while declaring the round; ` +
+            'excluding it from the round set:',
+          error,
+        );
+        continue;
+      }
       // Cache so the per-call checkpoint does not invoke `loopKey` a second
       // time; keyed by call id, which is unique within a round.
       if (toolCall.id !== undefined) {
@@ -1556,9 +1576,33 @@ export class ModelResult<
       toolCall.id !== undefined
         ? this.doomLoopRoundKeyMaterial.get(String(toolCall.id))
         : undefined;
-    const resolution =
-      cached ??
-      resolveLoopKeyMaterial(isClientTool(tool) ? tool.function.loopKey : undefined, callArguments);
+    let resolution: LoopKeyResolution;
+    if (cached !== undefined) {
+      resolution = cached;
+    } else {
+      /*
+       * Not declared (undeclared round, or the declaration skipped this call).
+       * `resolveLoopKeyMaterial` can throw despite catching `loopKey` itself —
+       * the field-list form reads `args[field]`, so a getter on the arguments
+       * throws out of it. Detection must never reject a call or fail a run
+       * except through a ladder action, so skip detection for this one call.
+       */
+      try {
+        resolution = resolveLoopKeyMaterial(
+          isClientTool(tool) ? tool.function.loopKey : undefined,
+          callArguments,
+        );
+      } catch (error) {
+        console.warn(
+          `[DoomLoop] could not resolve loop identity for "${toolCall.name}"; ` +
+            'skipping detection for this call:',
+          error,
+        );
+        return {
+          blocked: false,
+        };
+      }
+    }
     if (resolution.kind === 'exempt') {
       return {
         blocked: false,
