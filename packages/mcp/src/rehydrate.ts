@@ -42,7 +42,17 @@ export interface RehydrateMCPToolsOptions {
     store: MCPCacheStore;
     key?: string;
   };
-  /** On expiry / missing creds / connection failure, do a full reconnect. Default true. */
+  /**
+   * On expired cached tokens, missing credentials, an over-age snapshot
+   * (`staleness.maxAgeMs`), or a replay connection failure, transparently fall
+   * back to a full fresh connect. Default true.
+   *
+   * The fallback is skipped when the replay's connect ended in a credential
+   * rejection (the SDK's `UnauthorizedError`, or a 401/403 when an OAuth
+   * provider is configured): the fallback reuses the same auth, so retrying
+   * cannot succeed and would re-drive an OAuth authorization flow. Those
+   * failures reject with `MCPCacheError` instead.
+   */
   reconnectOnExpiry?: boolean;
   // Tool-shaping + caching options threaded through from `createMCPTools` so a
   // cache hit applies the same filters/prefix as the original cold call.
@@ -265,8 +275,12 @@ async function refreshStaleReplay(handle: MCPToolsHandle): Promise<void> {
  * Rebuild an {@link MCPToolsHandle} from a cached snapshot. On the happy path we
  * reconnect the transport and rebuild tools directly from the snapshot —
  * skipping `listTools()`. If cached tokens are expired, credentials are missing,
- * or the connection fails, we transparently fall back to a full
- * {@link createMCPTools} (unless `reconnectOnExpiry` is false).
+ * the snapshot is older than `staleness.maxAgeMs`, or the replay connection
+ * fails, we transparently fall back to a fresh connect (unless
+ * `reconnectOnExpiry` is false) — with one exception: a credential rejection is
+ * not retried, because the fallback reuses the same auth and re-attempting
+ * would re-drive an OAuth authorization flow. See {@link
+ * RehydrateMCPToolsOptions.reconnectOnExpiry}.
  */
 export async function rehydrateMCPTools(
   options: RehydrateMCPToolsOptions,
