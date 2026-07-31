@@ -1304,30 +1304,6 @@ export class DoomLoopMonitor {
         duplicateInRound,
       };
     }
-    /*
-     * The message names what actually repeated. When the round streak decides
-     * (or ties), a multi-call round quotes the ROUND's identity — identical
-     * text for every call, deliberately, because the steer rung dedupes queued
-     * guidance by exact message text and one round of evidence must not queue
-     * N near-identical corrections. When the PER-CALL streak alone decides
-     * (its count exceeds the round's), only this one call is the evidence, so
-     * quoting its own fingerprint is both accurate and dedupe-safe: no other
-     * call of the round carries the same verdict.
-     */
-    const message =
-      callStreak > streak
-        ? `Doom loop suspected: tool "${toolName}" was invoked with the same arguments ` +
-          `(fingerprint ${fingerprint.slice(0, 16)}…) in ${callStreak} consecutive rounds, even as ` +
-          'its other calls changed. Repeating the call will not change the result. ' +
-          'Take a different approach, or explain why repetition is required.'
-        : callSet.length > 1
-          ? `Doom loop suspected: tool "${toolName}" was invoked in ${streak} consecutive rounds ` +
-            `with the same set of ${callSet.length} parallel calls ` +
-            `(round identity ${summarizeRound(callSet)}). Reissuing the same fan-out ` +
-            'will not change the results. Take a different approach, or explain why repetition is required.'
-          : `Doom loop suspected: tool "${toolName}" was invoked in ${streak} consecutive rounds ` +
-            `with identical arguments (fingerprint ${fingerprint.slice(0, 16)}…). Repeating the call ` +
-            'will not change the result. Take a different approach, or explain why repetition is required.';
     return {
       fingerprint,
       streak: effectiveStreak,
@@ -1338,7 +1314,13 @@ export class DoomLoopMonitor {
         streak: effectiveStreak,
         fingerprint,
         toolName,
-        message,
+        message: buildToolVerdictMessage({
+          toolName,
+          fingerprint,
+          callSet,
+          roundStreak: streak,
+          callStreak,
+        }),
       },
     };
   }
@@ -1463,4 +1445,45 @@ function summarizeRound(fingerprints: readonly string[]): string {
 /** Set equality over two sorted fingerprint lists. */
 function setsMatch(left: readonly string[], right: readonly string[]): boolean {
   return left.length === right.length && left.every((value, index) => value === right[index]);
+}
+
+/**
+ * Verdict text for a tool-fingerprint detection, naming what actually
+ * repeated. When the round streak decides (or ties), a multi-call round quotes
+ * the ROUND's identity — identical text for every call, deliberately, because
+ * the steer rung dedupes queued guidance by exact message text and one round
+ * of evidence must not queue N near-identical corrections. When the PER-CALL
+ * streak alone decides (its count exceeds the round's), only this one call is
+ * the evidence, so quoting its own fingerprint is both accurate and
+ * dedupe-safe: no other call of the round carries the same verdict.
+ */
+function buildToolVerdictMessage(input: {
+  toolName: string;
+  fingerprint: string;
+  callSet: readonly string[];
+  roundStreak: number;
+  callStreak: number;
+}): string {
+  const { toolName, fingerprint, callSet, roundStreak, callStreak } = input;
+  if (callStreak > roundStreak) {
+    return (
+      `Doom loop suspected: tool "${toolName}" was invoked with the same arguments ` +
+      `(fingerprint ${fingerprint.slice(0, 16)}…) in ${callStreak} consecutive rounds, even as ` +
+      'its other calls changed. Repeating the call will not change the result. ' +
+      'Take a different approach, or explain why repetition is required.'
+    );
+  }
+  if (callSet.length > 1) {
+    return (
+      `Doom loop suspected: tool "${toolName}" was invoked in ${roundStreak} consecutive rounds ` +
+      `with the same set of ${callSet.length} parallel calls ` +
+      `(round identity ${summarizeRound(callSet)}). Reissuing the same fan-out ` +
+      'will not change the results. Take a different approach, or explain why repetition is required.'
+    );
+  }
+  return (
+    `Doom loop suspected: tool "${toolName}" was invoked in ${roundStreak} consecutive rounds ` +
+    `with identical arguments (fingerprint ${fingerprint.slice(0, 16)}…). Repeating the call ` +
+    'will not change the result. Take a different approach, or explain why repetition is required.'
+  );
 }
