@@ -1314,6 +1314,21 @@ export class ModelResult<
    * execution path skips them with the same `isAutoResolvableTool` predicate
    * used here. Their absence from the declared set is also correct on its own
    * terms — they are not evidence, so they are not part of the round.
+   *
+   * INVARIANT — every declared member must eventually be recorded. A call
+   * that is declared but never reaches the doom-loop checkpoint is a phantom
+   * member of the round's identity: the tool's streak silently resets the
+   * moment the phantom stops being emitted (pinned by the "declared-but-
+   * never-recorded member" test in doom-loop-fanout.test.ts). The filters
+   * below therefore MIRROR every path that skips recording — unknown/manual
+   * tools (`isAutoResolvableTool`, also gating executeAutoApproveTools and
+   * the approval-resume loop), `hookDeniedCalls` (consumed before the
+   * checkpoint in executeSingleToolCall), and `loopKey`-exempt calls (early
+   * return in checkDoomLoopBeforeExecution; the same resolution is cached
+   * here so both sides agree). If you add a new short-circuit between
+   * declaration and the checkpoint — a pre-execution gate, a batch filter —
+   * it MUST be reflected here, or fan-out detection degrades silently for
+   * that tool rather than failing loudly.
    */
   private async beginDoomLoopRound(batch: readonly ParsedToolCall<Tool>[] = []): Promise<void> {
     const monitor = this.doomLoopMonitor;
