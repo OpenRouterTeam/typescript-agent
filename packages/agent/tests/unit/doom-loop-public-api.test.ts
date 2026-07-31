@@ -188,6 +188,88 @@ describe('DoomLoopMonitor via the public entrypoint', () => {
     expect(record.streak).toBe(1);
   });
 
+  it('isolates the live detector from mutations of a saved snapshot', async () => {
+    /*
+     * `getState()` snapshots are handed to the caller's StateAccessor, and the
+     * multi-call round set used to be the live array — shared with the running
+     * streak entry and the round declaration. A caller that pushed into (or
+     * sorted, or spliced) the saved blob silently corrupted the detector for
+     * the rest of the run: the next identical fan-out compared against the
+     * mutated set, never matched, and scored 1 instead of block.
+     */
+    const paths = [
+      'a',
+      'b',
+    ];
+    const monitor = new DoomLoopMonitor(resolveDoomLoopOption(true));
+    for (const round of [
+      0,
+      1,
+    ]) {
+      await monitor.declareRound(
+        round,
+        paths.map((path) => ({
+          toolName: 'read',
+          keyMaterial: {
+            path,
+          },
+        })),
+      );
+      for (const path of paths) {
+        await monitor.recordToolCall(
+          'read',
+          {
+            path,
+          },
+          round,
+        );
+      }
+    }
+
+    /* A careless (or hostile) caller mutates the saved snapshot in place. */
+    const saved = monitor.getState() as {
+      tools: Record<
+        string,
+        {
+          roundFingerprints?: string[];
+        }
+      >;
+    };
+    saved.tools.read.roundFingerprints?.push('INJECTED');
+
+    /* The live detector must be unaffected: round 3 still blocks. */
+    await monitor.declareRound(
+      2,
+      paths.map((path) => ({
+        toolName: 'read',
+        keyMaterial: {
+          path,
+        },
+      })),
+    );
+    let last: {
+      streak: number;
+      action?: string;
+    } = {
+      streak: 0,
+    };
+    for (const path of paths) {
+      const record = await monitor.recordToolCall(
+        'read',
+        {
+          path,
+        },
+        2,
+      );
+      last = {
+        streak: record.streak,
+        action: record.verdict?.action,
+      };
+    }
+    expect(last.streak).toBe(3);
+    expect(last.action).toBe('block');
+  });
+
   it('round-trips state across a process boundary via plain JSON', async () => {
     const first = new DoomLoopMonitor(resolveDoomLoopOption(true));
     await first.recordToolCall(

@@ -981,10 +981,18 @@ export class DoomLoopMonitor {
              * which reset condemned fan-outs across approval pauses and made
              * per-turn-resume topologies never accumulate. Single-call rounds
              * omit it: their fingerprint fully describes the round.
+             *
+             * COPIED, not aliased: the in-memory array is shared with the live
+             * streak entry (and, for declared rounds, with `declaredRound`
+             * itself), and the snapshot is handed to the caller's
+             * StateAccessor. An in-place mutation of the saved blob must not
+             * corrupt the detector still running against it.
              */
             ...((entry.roundFingerprints?.length ?? 0) > 1
               ? {
-                  roundFingerprints: entry.roundFingerprints,
+                  roundFingerprints: [
+                    ...(entry.roundFingerprints as readonly string[]),
+                  ],
                 }
               : {}),
           },
