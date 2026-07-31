@@ -182,6 +182,35 @@ export {
   buildNextTurnParamsContext,
   executeNextTurnParamsFunctions,
 } from './lib/next-turn-params.js';
+export type {
+  ComponentDefinition,
+  CreateLibraryOptions,
+  FragmentArg,
+  FragmentBuilder,
+  FragmentNode,
+  OpenUiPlugin,
+  OpenUiWireComponent,
+  PropSignature,
+  UiExpr,
+  UiFragment,
+  UiLibrary,
+  UiLiteralValue,
+} from './lib/openui/index.js';
+// OpenUI (generative UI) bindings: library model, fragment builder, plugin helper
+export {
+  componentProps,
+  createLibrary,
+  defineComponent,
+  fragment,
+  OPENUI_BUILTIN_COMPONENTS,
+  OPENUI_LANG_DIALECT,
+  OPENUI_ROOT_REF,
+  openui,
+  serializeExpr,
+  uiBuiltin,
+  uiRef,
+  uiState,
+} from './lib/openui/index.js';
 // Stop condition helpers
 export {
   finishReasonIs,
