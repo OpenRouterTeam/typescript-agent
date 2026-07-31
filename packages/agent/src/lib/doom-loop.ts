@@ -820,6 +820,60 @@ function isValidStreak(value: unknown): value is DoomLoopStreak {
   );
 }
 
+/**
+ * Rebuild one tool's in-memory streak entry from its persisted shape.
+ *
+ * The persisted set (when the last round was multi-call) restores the round's
+ * identity exactly, so a resumed fan-out continues its streak and a resumed
+ * SUBSET cannot match it — the false-positive and false-negative failure
+ * modes of a single-fingerprint save. Older blobs (and single-call rounds)
+ * carry no set; the lone fingerprint fully describes those rounds. Malformed
+ * sets fall back the same way rather than dropping the entry.
+ *
+ * Per-call counts restore into the CURRENT-round slot: the first resumed
+ * record is a new round, so `recordToolCall` rolls them into its baseline
+ * (`priorCallStreaks`) exactly as a live round transition would. Validated
+ * entry-by-entry — the blob is caller-writable JSON, and one malformed count
+ * must not poison the rest. `Object.create(null)` + direct assignment so a
+ * persisted "__proto__" key is inert data, mirroring the Map rationale at the
+ * `tools` field. `round` is intentionally absent from the result: the first
+ * resumed record is always a new round, whatever the numbering.
+ */
+function restoreStreakEntry(entry: DoomLoopStreak): StreakEntry {
+  const persistedSet =
+    Array.isArray(entry.roundFingerprints) &&
+    entry.roundFingerprints.length > 1 &&
+    entry.roundFingerprints.every((value) => typeof value === 'string')
+      ? [
+          ...entry.roundFingerprints,
+        ].sort()
+      : [
+          entry.fingerprint,
+        ];
+  const persistedCallStreaks: Record<string, number> = Object.create(null) as Record<
+    string,
+    number
+  >;
+  if (typeof entry.callStreaks === 'object' && entry.callStreaks !== null) {
+    for (const [callFingerprint, count] of Object.entries(entry.callStreaks)) {
+      if (typeof count === 'number' && Number.isFinite(count) && count >= 1) {
+        persistedCallStreaks[callFingerprint] = Math.floor(count);
+      }
+    }
+  }
+  return {
+    fingerprint: entry.fingerprint,
+    streak: entry.streak,
+    roundFingerprints: persistedSet,
+    callStreaks:
+      Object.keys(persistedCallStreaks).length > 0
+        ? persistedCallStreaks
+        : {
+            [entry.fingerprint]: entry.streak,
+          },
+  };
+}
+
 /** In-memory streak entry: serialized shape + the round of the last record. */
 interface StreakEntry extends DoomLoopStreak {
   /**
@@ -1063,58 +1117,7 @@ export class DoomLoopMonitor {
     if (typeof candidate.tools === 'object' && candidate.tools !== null) {
       for (const [name, entry] of Object.entries(candidate.tools)) {
         if (isValidStreak(entry)) {
-          /*
-           * The persisted set (when the last round was multi-call) restores
-           * the round's identity exactly, so a resumed fan-out continues its
-           * streak and a resumed SUBSET cannot match it — the false-positive
-           * and false-negative failure modes of a single-fingerprint save.
-           * Older blobs (and single-call rounds) carry no set; the lone
-           * fingerprint fully describes those rounds. Entries with a
-           * malformed set fall back the same way rather than being dropped.
-           */
-          const persistedSet =
-            Array.isArray(entry.roundFingerprints) &&
-            entry.roundFingerprints.length > 1 &&
-            entry.roundFingerprints.every((value) => typeof value === 'string')
-              ? [
-                  ...entry.roundFingerprints,
-                ].sort()
-              : [
-                  entry.fingerprint,
-                ];
-          /*
-           * Per-call counts restore into the CURRENT-round slot: the first
-           * resumed record is a new round, so `recordToolCall` rolls them into
-           * its baseline (`priorCallStreaks`) exactly as a live round
-           * transition would. Validated entry-by-entry — the blob is
-           * caller-writable JSON, and one malformed count must not poison the
-           * rest. `Object.create(null)`+direct assignment so a persisted
-           * "__proto__" key is inert data, mirroring the Map rationale above.
-           */
-          const persistedCallStreaks: Record<string, number> = Object.create(null) as Record<
-            string,
-            number
-          >;
-          if (typeof entry.callStreaks === 'object' && entry.callStreaks !== null) {
-            for (const [callFingerprint, count] of Object.entries(entry.callStreaks)) {
-              if (typeof count === 'number' && Number.isFinite(count) && count >= 1) {
-                persistedCallStreaks[callFingerprint] = Math.floor(count);
-              }
-            }
-          }
-          tools.set(name, {
-            fingerprint: entry.fingerprint,
-            streak: entry.streak,
-            // `round` intentionally absent: the first resumed record is
-            // always a new round, so it increments whatever the numbering.
-            roundFingerprints: persistedSet,
-            callStreaks:
-              Object.keys(persistedCallStreaks).length > 0
-                ? persistedCallStreaks
-                : {
-                    [entry.fingerprint]: entry.streak,
-                  },
-          });
+          tools.set(name, restoreStreakEntry(entry));
         }
       }
     }
