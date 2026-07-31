@@ -290,18 +290,27 @@ point. Repeated **rounds** build a per-tool streak: interleaved calls to
 within ONE round count once (a streak measures the model re-issuing a call
 *after seeing its result*, which requires a round trip).
 
-A round's identity for one tool is the **set** of calls it made, not its last
-call, so a fan-out of *distinct* arguments reissued verbatim counts:
-`read(a), read(b), read(c)` every round accumulates a streak. Ordering within
-the round is irrelevant, and a round whose membership *changes* — in either
-direction — resets the streak to 1, since adding or dropping work is progress
-rather than repetition. One consequence worth knowing: a call that repeats
-inside a round whose other members keep changing (`[a,b]`, `[a,c]`, `[a,d]`)
-does **not** accumulate, because the round differs each time.
+Two kinds of evidence accumulate side by side, and the stronger one decides:
+
+- **Round-set streaks.** A round's identity for one tool is the **set** of
+  calls it made, so a fan-out of *distinct* arguments reissued verbatim
+  counts: `read(a), read(b), read(c)` every round accumulates. Ordering
+  within the round is irrelevant, and a round whose membership changes — in
+  either direction — resets this streak, since adding or dropping work is
+  progress for the round as a unit.
+- **Per-call streaks.** Each `(tool, arguments)` identity also counts its own
+  consecutive rounds, whatever its round-mates did. A call repeating inside
+  varying company (`[a,b]`, `[a,c]`, `[a,d]` — `a` is a 3-peat) is flagged
+  even though every round's set differs, and a repeat spanning an approval
+  pause keeps counting when the paused member drops from the resumed round.
+  For an exactly-repeating round both counts are equal, so nothing
+  double-fires.
 
 When a repeating fan-out crosses a rung, every call in the round gets the
 verdict (so `block` stops the whole fan-out, not just one member) and they
-share one message, so the `steer` rung injects a single correction. The streak
+share one message, so the `steer` rung injects a single correction. When the
+per-call count alone crosses a rung, only that call is refused — its verdict
+quotes its own identity, and genuinely new round-mates run free. The streak
 crosses a graduated ladder — strongest crossed rung wins:
 
 | Action | Effect |
@@ -436,26 +445,11 @@ block to observe for a known-chatty tool, or escalate straight to stop.
 - **Manual/client-executed calls** pause the loop for the caller and are
   not recorded (only executed, blocked, and parse-error calls are
   evidence).
-- **A repeat inside a varying round.** Round identity is the whole set, so
-  `read(a)` reissued alongside a different second call every round
-  (`[a,b]`, `[a,c]`, `[a,d]`) never accumulates. This is the flip side of
-  "a changed member is progress"; a model retrying one failing call while
-  probing around it is not caught. Applies to *declared* rounds — i.e.
-  every batch the tool loop executes.
-- **Order-dependent scoring where a round can't be declared up front.**
-  Server-tool records (web search, advisor) arrive as the response streams,
-  so their membership isn't known in advance and they are scored per call
-  rather than per set. Each call compares against a baseline FIXED at the
-  round transition — the previous round's last-recorded fingerprint — so a
-  repeating multi-call round accumulates only on whichever call is recorded
-  *last*; which member that is depends on emission order, and a repeat
-  inside a varying round *does* accumulate if it happens to be last
-  (`[a,b]`, `[c,b]`, `[d,b]` trips on `b`). The fixed baseline also means a
-  match ANYWHERE in the next round counts, not only in its final position:
-  `[a]` then `[b, a]` scores `a` as a repeat even though `b` arrived first.
-  Server-tool verdicts cannot `block`, but they can reach `stop`. Client
-  tool calls always go through a declared round, so this affects server
-  tools and direct `DoomLoopMonitor` callers only.
+- **Cross-tool round patterns.** Streaks are per tool: a loop alternating
+  BETWEEN tools with no per-tool repetition (`read(a)` one round, `grep(a)`
+  the next, forever) shows each tool a sparse pattern its own evidence
+  cannot condemn. Interleaved calls to other tools never *reset* a tool's
+  streak, so an every-other-round repeat still accumulates — slowly.
 
 ### Tool Approval
 

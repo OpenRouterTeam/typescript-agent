@@ -18,20 +18,28 @@ a repeat — a round that adds new work is progress, not repetition. Every call 
 a repeating round reports that round's streak, so at the block rung a repeating
 fan-out stops spending rather than only its last call being refused.
 
-Paths that cannot know a round's membership up front — server-tool records, and
-direct/port callers — are scored per call against the previous round rather than
-as a set. A repeating multi-call round there still accumulates, but only on
-whichever call is recorded *last*, so the verdict lands on one member and which
-member depends on emission order. Declare the round (see below) for
-order-independent, whole-round scoring.
+**Per-call streaks** accumulate alongside the round-set streak, and the
+stronger evidence decides. Each `(tool, arguments)` identity counts its own
+consecutive rounds, whatever its round-mates did — so a call repeating inside
+varying company (`[a,b]`, `[a,c]`, `[a,d]`: `a` is a 3-peat) is flagged even
+though every round's set differs, a repeat keeps counting when a paused HITL
+member drops from the resumed round, and undeclared paths (server-tool records,
+direct callers) get order-independent per-call detection without a declaration.
+When the per-call count alone crosses a rung, only that call is refused and its
+verdict quotes its own identity; genuinely new round-mates run free. For an
+exactly-repeating round both counts are equal, so nothing double-fires. A
+partial repeat (`[a,b,c]` then `[a,b]`) flags the re-issued calls at the
+observe rung rather than being invisible; a superset round (`[a,b]`, `[a,b]`,
+`[a,b,c]`) flags the repeated members while the new call always executes.
 
 A call that a round's declaration could not include (unhashable key material)
-is likewise scored on its own, and cannot move the round's counters — one
-unhashable argument costs detection for its own call only, never for the tool.
+cannot inherit or move the round's counters; its own verbatim repetition still
+accumulates per-call evidence like any other repeat.
 
-**Resumed runs**: a multi-call round's fingerprint set is persisted alongside
-its streak (a new optional `roundFingerprints` on `DoomLoopStreak` — additive;
-pre-existing blobs restore with their old single-call semantics). A repeating
+**Resumed runs**: a multi-call round's fingerprint set and per-call counts are
+persisted alongside its streak (new optional `roundFingerprints` and
+`callStreaks` on `DoomLoopStreak` — additive; pre-existing blobs restore with
+their old single-call semantics). A repeating
 fan-out therefore keeps its evidence across save/resume boundaries: approval
 pauses no longer reset a fan-out sitting at the block rung, and per-turn-resume
 topologies (one `callModel` per user turn, state persisted between) accumulate
@@ -44,17 +52,14 @@ a fan-out's evidence. Single-call streaks behave exactly as before.
 complete call set before any of it is scored. `DoomLoopMonitor` is exported, so
 this is a new public method, additive only. Callers using `callModel` need not
 touch it (the engine calls it); direct `DoomLoopMonitor` users and SDK ports
-should, since an undeclared multi-call round falls back to per-call scoring and
-its fan-out goes undetected.
+should, so a repeating fan-out is flagged as one unit (shared verdict, shared
+steer message) rather than only via each member's individual per-call count.
 
 Single-call round timing, in-round duplicate collapsing, verdict payloads, and
 the number of times a tool's `loopKey` is invoked (once per checked call) are
-unchanged. The persisted shape gains one optional field (`roundFingerprints`,
-above); everything existing is untouched and old blobs restore cleanly.
-
-Known limit, unchanged by this fix: a call that repeats inside a round whose
-other members keep varying (`[a,b]`, `[a,c]`, `[a,d]`) does not accumulate,
-since round identity requires the whole set to match.
+unchanged. The persisted shape gains two optional fields (`roundFingerprints`
+and `callStreaks`, both above); everything existing is untouched and old blobs
+restore cleanly with their old semantics.
 
 **Newly reachable false positive.** The detector compares arguments, not
 results, so a tool invoked with a stable *set* of parallel arguments every round
@@ -91,12 +96,14 @@ const result = callModel(client, {
 //      EVERY call of the round is refused at the block rung, not just one,
 //      so the fan-out stops spending.
 //
-// A round that ADDS work is progress and resets to 1:
-//   round 3: read(a), read(b), read(c), read(d)   <- no verdict
+// A round that ADDS work resets the ROUND streak, but each repeated call
+// keeps its own count — the model re-read a, b, c a third time:
+//   round 3: read(a), read(b), read(c), read(d)
+//            -> a, b, c blocked (3rd consecutive round each); d executes.
 //
 // `loopKey` still runs exactly once per checked call. Persisted state gains
-// one optional field so fan-out streaks survive save/resume; old state
-// restores cleanly.
+// two optional fields so fan-out and per-call evidence survive save/resume;
+// old state restores cleanly.
 ```
 
 Driving `DoomLoopMonitor` directly (or porting it) is the case that needs the
@@ -111,10 +118,9 @@ import { DoomLoopMonitor, resolveDoomLoopOption } from '@openrouter/agent';
 const monitor = new DoomLoopMonitor(resolveDoomLoopOption(true));
 
 for (const [round, batch] of batches.entries()) {
-  // NEW: declare the round's complete set BEFORE recording any of its calls.
-  // Without this a multi-call round is scored per call, so a repeating fan-out
-  // accumulates only on whichever call is recorded last — and which one that
-  // is depends on emission order.
+  // NEW: declare the round's complete set BEFORE recording any of its calls,
+  // so a repeating fan-out is scored as one unit. (Per-call repetition is
+  // detected either way; the declaration adds whole-round identity.)
   await monitor.declareRound(
     round,
     batch.map((call) => ({ toolName: call.name, keyMaterial: call.arguments })),

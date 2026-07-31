@@ -138,7 +138,7 @@ describe('same-tool fan-out streaks', () => {
     ]);
   });
 
-  it('resets when the fan-out membership changes', async () => {
+  it('scores each call individually when the fan-out membership changes', async () => {
     const actions = await playRounds([
       [
         'a',
@@ -162,18 +162,23 @@ describe('same-tool fan-out streaks', () => {
       'observe',
       'observe',
     ]);
-    /* Different set: this is progress, not repetition. */
+    /*
+     * Round 3 changes a member: the ROUND identity resets (progress), but `a`
+     * itself is on its third consecutive round — the per-call detector flags
+     * it while the genuinely new `z` runs free. Swapping one argument while
+     * re-issuing the rest is not a loop escape.
+     */
     expect(actions[2]).toEqual([
-      'none',
+      'block',
       'none',
     ]);
     expect(actions[3]).toEqual([
-      'observe',
+      'block',
       'observe',
     ]);
   });
 
-  it('does not treat a partial repeat as a repeat', async () => {
+  it('flags the calls of a partial repeat that actually repeated', async () => {
     const actions = await playRounds([
       [
         'a',
@@ -186,14 +191,19 @@ describe('same-tool fan-out streaks', () => {
       ],
     ]);
 
-    /* A strict subset is a different round, so no verdict fires. */
+    /*
+     * A strict subset is a different ROUND, but `a` and `b` are each on their
+     * second consecutive round: doing strictly less work does not make the
+     * re-issued calls progress. Observe only — dropping work never escalates
+     * faster than repeating it.
+     */
     expect(actions[1]).toEqual([
-      'none',
-      'none',
+      'observe',
+      'observe',
     ]);
   });
 
-  it('does not treat a superset round as a repeat', async () => {
+  it('flags the repeated members of a superset round, never the new one', async () => {
     const actions = await playRounds([
       [
         'a',
@@ -211,18 +221,20 @@ describe('same-tool fan-out streaks', () => {
     ]);
 
     /*
-     * The third round added new work, so it is progress and nothing fires.
-     * Scoring the set as it accumulated used to make this round transiently
-     * equal `[a,b]` on its `b` call and score streak 3 -> block, refusing a
-     * legitimate call. Guards the direction the subset test above does not.
+     * Round 3 adds `c`: the ROUND is progress, and `c` must run — the original
+     * superset bug blocked it via a transient identity match, order-
+     * dependently. Under per-call scoring `a` and `b` are flagged because each
+     * genuinely IS on its third consecutive round (the model re-read both
+     * while adding one file), while `c` executes untouched. Unlike the old
+     * bug, this is order-independent — see the permutation test below.
      */
     expect(actions[1]).toEqual([
       'observe',
       'observe',
     ]);
     expect(actions[2]).toEqual([
-      'none',
-      'none',
+      'block',
+      'block',
       'none',
     ]);
   });
@@ -260,19 +272,25 @@ describe('same-tool fan-out streaks', () => {
     ]);
 
     /*
-     * Emission order must not decide whether a call is refused. While the set
+     * Emission order must not decide any call's outcome. While the set
      * accumulated, `[a,b,c]` blocked its `b` call and `[c,a,b]` fired nothing
-     * — same calls, same history, different outcome.
+     * — same calls, same history, different outcome. Per-call verdicts follow
+     * each call's own identity, so a permutation reorders the verdicts with
+     * the calls but never changes what any call receives.
      */
-    expect(permuted[2]).toEqual(inOrder[2]);
     expect(inOrder[2]).toEqual([
+      'block',
+      'block',
       'none',
+    ]);
+    expect(permuted[2]).toEqual([
       'none',
-      'none',
+      'block',
+      'block',
     ]);
   });
 
-  it('does not accumulate a streak while a fan-out keeps expanding', async () => {
+  it('scores an expanding fan-out per call: repeats climb, each new call runs free', async () => {
     const actions = await playRounds([
       [
         'a',
@@ -294,13 +312,33 @@ describe('same-tool fan-out streaks', () => {
       ],
     ]);
 
-    /* Every round adds work, so no round repeats its predecessor. */
-    expect(
-      actions
-        .slice(1)
-        .flat()
-        .every((action) => action === 'none'),
-    ).toBe(true);
+    /*
+     * Every round adds work, so no ROUND repeats its predecessor — but `a` is
+     * re-issued in all four rounds and `b` in three. Per-call evidence tracks
+     * each: the newest call is always clean, the oldest climbs the ladder.
+     * (Genuine incremental exploration re-reads nothing and stays silent; a
+     * tool that legitimately re-reads its anchors opts out via `loopKey`.)
+     */
+    expect(actions).toEqual([
+      [
+        'none',
+      ],
+      [
+        'observe',
+        'none',
+      ],
+      [
+        'block',
+        'observe',
+        'none',
+      ],
+      [
+        'block',
+        'block',
+        'observe',
+        'none',
+      ],
+    ]);
   });
 
   it('leaves single-call rounds behaving exactly as before', async () => {
@@ -422,22 +460,19 @@ describe('same-tool fan-out streaks', () => {
     expect(fresh.verdict).toBeUndefined();
   });
 
-  it('scores an UNDECLARED multi-call round on its last member, order-dependently', async () => {
+  it('scores an UNDECLARED multi-call round per call, order-independently', async () => {
     /*
-     * Pins the undeclared path's real semantics, because they are NOT the
-     * pre-fan-out per-call comparison for a multi-call round, and the docs
-     * previously claimed they were.
+     * Pins the undeclared path (server-tool records, direct callers). The
+     * round SET is unknowable there, but per-call evidence needs no
+     * declaration: every repeated fingerprint accumulates its own count, so a
+     * repeating undeclared fan-out now flags EVERY repeated member instead of
+     * only whichever happened to be recorded last, and flipping the emission
+     * order no longer changes any call's outcome.
      *
-     * Each call of an undeclared round overwrites `roundFingerprints` with its
-     * own singleton, so the next round's matching call compares against the
-     * previous round's LAST recorded fingerprint. A repeating undeclared
-     * fan-out therefore accumulates on whichever member lands last, and
-     * flipping the emission order moves the verdict to a different call.
-     *
-     * Consequences worth pinning: it reaches `stop` at the default ladder's
-     * streak 6 (server-tool verdicts cannot `block`, but they can stop a run),
-     * and a repeat inside a *varying* round accumulates here even though the
-     * declared path treats that as progress.
+     * Still worth pinning: verdicts here can reach `stop` at the default
+     * ladder's streak 6 (server-tool verdicts cannot `block`, but they can
+     * stop a run), and a repeat inside a *varying* round accumulates on the
+     * repeated member exactly as on the declared path.
      */
     const undeclared = async (rounds: readonly (readonly string[])[]): Promise<string[][]> => {
       const detector = monitor();
@@ -459,7 +494,7 @@ describe('same-tool fan-out streaks', () => {
       return out;
     };
 
-    /* The last member accumulates; the first does not. */
+    /* Both repeated members accumulate, not just the last-recorded one. */
     expect(
       await undeclared([
         [
@@ -477,12 +512,12 @@ describe('same-tool fan-out streaks', () => {
         '1:none',
       ],
       [
-        '1:none',
+        '2:observe',
         '2:observe',
       ],
     ]);
 
-    /* Flipping the order moves the verdict onto the other call. */
+    /* Flipping the order changes nothing about any call's outcome. */
     expect(
       await undeclared([
         [
@@ -501,32 +536,39 @@ describe('same-tool fan-out streaks', () => {
       ],
       [
         '2:observe',
-        '1:none',
+        '2:observe',
       ],
     ]);
 
-    /* A varying round still accumulates on the stable last member. */
+    /* A varying round accumulates on the repeated member wherever it sits. */
     expect(
-      (
-        await undeclared([
-          [
-            'a',
-            'b',
-          ],
-          [
-            'c',
-            'b',
-          ],
-          [
-            'd',
-            'b',
-          ],
-        ])
-      ).map((round) => round.at(-1)),
+      await undeclared([
+        [
+          'b',
+          'a',
+        ],
+        [
+          'b',
+          'c',
+        ],
+        [
+          'b',
+          'd',
+        ],
+      ]),
     ).toEqual([
-      '1:none',
-      '2:observe',
-      '3:block',
+      [
+        '1:none',
+        '1:none',
+      ],
+      [
+        '2:observe',
+        '1:none',
+      ],
+      [
+        '3:block',
+        '1:none',
+      ],
     ]);
   });
 
@@ -579,7 +621,8 @@ describe('same-tool fan-out streaks', () => {
       },
     ]);
     const member = await detector.recordToolCall('read', hashable, 2);
-    /* Recorded with a fallback identity, as the engine would. */
+    /* Recorded with a fallback identity, as the engine would — for the
+     * FIRST time; earlier rounds never recorded it. */
     const dropped = await detector.recordToolCall(
       'read',
       {
@@ -590,9 +633,78 @@ describe('same-tool fan-out streaks', () => {
 
     /* The real repeat accumulates. */
     expect(member.streak).toBe(3);
-    /* The non-member does not inherit it. */
+    /* The non-member's first-ever appearance inherits nothing — not the
+     * round streak, and (never having been recorded) no per-call count. */
     expect(dropped.streak).toBe(1);
     expect(dropped.verdict).toBeUndefined();
+  });
+
+  it('accumulates per-call evidence for an unhashable call reissued verbatim', async () => {
+    /*
+     * A call dropped from the declaration (unhashable key material) records
+     * under a fallback identity as a NON-member: it can never inherit or move
+     * the round's counters. Its OWN repetition is still evidence — before
+     * per-call streaks it was pinned at 1 forever, a documented detection
+     * loss ("costs detection for its own call only"). Now the fallback
+     * identity accumulates like any repeat, while the round members are
+     * unaffected either way.
+     */
+    const detector = monitor();
+    const droppedStreaks: number[] = [];
+    const memberStreaks: number[] = [];
+    for (const round of [
+      0,
+      1,
+      2,
+    ]) {
+      await detector.declareRound(round, [
+        {
+          toolName: 'read',
+          keyMaterial: {
+            path: 'a',
+          },
+        },
+        {
+          toolName: 'read',
+          keyMaterial: {
+            size: 1n,
+          },
+        },
+      ]);
+      memberStreaks.push(
+        (
+          await detector.recordToolCall(
+            'read',
+            {
+              path: 'a',
+            },
+            round,
+          )
+        ).streak,
+      );
+      droppedStreaks.push(
+        (
+          await detector.recordToolCall(
+            'read',
+            {
+              size: 'fallback-identity',
+            },
+            round,
+          )
+        ).streak,
+      );
+    }
+
+    expect(memberStreaks).toEqual([
+      1,
+      2,
+      3,
+    ]);
+    expect(droppedStreaks).toEqual([
+      1,
+      2,
+      3,
+    ]);
   });
 
   it('keeps accumulating when an unhashable call rides along every round', async () => {
@@ -715,17 +827,35 @@ describe('same-tool fan-out streaks', () => {
       );
     }
 
-    /* The ignored call must not be refused the first time it is seen. */
+    /*
+     * The non-member was genuinely recorded in both rounds, so on resume its
+     * OWN per-call count continues (2 -> 3) — earned evidence, not the round
+     * streak leaking. The K2 bug this test pins was different: the saved
+     * ROUND count attached to the non-member's fingerprint, so it inherited
+     * evidence it never earned while the real repeat lost its own. The guard
+     * for that is the identity pairing, asserted below via the member.
+     */
     const resumedNonMember = new DoomLoopMonitor(resolveDoomLoopOption(true), detector.getState());
-    const firstSighting = await resumedNonMember.recordToolCall(
+    const ownRepeat = await resumedNonMember.recordToolCall(
       'read',
       {
         size: 'fallback-identity',
       },
       0,
     );
-    expect(firstSighting.streak).toBe(1);
-    expect(firstSighting.verdict).toBeUndefined();
+    expect(ownRepeat.streak).toBe(3);
+
+    /* A call NEVER recorded before the save inherits nothing on resume. */
+    const resumedFresh = new DoomLoopMonitor(resolveDoomLoopOption(true), detector.getState());
+    const fresh = await resumedFresh.recordToolCall(
+      'read',
+      {
+        size: 'never-seen-before',
+      },
+      0,
+    );
+    expect(fresh.streak).toBe(1);
+    expect(fresh.verdict).toBeUndefined();
 
     /* And the real repeat keeps the evidence it earned. */
     const resumedMember = new DoomLoopMonitor(resolveDoomLoopOption(true), detector.getState());
@@ -747,19 +877,16 @@ describe('same-tool fan-out streaks', () => {
     expect(realRepeat.streak).toBe(3);
   });
 
-  it('resets a streak when a declared-but-never-recorded member disappears', async () => {
+  it('keeps counting a recorded call when a declared-but-never-recorded member disappears', async () => {
     /*
-     * Pins WHY the engine must not declare a call it will never record (a
-     * manual tool, a PermissionRequest denial, a malformed call to either).
-     * Such a member is a phantom: it inflates the round's identity, so the
-     * sibling that IS recorded gets scored against a set it never matches on
-     * its own — and the streak resets the moment the phantom stops being
-     * emitted, even though the recorded call never changed.
-     *
-     * This test drives the monitor directly with an over-broad declaration to
-     * show the consequence; `beginDoomLoopRound` is what prevents it, by
-     * filtering the batch through `isAutoResolvableTool` and `hookDeniedCalls`
-     * before declaring.
+     * A phantom member — declared but never recorded (a manual tool, a
+     * PermissionRequest denial) — inflates the ROUND's identity, so the round
+     * streak resets when the phantom stops being emitted. That used to zero
+     * detection for the sibling that WAS recorded every round; per-call
+     * evidence is immune, because it follows the call's own fingerprint
+     * rather than the round set. The engine still filters phantoms out of
+     * declarations (`isAutoResolvableTool`, `hookDeniedCalls` in
+     * `beginDoomLoopRound`) so the ROUND streak stays meaningful too.
      */
     const detector = monitor();
     const streaks: number[] = [];
@@ -803,121 +930,12 @@ describe('same-tool fan-out streaks', () => {
       );
     }
 
-    /*
-     * The recorded call was identical in all four rounds, yet the streak
-     * restarts at round 2 when the phantom disappears. An over-broad
-     * declaration therefore costs real detection — hence the filtering.
-     */
+    /* Identical call, four consecutive rounds: uninterrupted evidence. */
     expect(streaks).toEqual([
       1,
       2,
-      1,
-      2,
-    ]);
-  });
-
-  it('holds an unhashable call at streak 1 without stalling its round-mates', async () => {
-    /*
-     * Bounds the cost of an unhashable argument. Such a call is compared
-     * against its tool's declared set, which it is not a member of, so it
-     * cannot match and stays at 1 however often it recurs — it is invisible to
-     * detection. That is the fail-open contract: the price is paid by that call
-     * alone, and its round-mates keep accumulating normally (the regression
-     * above covers the case where it used to zero them too).
-     *
-     * Also pins the asymmetry: a tool whose calls are ALL unhashable has no
-     * declared set, so it falls through to the ordinary per-call comparison
-     * and DOES accumulate.
-     */
-    const detector = monitor();
-    const memberStreaks: number[] = [];
-    const droppedStreaks: number[] = [];
-    for (const round of [
-      0,
-      1,
-      2,
-    ]) {
-      await detector.declareRound(round, [
-        {
-          toolName: 'read',
-          keyMaterial: {
-            path: 'a',
-          },
-        },
-        {
-          toolName: 'read',
-          keyMaterial: {
-            size: 1n,
-          },
-        },
-      ]);
-      memberStreaks.push(
-        (
-          await detector.recordToolCall(
-            'read',
-            {
-              path: 'a',
-            },
-            round,
-          )
-        ).streak,
-      );
-      droppedStreaks.push(
-        (
-          await detector.recordToolCall(
-            'read',
-            {
-              size: 'fallback-identity',
-            },
-            round,
-          )
-        ).streak,
-      );
-    }
-
-    expect(memberStreaks).toEqual([
-      1,
-      2,
       3,
-    ]);
-    expect(droppedStreaks).toEqual([
-      1,
-      1,
-      1,
-    ]);
-
-    /* No declared set for the tool at all: ordinary per-call accumulation. */
-    const allUnhashable = monitor();
-    const soloStreaks: number[] = [];
-    for (const round of [
-      0,
-      1,
-      2,
-    ]) {
-      await allUnhashable.declareRound(round, [
-        {
-          toolName: 'read',
-          keyMaterial: {
-            size: 1n,
-          },
-        },
-      ]);
-      soloStreaks.push(
-        (
-          await allUnhashable.recordToolCall(
-            'read',
-            {
-              size: 'fallback-identity',
-            },
-            round,
-          )
-        ).streak,
-      );
-    }
-    expect(soloStreaks).toEqual([
-      1,
-      2,
-      3,
+      4,
     ]);
   });
 
@@ -1040,14 +1058,69 @@ describe('same-tool fan-out streaks', () => {
     expect(record.verdict?.action).toBe('block');
   });
 
-  it('does not refuse a resumed SINGLE call that inherits a fan-out streak', async () => {
+  it('keeps counting a repeat when a paused HITL member drops from the resumed round', async () => {
     /*
-     * The streak persists together with the SET that earned it, so a resumed
-     * round consisting of only one member of that set is a different round —
-     * it cannot match the persisted identity and scores 1. Persisting the
-     * count against a single fingerprint instead attached a fan-out's whole
-     * evidence to whichever call was recorded last: a lesser resumed call was
-     * BLOCKED on its first appearance, arbitrarily by emission order.
+     * A HITL member that pauses is recorded in the round where it pauses, but
+     * the resumed batch no longer contains it — so the tool's ROUND identity
+     * differs and the round streak resets. Before per-call evidence, that
+     * granted the loop a fresh grace window on every pause. The repeated
+     * working call now carries its own count through the membership change.
+     */
+    const detector = monitor();
+    const workStreaks: string[] = [];
+    for (const round of [
+      0,
+      1,
+      2,
+    ]) {
+      /* Round 0 includes the gated call; the resumed rounds do not. */
+      const members =
+        round === 0
+          ? [
+              'work',
+              'gated',
+            ]
+          : [
+              'work',
+            ];
+      await detector.declareRound(
+        round,
+        members.map((path) => ({
+          toolName: 'deploy',
+          keyMaterial: {
+            path,
+          },
+        })),
+      );
+      for (const path of members) {
+        const record = await detector.recordToolCall(
+          'deploy',
+          {
+            path,
+          },
+          round,
+        );
+        if (path === 'work') {
+          workStreaks.push(`${record.streak}:${record.verdict?.action ?? 'none'}`);
+        }
+      }
+    }
+
+    expect(workStreaks).toEqual([
+      '1:none',
+      '2:observe',
+      '3:block',
+    ]);
+  });
+
+  it('scores a resumed SINGLE call on its own earned evidence, never inherited', async () => {
+    /*
+     * Both the round set and the per-call counts persist, so evidence follows
+     * whoever EARNED it. A member of the saved fan-out resumed alone continues
+     * its own count — it genuinely appeared in consecutive rounds, and which
+     * member it is no longer matters (the original bug attached the whole
+     * fan-out count to whichever call was recorded last, arbitrarily by
+     * emission order). A call never recorded before the save inherits nothing.
      */
     const detector = monitor();
     const paths = [
@@ -1078,72 +1151,70 @@ describe('same-tool fan-out streaks', () => {
         );
       }
     }
-    /* The streak survives the save, paired with its full set. */
+    /* The streak survives the save, paired with its set and per-call counts. */
     const saved = detector.getState() as {
       tools: Record<
         string,
         {
           streak: number;
           roundFingerprints?: string[];
+          callStreaks?: Record<string, number>;
         }
       >;
     };
     expect(saved.tools.read.streak).toBe(2);
     expect(saved.tools.read.roundFingerprints).toHaveLength(3);
-
-    /* Resume with ONE call — the same one that was recorded last. */
-    const resumed = new DoomLoopMonitor(resolveDoomLoopOption(true), detector.getState());
-    await resumed.declareRound(0, [
-      {
-        toolName: 'read',
-        keyMaterial: {
-          path: 'c',
-        },
-      },
-    ]);
-    const solo = await resumed.recordToolCall(
-      'read',
-      {
-        path: 'c',
-      },
-      0,
-    );
-    /* A subset is a different round: no inherited evidence, no refusal. */
-    expect(solo.streak).toBe(1);
-    expect(solo.verdict).toBeUndefined();
-
-    /* Detection is not lost: a repeating fan-out trips again after the resume. */
-    const afterResume: number[] = [];
-    for (const round of [
-      1,
+    expect(Object.values(saved.tools.read.callStreaks ?? {})).toEqual([
       2,
-    ]) {
-      await resumed.declareRound(
-        round,
-        paths.map((path) => ({
+      2,
+      2,
+    ]);
+
+    /*
+     * ANY member resumed alone continues its own earned count (2 -> 3): a
+     * third consecutive re-read of the same file is a repeat regardless of
+     * what happened to its former round-mates. Emission order is irrelevant —
+     * every member carries the same earned evidence.
+     */
+    for (const path of paths) {
+      const resumed = new DoomLoopMonitor(resolveDoomLoopOption(true), detector.getState());
+      await resumed.declareRound(0, [
+        {
           toolName: 'read',
           keyMaterial: {
             path,
           },
-        })),
+        },
+      ]);
+      const solo = await resumed.recordToolCall(
+        'read',
+        {
+          path,
+        },
+        0,
       );
-      let last = 0;
-      for (const path of paths) {
-        last = (
-          await resumed.recordToolCall(
-            'read',
-            {
-              path,
-            },
-            round,
-          )
-        ).streak;
-      }
-      afterResume.push(last);
+      expect(solo.streak).toBe(3);
+      expect(solo.verdict?.action).toBe('block');
     }
-    expect(afterResume).toEqual([
-      1,
-      2,
+
+    /* A call never recorded before the save inherits nothing. */
+    const resumedFresh = new DoomLoopMonitor(resolveDoomLoopOption(true), detector.getState());
+    await resumedFresh.declareRound(0, [
+      {
+        toolName: 'read',
+        keyMaterial: {
+          path: 'never-before',
+        },
+      },
     ]);
+    const fresh = await resumedFresh.recordToolCall(
+      'read',
+      {
+        path: 'never-before',
+      },
+      0,
+    );
+    expect(fresh.streak).toBe(1);
+    expect(fresh.verdict).toBeUndefined();
   });
 });
