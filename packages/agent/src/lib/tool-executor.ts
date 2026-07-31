@@ -174,22 +174,56 @@ export function parseToolCallArguments(argumentsString: string): unknown {
 }
 
 /**
- * Build a ToolExecuteContext for a tool from a TurnContext and optional context store
+ * Build a ToolExecuteContext for a tool from a TurnContext and optional context store.
+ *
+ * `context.toolCall` is part of the tool-facing contract
+ * ({@link TurnContext.toolCall}), but only the non-streaming orchestrator
+ * historically populated it — the streaming `ModelResult` loop builds its
+ * turn context with just `numberOfTurns`, so hooks like `onToolCalled` saw
+ * `toolCall: undefined`. Every executor path has the call in hand, so thread
+ * it here: a caller-provided `toolCall` on the turn context wins (the
+ * orchestrator's carries `status`), and the executed call fills the gap
+ * otherwise.
  */
 // biome-ignore lint: parameters match the internal API shape
 function buildExecuteCtx(
   tool: ClientTool,
+  toolCall: ParsedToolCall<Tool> | undefined,
   turnContext: TurnContext,
   contextStore?: ToolContextStore,
   sharedSchema?: $ZodObject<$ZodShape>,
 ): ToolExecuteContext {
+  const resolvedToolCall = turnContext.toolCall ?? (toolCall && toFunctionCallItem(toolCall));
   return buildToolExecuteContext(
-    turnContext,
+    resolvedToolCall
+      ? {
+          ...turnContext,
+          toolCall: resolvedToolCall,
+        }
+      : turnContext,
     contextStore,
     tool.function.name,
     tool.function.contextSchema,
     sharedSchema,
   );
+}
+
+/**
+ * Convert an executor-shaped {@link ParsedToolCall} (whose `id` is the wire
+ * `call_id` and whose `arguments` are already parsed) back into the
+ * wire-shaped {@link models.FunctionCallItem} the execute context declares.
+ */
+function toFunctionCallItem(toolCall: ParsedToolCall<Tool>): models.FunctionCallItem {
+  return {
+    type: 'function_call',
+    id: toolCall.id,
+    callId: toolCall.id,
+    name: toolCall.name,
+    arguments:
+      typeof toolCall.arguments === 'string'
+        ? toolCall.arguments
+        : JSON.stringify(toolCall.arguments ?? {}),
+  };
 }
 
 /**
@@ -213,7 +247,7 @@ export async function executeRegularTool(
 
   try {
     const validatedInput = validateToolInput(tool.function.inputSchema, toolCall.arguments);
-    const executeContext = buildExecuteCtx(tool, context, contextStore, sharedSchema);
+    const executeContext = buildExecuteCtx(tool, toolCall, context, contextStore, sharedSchema);
 
     // Execute tool with context
     const result = await Promise.resolve(tool.function.execute(validatedInput, executeContext));
@@ -270,7 +304,7 @@ export async function executeGeneratorTool(
 
   try {
     const validatedInput = validateToolInput(tool.function.inputSchema, toolCall.arguments);
-    const executeContext = buildExecuteCtx(tool, context, contextStore, sharedSchema);
+    const executeContext = buildExecuteCtx(tool, toolCall, context, contextStore, sharedSchema);
 
     const preliminaryResults: unknown[] = [];
     let finalResult: unknown;
@@ -359,7 +393,7 @@ export async function executeHITLTool(
 
   try {
     const validatedInput = validateToolInput(tool.function.inputSchema, toolCall.arguments);
-    const executeContext = buildExecuteCtx(tool, context, contextStore, sharedSchema);
+    const executeContext = buildExecuteCtx(tool, toolCall, context, contextStore, sharedSchema);
 
     const result = await Promise.resolve(
       tool.function.onToolCalled(validatedInput, executeContext),
@@ -589,7 +623,12 @@ async function invokeOnResponseReceived(
   if (!hook) {
     throw new Error('invokeOnResponseReceived called without onResponseReceived hook');
   }
-  const executeContext = buildExecuteCtx(tool, context, contextStore, sharedSchema);
+  /*
+   * Only the `function_call_output` item is in scope here — the originating
+   * call's arguments are not — so no synthetic `toolCall` is threaded. A
+   * caller-provided `turnContext.toolCall` still flows through.
+   */
+  const executeContext = buildExecuteCtx(tool, undefined, context, contextStore, sharedSchema);
   try {
     const hookResult = await Promise.resolve(hook(parsed, executeContext));
     const validation = z4.safeParse(tool.function.outputSchema, hookResult);

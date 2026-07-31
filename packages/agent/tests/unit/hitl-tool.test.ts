@@ -175,6 +175,81 @@ describe('executeHITLTool', () => {
     });
   });
 
+  it('threads the executed tool call into the hook context (streaming turn contexts omit it)', async () => {
+    let seenToolCall: models.FunctionCallItem | undefined;
+    const t = tool({
+      name: 'approve',
+      inputSchema: z.object({
+        amount: z.number(),
+      }),
+      outputSchema: z.object({
+        ok: z.boolean(),
+      }),
+      onToolCalled: async (_input, context) => {
+        seenToolCall = context?.toolCall;
+        return null;
+      },
+    });
+
+    // A streaming-loop turn context: numberOfTurns only, no toolCall.
+    const result = await executeHITLTool(
+      t,
+      makeToolCall('approve', 'call_stream_1', {
+        amount: 5,
+      }),
+      {
+        numberOfTurns: 1,
+      },
+    );
+    expect(result).toBeNull();
+    expect(seenToolCall).toEqual({
+      type: 'function_call',
+      id: 'call_stream_1',
+      callId: 'call_stream_1',
+      name: 'approve',
+      arguments: JSON.stringify({
+        amount: 5,
+      }),
+    });
+  });
+
+  it('prefers a caller-provided turn-context toolCall over the synthesized one', async () => {
+    let seenToolCall: models.FunctionCallItem | undefined;
+    const orchestratorToolCall: models.FunctionCallItem = {
+      type: 'function_call',
+      id: 'call_rich_1',
+      callId: 'call_rich_1',
+      name: 'approve',
+      arguments: '{"amount":5}',
+      status: 'completed',
+    };
+    const t = tool({
+      name: 'approve',
+      inputSchema: z.object({
+        amount: z.number(),
+      }),
+      outputSchema: z.object({
+        ok: z.boolean(),
+      }),
+      onToolCalled: async (_input, context) => {
+        seenToolCall = context?.toolCall;
+        return null;
+      },
+    });
+
+    await executeHITLTool(
+      t,
+      makeToolCall('approve', 'call_rich_1', {
+        amount: 5,
+      }),
+      {
+        numberOfTurns: 1,
+        toolCall: orchestratorToolCall,
+      },
+    );
+    expect(seenToolCall).toBe(orchestratorToolCall);
+  });
+
   it('returns null when onToolCalled returns null (pause)', async () => {
     const t = tool({
       name: 'approve',
