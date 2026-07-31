@@ -34,3 +34,11 @@ export {
   type UiLibrary,
 } from './library.js';
 export { type OpenUiPlugin, type OpenUiWireComponent, openui } from './plugin.js';
+export {
+  OPENUI_WIRE_EVENT,
+  translateUiEvent,
+  type UiDocumentEvent,
+  type UiFragmentEvent,
+  type UiStatementEvent,
+  type UiStreamEvent,
+} from './ui-stream.js';
