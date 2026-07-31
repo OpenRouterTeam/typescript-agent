@@ -993,6 +993,18 @@ export class DoomLoopMonitor {
   }
 
   /**
+   * Clear the cross-step text streak. Called by the engine when a late
+   * async-tool result is injected into the conversation: the run made
+   * observable forward progress, so a model that said "still waiting…"
+   * between deliveries must not accumulate a repetition streak toward a
+   * false-positive stop. Tool streaks are deliberately kept — re-issuing an
+   * identical tool call after a delivery is still loop evidence.
+   */
+  resetTextStreak(): void {
+    this.text = undefined;
+  }
+
+  /**
    * Record one step's assistant text and return the strongest verdict from
    * the two text detectors:
    *

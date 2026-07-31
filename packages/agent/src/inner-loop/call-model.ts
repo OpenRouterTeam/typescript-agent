@@ -109,6 +109,9 @@ export function callModel<
     hooks,
     doomLoop,
     signal,
+    toolTimeoutMs,
+    toolConcurrency,
+    asyncTools,
     ...apiRequest
   } = request;
 
@@ -159,6 +162,9 @@ export function callModel<
     hooks: hooks !== undefined ? resolveHooks(hooks) : undefined,
     doomLoop,
     signal,
+    toolTimeoutMs,
+    toolConcurrency,
+    asyncTools,
   };
   for (const key of Object.keys(engineOptions)) {
     if (engineOptions[key] === undefined) {

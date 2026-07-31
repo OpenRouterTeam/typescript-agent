@@ -5,7 +5,7 @@ import {
 } from './next-turn-params.js';
 import { extractToolCallsFromResponse, responseHasToolCalls } from './stream-transformers.js';
 import { isFunctionCallItem } from './stream-type-guards.js';
-import { executeTool, findToolByName } from './tool-executor.js';
+import { executeTool, findToolByName, isAsyncToolInvocation } from './tool-executor.js';
 import type { APITool, Tool, ToolExecutionResult } from './tool-types.js';
 import { isAutoResolvableTool, isMcpTool } from './tool-types.js';
 import { buildTurnContext } from './turn-context.js';
@@ -149,7 +149,10 @@ export async function executeToolLoop(
       }
 
       if (settled.status === 'fulfilled') {
-        if (settled.value !== null) {
+        // This legacy loop predates async tools; it only aggregates
+        // synchronous execution results (background/deferred invocations
+        // are handled by ModelResult's live loop).
+        if (settled.value !== null && !isAsyncToolInvocation(settled.value)) {
           roundResults.push(settled.value);
         }
       } else {

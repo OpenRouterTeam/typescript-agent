@@ -134,6 +134,21 @@ function validatePartialAgainstSchema(
 }
 
 /**
+ * Per-execution extras threaded into the ToolExecuteContext: the composed
+ * abort signal for this call, the call id, and the conversation id.
+ */
+export interface ToolExecutionExtras {
+  signal?: AbortSignal;
+  callId?: string;
+  conversationId?: string;
+}
+
+// Shared never-aborting signal for contexts built without cancellation
+// sources — keeps `ctx.signal` always present so tool bodies can pass it
+// to fetch/etc. unconditionally.
+const NEVER_ABORT_SIGNAL = new AbortController().signal;
+
+/**
  * Build a flat ToolExecuteContext for a specific tool.
  * Returns a merged object with TurnContext fields, a `local` getter
  * (reads from the store on each access), `shared` getter, and mutation methods.
@@ -146,6 +161,7 @@ function validatePartialAgainstSchema(
  * @param toolName - The tool's name
  * @param schema - The tool's contextSchema (for validation)
  * @param sharedSchema - The shared contextSchema (for validation)
+ * @param extras - Per-execution extras (abort signal, call id, conversation id)
  * @returns A flat ToolExecuteContext
  */
 export function buildToolExecuteContext<
@@ -158,6 +174,7 @@ export function buildToolExecuteContext<
   toolName: TName,
   schema: $ZodObject<$ZodShape> | undefined,
   sharedSchema?: $ZodObject<$ZodShape> | undefined,
+  extras?: ToolExecutionExtras,
 ): ToolExecuteContext<TName, TContext, TShared> {
   // Validate initial context eagerly (throws on bad data)
   if (store && schema) {
@@ -169,6 +186,14 @@ export function buildToolExecuteContext<
 
   const ctx: ToolExecuteContext<TName, TContext, TShared> = {
     ...turnContext,
+
+    signal: extras?.signal ?? NEVER_ABORT_SIGNAL,
+    ...(extras?.callId !== undefined && {
+      callId: extras.callId,
+    }),
+    ...(extras?.conversationId !== undefined && {
+      conversationId: extras.conversationId,
+    }),
 
     get local(): Readonly<TContext> {
       const data = store ? store.getToolContext(toolName) : {};

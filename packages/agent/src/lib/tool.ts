@@ -1,6 +1,15 @@
+import type { OpenRouterCore } from '@openrouter/sdk/core';
+import type { RequestOptions } from '@openrouter/sdk/lib/sdks';
 import type { $ZodObject, $ZodShape, $ZodType, infer as zodInfer } from 'zod/v4/core';
+import type { CallModelInput } from './async-params.js';
+import type { ModelResult } from './model-result.js';
 import type {
+  AsyncToolAck,
+  BackgroundTool,
+  BackgroundToolExecuteContext,
   ContextFromSchema,
+  DeferredStartResult,
+  DeferredTool,
   HITLTool,
   ManualTool,
   McpBranded,
@@ -8,6 +17,7 @@ import type {
   ServerTool,
   ServerToolConfig,
   ServerToolType,
+  StateAccessor,
   ToModelOutputFunction,
   Tool,
   ToolApprovalCheck,
@@ -42,6 +52,10 @@ type RegularToolConfigWithOutput<
   requireApproval?: boolean | ToolApprovalCheck<zodInfer<TInput>>;
   /** Doom-loop identity: function, field list, or false — see {@link ToolLoopKey} */
   loopKey?: ToolLoopKey<zodInfer<TInput>>;
+  /** Deadline for one execution of this tool, in ms (see BaseToolFunction.timeoutMs) */
+  timeoutMs?: number;
+  /** Max simultaneous in-flight executions of this tool across the run */
+  maxConcurrency?: number;
   execute: (
     params: zodInfer<TInput>,
     context?: ToolExecuteContext<TName, ContextFromSchema<TCtx>>,
@@ -70,6 +84,10 @@ type RegularToolConfigWithoutOutput<
   requireApproval?: boolean | ToolApprovalCheck<zodInfer<TInput>>;
   /** Doom-loop identity: function, field list, or false — see {@link ToolLoopKey} */
   loopKey?: ToolLoopKey<zodInfer<TInput>>;
+  /** Deadline for one execution of this tool, in ms (see BaseToolFunction.timeoutMs) */
+  timeoutMs?: number;
+  /** Max simultaneous in-flight executions of this tool across the run */
+  maxConcurrency?: number;
   execute: (
     params: zodInfer<TInput>,
     context?: ToolExecuteContext<TName, ContextFromSchema<TCtx>>,
@@ -99,6 +117,10 @@ type GeneratorToolConfig<
   requireApproval?: boolean | ToolApprovalCheck<zodInfer<TInput>>;
   /** Doom-loop identity: function, field list, or false — see {@link ToolLoopKey} */
   loopKey?: ToolLoopKey<zodInfer<TInput>>;
+  /** Deadline for one execution of this tool, in ms (see BaseToolFunction.timeoutMs) */
+  timeoutMs?: number;
+  /** Max simultaneous in-flight executions of this tool across the run */
+  maxConcurrency?: number;
   execute: (
     params: zodInfer<TInput>,
     context?: ToolExecuteContext<TName, ContextFromSchema<TCtx>>,
@@ -123,6 +145,10 @@ type ManualToolConfig<
   requireApproval?: boolean | ToolApprovalCheck<zodInfer<TInput>>;
   /** Doom-loop identity: function, field list, or false — see {@link ToolLoopKey} */
   loopKey?: ToolLoopKey<zodInfer<TInput>>;
+  /** Deadline for one execution of this tool, in ms (see BaseToolFunction.timeoutMs) */
+  timeoutMs?: number;
+  /** Max simultaneous in-flight executions of this tool across the run */
+  maxConcurrency?: number;
   execute: false;
 };
 
@@ -161,6 +187,10 @@ type HITLToolConfig<
   requireApproval?: boolean | ToolApprovalCheck<zodInfer<TInput>>;
   /** Doom-loop identity: function, field list, or false — see {@link ToolLoopKey} */
   loopKey?: ToolLoopKey<zodInfer<TInput>>;
+  /** Deadline for one execution of this tool, in ms (see BaseToolFunction.timeoutMs) */
+  timeoutMs?: number;
+  /** Max simultaneous in-flight executions of this tool across the run */
+  maxConcurrency?: number;
   onToolCalled: (
     params: zodInfer<TInput>,
     context?: ToolExecuteContext<TName, ContextFromSchema<TCtx>>,
@@ -191,6 +221,10 @@ type ToolConfigWithSharedContext<
   requireApproval?: boolean | ToolApprovalCheck<Record<string, unknown>>;
   /** Doom-loop identity: function, field list, or false — see {@link ToolLoopKey} */
   loopKey?: ToolLoopKey<Record<string, unknown>>;
+  /** Deadline for one execution of this tool, in ms (see BaseToolFunction.timeoutMs) */
+  timeoutMs?: number;
+  /** Max simultaneous in-flight executions of this tool across the run */
+  maxConcurrency?: number;
   execute:
     | ((
         params: Record<string, unknown>,
@@ -203,6 +237,87 @@ type ToolConfigWithSharedContext<
     | false;
   /** Convert tool execution output to model-facing output */
   toModelOutput?: ToModelOutputFunction<Record<string, unknown>, unknown>;
+};
+
+/**
+ * Configuration for a background tool (`tool.background`).
+ * An ordinary async `execute` whose result may arrive after the round closes.
+ */
+type BackgroundToolConfig<
+  TInput extends $ZodObject<$ZodShape>,
+  TOutput extends $ZodType,
+  TEvent extends $ZodType = $ZodType<never>,
+  TCtx extends $ZodObject<$ZodShape> = $ZodObject<$ZodShape>,
+  TName extends string = string,
+> = {
+  name: TName;
+  description?: string;
+  inputSchema: TInput;
+  /** Required: the final result is validated whenever it settles. */
+  outputSchema: TOutput;
+  /** Optional schema for `ctx.progress()` events. */
+  eventSchema?: TEvent;
+  /** Model-facing acknowledgement merged into the pending placeholder. */
+  ack?: AsyncToolAck<zodInfer<TInput>>;
+  /**
+   * Settles-fast window (ms): work finishing inside it produces a plain
+   * synchronous output, no placeholder. Default 250; `0` always placeholders.
+   */
+  graceMs?: number;
+  /** Deadline for the whole task (queue wait + execution), in ms. */
+  timeoutMs?: number;
+  /** Max simultaneous in-flight executions of this tool. */
+  maxConcurrency?: number;
+  /** Zod schema declaring the context data this tool needs */
+  contextSchema?: TCtx;
+  nextTurnParams?: NextTurnParamsFunctions<zodInfer<TInput>>;
+  requireApproval?: boolean | ToolApprovalCheck<zodInfer<TInput>>;
+  /** Doom-loop identity: function, field list, or false — see {@link ToolLoopKey} */
+  loopKey?: ToolLoopKey<zodInfer<TInput>>;
+  execute: (
+    params: zodInfer<TInput>,
+    context?: BackgroundToolExecuteContext<TName, ContextFromSchema<TCtx>, zodInfer<TEvent>>,
+  ) => Promise<zodInfer<TOutput>>;
+  /** Convert tool execution output to model-facing output */
+  toModelOutput?: ToModelOutputFunction<zodInfer<TInput>, zodInfer<TOutput>>;
+};
+
+/**
+ * Configuration for a deferred tool (`tool.deferred`).
+ * `start` kicks off external work and returns `{ taskId }` (pause) or
+ * `{ output }` (immediate result).
+ */
+type DeferredToolConfig<
+  TInput extends $ZodObject<$ZodShape>,
+  TOutput extends $ZodType,
+  TCtx extends $ZodObject<$ZodShape> = $ZodObject<$ZodShape>,
+  TName extends string = string,
+> = {
+  name: TName;
+  description?: string;
+  inputSchema: TInput;
+  /** Required: validates `{ output }` fast paths and `.resolve()` payloads. */
+  outputSchema: TOutput;
+  /** Model-facing acknowledgement merged into the pending placeholder. */
+  ack?: AsyncToolAck<zodInfer<TInput>>;
+  /** Default poll-interval hint for tasks started by this tool. */
+  pollAfterMs?: number;
+  /** Deadline for `start` itself (not the external task), in ms. */
+  timeoutMs?: number;
+  /** Max simultaneous in-flight `start` executions of this tool. */
+  maxConcurrency?: number;
+  /** Zod schema declaring the context data this tool needs */
+  contextSchema?: TCtx;
+  nextTurnParams?: NextTurnParamsFunctions<zodInfer<TInput>>;
+  requireApproval?: boolean | ToolApprovalCheck<zodInfer<TInput>>;
+  /** Doom-loop identity: function, field list, or false — see {@link ToolLoopKey} */
+  loopKey?: ToolLoopKey<zodInfer<TInput>>;
+  start: (
+    params: zodInfer<TInput>,
+    context?: ToolExecuteContext<TName, ContextFromSchema<TCtx>>,
+  ) => Promise<DeferredStartResult<zodInfer<TOutput>>> | DeferredStartResult<zodInfer<TOutput>>;
+  /** Convert tool execution output to model-facing output */
+  toModelOutput?: ToModelOutputFunction<zodInfer<TInput>, zodInfer<TOutput>>;
 };
 
 //#endregion
@@ -371,6 +486,14 @@ export function tool(
       fn.loopKey = config.loopKey;
     }
 
+    if (config.timeoutMs !== undefined) {
+      fn.timeoutMs = config.timeoutMs;
+    }
+
+    if (config.maxConcurrency !== undefined) {
+      fn.maxConcurrency = config.maxConcurrency;
+    }
+
     if (config.onResponseReceived !== undefined) {
       fn.onResponseReceived = config.onResponseReceived;
     }
@@ -418,6 +541,14 @@ export function tool(
       fn.loopKey = config.loopKey;
     }
 
+    if (config.timeoutMs !== undefined) {
+      fn.timeoutMs = config.timeoutMs;
+    }
+
+    if (config.maxConcurrency !== undefined) {
+      fn.maxConcurrency = config.maxConcurrency;
+    }
+
     return {
       type: ToolType.Function,
       function: fn,
@@ -460,6 +591,14 @@ export function tool(
       fn.loopKey = config.loopKey;
     }
 
+    if (config.timeoutMs !== undefined) {
+      fn.timeoutMs = config.timeoutMs;
+    }
+
+    if (config.maxConcurrency !== undefined) {
+      fn.maxConcurrency = config.maxConcurrency;
+    }
+
     if ('toModelOutput' in config && config.toModelOutput !== undefined) {
       fn.toModelOutput = config.toModelOutput;
     }
@@ -493,6 +632,12 @@ export function tool(
     ...(config.loopKey !== undefined && {
       loopKey: config.loopKey,
     }),
+    ...(config.timeoutMs !== undefined && {
+      timeoutMs: config.timeoutMs,
+    }),
+    ...(config.maxConcurrency !== undefined && {
+      maxConcurrency: config.maxConcurrency,
+    }),
     ...('toModelOutput' in config &&
       config.toModelOutput !== undefined && {
         toModelOutput: config.toModelOutput,
@@ -504,6 +649,337 @@ export function tool(
     function: functionObj,
   };
 }
+
+//#endregion
+
+//#region tool.background() / tool.deferred() Builders
+
+/**
+ * Request shape shared by the deferred completion methods (`.resolve()` /
+ * `.fail()` / `.cancel()`). `run` continues the conversation immediately;
+ * omit it to record the result on state for the next `callModel({ state })`.
+ */
+type DeferredCompletionBase = {
+  state: StateAccessor<readonly Tool[]>;
+  taskId: string;
+  /**
+   * Continue the conversation immediately with this run configuration
+   * (model, extra tools, stopWhen, ...). The deferred tool includes itself
+   * in the run's tools automatically.
+   */
+  run?: DeferredRunConfig;
+  /** Behavior when the task is already settled. Default 'throw'. */
+  ifSettled?: 'throw' | 'ignore';
+};
+
+/** Run config accepted by the deferred completion methods. */
+type DeferredRunConfig = Omit<
+  CallModelInput<readonly Tool[]>,
+  'state' | 'input' | 'approveToolCalls' | 'rejectToolCalls'
+>;
+
+/**
+ * Typed completion methods attached to every tool built by `tool.deferred()`.
+ * Thin wrappers over `resumeToolResults()` with the tool reference bound, so
+ * `output` is checked against the tool's `outputSchema` at compile time and
+ * runtime.
+ *
+ * SECURITY: these methods inject values the model treats as tool results.
+ * Authenticate the webhook/caller before invoking them — the SDK cannot.
+ */
+export interface DeferredToolMethods<TOutput> {
+  /**
+   * Supply the task's successful result (typed by the tool's outputSchema).
+   * With `run` config the conversation continues immediately and the
+   * `ModelResult` is returned; without, the result is recorded on state and
+   * `null` is returned — the next `callModel({ state })` delivers it.
+   */
+  resolve(
+    client: OpenRouterCore,
+    request: DeferredCompletionBase & {
+      output: TOutput;
+    },
+    options?: RequestOptions,
+  ): Promise<ModelResult<readonly Tool[]> | null>;
+  /** Report the task as failed. Same continue-or-record semantics as resolve. */
+  fail(
+    client: OpenRouterCore,
+    request: DeferredCompletionBase & {
+      error: string | Error;
+    },
+    options?: RequestOptions,
+  ): Promise<ModelResult<readonly Tool[]> | null>;
+  /** Cancel the task. Same continue-or-record semantics as resolve. */
+  cancel(
+    client: OpenRouterCore,
+    request: DeferredCompletionBase & {
+      reason?: string;
+    },
+    options?: RequestOptions,
+  ): Promise<ModelResult<readonly Tool[]> | null>;
+}
+
+/**
+ * A built deferred tool: the tool wrapper plus its typed completion methods.
+ * Structurally still a `DeferredTool`, so it flows into `tools: [...]`
+ * arrays unchanged.
+ */
+export type BuiltDeferredTool<
+  TInput extends $ZodObject<$ZodShape>,
+  TOutput extends $ZodType,
+  TCtx extends $ZodObject<$ZodShape> = $ZodObject<$ZodShape>,
+> = DeferredTool<TInput, TOutput, Record<string, unknown>, TCtx> &
+  DeferredToolMethods<zodInfer<TOutput>>;
+
+/** Copy shared BaseToolFunction config fields onto a function object. */
+function assignCommonToolFields(
+  fn: Record<string, unknown>,
+  config: {
+    description?: string;
+    contextSchema?: unknown;
+    nextTurnParams?: unknown;
+    requireApproval?: unknown;
+    loopKey?: unknown;
+    timeoutMs?: number;
+    maxConcurrency?: number;
+    toModelOutput?: unknown;
+  },
+): void {
+  const fields = [
+    'description',
+    'contextSchema',
+    'nextTurnParams',
+    'requireApproval',
+    'loopKey',
+    'timeoutMs',
+    'maxConcurrency',
+    'toModelOutput',
+  ] as const;
+  for (const field of fields) {
+    if (config[field] !== undefined) {
+      fn[field] = config[field];
+    }
+  }
+}
+
+/**
+ * Create a background tool: an ordinary async `execute` that the loop does
+ * not wait for. Work settling within `graceMs` (default 250ms) produces a
+ * plain synchronous output — no async machinery visible; otherwise the model
+ * receives a pending placeholder immediately, the loop continues, and the
+ * return value is injected into the conversation when it settles.
+ *
+ * @example
+ * ```typescript
+ * const renderVideo = tool.background({
+ *   name: 'render_video',
+ *   inputSchema: z.object({ script: z.string() }),
+ *   eventSchema: z.object({ pct: z.number() }),
+ *   outputSchema: z.object({ url: z.string() }),
+ *   ack: 'Rendering started — the result arrives automatically.',
+ *   timeoutMs: 300_000,
+ *   execute: async ({ script }, ctx) => {
+ *     const job = await renderer.start(script, { signal: ctx?.signal });
+ *     for await (const p of job.progress()) ctx?.progress({ pct: p });
+ *     return job.result();          // just return it
+ *   },
+ * });
+ * ```
+ */
+function backgroundToolBuilder<
+  TInput extends $ZodObject<$ZodShape>,
+  TOutput extends $ZodType,
+  TEvent extends $ZodType = $ZodType<never>,
+  TCtx extends $ZodObject<$ZodShape> = $ZodObject<$ZodShape>,
+  TName extends string = string,
+>(
+  config: BackgroundToolConfig<TInput, TOutput, TEvent, TCtx, TName>,
+): BackgroundTool<TInput, TOutput, TEvent, Record<string, unknown>, TCtx> {
+  if (config.name === SHARED_CONTEXT_KEY) {
+    throw new Error(
+      `Tool name "${SHARED_CONTEXT_KEY}" is reserved for shared context. Choose a different name.`,
+    );
+  }
+  // Required at the type level; JavaScript callers can bypass types.
+  if (config.outputSchema === undefined) {
+    throw new Error(
+      `Background tool "${config.name}" must declare an outputSchema. The final result is validated when it settles — possibly long after the round that started it.`,
+    );
+  }
+
+  const fn: Record<string, unknown> = {
+    background: true,
+    name: config.name,
+    inputSchema: config.inputSchema,
+    outputSchema: config.outputSchema,
+    execute: config.execute,
+  };
+  if (config.eventSchema !== undefined) {
+    fn['eventSchema'] = config.eventSchema;
+  }
+  if (config.ack !== undefined) {
+    fn['ack'] = config.ack;
+  }
+  if (config.graceMs !== undefined) {
+    fn['graceMs'] = config.graceMs;
+  }
+  assignCommonToolFields(fn, config);
+
+  return {
+    type: ToolType.Function,
+    function: fn as unknown as BackgroundTool<
+      TInput,
+      TOutput,
+      TEvent,
+      Record<string, unknown>,
+      TCtx
+    >['function'],
+  };
+}
+
+/**
+ * Bind one deferred completion method: resolve the entry shape, prepend the
+ * tool itself to any `run` tools, and dispatch through `resumeToolResults`.
+ * The resume module is imported lazily to avoid a static
+ * tool.ts → call-model.ts → model-result.ts import cycle.
+ */
+function bindDeferredCompletion(
+  toolValue: Tool,
+  toEntry: (request: Record<string, unknown>) => Record<string, unknown>,
+): (
+  client: OpenRouterCore,
+  request: DeferredCompletionBase & Record<string, unknown>,
+  options?: RequestOptions,
+) => Promise<ModelResult<readonly Tool[]> | null> {
+  return async (client, request, options) => {
+    const { resumeToolResults } = await import('../inner-loop/resume-tool-results.js');
+    const run = request.run;
+    return resumeToolResults<readonly Tool[]>(
+      client,
+      {
+        state: request.state,
+        tools: [
+          toolValue,
+        ],
+        results: [
+          {
+            taskId: request.taskId,
+            ...toEntry(request),
+          } as never,
+        ],
+        ...(request.ifSettled !== undefined && {
+          ifSettled: request.ifSettled,
+        }),
+        ...(run !== undefined && {
+          run: {
+            ...run,
+            tools: [
+              toolValue,
+              ...(run.tools ?? []).filter((t) => t !== toolValue),
+            ],
+          },
+        }),
+      },
+      options,
+    );
+  };
+}
+
+/**
+ * Create a deferred tool: `start` kicks off durable external work (a
+ * webhook-backed job, a human review) and returns a plain `{ taskId }` — the
+ * model receives a pending placeholder and the run pauses
+ * (`status: 'awaiting_async_tools'`) until the task is completed via the
+ * tool's typed `.resolve()` / `.fail()` / `.cancel()` methods, possibly from
+ * another process. Return `{ output }` instead for an immediate result.
+ *
+ * @example
+ * ```typescript
+ * const legalReview = tool.deferred({
+ *   name: 'request_legal_review',
+ *   inputSchema: z.object({ contractId: z.string() }),
+ *   outputSchema: z.object({ approved: z.boolean() }),
+ *   start: async ({ contractId }, ctx) => {
+ *     const ticket = await legal.open(contractId, { conversationId: ctx?.conversationId });
+ *     return { taskId: ticket.id };
+ *   },
+ * });
+ *
+ * // webhook handler — different process, days later:
+ * await legalReview.resolve(client, {
+ *   state: makeAccessor(conversationId),
+ *   taskId: ticketId,
+ *   output: { approved: true },   // ← typed by outputSchema
+ *   run: { model: 'openai/gpt-4o' },
+ * });
+ * ```
+ */
+function deferredToolBuilder<
+  TInput extends $ZodObject<$ZodShape>,
+  TOutput extends $ZodType,
+  TCtx extends $ZodObject<$ZodShape> = $ZodObject<$ZodShape>,
+  TName extends string = string,
+>(
+  config: DeferredToolConfig<TInput, TOutput, TCtx, TName>,
+): BuiltDeferredTool<TInput, TOutput, TCtx> {
+  if (config.name === SHARED_CONTEXT_KEY) {
+    throw new Error(
+      `Tool name "${SHARED_CONTEXT_KEY}" is reserved for shared context. Choose a different name.`,
+    );
+  }
+  // Required at the type level; JavaScript callers can bypass types.
+  if (config.outputSchema === undefined) {
+    throw new Error(
+      `Deferred tool "${config.name}" must declare an outputSchema. Caller-supplied resolutions are validated before the model sees them.`,
+    );
+  }
+
+  const fn: Record<string, unknown> = {
+    name: config.name,
+    inputSchema: config.inputSchema,
+    outputSchema: config.outputSchema,
+    start: config.start,
+  };
+  if (config.ack !== undefined) {
+    fn['ack'] = config.ack;
+  }
+  if (config.pollAfterMs !== undefined) {
+    fn['pollAfterMs'] = config.pollAfterMs;
+  }
+  assignCommonToolFields(fn, config);
+
+  const toolValue = {
+    type: ToolType.Function,
+    function: fn as unknown as DeferredTool<
+      TInput,
+      TOutput,
+      Record<string, unknown>,
+      TCtx
+    >['function'],
+  };
+
+  return Object.assign(toolValue, {
+    resolve: bindDeferredCompletion(toolValue, (request) => ({
+      output: request['output'],
+    })),
+    fail: bindDeferredCompletion(toolValue, (request) => ({
+      error:
+        request['error'] instanceof Error
+          ? request['error'].message
+          : String(request['error'] ?? 'Task failed'),
+    })),
+    cancel: bindDeferredCompletion(toolValue, (request) => ({
+      error: typeof request['reason'] === 'string' ? request['reason'] : 'Task cancelled',
+      status: 'cancelled',
+    })),
+  }) as BuiltDeferredTool<TInput, TOutput, TCtx>;
+}
+
+// Attach the namespaced builders. Expando properties on a function
+// declaration merge into its type, so `tool.background(...)` and
+// `tool.deferred(...)` are fully typed at the call site.
+tool.background = backgroundToolBuilder;
+tool.deferred = deferredToolBuilder;
 
 //#endregion
 

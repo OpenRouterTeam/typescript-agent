@@ -2,7 +2,7 @@
   "name": "@openrouter/agent",
   "version": "0.8.0",
   "author": "OpenRouter",
-  "description": "Agent toolkit for building AI applications with OpenRouter — tool orchestration, streaming, multi-turn conversations, and format compatibility.",
+  "description": "Agent toolkit for building AI applications with OpenRouter \u2014 tool orchestration, streaming, multi-turn conversations, and format compatibility.",
   "keywords": [
     "openrouter",
     "agent",
@@ -96,7 +96,19 @@
       "types": "./esm/openrouter.d.ts",
       "default": "./esm/openrouter.js"
     },
-    "./package.json": "./package.json"
+    "./package.json": "./package.json",
+    "./tool-concurrency": {
+      "types": "./esm/lib/tool-concurrency.d.ts",
+      "default": "./esm/lib/tool-concurrency.js"
+    },
+    "./async-tool-registry": {
+      "types": "./esm/lib/async-tool-registry.d.ts",
+      "default": "./esm/lib/async-tool-registry.js"
+    },
+    "./resume-tool-results": {
+      "types": "./esm/inner-loop/resume-tool-results.d.ts",
+      "default": "./esm/inner-loop/resume-tool-results.js"
+    }
   },
   "sideEffects": false,
   "repository": {

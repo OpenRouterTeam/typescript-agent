@@ -3,11 +3,13 @@ import * as z4 from 'zod/v4';
 import type { $ZodObject, $ZodShape, $ZodType } from 'zod/v4/core';
 import { isContentArray } from './conversation-state.js';
 import { isFunctionCallItem, isFunctionCallOutputItem } from './stream-type-guards.js';
-import type { ToolContextStore } from './tool-context.js';
+import type { ToolContextStore, ToolExecutionExtras } from './tool-context.js';
 import { buildToolExecuteContext } from './tool-context.js';
 import type {
   APITool,
+  BackgroundToolExecuteContext,
   ClientTool,
+  DeferredStartResult,
   HITLTool,
   ParsedToolCall,
   Tool,
@@ -17,6 +19,8 @@ import type {
 } from './tool-types.js';
 import {
   hasExecuteFunction,
+  isBackgroundTool,
+  isDeferredTool,
   isGeneratorTool,
   isHITLTool,
   isMcpTool,
@@ -182,6 +186,7 @@ function buildExecuteCtx(
   turnContext: TurnContext,
   contextStore?: ToolContextStore,
   sharedSchema?: $ZodObject<$ZodShape>,
+  extras?: ToolExecutionExtras,
 ): ToolExecuteContext {
   return buildToolExecuteContext(
     turnContext,
@@ -189,6 +194,7 @@ function buildExecuteCtx(
     tool.function.name,
     tool.function.contextSchema,
     sharedSchema,
+    extras,
   );
 }
 
@@ -202,6 +208,7 @@ export async function executeRegularTool(
   context: TurnContext,
   contextStore?: ToolContextStore,
   sharedSchema?: $ZodObject<$ZodShape>,
+  extras?: ToolExecutionExtras,
 ): Promise<ToolExecutionResult<Tool>> {
   if (!isRegularExecuteTool(tool)) {
     throw new Error(
@@ -213,7 +220,7 @@ export async function executeRegularTool(
 
   try {
     const validatedInput = validateToolInput(tool.function.inputSchema, toolCall.arguments);
-    const executeContext = buildExecuteCtx(tool, context, contextStore, sharedSchema);
+    const executeContext = buildExecuteCtx(tool, context, contextStore, sharedSchema, extras);
 
     // Execute tool with context
     const result = await Promise.resolve(tool.function.execute(validatedInput, executeContext));
@@ -261,6 +268,7 @@ export async function executeGeneratorTool(
   onPreliminaryResult?: (toolCallId: string, result: unknown) => void,
   contextStore?: ToolContextStore,
   sharedSchema?: $ZodObject<$ZodShape>,
+  extras?: ToolExecutionExtras,
 ): Promise<ToolExecutionResult<Tool>> {
   if (!isGeneratorTool(tool)) {
     throw new Error(`Tool "${toolCall.name}" is not a generator tool`);
@@ -270,7 +278,7 @@ export async function executeGeneratorTool(
 
   try {
     const validatedInput = validateToolInput(tool.function.inputSchema, toolCall.arguments);
-    const executeContext = buildExecuteCtx(tool, context, contextStore, sharedSchema);
+    const executeContext = buildExecuteCtx(tool, context, contextStore, sharedSchema, extras);
 
     const preliminaryResults: unknown[] = [];
     let finalResult: unknown;
@@ -350,6 +358,7 @@ export async function executeHITLTool(
   context: TurnContext,
   contextStore?: ToolContextStore,
   sharedSchema?: $ZodObject<$ZodShape>,
+  extras?: ToolExecutionExtras,
 ): Promise<ToolExecutionResult<Tool> | null> {
   if (!isHITLTool(tool)) {
     throw new Error(`Tool "${toolCall.name}" is not a HITL tool`);
@@ -359,7 +368,7 @@ export async function executeHITLTool(
 
   try {
     const validatedInput = validateToolInput(tool.function.inputSchema, toolCall.arguments);
-    const executeContext = buildExecuteCtx(tool, context, contextStore, sharedSchema);
+    const executeContext = buildExecuteCtx(tool, context, contextStore, sharedSchema, extras);
 
     const result = await Promise.resolve(
       tool.function.onToolCalled(validatedInput, executeContext),
@@ -390,11 +399,215 @@ export async function executeHITLTool(
 }
 
 /**
+ * Tagged result for tools whose work escapes the synchronous round.
+ *
+ * - `'background'`: `run()` starts the tool's `execute` (input already
+ *   validated, context built) and resolves with the OUTPUT-VALIDATED final
+ *   value. The engine decides when to invoke it (under the background pool)
+ *   and whether its settlement lands in-round (grace window) or later.
+ * - `'defer'`: the tool's `start` returned a durable task handle; the run
+ *   should pause until the task is resolved externally.
+ */
+export type AsyncToolInvocation =
+  | {
+      asyncMode: 'background';
+      run: () => Promise<unknown>;
+      ack?: string | Record<string, unknown> | undefined;
+      graceMs: number;
+    }
+  | {
+      asyncMode: 'defer';
+      taskId: string;
+      ack?: string | Record<string, unknown> | undefined;
+      pollAfterMs?: number | undefined;
+      expiresAt?: number | undefined;
+    };
+
+/** Type guard for {@link AsyncToolInvocation} in executeTool results. */
+export function isAsyncToolInvocation(value: unknown): value is AsyncToolInvocation {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    'asyncMode' in value &&
+    ((value as AsyncToolInvocation).asyncMode === 'background' ||
+      (value as AsyncToolInvocation).asyncMode === 'defer')
+  );
+}
+
+/** Resolve a tool's `ack` declaration against the validated input. */
+function resolveAck(
+  ack: unknown,
+  input: Record<string, unknown>,
+): string | Record<string, unknown> | undefined {
+  if (ack === undefined) {
+    return undefined;
+  }
+  if (typeof ack === 'function') {
+    return (ack as (input: Record<string, unknown>) => string | Record<string, unknown>)(input);
+  }
+  return ack as string | Record<string, unknown>;
+}
+
+/**
+ * Prepare a background tool invocation. Validates the input eagerly (a
+ * validation failure returns an error result like every other executor) and
+ * returns a `run` thunk that performs the actual work — the engine invokes
+ * it under the background concurrency pool.
+ */
+// biome-ignore lint: parameters match the internal API shape
+function prepareBackgroundInvocation(
+  tool: Tool,
+  toolCall: ParsedToolCall<Tool>,
+  context: TurnContext,
+  onPreliminaryResult?: (toolCallId: string, result: unknown) => void,
+  contextStore?: ToolContextStore,
+  sharedSchema?: $ZodObject<$ZodShape>,
+  extras?: ToolExecutionExtras,
+): ToolExecutionResult<Tool> | AsyncToolInvocation {
+  if (!isBackgroundTool(tool)) {
+    throw new Error(`Tool "${toolCall.name}" is not a background tool`);
+  }
+  const fn = tool.function;
+
+  let validatedInput: Record<string, unknown>;
+  try {
+    validatedInput = validateToolInput(fn.inputSchema, toolCall.arguments) as Record<
+      string,
+      unknown
+    >;
+  } catch (error) {
+    return {
+      toolCallId: toolCall.id,
+      toolName: toolCall.name,
+      source: isMcpTool(tool) ? 'mcp' : 'client',
+      result: null,
+      error: error instanceof Error ? error : new Error(String(error)),
+    };
+  }
+
+  const baseContext = buildExecuteCtx(tool, context, contextStore, sharedSchema, extras);
+  // Spreading loses the live `local`/`shared` getters, so attach progress()
+  // to the built context object directly.
+  const executeContext = Object.assign(baseContext, {
+    progress: (event: unknown) => {
+      const validated = fn.eventSchema ? validateToolOutput(fn.eventSchema, event) : event;
+      onPreliminaryResult?.(toolCall.id, validated);
+    },
+  }) as BackgroundToolExecuteContext;
+
+  return {
+    asyncMode: 'background',
+    run: async () => {
+      const result = await fn.execute(validatedInput, executeContext);
+      return validateToolOutput(fn.outputSchema, result);
+    },
+    ...(fn.ack !== undefined && {
+      ack: resolveAck(fn.ack, validatedInput),
+    }),
+    graceMs: fn.graceMs ?? 250,
+  };
+}
+
+/**
+ * Execute a deferred tool's `start`. Returns:
+ * - a normal `ToolExecutionResult` when `start` took the `{ output }` fast
+ *   path (validated against `outputSchema`) or threw;
+ * - a `'defer'` {@link AsyncToolInvocation} when it returned `{ taskId }`.
+ */
+// biome-ignore lint: parameters match the internal API shape
+export async function executeDeferredStart(
+  tool: Tool,
+  toolCall: ParsedToolCall<Tool>,
+  context: TurnContext,
+  contextStore?: ToolContextStore,
+  sharedSchema?: $ZodObject<$ZodShape>,
+  extras?: ToolExecutionExtras,
+): Promise<ToolExecutionResult<Tool> | AsyncToolInvocation> {
+  if (!isDeferredTool(tool)) {
+    throw new Error(`Tool "${toolCall.name}" is not a deferred tool`);
+  }
+  const fn = tool.function;
+  const source = isMcpTool(tool) ? 'mcp' : 'client';
+
+  try {
+    const validatedInput = validateToolInput(fn.inputSchema, toolCall.arguments) as Record<
+      string,
+      unknown
+    >;
+    const executeContext = buildExecuteCtx(tool, context, contextStore, sharedSchema, extras);
+
+    const started: DeferredStartResult<unknown> = await Promise.resolve(
+      fn.start(validatedInput, executeContext),
+    );
+
+    if (
+      started &&
+      typeof started === 'object' &&
+      'output' in started &&
+      !('taskId' in started && started.taskId !== undefined)
+    ) {
+      // Fast path: resolved synchronously.
+      const validatedOutput = validateToolOutput(fn.outputSchema, started.output);
+      return {
+        toolCallId: toolCall.id,
+        toolName: toolCall.name,
+        source,
+        result: validatedOutput,
+      };
+    }
+
+    if (
+      !started ||
+      typeof started !== 'object' ||
+      typeof started.taskId !== 'string' ||
+      started.taskId.length === 0
+    ) {
+      throw new Error(
+        `Deferred tool "${toolCall.name}" start() must return { taskId } or { output }`,
+      );
+    }
+    if (started.taskId.length > 256) {
+      throw new Error(
+        `Deferred tool "${toolCall.name}" returned a taskId longer than 256 characters`,
+      );
+    }
+
+    return {
+      asyncMode: 'defer',
+      taskId: started.taskId,
+      ...(started.ack !== undefined && {
+        ack: started.ack,
+      }),
+      ...((started.pollAfterMs ?? fn.pollAfterMs) !== undefined && {
+        pollAfterMs: started.pollAfterMs ?? fn.pollAfterMs,
+      }),
+      ...(started.expiresAt !== undefined && {
+        expiresAt: started.expiresAt,
+      }),
+      ...(started.ack === undefined &&
+        fn.ack !== undefined && {
+          ack: resolveAck(fn.ack, validatedInput),
+        }),
+    };
+  } catch (error) {
+    return {
+      toolCallId: toolCall.id,
+      toolName: toolCall.name,
+      source,
+      result: null,
+      error: error instanceof Error ? error : new Error(String(error)),
+    };
+  }
+}
+
+/**
  * Execute a tool call.
- * Automatically detects if it's a regular, generator, or HITL tool.
+ * Automatically detects if it's a regular, generator, HITL, background, or
+ * deferred tool.
  *
  * Returns `null` only for HITL tools whose `onToolCalled` returned `null`
- * (signaling a manual-style pause). All other tools always return a
+ * (signaling a manual-style pause). Background and deferred tools may return
+ * an {@link AsyncToolInvocation}. All other tools always return a
  * `ToolExecutionResult` (with `error` set on failure).
  */
 // biome-ignore lint: parameters match the internal API shape
@@ -405,9 +618,26 @@ export async function executeTool(
   onPreliminaryResult?: (toolCallId: string, result: unknown) => void,
   contextStore?: ToolContextStore,
   sharedSchema?: $ZodObject<$ZodShape>,
-): Promise<ToolExecutionResult<Tool> | null> {
+  extras?: ToolExecutionExtras,
+): Promise<ToolExecutionResult<Tool> | AsyncToolInvocation | null> {
   if (isHITLTool(tool)) {
-    return executeHITLTool(tool, toolCall, context, contextStore, sharedSchema);
+    return executeHITLTool(tool, toolCall, context, contextStore, sharedSchema, extras);
+  }
+
+  if (isBackgroundTool(tool)) {
+    return prepareBackgroundInvocation(
+      tool,
+      toolCall,
+      context,
+      onPreliminaryResult,
+      contextStore,
+      sharedSchema,
+      extras,
+    );
+  }
+
+  if (isDeferredTool(tool)) {
+    return executeDeferredStart(tool, toolCall, context, contextStore, sharedSchema, extras);
   }
 
   if (!hasExecuteFunction(tool)) {
@@ -422,10 +652,11 @@ export async function executeTool(
       onPreliminaryResult,
       contextStore,
       sharedSchema,
+      extras,
     );
   }
 
-  return executeRegularTool(tool, toolCall, context, contextStore, sharedSchema);
+  return executeRegularTool(tool, toolCall, context, contextStore, sharedSchema, extras);
 }
 
 /**

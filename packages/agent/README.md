@@ -114,7 +114,7 @@ What each stream emits:
 
 ### Tool Types
 
-The `tool()` factory creates type-safe tools with full Zod schema inference. Three tool types are supported:
+The `tool()` factory creates type-safe tools with full Zod schema inference. In addition to the three base kinds below, `tool.background()` and `tool.deferred()` create [async tools](#async-tools) whose results arrive after the tool round.
 
 **Regular tools** — automatically executed by the agent loop:
 
@@ -411,6 +411,81 @@ block to observe for a known-chatty tool, or escalate straight to stop.
 - **Manual/client-executed calls** pause the loop for the caller and are
   not recorded (only executed, blocked, and parse-error calls are
   evidence).
+
+### Async Tools
+
+Two builders cover tools whose results don't arrive within the tool round. Write an ordinary tool body and return plain values — the SDK handles the pending placeholder, the pairing rules providers enforce, and the late delivery.
+
+**Background tools** (`tool.background`) keep the agent loop going while the work runs. If `execute` settles within the grace window (`graceMs`, default 250ms) the call behaves exactly like a regular tool; otherwise the model immediately receives a pending placeholder, the loop continues, and the return value is injected into the conversation as a `tool_task_result` message when it settles:
+
+```typescript
+const renderVideo = tool.background({
+  name: 'render_video',
+  inputSchema: z.object({ script: z.string() }),
+  eventSchema: z.object({ pct: z.number() }),      // optional progress events
+  outputSchema: z.object({ url: z.string() }),      // validates the final result
+  ack: 'Rendering started — the result arrives automatically.',
+  timeoutMs: 300_000,
+  execute: async ({ script }, ctx) => {
+    const job = await renderer.start(script, { signal: ctx?.signal });
+    for await (const p of job.progress()) ctx?.progress({ pct: p });
+    return job.result();                             // just return it
+  },
+});
+```
+
+When the run would end while background work is still in flight, `asyncTools.onRunEnd` decides what happens: `'drain'` (default) waits up to `drainTimeoutMs` (30s) and gives the model up to `maxDrainTurns` (2) extra turns to fold late results into the final answer; `'detach'` returns immediately (results are dropped; tasks persist as `orphaned` when a state accessor exists); `'cancel'` aborts the work.
+
+**Deferred tools** (`tool.deferred`) pause the run durably for work that completes out-of-process — a webhook-backed job, a human review. `start` kicks off the external work and returns `{ taskId }` (or `{ output }` for an immediate, fully-typed fast path); the conversation pauses with status `awaiting_async_tools`:
+
+```typescript
+const legalReview = tool.deferred({
+  name: 'request_legal_review',
+  inputSchema: z.object({ contractId: z.string() }),
+  outputSchema: z.object({ approved: z.boolean(), notes: z.string().optional() }),
+  start: async ({ contractId }, ctx) => {
+    const ticket = await legal.open(contractId, { conversationId: ctx?.conversationId });
+    return { taskId: ticket.id };
+  },
+});
+```
+
+Completion happens on the tool itself — typed by its `outputSchema`, from any process:
+
+```typescript
+// webhook handler — hours later, different process
+const result = await legalReview.resolve(client, {
+  state: makeAccessor(conversationId),
+  taskId: ticketId,
+  output: { approved: true, notes: 'LGTM' },   // ← typechecked ✓
+  run: { model: 'openai/gpt-4o' },             // continue immediately
+});
+console.log(await result?.getText());
+```
+
+Omit `run` to record the result on state and let the next `callModel({ state })` deliver it. `legalReview.fail(...)` and `legalReview.cancel(...)` complete the surface; double resolution throws `ToolTaskAlreadySettledError` (pass `ifSettled: 'ignore'` to no-op instead). The low-level `resumeToolResults()` handles batches and dynamically-stored tools.
+
+> **Security:** `.resolve()` injects a value the model treats as a tool result. Authenticate the webhook before calling it — the SDK cannot do that for you. Outputs are validated against `outputSchema` at runtime as well as compile time.
+
+Async lifecycle is observable on the streams: `tool.async_started` when a call escapes the round, `tool.preliminary_result` for `ctx.progress()` events, and `tool.async_settled` (with `delivery: 'injected' | 'pending_resume' | 'dropped'`) when a task finishes. `tool.result` still fires exactly once per call with the final value. In-process tasks are inspectable via `result.getAsyncTasks()` and cancellable via `result.cancelTask(taskId)`.
+
+### Per-Tool Timeouts & Concurrency
+
+Every tool kind accepts `timeoutMs` (per-execution deadline; the run-level `toolTimeoutMs` sets a default) and `maxConcurrency` (max simultaneous executions of that tool). On timeout the round stops waiting — the model receives `{ error, code: 'tool_timeout' }` and the tool's `ctx.signal` aborts; the timeout bounds the round's *wait*, not the tool body, so signal-ignoring bodies can't hang the run. `ctx.signal` also fires on run abort (`signal` option) and `ModelResult.cancel()`.
+
+Round-level parallelism (unbounded by default, matching previous behavior) is capped with `toolConcurrency`:
+
+```typescript
+const result = callModel(client, {
+  model: 'openai/gpt-4o',
+  input: 'fan out',
+  tools: [searchTool] as const,
+  toolTimeoutMs: 30_000,
+  toolConcurrency: { round: 4, background: 8 },  // or a bare number for { round: n }
+});
+```
+
+Execution order may change under a cap; output order never does (results stay in call order for prompt-cache stability).
 
 ### Tool Approval
 
@@ -768,6 +843,9 @@ import { toChatMessage } from '@openrouter/agent/chat-compat';
 import { ToolContextStore } from '@openrouter/agent/tool-context';
 import { ToolEventBroadcaster } from '@openrouter/agent/tool-event-broadcaster';
 import { createInitialState } from '@openrouter/agent/conversation-state';
+import { resumeToolResults } from '@openrouter/agent/resume-tool-results';
+import { Semaphore } from '@openrouter/agent/tool-concurrency';
+import { AsyncToolRegistry } from '@openrouter/agent/async-tool-registry';
 ```
 
 ## Development
