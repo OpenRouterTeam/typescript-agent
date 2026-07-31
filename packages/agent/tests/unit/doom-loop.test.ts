@@ -193,7 +193,7 @@ describe('fingerprints (cross-port vectors)', () => {
 });
 
 // ---------------------------------------------------------------------------
-// loopKey resolution (function | field list | false | absent)
+// loopKey resolution (function | false | absent)
 // ---------------------------------------------------------------------------
 
 describe('resolveLoopKeyMaterial', () => {
@@ -214,44 +214,6 @@ describe('resolveLoopKeyMaterial', () => {
     expect(resolveLoopKeyMaterial(false, args)).toEqual({
       kind: 'exempt',
     });
-  });
-
-  it('field array → declarative subset (missing fields simply absent)', () => {
-    expect(
-      resolveLoopKeyMaterial(
-        [
-          'command',
-          'cwd',
-          'not_a_field',
-        ],
-        args,
-      ),
-    ).toEqual({
-      kind: 'key',
-      keyMaterial: {
-        command: 'ls',
-        cwd: '/tmp',
-      },
-    });
-  });
-
-  it('preserves __proto__ as a declared field', () => {
-    const args = JSON.parse('{"__proto__":"declared"}') as Record<string, unknown>;
-    const resolution = resolveLoopKeyMaterial(
-      [
-        '__proto__',
-      ],
-      args,
-    );
-    expect(resolution).toEqual({
-      kind: 'key',
-      keyMaterial: expect.objectContaining({
-        ['__proto__']: 'declared',
-      }),
-    });
-    if (resolution.kind === 'key') {
-      expect(Object.getPrototypeOf(resolution.keyMaterial)).toBeNull();
-    }
   });
 
   it('function returning a value → that value', () => {

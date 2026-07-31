@@ -339,10 +339,11 @@ rungs (a weaker threshold at or past an enabled stronger one) warn, and so
 does an `escalate` rung without an `escalation` config (or vice versa).
 
 **Tools declare what identifies a call** via `loopKey` on the tool
-definition — a **function or a variable**:
+definition — a computed function over the call's validated arguments, like
+every other tool hook, or `false` to exempt:
 
 ```typescript
-// Function: compute the identity — a web-search tool normalizes its query.
+// Compute the identity — a web-search tool normalizes its query.
 tool({
   name: 'web_search',
   inputSchema: z.object({ query: z.string() }),
@@ -350,17 +351,16 @@ tool({
   execute: async ({ query }) => search(query),
 });
 
-// Variable (field list): declarative subset — data, not code, so it
-// survives serializable tool caches. A bash call is identified by the
-// command AND where it runs; other fields (e.g. verbose) don't count.
+// Return the subset of fields that matter. A bash call is identified by
+// the command AND where it runs; other fields (e.g. verbose) don't count.
 tool({
   name: 'bash',
   inputSchema: z.object({ command: z.string(), cwd: z.string(), verbose: z.boolean() }),
-  loopKey: ['command', 'cwd'],
+  loopKey: ({ command, cwd }) => ({ command, cwd }),
   execute: async ({ command, cwd }) => run(command, cwd),
 });
 
-// Variable (false): statically exempt — repetition is this tool's job.
+// false: statically exempt — repetition is this tool's job.
 tool({
   name: 'check_status',
   inputSchema: z.object({ jobId: z.string() }),
@@ -374,7 +374,7 @@ Returning `undefined`, throwing, or returning unhashable material (bigint,
 circular, >64 levels deep) falls back to the full-arguments identity with a
 warning — detection never fails a run. Without any `loopKey`, the full
 validated arguments object is the identity. MCP-wrapped tools accept a
-`loopKey` via `markMcp(tool, { loopKey })` (prefer the field-list form).
+`loopKey` via `markMcp(tool, { loopKey })`.
 
 **Fingerprints are a cross-port contract**: key material is canonicalized
 per RFC 8785 (JCS) and hashed with SHA-256 over the UTF-8 bytes, so the
@@ -398,7 +398,7 @@ block to observe for a known-chatty tool, or escalate straight to stop.
 
 - **Varying-input loops.** The fingerprint is identity-based: a model that
   invents a fresh nonce/timestamp field each call evades the default
-  whole-arguments identity entirely. A `loopKey` that names the meaningful
+  whole-arguments identity entirely. A `loopKey` that returns the meaningful
   fields closes this per tool; the structural fix (outcome hashing — the
   progress-ledger detector from the design doc) is planned, not shipped.
 - **Paraphrased repetition.** Text detectors require exact repeated token

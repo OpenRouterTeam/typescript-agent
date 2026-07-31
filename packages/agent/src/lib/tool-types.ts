@@ -343,19 +343,18 @@ export type ToolLoopKeyFn<TInput> = {
 
 /**
  * Doom-loop identity declaration for a tool (see the `doomLoop` option on
- * `callModel`). A tool provides a **function or a variable** describing how
- * its calls are fingerprinted, so the harness can flag duplicates:
+ * `callModel`). Computed like every other tool hook — a plain function over
+ * the call's validated arguments:
  *
- * - function — computes key material per call ({@link ToolLoopKeyFn});
- *   `null` exempts individual calls.
- * - `readonly string[]` — declarative field subset of the arguments, e.g.
- *   `['command', 'cwd']` for a bash tool. Data, not code: serializable, so
- *   it survives tool caches and can be advertised over the MCP wire.
+ * - function — computes key material per call ({@link ToolLoopKeyFn}), e.g.
+ *   `({ command, cwd }) => ({ command, cwd })` for a bash tool. Returning
+ *   `null` exempts individual calls (a legitimate repeat the tool can
+ *   recognize from its arguments).
  * - `false` — this tool is statically exempt (repetition is its job, e.g. a
  *   status poller).
  * - absent — the full validated arguments object is the identity.
  */
-export type ToolLoopKey<TInput> = ToolLoopKeyFn<TInput> | readonly string[] | false;
+export type ToolLoopKey<TInput> = ToolLoopKeyFn<TInput> | false;
 
 /**
  * Content item types for tool output to model.
@@ -428,8 +427,8 @@ export interface BaseToolFunction<
   requireApproval?: boolean | ToolApprovalCheck<zodInfer<TInput>>;
   /**
    * Doom-loop identity for this tool's calls — see {@link ToolLoopKey}.
-   * Function, field-name array, or `false` (exempt). Absent: the full
-   * validated arguments object is the identity.
+   * A computed function over the call's arguments, or `false` (exempt).
+   * Absent: the full validated arguments object is the identity.
    */
   loopKey?: ToolLoopKey<zodInfer<TInput>>;
   /**

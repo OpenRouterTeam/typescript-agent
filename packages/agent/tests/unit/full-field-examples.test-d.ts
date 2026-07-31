@@ -115,9 +115,9 @@ describe('full-field examples (PR documentation, compile-verified)', () => {
 
     // Loop integration
     requireApproval: ({ quality }) => quality === 'production',
-    loopKey: [
-      'script',
-    ], // doom-loop identity = script only (quality changes ≠ new work)
+    loopKey: ({ script }) => ({
+      script,
+    }), // doom-loop identity = script only (quality changes ≠ new work)
     nextTurnParams: {
       temperature: (_input, _ctx) => 0.2,
     },
@@ -246,9 +246,9 @@ describe('full-field examples (PR documentation, compile-verified)', () => {
     timeoutMs: 600_000, //  whole child run
     maxConcurrency: 3, //   max concurrent child conversations for this tool
     requireApproval: false,
-    loopKey: [
-      'topic',
-    ],
+    loopKey: ({ topic }) => ({
+      topic,
+    }),
   });
 
   // ─── Example 4: the run itself — every run-level option ──────────────────

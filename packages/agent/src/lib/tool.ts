@@ -54,7 +54,7 @@ type RegularToolConfigWithOutput<
   contextSchema?: TCtx;
   nextTurnParams?: NextTurnParamsFunctions<zodInfer<TInput>>;
   requireApproval?: boolean | ToolApprovalCheck<zodInfer<TInput>>;
-  /** Doom-loop identity: function, field list, or false — see {@link ToolLoopKey} */
+  /** Doom-loop identity: computed function, or false to exempt — see {@link ToolLoopKey} */
   loopKey?: ToolLoopKey<zodInfer<TInput>>;
   /** Deadline for one execution of this tool, in ms (see BaseToolFunction.timeoutMs) */
   timeoutMs?: number;
@@ -86,7 +86,7 @@ type RegularToolConfigWithoutOutput<
   contextSchema?: TCtx;
   nextTurnParams?: NextTurnParamsFunctions<zodInfer<TInput>>;
   requireApproval?: boolean | ToolApprovalCheck<zodInfer<TInput>>;
-  /** Doom-loop identity: function, field list, or false — see {@link ToolLoopKey} */
+  /** Doom-loop identity: computed function, or false to exempt — see {@link ToolLoopKey} */
   loopKey?: ToolLoopKey<zodInfer<TInput>>;
   /** Deadline for one execution of this tool, in ms (see BaseToolFunction.timeoutMs) */
   timeoutMs?: number;
@@ -119,7 +119,7 @@ type GeneratorToolConfig<
   contextSchema?: TCtx;
   nextTurnParams?: NextTurnParamsFunctions<zodInfer<TInput>>;
   requireApproval?: boolean | ToolApprovalCheck<zodInfer<TInput>>;
-  /** Doom-loop identity: function, field list, or false — see {@link ToolLoopKey} */
+  /** Doom-loop identity: computed function, or false to exempt — see {@link ToolLoopKey} */
   loopKey?: ToolLoopKey<zodInfer<TInput>>;
   /** Deadline for one execution of this tool, in ms (see BaseToolFunction.timeoutMs) */
   timeoutMs?: number;
@@ -147,7 +147,7 @@ type ManualToolConfig<
   contextSchema?: TCtx;
   nextTurnParams?: NextTurnParamsFunctions<zodInfer<TInput>>;
   requireApproval?: boolean | ToolApprovalCheck<zodInfer<TInput>>;
-  /** Doom-loop identity: function, field list, or false — see {@link ToolLoopKey} */
+  /** Doom-loop identity: computed function, or false to exempt — see {@link ToolLoopKey} */
   loopKey?: ToolLoopKey<zodInfer<TInput>>;
   /** Deadline for one execution of this tool, in ms (see BaseToolFunction.timeoutMs) */
   timeoutMs?: number;
@@ -189,7 +189,7 @@ type HITLToolConfig<
   contextSchema?: TCtx;
   nextTurnParams?: NextTurnParamsFunctions<zodInfer<TInput>>;
   requireApproval?: boolean | ToolApprovalCheck<zodInfer<TInput>>;
-  /** Doom-loop identity: function, field list, or false — see {@link ToolLoopKey} */
+  /** Doom-loop identity: computed function, or false to exempt — see {@link ToolLoopKey} */
   loopKey?: ToolLoopKey<zodInfer<TInput>>;
   /** Deadline for one execution of this tool, in ms (see BaseToolFunction.timeoutMs) */
   timeoutMs?: number;
@@ -223,7 +223,7 @@ type ToolConfigWithSharedContext<
   contextSchema?: TCtx;
   nextTurnParams?: NextTurnParamsFunctions<Record<string, unknown>>;
   requireApproval?: boolean | ToolApprovalCheck<Record<string, unknown>>;
-  /** Doom-loop identity: function, field list, or false — see {@link ToolLoopKey} */
+  /** Doom-loop identity: computed function, or false to exempt — see {@link ToolLoopKey} */
   loopKey?: ToolLoopKey<Record<string, unknown>>;
   /** Deadline for one execution of this tool, in ms (see BaseToolFunction.timeoutMs) */
   timeoutMs?: number;
@@ -261,7 +261,7 @@ type RunToolConfigBase<
   contextSchema?: TCtx;
   nextTurnParams?: NextTurnParamsFunctions<zodInfer<TInput>>;
   requireApproval?: boolean | ToolApprovalCheck<zodInfer<TInput>>;
-  /** Doom-loop identity: function, field list, or false — see {@link ToolLoopKey} */
+  /** Doom-loop identity: computed function, or false to exempt — see {@link ToolLoopKey} */
   loopKey?: ToolLoopKey<zodInfer<TInput>>;
   /** Deadline for one execution of this tool, in ms (see BaseToolFunction.timeoutMs) */
   timeoutMs?: number;
@@ -994,8 +994,8 @@ export function serverTool<T extends ServerToolType>(
  *
  * `options.loopKey` attaches a doom-loop identity to the wrapped tool —
  * the only injection point for MCP tools, whose remote definitions cannot
- * carry client-side functions. Prefer the declarative field-list form
- * (data, not code): it round-trips through serializable tool caches.
+ * carry client-side functions. Like every other tool hook it is a computed
+ * function over the call's arguments (or `false` to exempt).
  */
 export function markMcp<T extends Tool>(
   toolToMark: T,

@@ -126,11 +126,11 @@ type BaseCallModelInput<
    * consecutive repetitions). `true` enables recommended defaults; an
    * object tunes thresholds and text detection. Off by default.
    *
-   * Tools declare precise call identity via `loopKey` (hash the search
-   * query, the bash command + cwd + env, ...); without one the full
-   * arguments object is the identity. `loopKey: () => null` exempts a tool
-   * (legitimate polling). Detection is deterministic: the same transcript
-   * always produces the same verdicts.
+   * Tools declare precise call identity via a computed `loopKey` function
+   * (return the search query, `({ command, cwd }) => ({ command, cwd })`,
+   * ...); without one the full arguments object is the identity.
+   * `loopKey: false` exempts a tool (legitimate polling). Detection is
+   * deterministic: the same transcript always produces the same verdicts.
    */
   doomLoop?: DoomLoopOption;
   /**

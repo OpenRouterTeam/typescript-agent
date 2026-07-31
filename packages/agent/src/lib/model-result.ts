@@ -166,8 +166,8 @@ function extractServerToolIdentity(item: ServerToolResultItem): Record<string, u
   const record = item as unknown as Record<string, unknown>;
   // Object.create(null), not `{}`: keys come from a JSON-parsed API response, so
   // a `__proto__` key would hit the prototype setter instead of creating an own
-  // property and drop out of the fingerprint. Same reasoning as the field-list
-  // subset in resolveLoopKeyMaterial and the Map-backed streak store.
+  // property and drop out of the fingerprint. Same reasoning as the
+  // Map-backed streak store.
   const identity: Record<string, unknown> = Object.create(null) as Record<string, unknown>;
   for (const [key, value] of Object.entries(record)) {
     if (
@@ -1624,7 +1624,7 @@ export class ModelResult<
   /**
    * Doom-loop checkpoint for one tool call, run before PreToolUse/execution.
    *
-   * Resolves the tool's `loopKey` declaration (function | field list |
+   * Resolves the tool's `loopKey` declaration (function |
    * false | absent — see {@link resolveLoopKeyMaterial}) and evaluates the
    * call against the monitor. Ladder actions:
    *

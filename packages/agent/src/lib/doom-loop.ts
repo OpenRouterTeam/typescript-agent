@@ -22,8 +22,8 @@
  *   the shared vector file `tests/vectors/doom-loop-fingerprints.json` is
  *   the conformance contract.
  * - **Tool-declared identity.** A tool opts into precise loop identity via
- *   `loopKey` on its definition: a function computing key material, a
- *   declarative field subset (`['command', 'cwd']`), or `false` to exempt
+ *   `loopKey` on its definition: a function computing key material
+ *   (e.g. `({ command, cwd }) => ({ command, cwd })`), or `false` to exempt
  *   the tool. Tools declare *what identifies a call*; this module owns
  *   canonicalization and hashing so fingerprints are uniform across tools
  *   and ports.
@@ -426,20 +426,17 @@ export function resolveDoomLoopOption(
 //#region loopKey Resolution
 
 /**
- * Resolve a tool's `loopKey` declaration (function, field list, `false`, or
- * absent) against one call's validated arguments.
+ * Resolve a tool's `loopKey` declaration (function, `false`, or absent)
+ * against one call's validated arguments.
  *
  * - absent (`undefined` declaration) → the full arguments object.
  * - `false` → the tool is statically exempt.
- * - `readonly string[]` → declarative field subset of the arguments
- *   (missing fields are simply absent — canonicalization drops them).
- *   Data, not code: serializable, so it survives tool caches and can be
- *   advertised over the MCP wire.
- * - function → called with the arguments. `null` exempts THIS call;
- *   `undefined` falls back to the full arguments (with a warning — a bare
- *   `return;` is almost always a bug, and treating it as key material would
- *   collide every call of the tool onto one fingerprint); a throw falls
- *   back to the full arguments (detection must never take down a run).
+ * - function → called with the arguments, like every other tool hook.
+ *   `null` exempts THIS call; `undefined` falls back to the full arguments
+ *   (with a warning — a bare `return;` is almost always a bug, and treating
+ *   it as key material would collide every call of the tool onto one
+ *   fingerprint); a throw falls back to the full arguments (detection must
+ *   never take down a run).
  */
 export function resolveLoopKeyMaterial(
   loopKey: unknown,
@@ -454,18 +451,6 @@ export function resolveLoopKeyMaterial(
   if (loopKey === false) {
     return {
       kind: 'exempt',
-    };
-  }
-  if (Array.isArray(loopKey)) {
-    const subset: Record<string, unknown> = Object.create(null) as Record<string, unknown>;
-    for (const field of loopKey) {
-      if (typeof field === 'string' && field in args) {
-        subset[field] = args[field];
-      }
-    }
-    return {
-      kind: 'key',
-      keyMaterial: subset,
     };
   }
   if (typeof loopKey === 'function') {
