@@ -6,8 +6,9 @@ import { tool } from '../../src/lib/tool.js';
 import type { StateAccessor, Tool } from '../../src/lib/tool-types.js';
 
 describe('async tool type inference', () => {
-  const legalReview = tool.deferred({
+  const legalReview = tool({
     name: 'request_legal_review',
+    lifecycle: 'deferred',
     inputSchema: z.object({
       contractId: z.string(),
     }),
@@ -15,11 +16,12 @@ describe('async tool type inference', () => {
       approved: z.boolean(),
       notes: z.string().optional(),
     }),
-    start: async ({ contractId }) => {
+    run: async ({ contractId }, ctx) => {
       expectTypeOf(contractId).toEqualTypeOf<string>();
-      return {
-        taskId: 'ticket_1',
-      };
+      if (!ctx) {
+        throw new Error('no ctx');
+      }
+      return ctx.defer('ticket_1');
     },
   });
 
@@ -46,15 +48,16 @@ describe('async tool type inference', () => {
         echoed: q,
       }),
     });
-    const background = tool.background({
+    const background = tool({
       name: 'bg',
+      lifecycle: 'background',
       inputSchema: z.object({
         s: z.string(),
       }),
       outputSchema: z.object({
         url: z.string(),
       }),
-      execute: async () => ({
+      run: async () => ({
         url: 'x',
       }),
     });
@@ -67,39 +70,40 @@ describe('async tool type inference', () => {
     expectTypeOf(tools).toExtend<readonly Tool[]>();
   });
 
-  it('background execute return type must match outputSchema', () => {
-    tool.background({
+  it('background run return type must match outputSchema', () => {
+    tool({
       name: 'typed_bg',
+      lifecycle: 'background',
       inputSchema: z.object({}),
       outputSchema: z.object({
         url: z.string(),
       }),
       // @ts-expect-error — wrong return shape
-      execute: async () => ({
+      run: async () => ({
         wrong: true,
       }),
     });
   });
 
-  it('deferred start return type is constrained to taskId or typed output', () => {
-    tool.deferred({
+  it('deferred run return type is constrained to DeferredHandle or typed output', () => {
+    tool({
       name: 'typed_deferred',
+      lifecycle: 'deferred',
       inputSchema: z.object({}),
       outputSchema: z.object({
         ok: z.boolean(),
       }),
       // @ts-expect-error — output must match outputSchema
-      start: async () => ({
-        output: {
-          ok: 'yes',
-        },
+      run: async () => ({
+        ok: 'yes',
       }),
     });
   });
 
-  it('background ctx exposes signal and progress typed by eventSchema', () => {
-    tool.background({
+  it('background run ctx exposes signal, log, and onMessage', () => {
+    tool({
       name: 'ctx_probe',
+      lifecycle: 'background',
       inputSchema: z.object({}),
       eventSchema: z.object({
         pct: z.number(),
@@ -107,12 +111,11 @@ describe('async tool type inference', () => {
       outputSchema: z.object({
         ok: z.boolean(),
       }),
-      execute: async (_params, ctx) => {
+      run: async (_params, ctx) => {
         if (ctx) {
           expectTypeOf(ctx.signal).toEqualTypeOf<AbortSignal>();
-          expectTypeOf(ctx.progress).parameter(0).toEqualTypeOf<{
-            pct: number;
-          }>();
+          expectTypeOf(ctx.log).parameter(0).toEqualTypeOf<unknown>();
+          expectTypeOf(ctx.onMessage).parameter(0).toEqualTypeOf<(message: unknown) => void>();
         }
         return {
           ok: true,

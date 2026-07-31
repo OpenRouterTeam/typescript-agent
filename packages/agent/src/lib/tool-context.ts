@@ -135,12 +135,30 @@ function validatePartialAgainstSchema(
 
 /**
  * Per-execution extras threaded into the ToolExecuteContext: the composed
- * abort signal for this call, the call id, and the conversation id.
+ * abort signal for this call, the call id, the conversation id, and (for
+ * unified `run` tools) the async-task affordances.
  */
 export interface ToolExecutionExtras {
   signal?: AbortSignal;
   callId?: string;
   conversationId?: string;
+  /** The parent run's client — agent tools use it to start child runs. */
+  client?: unknown;
+  /**
+   * Unified-run affordances, wired by the engine per call:
+   * - `defer` — create a DeferredHandle (deferred lifecycle only)
+   * - `log` — append a task log entry (same pipeline as a yield)
+   * - `onMessage` — register the steering-inbox handler
+   * - `taskId` — the task id once assigned
+   */
+  runExtras?: {
+    defer?: (taskId: string, options?: Record<string, unknown>) => unknown;
+    log?: (entry: unknown) => void;
+    onMessage?: (handler: (message: unknown) => void) => void;
+    taskId?: string;
+    /** Narrow task facade (agent tools attach their transcript source here). */
+    task?: unknown;
+  };
 }
 
 // Shared never-aborting signal for contexts built without cancellation
@@ -229,6 +247,59 @@ export function buildToolExecuteContext<
   };
 
   return ctx;
+}
+
+/**
+ * Build a ToolRunContext for a unified `run` tool: the base execute context
+ * plus the async-task affordances (`defer`, `log`, `onMessage`, `taskId`,
+ * `client`). Attached onto the built object (not via spread) because
+ * `local`/`shared` are live getters a spread would flatten.
+ */
+export function buildToolRunContext<
+  TName extends string,
+  TContext extends Record<string, unknown>,
+  TShared extends Record<string, unknown> = Record<string, unknown>,
+>(
+  turnContext: TurnContext,
+  store: ToolContextStore | undefined,
+  toolName: TName,
+  schema: $ZodObject<$ZodShape> | undefined,
+  sharedSchema?: $ZodObject<$ZodShape> | undefined,
+  extras?: ToolExecutionExtras,
+): ToolExecuteContext<TName, TContext, TShared> & {
+  defer: (taskId: string, options?: Record<string, unknown>) => unknown;
+  log: (entry: unknown) => void;
+  onMessage: (handler: (message: unknown) => void) => void;
+} {
+  const base = buildToolExecuteContext<TName, TContext, TShared>(
+    turnContext,
+    store,
+    toolName,
+    schema,
+    sharedSchema,
+    extras,
+  );
+  const runExtras = extras?.runExtras;
+  return Object.assign(base, {
+    defer:
+      runExtras?.defer ??
+      (() => {
+        throw new Error(
+          `Tool "${toolName}": ctx.defer() is only available on lifecycle: 'deferred' tools`,
+        );
+      }),
+    log: runExtras?.log ?? (() => undefined),
+    onMessage: runExtras?.onMessage ?? (() => undefined),
+    ...(runExtras?.taskId !== undefined && {
+      taskId: runExtras.taskId,
+    }),
+    ...(runExtras?.task !== undefined && {
+      task: runExtras.task,
+    }),
+    ...(extras?.client !== undefined && {
+      client: extras.client,
+    }),
+  });
 }
 
 //#endregion

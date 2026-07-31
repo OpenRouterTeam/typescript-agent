@@ -1,15 +1,14 @@
 import type { OpenRouterCore } from '@openrouter/sdk/core';
 import type { RequestOptions } from '@openrouter/sdk/lib/sdks';
 import type { $ZodObject, $ZodShape, $ZodType, infer as zodInfer } from 'zod/v4/core';
+import { agentToolBuilder } from './agent-tool.js';
 import type { CallModelInput } from './async-params.js';
 import type { ModelResult } from './model-result.js';
+import type { TaskLogLimits } from './tool-task.js';
 import type {
   AsyncToolAck,
-  BackgroundTool,
-  BackgroundToolExecuteContext,
   ContextFromSchema,
-  DeferredStartResult,
-  DeferredTool,
+  DeferredHandle,
   HITLTool,
   ManualTool,
   McpBranded,
@@ -21,10 +20,14 @@ import type {
   ToModelOutputFunction,
   Tool,
   ToolApprovalCheck,
+  ToolCheckConfig,
   ToolExecuteContext,
+  ToolLifecycle,
   ToolLoopKey,
+  ToolRunContext,
   ToolWithExecute,
   ToolWithGenerator,
+  UnifiedTool,
 } from './tool-types.js';
 import { isClientTool, SHARED_CONTEXT_KEY, ToolType } from './tool-types.js';
 
@@ -240,84 +243,90 @@ type ToolConfigWithSharedContext<
 };
 
 /**
- * Configuration for a background tool (`tool.background`).
- * An ordinary async `execute` whose result may arrive after the round closes.
+ * Shared fields for unified `run` tool configs.
  */
-type BackgroundToolConfig<
+type RunToolConfigBase<
+  TInput extends $ZodObject<$ZodShape>,
+  TCtx extends $ZodObject<$ZodShape> = $ZodObject<$ZodShape>,
+  TName extends string = string,
+> = {
+  name: TName;
+  description?: string;
+  inputSchema: TInput;
+  /** Never present on run configs — keeps them disjoint from legacy overloads. */
+  execute?: undefined;
+  onToolCalled?: undefined;
+  /** Zod schema declaring the context data this tool needs */
+  contextSchema?: TCtx;
+  nextTurnParams?: NextTurnParamsFunctions<zodInfer<TInput>>;
+  requireApproval?: boolean | ToolApprovalCheck<zodInfer<TInput>>;
+  /** Doom-loop identity: function, field list, or false — see {@link ToolLoopKey} */
+  loopKey?: ToolLoopKey<zodInfer<TInput>>;
+  /** Deadline for one execution of this tool, in ms (see BaseToolFunction.timeoutMs) */
+  timeoutMs?: number;
+  /** Max simultaneous in-flight executions of this tool across the run */
+  maxConcurrency?: number;
+  /** Check-in config: model calls this tool with a taskId to check a task */
+  check?: ToolCheckConfig;
+  /** Per-task log ring-buffer overrides */
+  logLimits?: Partial<TaskLogLimits>;
+};
+
+/**
+ * Configuration for a unified tool with a `run` handler and an explicit
+ * outputSchema. `lifecycle` selects sync (default) / background / deferred.
+ */
+type RunToolConfigWithOutput<
   TInput extends $ZodObject<$ZodShape>,
   TOutput extends $ZodType,
   TEvent extends $ZodType = $ZodType<never>,
   TCtx extends $ZodObject<$ZodShape> = $ZodObject<$ZodShape>,
   TName extends string = string,
-> = {
-  name: TName;
-  description?: string;
-  inputSchema: TInput;
-  /** Required: the final result is validated whenever it settles. */
+> = RunToolConfigBase<TInput, TCtx, TName> & {
   outputSchema: TOutput;
-  /** Optional schema for `ctx.progress()` events. */
+  /** Validates run yields / ctx.log entries when declared. */
   eventSchema?: TEvent;
+  lifecycle?: ToolLifecycle;
   /** Model-facing acknowledgement merged into the pending placeholder. */
   ack?: AsyncToolAck<zodInfer<TInput>>;
-  /**
-   * Settles-fast window (ms): work finishing inside it produces a plain
-   * synchronous output, no placeholder. Default 250; `0` always placeholders.
-   */
+  /** Background: settles-fast window (ms). Default 250; 0 always placeholders. */
   graceMs?: number;
-  /** Deadline for the whole task (queue wait + execution), in ms. */
-  timeoutMs?: number;
-  /** Max simultaneous in-flight executions of this tool. */
-  maxConcurrency?: number;
-  /** Zod schema declaring the context data this tool needs */
-  contextSchema?: TCtx;
-  nextTurnParams?: NextTurnParamsFunctions<zodInfer<TInput>>;
-  requireApproval?: boolean | ToolApprovalCheck<zodInfer<TInput>>;
-  /** Doom-loop identity: function, field list, or false — see {@link ToolLoopKey} */
-  loopKey?: ToolLoopKey<zodInfer<TInput>>;
-  execute: (
+  /** Deferred: default poll-interval hint. */
+  pollAfterMs?: number;
+  run: (
     params: zodInfer<TInput>,
-    context?: BackgroundToolExecuteContext<TName, ContextFromSchema<TCtx>, zodInfer<TEvent>>,
-  ) => Promise<zodInfer<TOutput>>;
+    context?: ToolRunContext<TName, ContextFromSchema<TCtx>, zodInfer<TOutput>>,
+  ) =>
+    | Promise<zodInfer<TOutput> | DeferredHandle<zodInfer<TOutput>>>
+    | zodInfer<TOutput>
+    | DeferredHandle<zodInfer<TOutput>>
+    | AsyncGenerator<zodInfer<TEvent>, zodInfer<TOutput> | DeferredHandle<zodInfer<TOutput>>>;
   /** Convert tool execution output to model-facing output */
   toModelOutput?: ToModelOutputFunction<zodInfer<TInput>, zodInfer<TOutput>>;
 };
 
 /**
- * Configuration for a deferred tool (`tool.deferred`).
- * `start` kicks off external work and returns `{ taskId }` (pause) or
- * `{ output }` (immediate result).
+ * Configuration for a SYNC unified tool without outputSchema — the output
+ * type is inferred from run's return. Long-running lifecycles require an
+ * explicit outputSchema (results settle after the round, possibly in
+ * another process), so this config pins lifecycle to 'sync'/absent.
  */
-type DeferredToolConfig<
+type SyncRunToolConfigWithoutOutput<
   TInput extends $ZodObject<$ZodShape>,
-  TOutput extends $ZodType,
+  TReturn,
+  TEvent extends $ZodType = $ZodType<never>,
   TCtx extends $ZodObject<$ZodShape> = $ZodObject<$ZodShape>,
   TName extends string = string,
-> = {
-  name: TName;
-  description?: string;
-  inputSchema: TInput;
-  /** Required: validates `{ output }` fast paths and `.resolve()` payloads. */
-  outputSchema: TOutput;
-  /** Model-facing acknowledgement merged into the pending placeholder. */
-  ack?: AsyncToolAck<zodInfer<TInput>>;
-  /** Default poll-interval hint for tasks started by this tool. */
-  pollAfterMs?: number;
-  /** Deadline for `start` itself (not the external task), in ms. */
-  timeoutMs?: number;
-  /** Max simultaneous in-flight `start` executions of this tool. */
-  maxConcurrency?: number;
-  /** Zod schema declaring the context data this tool needs */
-  contextSchema?: TCtx;
-  nextTurnParams?: NextTurnParamsFunctions<zodInfer<TInput>>;
-  requireApproval?: boolean | ToolApprovalCheck<zodInfer<TInput>>;
-  /** Doom-loop identity: function, field list, or false — see {@link ToolLoopKey} */
-  loopKey?: ToolLoopKey<zodInfer<TInput>>;
-  start: (
+> = RunToolConfigBase<TInput, TCtx, TName> & {
+  outputSchema?: undefined;
+  eventSchema?: TEvent;
+  lifecycle?: 'sync';
+  run: (
     params: zodInfer<TInput>,
-    context?: ToolExecuteContext<TName, ContextFromSchema<TCtx>>,
-  ) => Promise<DeferredStartResult<zodInfer<TOutput>>> | DeferredStartResult<zodInfer<TOutput>>;
+    context?: ToolRunContext<TName, ContextFromSchema<TCtx>, TReturn>,
+  ) => Promise<TReturn> | TReturn | AsyncGenerator<zodInfer<TEvent>, TReturn>;
   /** Convert tool execution output to model-facing output */
-  toModelOutput?: ToModelOutputFunction<zodInfer<TInput>, zodInfer<TOutput>>;
+  toModelOutput?: ToModelOutputFunction<zodInfer<TInput>, TReturn>;
 };
 
 //#endregion
@@ -367,6 +376,49 @@ type RegularToolConfig<
  * });
  * ```
  */
+// NEW unified overloads — ordered FIRST so `run` configs never fall through
+// to a legacy-overload error message. Disjointness with the released
+// overloads is structural: run configs declare `execute?: undefined` /
+// `onToolCalled?: undefined`, and the legacy configs require `execute` /
+// `onToolCalled`.
+
+// Overload for deferred unified tools — returns the tool + typed
+// .resolve()/.fail()/.cancel() completion methods.
+export function tool<
+  TInput extends $ZodObject<$ZodShape>,
+  TOutput extends $ZodType,
+  TEvent extends $ZodType = $ZodType<never>,
+  TCtx extends $ZodObject<$ZodShape> = $ZodObject<$ZodShape>,
+  TName extends string = string,
+>(
+  config: RunToolConfigWithOutput<TInput, TOutput, TEvent, TCtx, TName> & {
+    lifecycle: 'deferred';
+  },
+): BuiltDeferredTool<TInput, TOutput, TEvent, TCtx>;
+
+// Overload for unified run tools with outputSchema (any lifecycle).
+export function tool<
+  TInput extends $ZodObject<$ZodShape>,
+  TOutput extends $ZodType,
+  TEvent extends $ZodType = $ZodType<never>,
+  TCtx extends $ZodObject<$ZodShape> = $ZodObject<$ZodShape>,
+  TName extends string = string,
+>(
+  config: RunToolConfigWithOutput<TInput, TOutput, TEvent, TCtx, TName>,
+): UnifiedTool<TInput, TOutput, TEvent, Record<string, unknown>, TCtx>;
+
+// Overload for SYNC unified run tools without outputSchema (output inferred
+// from run's return — including a generator's TReturn).
+export function tool<
+  TInput extends $ZodObject<$ZodShape>,
+  TReturn,
+  TEvent extends $ZodType = $ZodType<never>,
+  TCtx extends $ZodObject<$ZodShape> = $ZodObject<$ZodShape>,
+  TName extends string = string,
+>(
+  config: SyncRunToolConfigWithoutOutput<TInput, TReturn, TEvent, TCtx, TName>,
+): UnifiedTool<TInput, $ZodType<TReturn>, TEvent, Record<string, unknown>, TCtx>;
+
 // Overload for generator tools (when eventSchema is provided).
 // TContext on the *returned* tool stays the wide default so specific tools remain
 // assignable to `Tool` / `Tool[]` (function-parameter variance). Typed
@@ -433,12 +485,26 @@ export function tool(
     | RegularToolConfig<$ZodObject<$ZodShape>, $ZodType, unknown>
     | ManualToolConfig<$ZodObject<$ZodShape>>
     | HITLToolConfig<$ZodObject<$ZodShape>, $ZodType>
+    | RunToolConfigWithOutput<$ZodObject<$ZodShape>, $ZodType>
+    | SyncRunToolConfigWithoutOutput<$ZodObject<$ZodShape>, unknown>
     | ToolConfigWithSharedContext<Record<string, unknown>>,
 ): Tool {
   // 'shared' is reserved for shared context — forbid it as a tool name
   if (config.name === SHARED_CONTEXT_KEY) {
     throw new Error(
       `Tool name "${SHARED_CONTEXT_KEY}" is reserved for shared context. Choose a different name.`,
+    );
+  }
+
+  // Unified run tool (new kind). Checked before the legacy branches so a
+  // config carrying `run` never routes through execute-keyed logic —
+  // but AFTER the name guard, keeping every released path on its exact
+  // current control flow.
+  if ('run' in config && typeof config.run === 'function') {
+    return buildUnifiedTool(
+      config as
+        | RunToolConfigWithOutput<$ZodObject<$ZodShape>, $ZodType>
+        | SyncRunToolConfigWithoutOutput<$ZodObject<$ZodShape>, unknown>,
     );
   }
 
@@ -652,7 +718,7 @@ export function tool(
 
 //#endregion
 
-//#region tool.background() / tool.deferred() Builders
+//#region Unified Tool Builder + Deferred Completion Methods
 
 /**
  * Request shape shared by the deferred completion methods (`.resolve()` /
@@ -679,7 +745,7 @@ type DeferredRunConfig = Omit<
 >;
 
 /**
- * Typed completion methods attached to every tool built by `tool.deferred()`.
+ * Typed completion methods attached to every `lifecycle: 'deferred'` tool.
  * Thin wrappers over `resumeToolResults()` with the tool reference bound, so
  * `output` is checked against the tool's `outputSchema` at compile time and
  * runtime.
@@ -720,30 +786,22 @@ export interface DeferredToolMethods<TOutput> {
 }
 
 /**
- * A built deferred tool: the tool wrapper plus its typed completion methods.
- * Structurally still a `DeferredTool`, so it flows into `tools: [...]`
- * arrays unchanged.
+ * A built deferred tool: the unified tool wrapper plus its typed completion
+ * methods. Structurally still a `UnifiedTool`, so it flows into
+ * `tools: [...]` arrays unchanged.
  */
 export type BuiltDeferredTool<
   TInput extends $ZodObject<$ZodShape>,
   TOutput extends $ZodType,
+  TEvent extends $ZodType = $ZodType<never>,
   TCtx extends $ZodObject<$ZodShape> = $ZodObject<$ZodShape>,
-> = DeferredTool<TInput, TOutput, Record<string, unknown>, TCtx> &
+> = UnifiedTool<TInput, TOutput, TEvent, Record<string, unknown>, TCtx> &
   DeferredToolMethods<zodInfer<TOutput>>;
 
-/** Copy shared BaseToolFunction config fields onto a function object. */
+/** Copy shared config fields onto a function object when present. */
 function assignCommonToolFields(
   fn: Record<string, unknown>,
-  config: {
-    description?: string;
-    contextSchema?: unknown;
-    nextTurnParams?: unknown;
-    requireApproval?: unknown;
-    loopKey?: unknown;
-    timeoutMs?: number;
-    maxConcurrency?: number;
-    toModelOutput?: unknown;
-  },
+  config: Record<string, unknown>,
 ): void {
   const fields = [
     'description',
@@ -754,87 +812,18 @@ function assignCommonToolFields(
     'timeoutMs',
     'maxConcurrency',
     'toModelOutput',
+    'eventSchema',
+    'ack',
+    'graceMs',
+    'pollAfterMs',
+    'check',
+    'logLimits',
   ] as const;
   for (const field of fields) {
     if (config[field] !== undefined) {
       fn[field] = config[field];
     }
   }
-}
-
-/**
- * Create a background tool: an ordinary async `execute` that the loop does
- * not wait for. Work settling within `graceMs` (default 250ms) produces a
- * plain synchronous output — no async machinery visible; otherwise the model
- * receives a pending placeholder immediately, the loop continues, and the
- * return value is injected into the conversation when it settles.
- *
- * @example
- * ```typescript
- * const renderVideo = tool.background({
- *   name: 'render_video',
- *   inputSchema: z.object({ script: z.string() }),
- *   eventSchema: z.object({ pct: z.number() }),
- *   outputSchema: z.object({ url: z.string() }),
- *   ack: 'Rendering started — the result arrives automatically.',
- *   timeoutMs: 300_000,
- *   execute: async ({ script }, ctx) => {
- *     const job = await renderer.start(script, { signal: ctx?.signal });
- *     for await (const p of job.progress()) ctx?.progress({ pct: p });
- *     return job.result();          // just return it
- *   },
- * });
- * ```
- */
-function backgroundToolBuilder<
-  TInput extends $ZodObject<$ZodShape>,
-  TOutput extends $ZodType,
-  TEvent extends $ZodType = $ZodType<never>,
-  TCtx extends $ZodObject<$ZodShape> = $ZodObject<$ZodShape>,
-  TName extends string = string,
->(
-  config: BackgroundToolConfig<TInput, TOutput, TEvent, TCtx, TName>,
-): BackgroundTool<TInput, TOutput, TEvent, Record<string, unknown>, TCtx> {
-  if (config.name === SHARED_CONTEXT_KEY) {
-    throw new Error(
-      `Tool name "${SHARED_CONTEXT_KEY}" is reserved for shared context. Choose a different name.`,
-    );
-  }
-  // Required at the type level; JavaScript callers can bypass types.
-  if (config.outputSchema === undefined) {
-    throw new Error(
-      `Background tool "${config.name}" must declare an outputSchema. The final result is validated when it settles — possibly long after the round that started it.`,
-    );
-  }
-
-  const fn: Record<string, unknown> = {
-    background: true,
-    name: config.name,
-    inputSchema: config.inputSchema,
-    outputSchema: config.outputSchema,
-    execute: config.execute,
-  };
-  if (config.eventSchema !== undefined) {
-    fn['eventSchema'] = config.eventSchema;
-  }
-  if (config.ack !== undefined) {
-    fn['ack'] = config.ack;
-  }
-  if (config.graceMs !== undefined) {
-    fn['graceMs'] = config.graceMs;
-  }
-  assignCommonToolFields(fn, config);
-
-  return {
-    type: ToolType.Function,
-    function: fn as unknown as BackgroundTool<
-      TInput,
-      TOutput,
-      TEvent,
-      Record<string, unknown>,
-      TCtx
-    >['function'],
-  };
 }
 
 /**
@@ -886,77 +875,45 @@ function bindDeferredCompletion(
 }
 
 /**
- * Create a deferred tool: `start` kicks off durable external work (a
- * webhook-backed job, a human review) and returns a plain `{ taskId }` — the
- * model receives a pending placeholder and the run pauses
- * (`status: 'awaiting_async_tools'`) until the task is completed via the
- * tool's typed `.resolve()` / `.fail()` / `.cancel()` methods, possibly from
- * another process. Return `{ output }` instead for an immediate result.
- *
- * @example
- * ```typescript
- * const legalReview = tool.deferred({
- *   name: 'request_legal_review',
- *   inputSchema: z.object({ contractId: z.string() }),
- *   outputSchema: z.object({ approved: z.boolean() }),
- *   start: async ({ contractId }, ctx) => {
- *     const ticket = await legal.open(contractId, { conversationId: ctx?.conversationId });
- *     return { taskId: ticket.id };
- *   },
- * });
- *
- * // webhook handler — different process, days later:
- * await legalReview.resolve(client, {
- *   state: makeAccessor(conversationId),
- *   taskId: ticketId,
- *   output: { approved: true },   // ← typed by outputSchema
- *   run: { model: 'openai/gpt-4o' },
- * });
- * ```
+ * Build a unified `run` tool from a config. Deferred tools additionally get
+ * the typed `.resolve()/.fail()/.cancel()` completion methods.
  */
-function deferredToolBuilder<
-  TInput extends $ZodObject<$ZodShape>,
-  TOutput extends $ZodType,
-  TCtx extends $ZodObject<$ZodShape> = $ZodObject<$ZodShape>,
-  TName extends string = string,
->(
-  config: DeferredToolConfig<TInput, TOutput, TCtx, TName>,
-): BuiltDeferredTool<TInput, TOutput, TCtx> {
-  if (config.name === SHARED_CONTEXT_KEY) {
+function buildUnifiedTool(
+  config:
+    | RunToolConfigWithOutput<$ZodObject<$ZodShape>, $ZodType>
+    | SyncRunToolConfigWithoutOutput<$ZodObject<$ZodShape>, unknown>,
+): Tool {
+  const lifecycle: ToolLifecycle = ('lifecycle' in config ? config.lifecycle : undefined) ?? 'sync';
+
+  // Long-running lifecycles require an outputSchema: the result settles
+  // after the round (possibly in another process) and must be validatable
+  // without the run's return-type inference. Type level enforces this too;
+  // JavaScript callers can bypass types.
+  if (lifecycle !== 'sync' && config.outputSchema === undefined) {
     throw new Error(
-      `Tool name "${SHARED_CONTEXT_KEY}" is reserved for shared context. Choose a different name.`,
-    );
-  }
-  // Required at the type level; JavaScript callers can bypass types.
-  if (config.outputSchema === undefined) {
-    throw new Error(
-      `Deferred tool "${config.name}" must declare an outputSchema. Caller-supplied resolutions are validated before the model sees them.`,
+      `Tool "${config.name}" (lifecycle: '${lifecycle}') must declare an outputSchema. Long-running results are validated when they settle — possibly long after the round that started them.`,
     );
   }
 
   const fn: Record<string, unknown> = {
+    lifecycle,
     name: config.name,
     inputSchema: config.inputSchema,
-    outputSchema: config.outputSchema,
-    start: config.start,
+    run: config.run,
   };
-  if (config.ack !== undefined) {
-    fn['ack'] = config.ack;
+  if (config.outputSchema !== undefined) {
+    fn['outputSchema'] = config.outputSchema;
   }
-  if (config.pollAfterMs !== undefined) {
-    fn['pollAfterMs'] = config.pollAfterMs;
-  }
-  assignCommonToolFields(fn, config);
+  assignCommonToolFields(fn, config as Record<string, unknown>);
 
   const toolValue = {
     type: ToolType.Function,
-    function: fn as unknown as DeferredTool<
-      TInput,
-      TOutput,
-      Record<string, unknown>,
-      TCtx
-    >['function'],
+    function: fn as unknown as UnifiedTool['function'],
   };
+
+  if (lifecycle !== 'deferred') {
+    return toolValue;
+  }
 
   return Object.assign(toolValue, {
     resolve: bindDeferredCompletion(toolValue, (request) => ({
@@ -972,14 +929,14 @@ function deferredToolBuilder<
       error: typeof request['reason'] === 'string' ? request['reason'] : 'Task cancelled',
       status: 'cancelled',
     })),
-  }) as BuiltDeferredTool<TInput, TOutput, TCtx>;
+  }) as Tool;
 }
 
-// Attach the namespaced builders. Expando properties on a function
-// declaration merge into its type, so `tool.background(...)` and
-// `tool.deferred(...)` are fully typed at the call site.
-tool.background = backgroundToolBuilder;
-tool.deferred = deferredToolBuilder;
+// Attach the agent builder as a namespaced property (expando properties on a
+// function declaration merge into its type). `tool.agent()` keeps a
+// dedicated builder because its config shape genuinely differs (an `agent`
+// run-spec factory + `result` mapper instead of `run`).
+tool.agent = agentToolBuilder;
 
 //#endregion
 

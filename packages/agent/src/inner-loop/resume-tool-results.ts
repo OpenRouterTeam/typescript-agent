@@ -6,7 +6,7 @@ import { appendToMessages, updateState } from '../lib/conversation-state.js';
 import type { ModelResult } from '../lib/model-result.js';
 import { validateToolOutput } from '../lib/tool-executor.js';
 import type { PendingAsyncTool, StateAccessor, Tool } from '../lib/tool-types.js';
-import { isClientTool, isDeferredTool } from '../lib/tool-types.js';
+import { isClientTool, isUnifiedTool } from '../lib/tool-types.js';
 import { callModel } from './call-model.js';
 
 /**
@@ -169,7 +169,7 @@ export async function resumeToolResults<TTools extends readonly Tool[]>(
       // Validate against the tool's outputSchema when the tool is available.
       const tool = request.tools?.find((t) => isClientTool(t) && t.function.name === task.name);
       let output = entry.output;
-      if (tool && isDeferredTool(tool)) {
+      if (tool && isUnifiedTool(tool) && tool.function.outputSchema !== undefined) {
         output = validateToolOutput(tool.function.outputSchema, output);
       }
       envelope = {

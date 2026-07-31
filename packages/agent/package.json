@@ -108,6 +108,18 @@
     "./resume-tool-results": {
       "types": "./esm/inner-loop/resume-tool-results.d.ts",
       "default": "./esm/inner-loop/resume-tool-results.js"
+    },
+    "./tool-task": {
+      "types": "./esm/lib/tool-task.d.ts",
+      "default": "./esm/lib/tool-task.js"
+    },
+    "./tool-check": {
+      "types": "./esm/lib/tool-check.d.ts",
+      "default": "./esm/lib/tool-check.js"
+    },
+    "./agent-tool": {
+      "types": "./esm/lib/agent-tool.d.ts",
+      "default": "./esm/lib/agent-tool.js"
     }
   },
   "sideEffects": false,

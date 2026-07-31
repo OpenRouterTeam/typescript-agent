@@ -61,9 +61,10 @@ import {
   isResponseIncompleteEvent,
   isServerToolResultItem,
 } from './stream-type-guards.js';
+import { defaultCheckResult, persistedTaskCheckResult, resolveCheckConfig } from './tool-check.js';
 import type { Semaphore as ToolSemaphore } from './tool-concurrency.js';
 import { acquireAll, Semaphore } from './tool-concurrency.js';
-import type { ContextInput } from './tool-context.js';
+import type { ContextInput, ToolExecutionExtras } from './tool-context.js';
 import { resolveContext, ToolContextStore } from './tool-context.js';
 import { ToolEventBroadcaster } from './tool-event-broadcaster.js';
 import type { AsyncToolInvocation } from './tool-executor.js';
@@ -71,7 +72,10 @@ import {
   applyOnResponseReceivedHooks,
   executeTool,
   isAsyncToolInvocation,
+  validateToolInput,
 } from './tool-executor.js';
+import type { ToolTaskMode } from './tool-task.js';
+import { ToolTask } from './tool-task.js';
 import type {
   ConversationState,
   ConversationStatus,
@@ -96,11 +100,14 @@ import type {
   UnsentToolResult,
 } from './tool-types.js';
 import {
+  isAgentTool,
   isAutoResolvableTool,
   isClientTool,
+  isLongRunningTool,
   isMcpTool,
   isServerTool,
   isToolCallOutputEvent,
+  isUnifiedTool,
 } from './tool-types.js';
 import { normalizeInputToArray } from './turn-context.js';
 
@@ -122,6 +129,18 @@ export const DEFAULT_FINAL_RESPONSE_DIRECTIVE =
  */
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+/**
+ * Mutable binding between a tool call's run context and its ToolTask (which
+ * is created only once the call escapes the round). See createRunBinding.
+ */
+interface RunBinding {
+  log: (entry: unknown) => void;
+  onMessage: (handler: (message: unknown) => void) => void;
+  setTranscriptSource: (source: NonNullable<ToolTask['transcriptSource']>) => void;
+  bind: (task: ToolTask) => void;
+  task: () => ToolTask | null;
 }
 
 /**
@@ -423,6 +442,15 @@ export interface GetResponseOptions<
     drainTimeoutMs?: number;
     /** Max extra model turns granted to deliver drained results. Default 2. */
     maxDrainTurns?: number;
+    /**
+     * Model-side check-ins: whether calling a long-running tool with a
+     * `taskId` answers status/logs/transcript instead of starting new work.
+     * Default true. When false, placeholders revert to "do not call this
+     * tool again" and the check schema is not advertised.
+     */
+    checkins?: boolean;
+    /** Max characters for the `transcript` check view. Default 20_000. */
+    maxTranscriptChars?: number;
   };
 }
 
@@ -1252,11 +1280,7 @@ export class ModelResult<
     toolCall: ParsedToolCall<Tool>,
     turnContext: TurnContext,
     onPreliminaryResult?: (toolCallId: string, result: unknown) => void,
-    extras?: {
-      signal?: AbortSignal;
-      callId?: string;
-      conversationId?: string;
-    },
+    extras?: ToolExecutionExtras,
   ): Promise<
     | {
         type: 'parse_error';
@@ -2296,6 +2320,7 @@ export class ModelResult<
    */
   private async settleAsyncInvocationAsUnsent(
     tc: ParsedToolCall<TTools[number]>,
+    tool: Tool,
     invocation: AsyncToolInvocation,
   ): Promise<UnsentToolResult<TTools>> {
     if (invocation.asyncMode === 'background') {
@@ -2312,13 +2337,24 @@ export class ModelResult<
     }
 
     const registry = this.ensureAsyncToolRegistry();
+    const liveTask = registry.trackDeferred({
+      callId: tc.id,
+      taskId: invocation.taskId,
+      name: String(tc.name),
+      ...(invocation.pollAfterMs !== undefined && {
+        pollAfterMs: invocation.pollAfterMs,
+      }),
+      ...(invocation.expiresAt !== undefined && {
+        expiresAt: invocation.expiresAt,
+      }),
+    });
     const task: PendingAsyncTool = {
       callId: tc.id,
       taskId: invocation.taskId,
       name: String(tc.name),
       mode: 'defer',
       status: 'working',
-      startedAt: Date.now(),
+      startedAt: liveTask.startedAt,
       ...(invocation.pollAfterMs !== undefined && {
         pollAfterMs: invocation.pollAfterMs,
       }),
@@ -2326,7 +2362,6 @@ export class ModelResult<
         expiresAt: invocation.expiresAt,
       }),
     };
-    registry.trackDeferred(task);
     if (this.currentState) {
       this.currentState = updateState(this.currentState, {
         pendingAsyncTools: [
@@ -2336,6 +2371,7 @@ export class ModelResult<
       });
     }
     const placeholder = this.buildPendingPlaceholder(
+      tool,
       tc as ParsedToolCall<Tool>,
       invocation.taskId,
       invocation.ack,
@@ -2396,7 +2432,7 @@ export class ModelResult<
       }
 
       if (isAsyncToolInvocation(result)) {
-        return this.settleAsyncInvocationAsUnsent(tc, result);
+        return this.settleAsyncInvocationAsUnsent(tc, tool, result);
       }
 
       if (result.error) {
@@ -2829,6 +2865,7 @@ export class ModelResult<
         invocation: AsyncToolInvocation;
         controller: AbortController;
         timeoutMs: number | undefined;
+        runBinding: RunBinding;
         preliminaryResultsForCall: InferToolEventsUnion<TTools>[];
       }
     | {
@@ -2847,6 +2884,19 @@ export class ModelResult<
     );
     if (!tool || !isAutoResolvableTool(tool)) {
       return null;
+    }
+
+    // Check-in dispatch: a call to a long-running tool whose args carry a
+    // `taskId` matching a known task is a CHECK on that task, not new work.
+    // Answered from the live registry / persisted state; bypasses gates,
+    // deadlines, and Pre/PostToolUse hooks (engine bookkeeping, not user
+    // work) and is loopKey-exempt by construction (never reaches the
+    // doom-loop checkpoint in runToolWithHooks).
+    if (isLongRunningTool(tool) && this.options.asyncTools?.checkins !== false) {
+      const checkOutcome = await this.tryAnswerCheckCall(tool, toolCall);
+      if (checkOutcome) {
+        return checkOutcome;
+      }
     }
 
     // PermissionRequest hook denied this call without pausing: synthesize a
@@ -2905,6 +2955,12 @@ export class ModelResult<
       // error output) and the body's signal is aborted. The abandoned body
       // keeps running detached; awaiting it would reintroduce the hang
       // run-cancellation (DEV-658) fixed.
+      // Unified-run affordances. The ToolTask is created later (when the
+      // call escapes the round in handleAsyncInvocation), so the log sink
+      // and inbox registration go through a mutable slot the task binds to
+      // on creation; entries logged before that are buffered.
+      const runBinding = this.createRunBinding(toolCall.id);
+
       const executionPromise = this.runToolWithHooks(
         tool,
         toolCall,
@@ -2916,6 +2972,27 @@ export class ModelResult<
           ...(this.currentState?.id !== undefined && {
             conversationId: this.currentState.id,
           }),
+          client: this.options.client,
+          runExtras: {
+            ...(isUnifiedTool(tool) &&
+              tool.function.lifecycle === 'deferred' && {
+                defer: (taskId: string, options?: Record<string, unknown>) => ({
+                  __deferred: true,
+                  taskId,
+                  ...(options ?? {}),
+                }),
+              }),
+            log: runBinding.log,
+            onMessage: runBinding.onMessage,
+            task: {
+              set transcriptSource(source: NonNullable<ToolTask['transcriptSource']>) {
+                runBinding.setTranscriptSource(source);
+              },
+              get transcriptSource(): ToolTask['transcriptSource'] {
+                return runBinding.task()?.transcriptSource;
+              },
+            },
+          },
         },
       );
 
@@ -2975,6 +3052,7 @@ export class ModelResult<
           invocation: result,
           controller,
           timeoutMs,
+          runBinding,
           preliminaryResultsForCall,
         };
       }
@@ -3183,22 +3261,36 @@ export class ModelResult<
     invocation: AsyncToolInvocation;
     controller: AbortController;
     timeoutMs: number | undefined;
+    runBinding: RunBinding;
   }): Promise<{
     output: models.FunctionCallOutputItem;
     deferredTask?: PendingAsyncTool;
   }> {
-    const { toolCall, tool, invocation, controller } = value;
+    const { toolCall, tool, invocation, controller, runBinding } = value;
     const registry = this.ensureAsyncToolRegistry();
     const source = isMcpTool(tool) ? 'mcp' : 'client';
+    const logLimits = isUnifiedTool(tool) ? tool.function.logLimits : undefined;
 
     if (invocation.asyncMode === 'defer') {
+      const liveTask = registry.trackDeferred({
+        callId: toolCall.id,
+        taskId: invocation.taskId,
+        name: String(toolCall.name),
+        ...(invocation.expiresAt !== undefined && {
+          expiresAt: invocation.expiresAt,
+        }),
+        ...(invocation.pollAfterMs !== undefined && {
+          pollAfterMs: invocation.pollAfterMs,
+        }),
+      });
+      runBinding.bind(liveTask);
       const task: PendingAsyncTool = {
         callId: toolCall.id,
         taskId: invocation.taskId,
         name: String(toolCall.name),
         mode: 'defer',
         status: 'working',
-        startedAt: Date.now(),
+        startedAt: liveTask.startedAt,
         ...(invocation.pollAfterMs !== undefined && {
           pollAfterMs: invocation.pollAfterMs,
         }),
@@ -3206,10 +3298,10 @@ export class ModelResult<
           expiresAt: invocation.expiresAt,
         }),
       };
-      registry.trackDeferred(task);
       this.broadcastAsyncStarted(toolCall, 'defer', invocation.taskId, invocation.ack);
       return {
         output: this.buildPendingPlaceholder(
+          tool,
           toolCall,
           invocation.taskId,
           invocation.ack,
@@ -3223,6 +3315,17 @@ export class ModelResult<
     // held for the duration of the work (queue wait counts against the
     // task's own timeout tracked by the registry).
     const taskId = registry.generateTaskId();
+    const liveTask = new ToolTask({
+      taskId,
+      callId: toolCall.id,
+      toolName: String(toolCall.name),
+      mode: isAgentTool(tool) ? 'agent' : 'background',
+      controller,
+      ...(logLimits !== undefined && {
+        limits: logLimits,
+      }),
+    });
+    runBinding.bind(liveTask);
     const work = this.runBackgroundWork(invocation.run, controller);
     // Surface unhandled rejections nowhere — the registry's .then() below
     // (or the grace race) is the sole consumer.
@@ -3297,20 +3400,68 @@ export class ModelResult<
     // executeSingleToolCall only bounds the ROUND's wait; a background task
     // gets its full budget).
     registry.trackBackground(
-      {
-        callId: toolCall.id,
-        taskId,
-        name: String(toolCall.name),
-        controller,
-        ...(value.timeoutMs !== undefined && {
-          timeoutMs: value.timeoutMs,
-        }),
-      },
+      liveTask,
       work,
+      value.timeoutMs !== undefined
+        ? {
+            timeoutMs: value.timeoutMs,
+          }
+        : undefined,
     );
-    this.broadcastAsyncStarted(toolCall, 'background', taskId, invocation.ack);
+    this.broadcastAsyncStarted(toolCall, liveTask.mode, taskId, invocation.ack);
     return {
-      output: this.buildPendingPlaceholder(toolCall, taskId, invocation.ack),
+      output: this.buildPendingPlaceholder(tool, toolCall, taskId, invocation.ack),
+    };
+  }
+
+  /**
+   * A mutable binding between a tool call's run context and its (created
+   * later) ToolTask. `ctx.log()` entries before the task exists are
+   * buffered; `ctx.onMessage()` registrations are forwarded on bind.
+   */
+  private createRunBinding(_callId: string): RunBinding {
+    let task: ToolTask | null = null;
+    const bufferedLogs: unknown[] = [];
+    let pendingHandler: ((message: unknown) => void) | null = null;
+    let pendingTranscriptSource: ToolTask['transcriptSource'] | null = null;
+    return {
+      log: (entry: unknown) => {
+        if (task) {
+          task.appendLog(entry, typeof entry === 'string' ? 'text' : 'event');
+        } else {
+          bufferedLogs.push(entry);
+        }
+      },
+      onMessage: (handler: (message: unknown) => void) => {
+        if (task) {
+          task.onMessage(handler);
+        } else {
+          pendingHandler = handler;
+        }
+      },
+      setTranscriptSource: (source: NonNullable<ToolTask['transcriptSource']>) => {
+        if (task) {
+          task.transcriptSource = source;
+        } else {
+          pendingTranscriptSource = source;
+        }
+      },
+      bind: (bound: ToolTask) => {
+        task = bound;
+        for (const entry of bufferedLogs) {
+          bound.appendLog(entry, typeof entry === 'string' ? 'text' : 'event');
+        }
+        bufferedLogs.length = 0;
+        if (pendingHandler) {
+          bound.onMessage(pendingHandler);
+          pendingHandler = null;
+        }
+        if (pendingTranscriptSource) {
+          bound.transcriptSource = pendingTranscriptSource;
+          pendingTranscriptSource = null;
+        }
+      },
+      task: () => task,
     };
   }
 
@@ -3341,7 +3492,7 @@ export class ModelResult<
   /** Broadcast a `tool.async_started` event on the turn broadcaster. */
   private broadcastAsyncStarted(
     toolCall: ParsedToolCall<Tool>,
-    mode: 'background' | 'defer',
+    mode: ToolTaskMode,
     taskId: string,
     ack?: unknown,
   ): void {
@@ -3383,37 +3534,197 @@ export class ModelResult<
    * Build the pending placeholder `function_call_output` for an async tool
    * call. Pairs the `function_call` immediately (providers 400 on unpaired
    * calls in follow-up history); the real result arrives later as a
-   * `tool_task_result` envelope. The trailing note is load-bearing: it is
-   * the cheapest defense against the model re-calling the tool to poll.
+   * `tool_task_result` envelope. The note steers the model: with check-ins
+   * enabled it explains HOW to check on the task (same tool + taskId);
+   * with check-ins disabled it forbids re-calling entirely.
    */
   private buildPendingPlaceholder(
+    tool: Tool,
     toolCall: ParsedToolCall<Tool>,
     taskId: string,
     ack?: unknown,
     pollAfterMs?: number,
   ): models.FunctionCallOutputItem {
+    const checkinsEnabled = this.options.asyncTools?.checkins !== false;
     const payload: Record<string, unknown> = {
       status: 'pending',
       taskId,
       ...(pollAfterMs !== undefined && {
         pollAfterMs,
       }),
+      ...(checkinsEnabled && {
+        check: true,
+      }),
     };
+    const toolName = isClientTool(tool) ? tool.function.name : String(toolCall.name);
+    const directive = checkinsEnabled
+      ? `The result will be delivered to you automatically when ready. To check progress (status, recent logs, or the full transcript), call ${toolName} again with { "taskId": "${taskId}" }. Keep working on other steps meanwhile.`
+      : 'The result will be delivered to you automatically when ready — do not call this tool again to check on it.';
     if (typeof ack === 'string') {
-      payload['note'] =
-        `${ack} The result will be delivered to you automatically when ready — do not call this tool again to check on it.`;
+      payload['note'] = `${ack} ${directive}`;
     } else {
       if (ack !== undefined && typeof ack === 'object') {
         Object.assign(payload, ack);
       }
-      payload['note'] =
-        'Started. The result will be delivered to you automatically when ready — do not call this tool again to check on it.';
+      payload['note'] = `Started. ${directive}`;
     }
     return {
       type: 'function_call_output' as const,
       id: `output_${toolCall.id}`,
       callId: toolCall.id,
       output: JSON.stringify(payload),
+    };
+  }
+
+  /**
+   * Try to answer a tool call as a CHECK on a running task. Returns null
+   * when the args carry no known taskId (the call starts new work instead).
+   *
+   * A known taskId = a live registry task OR a persisted pendingAsyncTools
+   * entry (deferred / cross-process after a restart). The check runs the
+   * tool's `check.execute` (or the SDK default views) with a TurnContext
+   * populated with `toolCallStatus`, `accumulatedYieldedEvents`, and the
+   * `task` handle.
+   */
+  private async tryAnswerCheckCall(
+    tool: Tool,
+    toolCall: ParsedToolCall<Tool>,
+  ): Promise<{
+    type: 'execution';
+    toolCall: ParsedToolCall<Tool>;
+    tool: Tool;
+    result: {
+      result: unknown;
+      error?: Error;
+    };
+    preliminaryResultsForCall: InferToolEventsUnion<TTools>[];
+  } | null> {
+    const args = toolCall.arguments;
+    if (!isRecord(args) || typeof args['taskId'] !== 'string') {
+      return null;
+    }
+    const taskId = args['taskId'];
+
+    const liveTask = this.asyncToolRegistry?.getTask(taskId);
+    const persisted = this.currentState?.pendingAsyncTools?.find((t) => t.taskId === taskId);
+    if (!liveTask && !persisted) {
+      // Unknown taskId: NOT a check — unless the tool's start schema could
+      // never produce a `taskId` arg, in which case answering with an error
+      // beats starting phantom work. We treat unknown ids as errors: a
+      // model echoing a stale/foreign taskId should hear that, not spawn a
+      // new task with misinterpreted args.
+      return {
+        type: 'execution' as const,
+        toolCall,
+        tool,
+        result: {
+          result: {
+            error: 'unknown_task',
+            taskId,
+            hint: 'No task with this id exists in this conversation. It may belong to another conversation, or its record was dropped.',
+          },
+        },
+        preliminaryResultsForCall: [],
+      };
+    }
+
+    const config = isUnifiedTool(tool) ? tool.function.check : undefined;
+    const { schema, execute } = resolveCheckConfig(config);
+
+    // Validate the check params (taskId stripped — it addressed the task).
+    const { taskId: _ignored, ...checkArgs } = args;
+    let validatedParams: Record<string, unknown>;
+    try {
+      validatedParams = validateToolInput(schema, checkArgs) as Record<string, unknown>;
+    } catch (error) {
+      return {
+        type: 'execution' as const,
+        toolCall,
+        tool,
+        result: {
+          result: null,
+          error: error instanceof Error ? error : new Error(String(error)),
+        },
+        preliminaryResultsForCall: [],
+      };
+    }
+
+    const maxTranscriptChars = this.options.asyncTools?.maxTranscriptChars ?? 20_000;
+
+    let checkResult: unknown;
+    try {
+      if (liveTask) {
+        const handle = this.buildTaskHandle(liveTask, maxTranscriptChars);
+        const checkTurnContext: TurnContext = {
+          numberOfTurns: this.allToolExecutionRounds.length + 1,
+          toolCallStatus: liveTask.status,
+          accumulatedYieldedEvents: liveTask.accumulatedYieldedEvents,
+          task: handle,
+        };
+        checkResult = execute
+          ? await Promise.resolve(execute(validatedParams, checkTurnContext))
+          : defaultCheckResult(validatedParams, checkTurnContext, {
+              maxTranscriptChars,
+            });
+      } else if (persisted) {
+        // Cross-process / post-restart: only persisted status survives. A
+        // custom check.execute still runs, with a state-backed context (no
+        // live task handle).
+        const checkTurnContext: TurnContext = {
+          numberOfTurns: this.allToolExecutionRounds.length + 1,
+          toolCallStatus: persisted.status,
+          accumulatedYieldedEvents: persisted.lastLog
+            ? [
+                persisted.lastLog.text,
+              ]
+            : [],
+        };
+        checkResult = execute
+          ? await Promise.resolve(execute(validatedParams, checkTurnContext))
+          : persistedTaskCheckResult(validatedParams, persisted);
+      }
+    } catch (error) {
+      return {
+        type: 'execution' as const,
+        toolCall,
+        tool,
+        result: {
+          result: null,
+          error: error instanceof Error ? error : new Error(String(error)),
+        },
+        preliminaryResultsForCall: [],
+      };
+    }
+
+    this.broadcastToolResult(
+      toolCall.id,
+      isMcpTool(tool) ? 'mcp' : 'client',
+      checkResult as InferToolOutputsUnion<TTools>,
+    );
+    return {
+      type: 'execution' as const,
+      toolCall,
+      tool,
+      result: {
+        result: checkResult,
+      },
+      preliminaryResultsForCall: [],
+    };
+  }
+
+  /** Build the narrow ToolTaskHandle façade for check.execute handlers. */
+  private buildTaskHandle(task: ToolTask, maxTranscriptChars: number) {
+    const registry = this.asyncToolRegistry;
+    return {
+      taskId: task.taskId,
+      toolName: task.toolName,
+      mode: task.mode,
+      status: () => task.status,
+      statusView: () => task.toStatusView() as Record<string, unknown>,
+      tailLogs: (n: number) => task.tailLogs(n),
+      transcript: (maxChars?: number) => task.renderTranscript(maxChars ?? maxTranscriptChars),
+      send: (message: unknown) => task.send(message),
+      cancel: (reason?: string) => registry?.cancelTask(task.taskId, reason) ?? false,
     };
   }
 
@@ -4015,6 +4326,35 @@ export class ModelResult<
       };
     }
 
+    // Mirror each live task's lastLog onto its persisted pendingAsyncTools
+    // entry (bounded ~200 chars) — the one piece of progress that survives
+    // a restart, surfaced by post-restart check calls. Debounced naturally:
+    // this runs only when state is being saved anyway, never per log entry.
+    if (this.asyncToolRegistry && this.currentState.pendingAsyncTools?.length) {
+      const registry = this.asyncToolRegistry;
+      this.currentState = {
+        ...this.currentState,
+        pendingAsyncTools: this.currentState.pendingAsyncTools.map((entry) => {
+          const live = registry.findByCallId(entry.callId);
+          const lastLog = live?.lastLog;
+          if (!lastLog) {
+            return entry;
+          }
+          const text =
+            typeof lastLog.data === 'string'
+              ? lastLog.data
+              : (JSON.stringify(lastLog.data) ?? String(lastLog.data));
+          return {
+            ...entry,
+            lastLog: {
+              at: lastLog.at,
+              text: text.length > 200 ? `${text.slice(0, 200)}…` : text,
+            },
+          };
+        }),
+      };
+    }
+
     try {
       await this.stateAccessor.save(this.currentState);
     } catch (error) {
@@ -4429,6 +4769,7 @@ export class ModelResult<
         unsentResults.push(
           await this.settleAsyncInvocationAsUnsent(
             toolCall as ParsedToolCall<TTools[number]>,
+            tool,
             result,
           ),
         );
@@ -5729,6 +6070,32 @@ export class ModelResult<
    */
   cancelTask(taskId: string, reason?: string): boolean {
     return this.asyncToolRegistry?.cancelTask(taskId, reason) ?? false;
+  }
+
+  /**
+   * Send a steering message to a running in-process task. Delivered to the
+   * run body's `ctx.onMessage` handler (queued until one registers). Agent
+   * tools (`tool.agent()`) auto-forward messages into the child
+   * conversation as user messages at the child's next turn boundary.
+   *
+   * Throws for deferred tasks — their work runs in an external system;
+   * steer it there.
+   *
+   * @returns true when a working task received (or queued) the message.
+   */
+  sendToTask(taskId: string, message: unknown): boolean {
+    return this.asyncToolRegistry?.sendToTask(taskId, message) ?? false;
+  }
+
+  /**
+   * Queue a user-role message for injection into this run's conversation at
+   * the next safe turn boundary (the same mechanism doom-loop steer
+   * guidance uses — never between a dangling `function_call` and its
+   * output). The primary consumer is `tool.agent()`, which forwards
+   * steering messages into child conversations through this.
+   */
+  queueUserMessage(text: string): void {
+    this.queueDoomLoopSteer(text);
   }
 
   // =========================================================================

@@ -3,29 +3,30 @@ import * as z4 from 'zod/v4';
 import type { $ZodObject, $ZodShape, $ZodType } from 'zod/v4/core';
 import { isContentArray } from './conversation-state.js';
 import { isFunctionCallItem, isFunctionCallOutputItem } from './stream-type-guards.js';
+import { buildToolParametersWithCheck } from './tool-check.js';
 import type { ToolContextStore, ToolExecutionExtras } from './tool-context.js';
-import { buildToolExecuteContext } from './tool-context.js';
+import { buildToolExecuteContext, buildToolRunContext } from './tool-context.js';
 import type {
   APITool,
-  BackgroundToolExecuteContext,
   ClientTool,
-  DeferredStartResult,
+  DeferredHandle,
   HITLTool,
   ParsedToolCall,
   Tool,
   ToolExecuteContext,
   ToolExecutionResult,
   TurnContext,
+  UnifiedTool,
 } from './tool-types.js';
 import {
   hasExecuteFunction,
-  isBackgroundTool,
-  isDeferredTool,
+  isDeferredHandle,
   isGeneratorTool,
   isHITLTool,
   isMcpTool,
   isRegularExecuteTool,
   isServerTool,
+  isUnifiedTool,
 } from './tool-types.js';
 
 // Re-export ZodError for convenience
@@ -110,8 +111,10 @@ export function convertZodToJsonSchema(zodSchema: $ZodType): Record<string, unkn
 /**
  * Convert tools to OpenRouter API format. Server tools pass their SDK-shaped
  * config through untouched; client tools are packaged into the function-call
- * shape. Return type widens to the SDK's full request-tool union so any new
- * server-tool variant added upstream flows through automatically.
+ * shape. Long-running unified tools get an `anyOf: [start, check]` parameter
+ * schema so the model can call the SAME tool with a `taskId` to check on a
+ * running task. Return type widens to the SDK's full request-tool union so
+ * any new server-tool variant added upstream flows through automatically.
  */
 export function convertToolsToAPIFormat(
   tools: readonly Tool[],
@@ -120,12 +123,13 @@ export function convertToolsToAPIFormat(
     if (isServerTool(tool)) {
       return tool.config;
     }
+    const startSchema = convertZodToJsonSchema(tool.function.inputSchema);
     const apiTool: APITool = {
       type: 'function' as const,
       name: tool.function.name,
       description: tool.function.description || null,
       strict: null,
-      parameters: convertZodToJsonSchema(tool.function.inputSchema),
+      parameters: buildToolParametersWithCheck(tool, startSchema, convertZodToJsonSchema),
     };
     return apiTool;
   });
@@ -449,13 +453,71 @@ function resolveAck(
 }
 
 /**
- * Prepare a background tool invocation. Validates the input eagerly (a
- * validation failure returns an error result like every other executor) and
- * returns a `run` thunk that performs the actual work — the engine invokes
- * it under the background concurrency pool.
+ * Drive a unified tool's `run` to completion: detects generator vs promise,
+ * routes yields through eventSchema validation → task log → preliminary
+ * results, validates the final value against `outputSchema` (unless it is a
+ * DeferredHandle), and enforces that only deferred tools may defer.
+ */
+async function runUnifiedTool(args: {
+  fn: UnifiedTool['function'];
+  validatedInput: Record<string, unknown>;
+  runContext: unknown;
+  toolName: string;
+  onYield: (value: unknown) => void;
+}): Promise<unknown | DeferredHandle> {
+  const { fn, validatedInput, runContext, toolName, onYield } = args;
+  const returned = fn.run(
+    validatedInput,
+    runContext as Parameters<UnifiedTool['function']['run']>[1],
+  );
+
+  let result: unknown;
+  if (
+    returned !== null &&
+    typeof returned === 'object' &&
+    Symbol.asyncIterator in (returned as object)
+  ) {
+    // Generator run: yields are logs/events; RETURN is the result. Strict
+    // rule — unlike legacy `execute` generators, a final yield is NOT the
+    // result.
+    const iterator = (returned as AsyncGenerator<unknown, unknown>)[Symbol.asyncIterator]();
+    let step = await iterator.next();
+    while (!step.done) {
+      const event = fn.eventSchema ? validateToolOutput(fn.eventSchema, step.value) : step.value;
+      onYield(event);
+      step = await iterator.next();
+    }
+    result = step.value;
+  } else {
+    result = await Promise.resolve(returned);
+  }
+
+  if (isDeferredHandle(result)) {
+    if (fn.lifecycle !== 'deferred') {
+      throw new Error(
+        `Tool "${toolName}": run() returned a DeferredHandle but lifecycle is '${fn.lifecycle}'. Only lifecycle: 'deferred' tools may defer.`,
+      );
+    }
+    return result;
+  }
+
+  return fn.outputSchema ? validateToolOutput(fn.outputSchema, result) : result;
+}
+
+/**
+ * Prepare a unified tool invocation. Validates input eagerly; builds the
+ * ToolRunContext (defer/log/onMessage/client wired by the engine through
+ * `extras.runExtras`); then per lifecycle:
+ *
+ * - `'sync'`: runs to completion inline — a plain `ToolExecutionResult`,
+ *   zero async overhead, behaviorally identical to `execute`.
+ * - `'background'` (and agent tools): returns a `'background'`
+ *   {@link AsyncToolInvocation} thunk for the engine's grace-window race.
+ * - `'deferred'`: awaits the run — a plain value is the typed fast path; a
+ *   `DeferredHandle` becomes a `'defer'` invocation.
  */
 // biome-ignore lint: parameters match the internal API shape
-function prepareBackgroundInvocation(
+export async function prepareUnifiedInvocation(
   tool: Tool,
   toolCall: ParsedToolCall<Tool>,
   context: TurnContext,
@@ -463,11 +525,12 @@ function prepareBackgroundInvocation(
   contextStore?: ToolContextStore,
   sharedSchema?: $ZodObject<$ZodShape>,
   extras?: ToolExecutionExtras,
-): ToolExecutionResult<Tool> | AsyncToolInvocation {
-  if (!isBackgroundTool(tool)) {
-    throw new Error(`Tool "${toolCall.name}" is not a background tool`);
+): Promise<ToolExecutionResult<Tool> | AsyncToolInvocation> {
+  if (!isUnifiedTool(tool)) {
+    throw new Error(`Tool "${toolCall.name}" is not a unified run() tool`);
   }
   const fn = tool.function;
+  const source = isMcpTool(tool) ? 'mcp' : 'client';
 
   let validatedInput: Record<string, unknown>;
   try {
@@ -479,115 +542,101 @@ function prepareBackgroundInvocation(
     return {
       toolCallId: toolCall.id,
       toolName: toolCall.name,
-      source: isMcpTool(tool) ? 'mcp' : 'client',
+      source,
       result: null,
       error: error instanceof Error ? error : new Error(String(error)),
     };
   }
 
-  const baseContext = buildExecuteCtx(tool, context, contextStore, sharedSchema, extras);
-  // Spreading loses the live `local`/`shared` getters, so attach progress()
-  // to the built context object directly.
-  const executeContext = Object.assign(baseContext, {
-    progress: (event: unknown) => {
-      const validated = fn.eventSchema ? validateToolOutput(fn.eventSchema, event) : event;
-      onPreliminaryResult?.(toolCall.id, validated);
-    },
-  }) as BackgroundToolExecuteContext;
-
-  return {
-    asyncMode: 'background',
-    run: async () => {
-      const result = await fn.execute(validatedInput, executeContext);
-      return validateToolOutput(fn.outputSchema, result);
-    },
-    ...(fn.ack !== undefined && {
-      ack: resolveAck(fn.ack, validatedInput),
-    }),
-    graceMs: fn.graceMs ?? 250,
+  // Yield pipeline: eventSchema validation happened in runUnifiedTool; here
+  // the engine-provided log sink (registry) and preliminary broadcast fire.
+  const onYield = (event: unknown) => {
+    extras?.runExtras?.log?.(event);
+    onPreliminaryResult?.(toolCall.id, event);
   };
-}
 
-/**
- * Execute a deferred tool's `start`. Returns:
- * - a normal `ToolExecutionResult` when `start` took the `{ output }` fast
- *   path (validated against `outputSchema`) or threw;
- * - a `'defer'` {@link AsyncToolInvocation} when it returned `{ taskId }`.
- */
-// biome-ignore lint: parameters match the internal API shape
-export async function executeDeferredStart(
-  tool: Tool,
-  toolCall: ParsedToolCall<Tool>,
-  context: TurnContext,
-  contextStore?: ToolContextStore,
-  sharedSchema?: $ZodObject<$ZodShape>,
-  extras?: ToolExecutionExtras,
-): Promise<ToolExecutionResult<Tool> | AsyncToolInvocation> {
-  if (!isDeferredTool(tool)) {
-    throw new Error(`Tool "${toolCall.name}" is not a deferred tool`);
+  // The run context routes ctx.log through the same pipeline as a yield —
+  // but with eventSchema validation applied here (runUnifiedTool only
+  // validates generator yields).
+  const runExtras = {
+    ...extras?.runExtras,
+    log: (entry: unknown) => {
+      const validated = fn.eventSchema ? validateToolOutput(fn.eventSchema, entry) : entry;
+      onYield(validated);
+    },
+  };
+  const runContext = buildToolRunContext(
+    context,
+    contextStore,
+    tool.function.name,
+    tool.function.contextSchema,
+    sharedSchema,
+    {
+      ...extras,
+      runExtras,
+    },
+  );
+
+  const invokeRun = () =>
+    runUnifiedTool({
+      fn,
+      validatedInput,
+      runContext,
+      toolName: String(toolCall.name),
+      onYield,
+    });
+
+  if (fn.lifecycle === 'background') {
+    return {
+      asyncMode: 'background',
+      run: async () => {
+        const result = await invokeRun();
+        if (isDeferredHandle(result)) {
+          // Unreachable (runUnifiedTool throws for non-deferred), but keep
+          // the invariant explicit for the engine's benefit.
+          throw new Error(`Tool "${toolCall.name}": background run cannot defer`);
+        }
+        return result;
+      },
+      ...(fn.ack !== undefined && {
+        ack: resolveAck(fn.ack, validatedInput),
+      }),
+      graceMs: fn.graceMs ?? 250,
+    };
   }
-  const fn = tool.function;
-  const source = isMcpTool(tool) ? 'mcp' : 'client';
 
+  // sync + deferred both await the run in-round.
   try {
-    const validatedInput = validateToolInput(fn.inputSchema, toolCall.arguments) as Record<
-      string,
-      unknown
-    >;
-    const executeContext = buildExecuteCtx(tool, context, contextStore, sharedSchema, extras);
+    const result = await invokeRun();
 
-    const started: DeferredStartResult<unknown> = await Promise.resolve(
-      fn.start(validatedInput, executeContext),
-    );
-
-    if (
-      started &&
-      typeof started === 'object' &&
-      'output' in started &&
-      !('taskId' in started && started.taskId !== undefined)
-    ) {
-      // Fast path: resolved synchronously.
-      const validatedOutput = validateToolOutput(fn.outputSchema, started.output);
+    if (isDeferredHandle(result)) {
+      if (result.taskId.length === 0 || result.taskId.length > 256) {
+        throw new Error(`Tool "${toolCall.name}": ctx.defer() taskId must be 1-256 characters`);
+      }
       return {
-        toolCallId: toolCall.id,
-        toolName: toolCall.name,
-        source,
-        result: validatedOutput,
+        asyncMode: 'defer',
+        taskId: result.taskId,
+        ...(result.ack !== undefined
+          ? {
+              ack: result.ack,
+            }
+          : fn.ack !== undefined && {
+              ack: resolveAck(fn.ack, validatedInput),
+            }),
+        ...((result.pollAfterMs ?? fn.pollAfterMs) !== undefined && {
+          pollAfterMs: result.pollAfterMs ?? fn.pollAfterMs,
+        }),
+        ...(result.expiresAt !== undefined && {
+          expiresAt: result.expiresAt,
+        }),
       };
     }
 
-    if (
-      !started ||
-      typeof started !== 'object' ||
-      typeof started.taskId !== 'string' ||
-      started.taskId.length === 0
-    ) {
-      throw new Error(
-        `Deferred tool "${toolCall.name}" start() must return { taskId } or { output }`,
-      );
-    }
-    if (started.taskId.length > 256) {
-      throw new Error(
-        `Deferred tool "${toolCall.name}" returned a taskId longer than 256 characters`,
-      );
-    }
-
     return {
-      asyncMode: 'defer',
-      taskId: started.taskId,
-      ...(started.ack !== undefined && {
-        ack: started.ack,
-      }),
-      ...((started.pollAfterMs ?? fn.pollAfterMs) !== undefined && {
-        pollAfterMs: started.pollAfterMs ?? fn.pollAfterMs,
-      }),
-      ...(started.expiresAt !== undefined && {
-        expiresAt: started.expiresAt,
-      }),
-      ...(started.ack === undefined &&
-        fn.ack !== undefined && {
-          ack: resolveAck(fn.ack, validatedInput),
-        }),
+      toolCallId: toolCall.id,
+      toolName: toolCall.name,
+      source,
+      result,
     };
   } catch (error) {
     return {
@@ -602,12 +651,12 @@ export async function executeDeferredStart(
 
 /**
  * Execute a tool call.
- * Automatically detects if it's a regular, generator, HITL, background, or
- * deferred tool.
+ * Automatically detects if it's a regular, generator, HITL, or unified
+ * `run` tool.
  *
  * Returns `null` only for HITL tools whose `onToolCalled` returned `null`
- * (signaling a manual-style pause). Background and deferred tools may return
- * an {@link AsyncToolInvocation}. All other tools always return a
+ * (signaling a manual-style pause). Unified background/deferred tools may
+ * return an {@link AsyncToolInvocation}. All other tools always return a
  * `ToolExecutionResult` (with `error` set on failure).
  */
 // biome-ignore lint: parameters match the internal API shape
@@ -624,8 +673,8 @@ export async function executeTool(
     return executeHITLTool(tool, toolCall, context, contextStore, sharedSchema, extras);
   }
 
-  if (isBackgroundTool(tool)) {
-    return prepareBackgroundInvocation(
+  if (isUnifiedTool(tool)) {
+    return prepareUnifiedInvocation(
       tool,
       toolCall,
       context,
@@ -634,10 +683,6 @@ export async function executeTool(
       sharedSchema,
       extras,
     );
-  }
-
-  if (isDeferredTool(tool)) {
-    return executeDeferredStart(tool, toolCall, context, contextStore, sharedSchema, extras);
   }
 
   if (!hasExecuteFunction(tool)) {

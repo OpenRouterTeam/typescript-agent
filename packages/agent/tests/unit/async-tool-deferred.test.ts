@@ -94,8 +94,9 @@ function createMemoryAccessor(): {
   };
 }
 
-const legalReview = tool.deferred({
+const legalReview = tool({
   name: 'request_legal_review',
+  lifecycle: 'deferred',
   inputSchema: z.object({
     contractId: z.string(),
   }),
@@ -104,17 +105,16 @@ const legalReview = tool.deferred({
     notes: z.string().optional(),
   }),
   ack: 'Legal review requested.',
-  start: async ({ contractId }) => {
+  run: async ({ contractId }, ctx) => {
     if (contractId === 'trivial') {
       return {
-        output: {
-          approved: true,
-        },
+        approved: true,
       };
     }
-    return {
-      taskId: `ticket_${contractId}`,
-    };
+    if (!ctx) {
+      throw new Error('run context missing');
+    }
+    return ctx.defer(`ticket_${contractId}`);
   },
 });
 
@@ -123,7 +123,7 @@ describe('tool.deferred — pause & placeholder', () => {
     mockBetaResponsesSend.mockReset();
   });
 
-  it('start returning {taskId} emits a placeholder, pauses with awaiting_async_tools, no follow-up request', async () => {
+  it('run returning ctx.defer() emits a placeholder, pauses with awaiting_async_tools, no follow-up request', async () => {
     mockBetaResponsesSend.mockResolvedValueOnce({
       ok: true,
       value: makeResponse('resp_1', [
@@ -169,12 +169,14 @@ describe('tool.deferred — pause & placeholder', () => {
     expect(placeholder?.output).toContain('"status":"pending"');
     expect(placeholder?.output).toContain('ticket_c-9');
     expect(placeholder?.output).toContain('Legal review requested.');
-    expect(placeholder?.output).toContain('do not call this tool again');
+    // Check-ins are on by default: the note tells the model HOW to check.
+    expect(placeholder?.output).toContain('To check progress');
+    expect(placeholder?.output).toContain('request_legal_review');
 
     expect(await result.requiresApproval()).toBe(true);
   });
 
-  it('start returning {output} resolves synchronously like a regular tool', async () => {
+  it('run returning a plain value resolves synchronously like a regular tool', async () => {
     mockBetaResponsesSend
       .mockResolvedValueOnce({
         ok: true,
@@ -220,14 +222,15 @@ describe('tool.deferred — pause & placeholder', () => {
     expect(state.pendingAsyncTools ?? []).toHaveLength(0);
   });
 
-  it('start throwing yields an error output; the loop continues', async () => {
-    const failing = tool.deferred({
+  it('run throwing yields an error output; the loop continues', async () => {
+    const failing = tool({
       name: 'failing_start',
+      lifecycle: 'deferred',
       inputSchema: z.object({}),
       outputSchema: z.object({
         ok: z.boolean(),
       }),
-      start: async () => {
+      run: async () => {
         throw new Error('external system down');
       },
     });

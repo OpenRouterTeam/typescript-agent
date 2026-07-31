@@ -90,8 +90,9 @@ function makeControlledBackgroundTool(
   }>((resolve) => {
     release = resolve;
   });
-  const built = tool.background({
+  const built = tool({
     name,
+    lifecycle: 'background',
     inputSchema: z.object({
       script: z.string(),
     }),
@@ -100,7 +101,7 @@ function makeControlledBackgroundTool(
     }),
     ack: 'Rendering started.',
     graceMs: options?.graceMs ?? 0,
-    execute: async () => gate,
+    run: async () => gate,
   });
   return {
     tool: built,
@@ -114,8 +115,9 @@ describe('tool.background — placeholder & delivery', () => {
   });
 
   it('work settling within graceMs behaves as a plain sync tool (no placeholder, no async events)', async () => {
-    const fast = tool.background({
+    const fast = tool({
       name: 'fast_render',
+      lifecycle: 'background',
       inputSchema: z.object({
         script: z.string(),
       }),
@@ -123,7 +125,7 @@ describe('tool.background — placeholder & delivery', () => {
         url: z.string(),
       }),
       graceMs: 1_000,
-      execute: async () => ({
+      run: async () => ({
         url: 'https://cdn/video.mp4',
       }),
     });
@@ -329,14 +331,15 @@ describe('tool.background — placeholder & delivery', () => {
   });
 
   it('a failing background task delivers an error envelope (the run does not fail)', async () => {
-    const failing = tool.background({
+    const failing = tool({
       name: 'flaky_render',
+      lifecycle: 'background',
       inputSchema: z.object({}),
       outputSchema: z.object({
         url: z.string(),
       }),
       graceMs: 0,
-      execute: async () => {
+      run: async () => {
         await new Promise((resolve) => setTimeout(resolve, 10));
         throw new Error('render farm exploded');
       },
@@ -428,14 +431,15 @@ describe('tool.background — placeholder & delivery', () => {
 
   it("onRunEnd: 'cancel' aborts in-flight background work", async () => {
     let sawAbort = false;
-    const cancellable = tool.background({
+    const cancellable = tool({
       name: 'cancellable',
+      lifecycle: 'background',
       inputSchema: z.object({}),
       outputSchema: z.object({
         ok: z.boolean(),
       }),
       graceMs: 0,
-      execute: async (_params, ctx) => {
+      run: async (_params, ctx) => {
         await new Promise<void>((resolve) => {
           ctx?.signal.addEventListener('abort', () => {
             sawAbort = true;
@@ -537,9 +541,10 @@ describe('tool.background — placeholder & delivery', () => {
     expect(envelope?.content).toContain('user changed their mind');
   });
 
-  it('ctx.progress() surfaces as tool.preliminary_result events', async () => {
-    const progressing = tool.background({
+  it('generator run yields surface as tool.preliminary_result events', async () => {
+    const progressing = tool({
       name: 'progressing',
+      lifecycle: 'background',
       inputSchema: z.object({}),
       eventSchema: z.object({
         pct: z.number(),
@@ -548,13 +553,13 @@ describe('tool.background — placeholder & delivery', () => {
         ok: z.boolean(),
       }),
       graceMs: 1_000, // settles in-window; progress still streams
-      execute: async (_params, ctx) => {
-        ctx?.progress({
+      run: async function* () {
+        yield {
           pct: 50,
-        });
-        ctx?.progress({
+        };
+        yield {
           pct: 100,
-        });
+        };
         return {
           ok: true,
         };

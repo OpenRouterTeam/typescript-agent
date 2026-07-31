@@ -2,12 +2,41 @@ import type * as models from '@openrouter/sdk/models';
 import type { StreamEvents } from '@openrouter/sdk/models';
 import type { $ZodObject, $ZodShape, $ZodType, infer as zodInfer } from 'zod/v4/core';
 import type { DoomLoopSerializedState } from './doom-loop.js';
+import type { TaskLogLimits, ToolTaskMode } from './tool-task.js';
 
 /**
  * Tool type enum for enhanced tools
  */
 export enum ToolType {
   Function = 'function',
+}
+
+/**
+ * Narrow façade over a running task, handed to check-in `execute` handlers
+ * via `turnContext.task`. Lets a custom check read progress, steer, or
+ * cancel without exposing the full registry.
+ */
+export interface ToolTaskHandle {
+  readonly taskId: string;
+  readonly toolName: string;
+  readonly mode: ToolTaskMode;
+  /** Current lifecycle status. */
+  status(): ToolTaskStatus;
+  /** The `status` check-view summary. */
+  statusView(): Record<string, unknown>;
+  /** Last `n` log entries (oldest first). */
+  tailLogs(n: number): Array<{
+    seq: number;
+    at: number;
+    data: unknown;
+    kind: string;
+  }>;
+  /** Rendered transcript, truncated to `maxChars` keeping the tail. */
+  transcript(maxChars?: number): string;
+  /** Queue a steering message for the run body (`ctx.onMessage`). */
+  send(message: unknown): void;
+  /** Cancel the task. Returns true when a working task was cancelled. */
+  cancel(reason?: string): boolean;
 }
 
 /**
@@ -21,6 +50,21 @@ export interface TurnContext {
   numberOfTurns: number;
   /** The full request being sent to the API (only available during tool execution) */
   turnRequest?: models.ResponsesRequest;
+  /**
+   * CHECK CALLS ONLY: lifecycle status of the task the model is checking on.
+   * Absent on every other path.
+   */
+  toolCallStatus?: ToolTaskStatus;
+  /**
+   * CHECK CALLS ONLY: the data of every retained yield/log from the task's
+   * `run` so far, oldest first. Absent on every other path.
+   */
+  accumulatedYieldedEvents?: unknown[];
+  /**
+   * CHECK CALLS ONLY: façade over the task being checked (read progress,
+   * steer via `send`, cancel). Absent on every other path.
+   */
+  task?: ToolTaskHandle;
 }
 
 //#region Context Types
@@ -118,20 +162,79 @@ export type ToolExecuteContext<
   readonly conversationId?: string;
 };
 
+declare const DEFERRED_BRAND: unique symbol;
+
 /**
- * Execute context for background tools (`tool.background`). Adds
- * `progress()` for emitting preliminary events while the work runs —
- * events surface as `tool.preliminary_result` on the streams, exactly
- * like generator-tool yields.
+ * Returned by `ctx.defer()`. Returning it from `run` parks the call on a
+ * durable external task: the model gets a pending placeholder and the run
+ * pauses (`status: 'awaiting_async_tools'`) until the task is resolved via
+ * the tool's `.resolve()` / `.fail()` / `.cancel()` methods or
+ * `resumeToolResults()` — possibly from another process.
+ *
+ * Branded with TOutput so a handle from one tool cannot be returned from
+ * another whose outputSchema differs.
  */
-export type BackgroundToolExecuteContext<
+export interface DeferredHandle<TOutput = unknown> {
+  readonly [DEFERRED_BRAND]: TOutput;
+  readonly taskId: string;
+  readonly pollAfterMs?: number;
+  readonly expiresAt?: number;
+  readonly ack?: string | Record<string, unknown>;
+}
+
+/** Runtime guard for {@link DeferredHandle} (structural — brand is type-only). */
+export function isDeferredHandle(value: unknown): value is DeferredHandle {
+  if (typeof value !== 'object' || value === null) {
+    return false;
+  }
+  const candidate = value as {
+    __deferred?: unknown;
+    taskId?: unknown;
+  };
+  return candidate.__deferred === true && typeof candidate.taskId === 'string';
+}
+
+/** Options for `ctx.defer()`. */
+export type DeferOptions = {
+  /** Poll-interval hint surfaced in the placeholder and to external pollers. */
+  pollAfterMs?: number;
+  /** Unix ms after which the task is considered expired. */
+  expiresAt?: number;
+  /** Model-facing note merged into the placeholder (overrides the tool-level `ack`). */
+  ack?: string | Record<string, unknown>;
+};
+
+/**
+ * Context passed to a unified tool's `run`. Extends the base execute
+ * context with the async-task affordances: deferral, logging, and the
+ * steering inbox.
+ */
+export type ToolRunContext<
   TName extends string = string,
   TContext extends Record<string, unknown> = Record<string, unknown>,
-  TEvent = unknown,
+  TOutput = unknown,
   TShared extends Record<string, unknown> = Record<string, unknown>,
 > = ToolExecuteContext<TName, TContext, TShared> & {
-  /** Emit a progress event (validated against `eventSchema` when declared). */
-  progress(event: TEvent): void;
+  /**
+   * Park this call on a durable external task and return the handle:
+   * `return ctx.defer(ticket.id)`. Only valid on `lifecycle: 'deferred'`
+   * tools — throws elsewhere.
+   */
+  defer(taskId: string, options?: DeferOptions): DeferredHandle<TOutput>;
+  /**
+   * Append a log entry without yielding — progress for non-generator `run`
+   * bodies. Same pipeline as a yield: validated against `eventSchema` when
+   * declared, appended to the task log, surfaced as `tool.preliminary_result`.
+   */
+  log(entry: unknown): void;
+  /**
+   * Register a steering handler. Messages sent via a check call's
+   * `turnContext.task.send(...)` or `ModelResult.sendToTask()` are delivered
+   * here (queued until registration).
+   */
+  onMessage(handler: (message: unknown) => void): void;
+  /** The task's id (background/agent: engine-generated, present once escaped). */
+  readonly taskId?: string;
 };
 
 /**
@@ -363,12 +466,12 @@ export interface ToolFunctionWithExecute<
   outputSchema?: TOutput;
   /**
    * Absent on regular tools. Declared as `undefined`-only so
-   * `BackgroundToolFunction` (which sets `background: true`) is structurally
-   * DISJOINT from this interface — type-guard narrowing must not keep
-   * background tools in the regular-execute union (their execute expects a
-   * `BackgroundToolExecuteContext`).
+   * `UnifiedToolFunction` (which requires `run` and `lifecycle`) is
+   * structurally DISJOINT from this interface — type-guard narrowing must
+   * not keep unified tools in the regular-execute union.
    */
-  readonly background?: undefined;
+  readonly run?: undefined;
+  readonly lifecycle?: undefined;
   // Method syntax (not property syntax) is deliberate: methods are checked
   // bivariantly, so tools carrying concrete TInput/TContext types remain
   // assignable to the wide `Tool` union despite contravariant params.
@@ -483,16 +586,56 @@ export type AsyncToolAck<TInput> =
       bivarianceHack(input: TInput): string | Record<string, unknown>;
     }['bivarianceHack'];
 
+/** How a unified tool's execution relates to the tool round. */
+export type ToolLifecycle = 'sync' | 'background' | 'deferred';
+
 /**
- * Background tool (`tool.background`): an ordinary async `execute` whose
- * result may arrive after the tool round has closed. When `execute` settles
- * within the grace window (`graceMs`) the call behaves exactly like a
- * regular tool; otherwise the model immediately receives a pending
- * placeholder output (satisfying the function_call/function_call_output
- * pairing providers require) and the real result is injected into the
- * conversation as a `tool_task_result` envelope at a later turn boundary.
+ * Check-in configuration for a long-running tool. The model checks on a
+ * running task by calling THE SAME TOOL with a `taskId` argument; the engine
+ * routes such calls here instead of starting new work.
+ *
+ * - `true` — explicit opt-in to the SDK default check (long-running tools
+ *   get it even without this).
+ * - `schema` — extra check parameters the model may pass alongside `taskId`
+ *   (e.g. a `steer` string). Defaults to
+ *   `{ view?: 'status'|'logs'|'transcript', tail?: number }`.
+ * - `execute` — custom check handler. Receives the validated check params
+ *   and a TurnContext populated with `toolCallStatus`,
+ *   `accumulatedYieldedEvents`, and the `task` handle. Its return value is
+ *   the tool output the model sees. When absent, the SDK default answers
+ *   with status / logs / transcript views.
  */
-export interface BackgroundToolFunction<
+export type ToolCheckConfig<TCheckParams = Record<string, unknown>> =
+  | true
+  | {
+      schema?: $ZodObject<$ZodShape>;
+      // Method syntax for bivariant param checking — see ToolFunctionWithExecute.
+      execute?: {
+        bivarianceHack(params: TCheckParams, turnContext: TurnContext): unknown | Promise<unknown>;
+      }['bivarianceHack'];
+    };
+
+/**
+ * The unified `run`-based tool kind. One shape covers every lifecycle:
+ *
+ * - `'sync'` (default): `run` is awaited in the round, exactly like `execute`.
+ * - `'background'`: the loop does not wait. Work settling within `graceMs`
+ *   behaves like a sync call; otherwise the model receives a pending
+ *   placeholder, the loop continues, and the return value is injected as a
+ *   `tool_task_result` envelope when it settles.
+ * - `'deferred'`: `run` may return `ctx.defer(taskId)` to park the call on a
+ *   durable external task — the run pauses (`awaiting_async_tools`) until
+ *   the task is resolved via `.resolve()`/`.fail()`/`.cancel()` or
+ *   `resumeToolResults()`, possibly from another process. Returning a plain
+ *   value resolves immediately (typed fast path).
+ *
+ * `run` is an async function or an async generator. Generator yields become
+ * the task's LOG entries (feeding check-in views and
+ * `tool.preliminary_result` events); the generator's RETURN value is the
+ * final result, validated against `outputSchema`. (This is stricter than
+ * legacy `execute` generators, which accept a final yield as the result.)
+ */
+export interface UnifiedToolFunction<
   TInput extends $ZodObject<$ZodShape>,
   TOutput extends $ZodType = $ZodType<unknown>,
   TEvent extends $ZodType = $ZodType<unknown>,
@@ -500,90 +643,45 @@ export interface BackgroundToolFunction<
   TName extends string = string,
   TCtx extends $ZodObject<$ZodShape> = $ZodObject<$ZodShape>,
 > extends BaseToolFunction<TInput, TCtx> {
-  /** Discriminator: marks this tool as a background tool. */
-  readonly background: true;
+  /** Discriminator against every legacy kind. */
+  readonly lifecycle: ToolLifecycle;
   /**
-   * Required: the final result is validated whenever it settles — possibly
-   * long after the round that started it.
+   * Required for 'background' | 'deferred' (results settle after the round,
+   * possibly in another process). Optional for 'sync' (inferred from run).
    */
-  outputSchema: TOutput;
-  /** Optional schema for `ctx.progress()` events. */
+  outputSchema?: TOutput;
+  /** Validates `run` yields / `ctx.log()` entries when declared. */
   eventSchema?: TEvent;
   /** Model-facing acknowledgement merged into the pending placeholder. */
   ack?: AsyncToolAck<zodInfer<TInput>>;
   /**
-   * Hold the round this long (ms) before emitting a placeholder. Work that
-   * settles in-window produces a plain synchronous output — no async
-   * machinery is ever visible. Default 250. `0` always placeholders
-   * (deterministic model-visible history).
+   * Background only: hold the round this long (ms) before emitting a
+   * placeholder. Work settling in-window produces a plain synchronous
+   * output. Default 250; `0` always placeholders.
    */
   graceMs?: number;
-  // Method syntax for bivariant param checking — see ToolFunctionWithExecute.
-  execute(
-    params: zodInfer<TInput>,
-    context?: BackgroundToolExecuteContext<TName, TContext, zodInfer<TEvent>>,
-  ): Promise<zodInfer<TOutput>>;
-  /** Convert tool execution output to model-facing output */
-  toModelOutput?: ToModelOutputFunction<zodInfer<TInput>, zodInfer<TOutput>>;
-}
-
-/**
- * Return shape of a deferred tool's `start`: either a durable task handle
- * (`{ taskId }` — the run pauses until the task is resolved via the tool's
- * `.resolve()` / `.fail()` / `.cancel()` methods, possibly from another
- * process) or an immediate `{ output }` (the fast path — behaves exactly
- * like a regular tool result, validated against `outputSchema`).
- */
-export type DeferredStartResult<TOutput> =
-  | {
-      /** Durable external task id. The run pauses awaiting its resolution. */
-      taskId: string;
-      output?: never;
-      /** Model-facing acknowledgement merged into the pending placeholder. */
-      ack?: string | Record<string, unknown>;
-      /** Hint for external pollers, surfaced in the placeholder. */
-      pollAfterMs?: number;
-      /** Unix ms after which the task is considered expired. */
-      expiresAt?: number;
-    }
-  | {
-      /** Immediate result — no pause, validated against `outputSchema`. */
-      output: TOutput;
-      taskId?: never;
-    };
-
-/**
- * Deferred tool (`tool.deferred`): `start` kicks off external work (a
- * webhook-backed job, a human review, a batch pipeline) and returns a plain
- * `{ taskId }`. The model immediately receives a pending placeholder output
- * and the run pauses durably (`status: 'awaiting_async_tools'`). The result
- * is supplied later — typically from a different process — via the built
- * tool's typed `.resolve()` / `.fail()` / `.cancel()` methods (or the
- * low-level `resumeToolResults()`).
- */
-export interface DeferredToolFunction<
-  TInput extends $ZodObject<$ZodShape>,
-  TOutput extends $ZodType = $ZodType<unknown>,
-  TContext extends Record<string, unknown> = Record<string, unknown>,
-  TName extends string = string,
-  TCtx extends $ZodObject<$ZodShape> = $ZodObject<$ZodShape>,
-> extends BaseToolFunction<TInput, TCtx> {
-  /**
-   * Required: validates the `{ output }` fast path at start time and the
-   * caller-supplied result at `.resolve()` time — in both type and runtime.
-   */
-  outputSchema: TOutput;
-  /** Model-facing acknowledgement merged into the pending placeholder. */
-  ack?: AsyncToolAck<zodInfer<TInput>>;
-  /** Default poll-interval hint for tasks started by this tool. */
+  /** Deferred only: default poll-interval hint for tasks from this tool. */
   pollAfterMs?: number;
+  /** Check-in configuration — see {@link ToolCheckConfig}. */
+  check?: ToolCheckConfig;
+  /** Set by `tool.agent()`: marks the run as a child-conversation driver. */
+  readonly kind?: 'agent';
+  /** Per-task log ring-buffer overrides. */
+  logLimits?: Partial<TaskLogLimits>;
   // Method syntax for bivariant param checking — see ToolFunctionWithExecute.
-  start(
+  run(
     params: zodInfer<TInput>,
-    context?: ToolExecuteContext<TName, TContext>,
-  ): Promise<DeferredStartResult<zodInfer<TOutput>>> | DeferredStartResult<zodInfer<TOutput>>;
+    context?: ToolRunContext<TName, TContext, zodInfer<TOutput>>,
+  ):
+    | Promise<zodInfer<TOutput> | DeferredHandle<zodInfer<TOutput>>>
+    | zodInfer<TOutput>
+    | DeferredHandle<zodInfer<TOutput>>
+    | AsyncGenerator<zodInfer<TEvent>, zodInfer<TOutput> | DeferredHandle<zodInfer<TOutput>>>;
   /** Convert tool execution output to model-facing output */
   toModelOutput?: ToModelOutputFunction<zodInfer<TInput>, zodInfer<TOutput>>;
+  /** Absent on unified tools — keeps them disjoint from legacy kinds. */
+  readonly execute?: undefined;
+  readonly onToolCalled?: undefined;
 }
 
 /**
@@ -643,10 +741,10 @@ export type HITLTool<
 };
 
 /**
- * Background tool wrapper (`tool.background`)
+ * Unified tool wrapper (`tool()` with `run`)
  * @template TCtx - The concrete contextSchema type when one was provided
  */
-export type BackgroundTool<
+export type UnifiedTool<
   TInput extends $ZodObject<$ZodShape> = $ZodObject<$ZodShape>,
   TOutput extends $ZodType = $ZodType<unknown>,
   TEvent extends $ZodType = $ZodType<unknown>,
@@ -654,35 +752,20 @@ export type BackgroundTool<
   TCtx extends $ZodObject<$ZodShape> = $ZodObject<$ZodShape>,
 > = {
   type: ToolType.Function;
-  function: BackgroundToolFunction<TInput, TOutput, TEvent, TContext, string, TCtx>;
-};
-
-/**
- * Deferred tool wrapper (`tool.deferred`)
- * @template TCtx - The concrete contextSchema type when one was provided
- */
-export type DeferredTool<
-  TInput extends $ZodObject<$ZodShape> = $ZodObject<$ZodShape>,
-  TOutput extends $ZodType = $ZodType<unknown>,
-  TContext extends Record<string, unknown> = Record<string, unknown>,
-  TCtx extends $ZodObject<$ZodShape> = $ZodObject<$ZodShape>,
-> = {
-  type: ToolType.Function;
-  function: DeferredToolFunction<TInput, TOutput, TContext, string, TCtx>;
+  function: UnifiedToolFunction<TInput, TOutput, TEvent, TContext, string, TCtx>;
 };
 
 /**
  * Union type of all client-executed tool shapes (function, generator, manual,
- * HITL, background, deferred). These run in the user's process via the agent
- * SDK's tool execution loop.
+ * HITL, unified `run`). These run in the user's process via the agent SDK's
+ * tool execution loop.
  */
 export type ClientTool =
   | ToolWithExecute<$ZodObject<$ZodShape>, $ZodType<unknown>>
   | ToolWithGenerator<$ZodObject<$ZodShape>, $ZodType<unknown>, $ZodType<unknown>>
   | ManualTool<$ZodObject<$ZodShape>, $ZodType<unknown>>
   | HITLTool<$ZodObject<$ZodShape>, $ZodType<unknown>>
-  | BackgroundTool<$ZodObject<$ZodShape>, $ZodType<unknown>, $ZodType<unknown>>
-  | DeferredTool<$ZodObject<$ZodShape>, $ZodType<unknown>>;
+  | UnifiedTool<$ZodObject<$ZodShape>, $ZodType<unknown>, $ZodType<unknown>>;
 
 /**
  * Config payload for an OpenRouter server-executed tool. Derived directly
@@ -912,33 +995,39 @@ export function isClientTool(tool: Tool): tool is ClientTool {
 }
 
 /**
- * Type guard to check if a tool is a background tool (`tool.background`)
+ * Type guard to check if a tool is a unified `run`-based tool
  */
-export function isBackgroundTool(tool: Tool): tool is BackgroundTool {
+export function isUnifiedTool(tool: Tool): tool is UnifiedTool {
   if (isServerTool(tool)) {
     return false;
   }
-  return 'background' in tool.function && tool.function.background === true;
+  return 'run' in tool.function && typeof tool.function.run === 'function';
 }
 
 /**
- * Type guard to check if a tool is a deferred tool (`tool.deferred`)
+ * True when the tool can outlive its round: a unified tool with a
+ * non-'sync' lifecycle. Drives check-schema generation and placeholder
+ * wording.
  */
-export function isDeferredTool(tool: Tool): tool is DeferredTool {
-  if (isServerTool(tool)) {
-    return false;
-  }
-  return 'start' in tool.function && typeof tool.function.start === 'function';
+export function isLongRunningTool(tool: Tool): boolean {
+  return isUnifiedTool(tool) && tool.function.lifecycle !== 'sync';
+}
+
+/**
+ * True when the tool is an agent tool (`tool.agent()`): a unified tool
+ * whose run drives a child conversation.
+ */
+export function isAgentTool(tool: Tool): boolean {
+  return isUnifiedTool(tool) && tool.function.kind === 'agent';
 }
 
 /**
  * Type guard to check if a tool has an execute function (regular or
- * generator). Background tools also carry `execute` but are excluded here —
- * their two-phase semantics need the dedicated {@link isBackgroundTool}
- * dispatch, and this guard's type predicate would misclassify them.
+ * generator). Unified `run` tools are excluded — they have their own
+ * dispatch and this guard's predicate would misclassify them.
  */
 export function hasExecuteFunction(tool: Tool): tool is ToolWithExecute | ToolWithGenerator {
-  if (isServerTool(tool) || isBackgroundTool(tool)) {
+  if (isServerTool(tool) || isUnifiedTool(tool)) {
     return false;
   }
   return 'execute' in tool.function && typeof tool.function.execute === 'function';
@@ -946,11 +1035,11 @@ export function hasExecuteFunction(tool: Tool): tool is ToolWithExecute | ToolWi
 
 /**
  * Type guard to check if a tool uses a generator (has eventSchema).
- * Background tools may declare an `eventSchema` for progress events but are
- * not generator tools.
+ * Unified tools may declare an `eventSchema` for run yields but are not
+ * legacy generator tools.
  */
 export function isGeneratorTool(tool: Tool): tool is ToolWithGenerator {
-  if (isServerTool(tool) || isBackgroundTool(tool)) {
+  if (isServerTool(tool) || isUnifiedTool(tool)) {
     return false;
   }
   return 'eventSchema' in tool.function;
@@ -964,16 +1053,14 @@ export function isRegularExecuteTool(tool: Tool): tool is ToolWithExecute {
 }
 
 /**
- * Type guard to check if a tool is a manual tool (no execute, no onToolCalled, no start)
+ * Type guard to check if a tool is a manual tool (no execute, no onToolCalled, no run)
  */
 export function isManualTool(tool: Tool): tool is ManualTool {
   if (isServerTool(tool)) {
     return false;
   }
   return (
-    !('execute' in tool.function) &&
-    !('onToolCalled' in tool.function) &&
-    !('start' in tool.function)
+    !('execute' in tool.function) && !('onToolCalled' in tool.function) && !('run' in tool.function)
   );
 }
 
@@ -989,16 +1076,14 @@ export function isHITLTool(tool: Tool): tool is HITLTool {
 
 /**
  * Type guard: true if the tool can be auto-resolved within a turn — through a
- * client execute/generator function, a HITL onToolCalled hook, a background
- * execute, or a deferred start (which always produces at least a placeholder
- * output). Returns false for manual tools (which always pause) and server tools.
+ * client execute/generator function, a HITL onToolCalled hook, or a unified
+ * `run` (which always produces at least a placeholder output). Returns false
+ * for manual tools (which always pause) and server tools.
  */
 export function isAutoResolvableTool(
   tool: Tool,
-): tool is ToolWithExecute | ToolWithGenerator | HITLTool | BackgroundTool | DeferredTool {
-  return (
-    hasExecuteFunction(tool) || isHITLTool(tool) || isBackgroundTool(tool) || isDeferredTool(tool)
-  );
+): tool is ToolWithExecute | ToolWithGenerator | HITLTool | UnifiedTool {
+  return hasExecuteFunction(tool) || isHITLTool(tool) || isUnifiedTool(tool);
 }
 
 /**
@@ -1213,7 +1298,7 @@ export type ToolAsyncStartedEvent = {
   toolCallId: string;
   toolName: string;
   taskId: string;
-  mode: 'background' | 'defer';
+  mode: ToolTaskMode;
   /** The model-facing acknowledgement carried in the placeholder, if any. */
   ack?: unknown;
   timestamp: number;
@@ -1454,12 +1539,12 @@ export type ToolTaskStatus = 'working' | 'input_required' | 'completed' | 'faile
 export interface PendingAsyncTool {
   /** The originating `function_call`'s call id. */
   callId: string;
-  /** Durable task id (deferred: caller-supplied; background: generated). */
+  /** Durable task id (deferred: caller-supplied; background/agent: generated). */
   taskId: string;
   /** The tool's name. */
   name: string;
-  /** How the task escapes the round: in-process promise vs external resume. */
-  mode: 'background' | 'defer';
+  /** How the task escapes the round. */
+  mode: ToolTaskMode;
   /** Current lifecycle status (MCP-Tasks-compatible vocabulary). */
   status: ToolTaskStatus;
   /** Unix ms when the task started. */
@@ -1473,6 +1558,15 @@ export interface PendingAsyncTool {
    * `onRunEnd: 'detach'` — its result will never be delivered.
    */
   orphaned?: boolean;
+  /**
+   * The most recent log entry, truncated (~200 chars) — the one piece of
+   * progress that survives a process restart. Additive within
+   * ConversationState version 1.
+   */
+  lastLog?: {
+    at: number;
+    text: string;
+  };
 }
 
 /**

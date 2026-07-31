@@ -114,7 +114,7 @@ What each stream emits:
 
 ### Tool Types
 
-The `tool()` factory creates type-safe tools with full Zod schema inference. In addition to the three base kinds below, `tool.background()` and `tool.deferred()` create [async tools](#async-tools) whose results arrive after the tool round.
+The `tool()` factory creates type-safe tools with full Zod schema inference. In addition to the legacy kinds below, the unified `run` interface with `lifecycle: 'sync' | 'background' | 'deferred'` covers [async tools](#async-tools) whose results arrive after the tool round, and `tool.agent()` creates [subagent tools](#agent-tools-subagents).
 
 **Regular tools** — automatically executed by the agent loop:
 
@@ -414,60 +414,115 @@ block to observe for a known-chatty tool, or escalate straight to stop.
 
 ### Async Tools
 
-Two builders cover tools whose results don't arrive within the tool round. Write an ordinary tool body and return plain values — the SDK handles the pending placeholder, the pairing rules providers enforce, and the late delivery.
+One `tool()` shape covers every execution lifecycle. Write an ordinary `run` — an async function or an async generator — and say what kind it is with `lifecycle`:
 
-**Background tools** (`tool.background`) keep the agent loop going while the work runs. If `execute` settles within the grace window (`graceMs`, default 250ms) the call behaves exactly like a regular tool; otherwise the model immediately receives a pending placeholder, the loop continues, and the return value is injected into the conversation as a `tool_task_result` message when it settles:
+- **`'sync'`** (default): awaited in the round, exactly like `execute`.
+- **`'background'`**: the loop keeps going. Work settling within the grace window (`graceMs`, default 250ms) behaves like a plain sync call; otherwise the model immediately receives a pending placeholder and the return value is injected as a `tool_task_result` message when it settles.
+- **`'deferred'`**: `run` returns `ctx.defer(taskId)` to park the call on durable external work — the run pauses (`status: 'awaiting_async_tools'`) until the task is completed from any process. Returning a plain value resolves immediately.
+
+Generator `run` yields become the task's **log** (feeding check-ins, `tool.preliminary_result` events, and transcripts); the generator's **return** is the result, validated against `outputSchema`. Non-generator bodies log with `ctx.log()`.
 
 ```typescript
-const renderVideo = tool.background({
+const renderVideo = tool({
   name: 'render_video',
+  lifecycle: 'background',
   inputSchema: z.object({ script: z.string() }),
-  eventSchema: z.object({ pct: z.number() }),      // optional progress events
-  outputSchema: z.object({ url: z.string() }),      // validates the final result
-  ack: 'Rendering started — the result arrives automatically.',
+  outputSchema: z.object({ url: z.string() }),
+  ack: 'Rendering started.',
   timeoutMs: 300_000,
-  execute: async ({ script }, ctx) => {
+  run: async function* ({ script }, ctx) {
     const job = await renderer.start(script, { signal: ctx?.signal });
-    for await (const p of job.progress()) ctx?.progress({ pct: p });
-    return job.result();                             // just return it
+    ctx?.onMessage((msg) => job.reprioritize(msg));       // steering opt-in
+    for await (const p of job.progress()) yield { pct: p };
+    return job.result();
   },
 });
-```
 
-When the run would end while background work is still in flight, `asyncTools.onRunEnd` decides what happens: `'drain'` (default) waits up to `drainTimeoutMs` (30s) and gives the model up to `maxDrainTurns` (2) extra turns to fold late results into the final answer; `'detach'` returns immediately (results are dropped; tasks persist as `orphaned` when a state accessor exists); `'cancel'` aborts the work.
-
-**Deferred tools** (`tool.deferred`) pause the run durably for work that completes out-of-process — a webhook-backed job, a human review. `start` kicks off the external work and returns `{ taskId }` (or `{ output }` for an immediate, fully-typed fast path); the conversation pauses with status `awaiting_async_tools`:
-
-```typescript
-const legalReview = tool.deferred({
+const legalReview = tool({
   name: 'request_legal_review',
+  lifecycle: 'deferred',
   inputSchema: z.object({ contractId: z.string() }),
-  outputSchema: z.object({ approved: z.boolean(), notes: z.string().optional() }),
-  start: async ({ contractId }, ctx) => {
+  outputSchema: z.object({ approved: z.boolean() }),
+  run: async ({ contractId }, ctx) => {
     const ticket = await legal.open(contractId, { conversationId: ctx?.conversationId });
-    return { taskId: ticket.id };
+    return ctx!.defer(ticket.id);
   },
 });
 ```
 
-Completion happens on the tool itself — typed by its `outputSchema`, from any process:
+Deferred completion is typed and lives on the tool — callable from any process holding the `StateAccessor`:
 
 ```typescript
 // webhook handler — hours later, different process
-const result = await legalReview.resolve(client, {
+await legalReview.resolve(client, {
   state: makeAccessor(conversationId),
   taskId: ticketId,
-  output: { approved: true, notes: 'LGTM' },   // ← typechecked ✓
-  run: { model: 'openai/gpt-4o' },             // continue immediately
+  output: { approved: true },        // ← typechecked against outputSchema
+  run: { model: 'openai/gpt-4o' },   // continue immediately (omit to record-only)
 });
-console.log(await result?.getText());
 ```
 
-Omit `run` to record the result on state and let the next `callModel({ state })` deliver it. `legalReview.fail(...)` and `legalReview.cancel(...)` complete the surface; double resolution throws `ToolTaskAlreadySettledError` (pass `ifSettled: 'ignore'` to no-op instead). The low-level `resumeToolResults()` handles batches and dynamically-stored tools.
+`legalReview.fail(...)` / `legalReview.cancel(...)` complete the surface; double resolution throws `ToolTaskAlreadySettledError`. The low-level `resumeToolResults()` handles batches. When a run would end with background work in flight, `asyncTools.onRunEnd` decides: `'drain'` (default), `'detach'`, or `'cancel'`.
 
 > **Security:** `.resolve()` injects a value the model treats as a tool result. Authenticate the webhook before calling it — the SDK cannot do that for you. Outputs are validated against `outputSchema` at runtime as well as compile time.
 
-Async lifecycle is observable on the streams: `tool.async_started` when a call escapes the round, `tool.preliminary_result` for `ctx.progress()` events, and `tool.async_settled` (with `delivery: 'injected' | 'pending_resume' | 'dropped'`) when a task finishes. `tool.result` still fires exactly once per call with the final value. In-process tasks are inspectable via `result.getAsyncTasks()` and cancellable via `result.cancelTask(taskId)`.
+### Checking On Long-Running Tasks
+
+The model checks on a running task by calling **the same tool** with a `taskId` (advertised in the pending placeholder). The engine routes such calls to the tool's check-in handler instead of starting new work:
+
+```typescript
+const renderVideo = tool({
+  name: 'render_video',
+  lifecycle: 'background',
+  // ... as above ...
+  check: {                                          // optional — SDK default when absent
+    schema: z.object({
+      view: z.enum(['status', 'logs', 'transcript']).optional(),
+      steer: z.string().optional(),                 // authors can expose steering
+    }),
+    execute: async (params, turnContext) => {
+      // turnContext.toolCallStatus           → 'working' | 'completed' | ...
+      // turnContext.accumulatedYieldedEvents → every run yield so far
+      // turnContext.task                     → { statusView, tailLogs, transcript, send, cancel }
+      if (params.steer) turnContext.task?.send(params.steer);
+      return turnContext.task?.statusView();
+    },
+  },
+});
+```
+
+Without a custom `check`, the SDK default answers three views: `status` (state, elapsed, last log, and for agents turns completed + current activity), `logs` (last `tail` entries, default 20), and `transcript` (full rendered detail, truncated to `asyncTools.maxTranscriptChars`, default 20k). Check calls are doom-loop-exempt, bypass per-tool concurrency/timeout gates, and never fire Pre/PostToolUse hooks. Disable model-side check-ins entirely with `asyncTools: { checkins: false }`.
+
+After a process restart, deferred tasks answer `status` from persisted state (including a bounded `lastLog`); full logs and transcripts are in-memory only and report an explanatory note instead.
+
+### Steering Running Tasks
+
+- **From code:** `result.sendToTask(taskId, message)` delivers into the run body's `ctx.onMessage` handler (queued until one registers). Deferred tasks throw — their work runs in an external system.
+- **From the model:** expose a check param (e.g. `steer`) and forward it with `turnContext.task.send(...)` in `check.execute`.
+- **Agent tools** forward steering messages into the child conversation automatically (as user messages at the child's next turn boundary).
+
+### Agent Tools (Subagents)
+
+`tool.agent()` creates a tool whose work IS a child `callModel` conversation, running as a background task:
+
+```typescript
+const researcher = tool.agent({
+  name: 'research_topic',
+  description: 'Deep-research a topic in the background.',
+  inputSchema: z.object({ topic: z.string() }),
+  outputSchema: z.object({ text: z.string() }),
+  agent: ({ topic }) => ({
+    model: 'openai/gpt-4o',
+    input: `Research: ${topic}`,
+    tools: [searchTool, fetchTool] as const,
+    stopWhen: stepCountIs(15),
+  }),
+  // default result mapper — Dennis-style last_message outcome:
+  result: async (child) => ({ text: await child.getText() }),
+});
+```
+
+The parent keeps working while children run (several can run concurrently under the background pool). The child's conversation is the check-in **transcript**; each child turn is a **log** entry; `status` reports `turnsCompleted` and `currentActivity`. `cancelTask(taskId)` (or parent abort / `timeoutMs`) cancels the child; `sendToTask` steers it mid-run. Children run **in-memory** (no `StateAccessor`) and do not inherit the parent's hooks — pass child hooks explicitly in the `agent` spec if needed. A child that pauses (HITL/manual/approval/deferred tools inside it) fails the task with a clear error.
 
 ### Per-Tool Timeouts & Concurrency
 
@@ -846,6 +901,9 @@ import { createInitialState } from '@openrouter/agent/conversation-state';
 import { resumeToolResults } from '@openrouter/agent/resume-tool-results';
 import { Semaphore } from '@openrouter/agent/tool-concurrency';
 import { AsyncToolRegistry } from '@openrouter/agent/async-tool-registry';
+import { ToolTask } from '@openrouter/agent/tool-task';
+import { DefaultCheckParamsSchema } from '@openrouter/agent/tool-check';
+import { AgentTranscriptSource } from '@openrouter/agent/agent-tool';
 ```
 
 ## Development

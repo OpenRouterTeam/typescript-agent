@@ -91,6 +91,9 @@ export {
   resumeToolResults,
   ToolTaskAlreadySettledError,
 } from './inner-loop/resume-tool-results.js';
+// Agent tools (tool.agent)
+export type { AgentRunSpec, AgentToolConfig } from './lib/agent-tool.js';
+export { AgentTranscriptSource } from './lib/agent-tool.js';
 export { fromClaudeMessages, toClaudeMessage } from './lib/anthropic-compat.js';
 export type {
   CallModelInput,
@@ -213,6 +216,9 @@ export {
 export type { BuiltDeferredTool, DeferredToolMethods } from './lib/tool.js';
 // Tool creation helpers (tool also carries tool.background / tool.deferred)
 export { markMcp, serverTool, tool } from './lib/tool.js';
+// Check-in helpers
+export type { DefaultCheckParams } from './lib/tool-check.js';
+export { DefaultCheckParamsSchema } from './lib/tool-check.js';
 // Tool concurrency primitives
 export type { SemaphoreRelease } from './lib/tool-concurrency.js';
 export { acquireAll, Semaphore } from './lib/tool-concurrency.js';
@@ -221,18 +227,23 @@ export type { ContextInput, ToolExecutionExtras } from './lib/tool-context.js';
 export { buildToolExecuteContext, ToolContextStore } from './lib/tool-context.js';
 // Real-time tool event broadcasting
 export { ToolEventBroadcaster } from './lib/tool-event-broadcaster.js';
+// Tool task runtime (logs, transcripts, steering inbox)
+export type {
+  TaskLogEntry,
+  TaskLogLimits,
+  TaskTranscriptSource,
+  ToolTaskMode,
+  ToolTaskStatusView,
+} from './lib/tool-task.js';
+export { DEFAULT_TASK_LOG_LIMITS, ToolTask } from './lib/tool-task.js';
 export type {
   AsyncToolAck,
-  BackgroundTool,
-  BackgroundToolExecuteContext,
-  BackgroundToolFunction,
   ChatStreamEvent,
   ClientTool,
   ConversationState,
   ConversationStatus,
-  DeferredStartResult,
-  DeferredTool,
-  DeferredToolFunction,
+  DeferOptions,
+  DeferredHandle,
   HasApprovalTools,
   HITLTool,
   HITLToolFunction,
@@ -265,16 +276,20 @@ export type {
   ToolAsyncSettledEvent,
   ToolAsyncStartedEvent,
   ToolCallOutputEvent,
+  ToolCheckConfig,
   ToolExecutionResult,
   ToolExecutionResultUnion,
   ToolHasApproval,
+  ToolLifecycle,
   ToolLoopKey,
   ToolLoopKeyFn,
   ToolOutputContentItem,
   ToolPreliminaryResultEvent,
   ToolResultEvent,
   ToolResultItem,
+  ToolRunContext,
   ToolStreamEvent,
+  ToolTaskHandle,
   ToolTaskStatus,
   ToolWithExecute,
   ToolWithGenerator,
@@ -283,18 +298,21 @@ export type {
   TurnStartEvent,
   TypedToolCall,
   TypedToolCallUnion,
+  UnifiedTool,
+  UnifiedToolFunction,
   UnsentToolResult,
   Warning,
 } from './lib/tool-types.js';
 export {
   hasApprovalRequiredTools,
   hasExecuteFunction,
+  isAgentTool,
   isAutoResolvableTool,
-  isBackgroundTool,
   isClientTool,
-  isDeferredTool,
+  isDeferredHandle,
   isGeneratorTool,
   isHITLTool,
+  isLongRunningTool,
   isManualTool,
   isMcpTool,
   isRegularExecuteTool,
@@ -306,6 +324,7 @@ export {
   isToolResultEvent,
   isTurnEndEvent,
   isTurnStartEvent,
+  isUnifiedTool,
   ToolType,
   toolHasApprovalConfigured,
 } from './lib/tool-types.js';
