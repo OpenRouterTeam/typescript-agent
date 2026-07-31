@@ -1076,12 +1076,21 @@ export class DoomLoopMonitor {
              * Per-call counts persist so a repeat spanning a save/resume
              * boundary keeps counting. Copied for the same isolation reason
              * as the set above. `fromEntries` for the same "__proto__" safety
-             * as the outer record. Omitted when there is nothing beyond the
-             * single-call case `fingerprint`+`streak` already covers.
+             * as the outer record. Omitted only when `fingerprint`+`streak`
+             * already carry the identical information (a single-call round
+             * whose per-call count equals its round count — `restore`
+             * reconstructs exactly that). The count-mismatch check matters:
+             * when a round SHRINKS to one call, the round streak resets while
+             * the per-call count keeps climbing, and dropping it would hand
+             * the repeat a fresh grace window on resume.
              */
             ...(entry.callStreaks !== undefined &&
             (Object.keys(entry.callStreaks).length > 1 ||
-              (entry.roundFingerprints?.length ?? 0) > 1)
+              (entry.roundFingerprints?.length ?? 0) > 1 ||
+              Object.entries(entry.callStreaks).some(
+                ([callFingerprint, count]) =>
+                  callFingerprint !== entry.fingerprint || count !== entry.streak,
+              ))
               ? {
                   callStreaks: Object.fromEntries(Object.entries(entry.callStreaks)),
                 }
@@ -1469,11 +1478,19 @@ function buildToolVerdictMessage(input: {
 }): string {
   const { toolName, fingerprint, callSet, roundStreak, callStreak } = input;
   if (callStreak > roundStreak) {
+    /*
+     * No per-call hash here, deliberately: a wide round can have MANY members
+     * whose per-call counts fire at once (a repeated fan-out plus one new
+     * call), and quoting each call's own fingerprint would queue one steer
+     * message per member. Same tool + same count -> byte-identical text, so
+     * the steer dedupe collapses them to one correction. Block outputs are
+     * attached to the specific refused call anyway, and the verdict payload
+     * carries the exact `fingerprint` for hooks.
+     */
     return (
-      `Doom loop suspected: tool "${toolName}" was invoked with the same arguments ` +
-      `(fingerprint ${fingerprint.slice(0, 16)}…) in ${callStreak} consecutive rounds, even as ` +
-      'its other calls changed. Repeating the call will not change the result. ' +
-      'Take a different approach, or explain why repetition is required.'
+      `Doom loop suspected: this exact "${toolName}" call was repeated in ${callStreak} ` +
+      'consecutive rounds, even as its other calls changed. Repeating it will not change ' +
+      'the result. Take a different approach, or explain why repetition is required.'
     );
   }
   if (callSet.length > 1) {

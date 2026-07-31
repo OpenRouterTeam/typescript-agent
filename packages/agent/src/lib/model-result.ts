@@ -1367,7 +1367,7 @@ export class ModelResult<
        * `runToolWithHooks` synthesizes the rejection before reaching the
        * doom-loop checkpoint, so the call is never recorded either.
        */
-      if (toolCall.id !== undefined && this.hookDeniedCalls.has(String(toolCall.id))) {
+      if (this.hookDeniedCalls.has(toolCall.id)) {
         continue;
       }
       const rawArgs: unknown = toolCall.arguments;
@@ -1404,10 +1404,8 @@ export class ModelResult<
         continue;
       }
       // Cache so the per-call checkpoint does not invoke `loopKey` a second
-      // time; keyed by call id, which is unique within a round.
-      if (toolCall.id !== undefined) {
-        this.doomLoopRoundKeyMaterial.set(String(toolCall.id), resolution);
-      }
+      // time; keyed by call id (required on ParsedToolCall, unique per round).
+      this.doomLoopRoundKeyMaterial.set(toolCall.id, resolution);
       if (resolution.kind === 'exempt') {
         continue;
       }
@@ -1587,10 +1585,7 @@ export class ModelResult<
      * as well would double-invoke it and, for a non-repeatable callback, make
      * the declared identity and the recorded identity disagree.
      */
-    const cached =
-      toolCall.id !== undefined
-        ? this.doomLoopRoundKeyMaterial.get(String(toolCall.id))
-        : undefined;
+    const cached = this.doomLoopRoundKeyMaterial.get(toolCall.id);
     let resolution: LoopKeyResolution;
     if (cached !== undefined) {
       resolution = cached;

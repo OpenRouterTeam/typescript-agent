@@ -1113,6 +1113,147 @@ describe('same-tool fan-out streaks', () => {
     ]);
   });
 
+  it('collapses per-call steer messages across a wide repeating round', async () => {
+    /*
+     * When per-call counts decide for MANY members at once (a wide fan-out
+     * repeated, then widened by one call), each member gets its own verdict.
+     * The steer rung dedupes by exact message text, so per-call messages must
+     * not embed the individual fingerprint — same tool + same count must be
+     * byte-identical, or a 20-wide round queues 20 near-identical corrections
+     * into one injected prompt. The refused call is identified by the block
+     * output's position and the verdict payload's `fingerprint`; the message
+     * text does not need to repeat it.
+     */
+    const detector = new DoomLoopMonitor(
+      resolveDoomLoopOption({
+        ladder: {
+          steer: 2,
+        },
+      }),
+    );
+    const wide = Array.from(
+      {
+        length: 20,
+      },
+      (_, index) => `f${index}`,
+    );
+    const messages = new Set<string>();
+    let verdictCount = 0;
+    for (const [round, paths] of [
+      wide,
+      wide,
+      [
+        ...wide,
+        'new',
+      ],
+    ].entries()) {
+      await detector.declareRound(
+        round,
+        paths.map((path) => ({
+          toolName: 'read',
+          keyMaterial: {
+            path,
+          },
+        })),
+      );
+      for (const path of paths) {
+        const record = await detector.recordToolCall(
+          'read',
+          {
+            path,
+          },
+          round,
+        );
+        if (round === 2 && record.verdict) {
+          verdictCount++;
+          messages.add(record.verdict.message);
+        }
+      }
+    }
+
+    /* All 20 repeated members fire; the steer queue sees ONE correction. */
+    expect(verdictCount).toBe(20);
+    expect(messages.size).toBe(1);
+  });
+
+  it('persists per-call evidence when the round has shrunk to a single call', async () => {
+    /*
+     * When a round SHRINKS (a paused HITL member drops out), the round streak
+     * resets while the per-call count keeps climbing — per-call evidence is
+     * then the ONLY evidence, held by a single-call round. The save-time
+     * omission of `callStreaks` for "plain" single-call rounds must not fire
+     * here: dropping the count handed the repeat a fresh grace window on
+     * resume, reaching block a full round later than the in-memory behavior.
+     */
+    const detector = monitor();
+    await detector.declareRound(0, [
+      {
+        toolName: 'deploy',
+        keyMaterial: {
+          path: 'work',
+        },
+      },
+      {
+        toolName: 'deploy',
+        keyMaterial: {
+          path: 'gated',
+        },
+      },
+    ]);
+    await detector.recordToolCall(
+      'deploy',
+      {
+        path: 'work',
+      },
+      0,
+    );
+    await detector.recordToolCall(
+      'deploy',
+      {
+        path: 'gated',
+      },
+      0,
+    );
+    /* The gated call paused; the resumed round is just the working call. */
+    await detector.declareRound(1, [
+      {
+        toolName: 'deploy',
+        keyMaterial: {
+          path: 'work',
+        },
+      },
+    ]);
+    const beforeSave = await detector.recordToolCall(
+      'deploy',
+      {
+        path: 'work',
+      },
+      1,
+    );
+    expect(beforeSave.streak).toBe(2);
+
+    /* Save/resume mid-loop (approval pause): the count must survive. */
+    const wire = JSON.parse(JSON.stringify(detector.getState())) as unknown;
+    const resumed = new DoomLoopMonitor(resolveDoomLoopOption(true), wire);
+    await resumed.declareRound(0, [
+      {
+        toolName: 'deploy',
+        keyMaterial: {
+          path: 'work',
+        },
+      },
+    ]);
+    const afterResume = await resumed.recordToolCall(
+      'deploy',
+      {
+        path: 'work',
+      },
+      0,
+    );
+    expect(afterResume.streak).toBe(3);
+    expect(afterResume.verdict?.action).toBe('block');
+  });
+
   it('scores a resumed SINGLE call on its own earned evidence, never inherited', async () => {
     /*
      * Both the round set and the per-call counts persist, so evidence follows
