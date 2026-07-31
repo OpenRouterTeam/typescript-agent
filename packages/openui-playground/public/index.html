@@ -1,0 +1,149 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>OpenUI Playground</title>
+<style>
+  :root {
+    --bg: #0d1117; --panel: #161b22; --border: #30363d; --text: #e6edf3;
+    --muted: #8b949e; --accent: #58a6ff; --success: #3fb950; --warning: #d29922;
+    --danger: #f85149; --mono: ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  }
+  header {
+    display: flex; align-items: center; gap: 12px; padding: 10px 16px;
+    border-bottom: 1px solid var(--border); background: var(--panel);
+  }
+  header h1 { font-size: 15px; margin: 0; font-weight: 600; }
+  header .dialect { color: var(--muted); font-family: var(--mono); font-size: 12px; }
+  main { display: grid; grid-template-columns: 340px 1fr 380px; gap: 0; height: calc(100vh - 45px); }
+  .col { overflow-y: auto; padding: 14px; }
+  .col + .col { border-left: 1px solid var(--border); }
+  label { display: block; color: var(--muted); font-size: 12px; margin: 10px 0 4px; }
+  textarea, input[type=text], select {
+    width: 100%; background: var(--bg); color: var(--text); border: 1px solid var(--border);
+    border-radius: 6px; padding: 8px; font: inherit;
+  }
+  textarea { min-height: 90px; resize: vertical; }
+  button.run {
+    margin-top: 12px; width: 100%; padding: 9px; border: 0; border-radius: 6px;
+    background: var(--accent); color: #0d1117; font-weight: 600; cursor: pointer; font-size: 14px;
+  }
+  button.run:disabled { opacity: .5; cursor: wait; }
+  .presets { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+  .presets button {
+    background: var(--bg); border: 1px solid var(--border); color: var(--muted);
+    border-radius: 12px; padding: 3px 10px; font-size: 12px; cursor: pointer;
+  }
+  .presets button:hover { color: var(--text); border-color: var(--accent); }
+  .modes { display: flex; gap: 10px; margin-top: 4px; color: var(--muted); font-size: 13px; }
+
+  /* Rendered surface */
+  #surface { min-height: 200px; }
+  .placeholder { color: var(--muted); text-align: center; margin-top: 80px; }
+  .ui-stack { display: flex; flex-direction: column; gap: 10px; }
+  .ui-stack.row { flex-direction: row; flex-wrap: wrap; align-items: flex-start; }
+  .ui-card { border: 1px solid var(--border); border-radius: 8px; padding: 12px; background: var(--panel); }
+  .ui-card > .title { font-weight: 600; margin-bottom: 8px; }
+  .ui-heading1 { font-size: 22px; font-weight: 700; margin: 4px 0; }
+  .ui-heading2 { font-size: 18px; font-weight: 600; margin: 3px 0; }
+  .ui-heading3 { font-size: 15px; font-weight: 600; margin: 2px 0; }
+  .ui-text { margin: 2px 0; }
+  .ui-text.muted { color: var(--muted); }
+  .ui-stat { display: inline-flex; flex-direction: column; padding: 10px 14px; border: 1px solid var(--border); border-radius: 8px; min-width: 110px; }
+  .ui-stat .v { font-size: 20px; font-weight: 700; }
+  .ui-stat .l { color: var(--muted); font-size: 12px; }
+  .ui-stat .d { font-size: 12px; color: var(--success); }
+  .ui-badge { display: inline-block; padding: 1px 9px; border-radius: 10px; font-size: 12px; border: 1px solid var(--border); }
+  .ui-badge.success { color: var(--success); border-color: var(--success); }
+  .ui-badge.warning { color: var(--warning); border-color: var(--warning); }
+  .ui-badge.danger { color: var(--danger); border-color: var(--danger); }
+  table.ui-table { border-collapse: collapse; width: 100%; }
+  table.ui-table th, table.ui-table td { border: 1px solid var(--border); padding: 5px 9px; text-align: left; font-size: 13px; }
+  table.ui-table th { color: var(--muted); font-weight: 600; }
+  .ui-button { padding: 6px 14px; border-radius: 6px; border: 1px solid var(--border); background: var(--panel); color: var(--text); cursor: pointer; }
+  .ui-button.primary { background: var(--accent); color: #0d1117; border: 0; font-weight: 600; }
+  .ui-button.danger { background: var(--danger); color: #fff; border: 0; }
+  .ui-progress { background: var(--border); border-radius: 6px; height: 10px; overflow: hidden; }
+  .ui-progress > div { background: var(--accent); height: 100%; }
+  .ui-input, .ui-select { width: auto; min-width: 180px; }
+  .ui-unknown { color: var(--danger); font-family: var(--mono); font-size: 12px; }
+
+  /* Right column */
+  h2.pane { font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 14px 0 6px; }
+  #lang, #events {
+    font-family: var(--mono); font-size: 12px; white-space: pre-wrap; word-break: break-word;
+    background: var(--bg); border: 1px solid var(--border); border-radius: 6px; padding: 8px;
+    max-height: 220px; overflow-y: auto;
+  }
+  #lang .stmt { color: var(--text); }
+  #lang .prose { color: var(--muted); font-style: italic; }
+  .stats { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px; }
+  .stat-tile { border: 1px solid var(--border); border-radius: 6px; padding: 7px 9px; }
+  .stat-tile .v { font-size: 16px; font-weight: 700; font-family: var(--mono); }
+  .stat-tile .l { color: var(--muted); font-size: 11px; }
+  #history { font-size: 12px; }
+  #history table { border-collapse: collapse; width: 100%; }
+  #history td, #history th { border-bottom: 1px solid var(--border); padding: 4px 6px; text-align: right; font-family: var(--mono); }
+  #history th { color: var(--muted); font-weight: 500; }
+  #history td:first-child, #history th:first-child { text-align: left; font-family: inherit; }
+  .diag { color: var(--warning); font-family: var(--mono); font-size: 12px; margin: 2px 0; }
+  .err { color: var(--danger); }
+</style>
+</head>
+<body>
+<header>
+  <h1>OpenUI Playground</h1>
+  <span class="dialect" id="dialect"></span>
+  <span class="dialect" style="margin-left:auto" id="status"></span>
+</header>
+<main>
+  <div class="col">
+    <label for="prompt">Prompt</label>
+    <textarea id="prompt">Show me a dashboard summarizing this month's API usage: total spend $128.40 (up 12%), 41,203 requests, 9 models used. Include a table of the top 3 models by spend and a progress bar showing 64% of the monthly budget used.</textarea>
+    <div class="presets" id="presets"></div>
+    <label for="model">Model</label>
+    <input type="text" id="model" list="model-options" />
+    <datalist id="model-options">
+      <option value="anthropic/claude-sonnet-5"></option>
+      <option value="anthropic/claude-haiku-4.5"></option>
+      <option value="openai/gpt-5.2"></option>
+      <option value="google/gemini-3-flash"></option>
+      <option value="deepseek/deepseek-v4"></option>
+    </datalist>
+    <label>Mode</label>
+    <div class="modes">
+      <label><input type="radio" name="mode" value="emulate" checked /> emulate (local parse)</label>
+      <label><input type="radio" name="mode" value="native" /> native (API plugin)</label>
+    </div>
+    <button type="button" class="run" id="run">Generate UI</button>
+    <h2 class="pane">Library prompt sent to the model</h2>
+    <div id="libprompt" style="font-family:var(--mono);font-size:11px;color:var(--muted);white-space:pre-wrap;"></div>
+  </div>
+
+  <div class="col">
+    <h2 class="pane">Rendered surface</h2>
+    <div id="surface"><div class="placeholder">Run a prompt to render generated UI here.</div></div>
+    <h2 class="pane">Diagnostics</h2>
+    <div id="diagnostics"><span style="color:var(--muted)">—</span></div>
+  </div>
+
+  <div class="col">
+    <h2 class="pane">Run stats</h2>
+    <div class="stats" id="stats"></div>
+    <h2 class="pane">OpenUI Lang stream</h2>
+    <div id="lang"></div>
+    <h2 class="pane">Raw model text</h2>
+    <div id="events"></div>
+    <h2 class="pane">Run history (this session)</h2>
+    <div id="history"></div>
+  </div>
+</main>
+<script type="module" src="/app.js"></script>
+</body>
+</html>
