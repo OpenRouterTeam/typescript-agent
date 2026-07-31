@@ -96,10 +96,15 @@ const result = callModel(client, {
 ```
 
 Driving `DoomLoopMonitor` directly (or porting it) is the case that needs the
-new call — declare a round's whole batch before recording any of it:
+new call — declare a round's whole batch before recording any of it.
+`resolveDoomLoopOption` and `ResolvedDoomLoopConfig` are now exported too:
+`DoomLoopMonitor` was previously exported without its config resolver, so it
+could not actually be constructed from the public API.
 
 ```ts
-import { DoomLoopMonitor } from '@openrouter/agent';
+import { DoomLoopMonitor, resolveDoomLoopOption } from '@openrouter/agent';
+
+const monitor = new DoomLoopMonitor(resolveDoomLoopOption(true));
 
 for (const [round, batch] of batches.entries()) {
   // NEW: declare the round's complete set BEFORE recording any of its calls.
@@ -117,8 +122,3 @@ for (const [round, batch] of batches.entries()) {
   }
 }
 ```
-
-Note for direct users: `DoomLoopMonitor` is exported but its config resolver is
-not, so constructing one outside `callModel` means hand-building the resolved
-config shape. That predates this change and is unrelated to `declareRound`;
-worth exporting `resolveDoomLoopOption` as a follow-up.
