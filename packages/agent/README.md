@@ -445,14 +445,17 @@ block to observe for a known-chatty tool, or escalate straight to stop.
 - **Order-dependent scoring where a round can't be declared up front.**
   Server-tool records (web search, advisor) arrive as the response streams,
   so their membership isn't known in advance and they are scored per call
-  rather than per set. A repeating multi-call round there still accumulates,
-  but only on whichever call is recorded *last* — so the verdict lands on one
-  member, which member depends on emission order, and a repeat inside a
-  varying round *does* accumulate if it happens to be last
-  (`[a,b]`, `[c,b]`, `[d,b]` trips on `b`). Server-tool verdicts cannot
-  `block`, but they can reach `stop`. Client tool calls always go through a
-  declared round, so this affects server tools and direct
-  `DoomLoopMonitor` callers only.
+  rather than per set. Each call compares against a baseline FIXED at the
+  round transition — the previous round's last-recorded fingerprint — so a
+  repeating multi-call round accumulates only on whichever call is recorded
+  *last*; which member that is depends on emission order, and a repeat
+  inside a varying round *does* accumulate if it happens to be last
+  (`[a,b]`, `[c,b]`, `[d,b]` trips on `b`). The fixed baseline also means a
+  match ANYWHERE in the next round counts, not only in its final position:
+  `[a]` then `[b, a]` scores `a` as a repeat even though `b` arrived first.
+  Server-tool verdicts cannot `block`, but they can reach `stop`. Client
+  tool calls always go through a declared round, so this affects server
+  tools and direct `DoomLoopMonitor` callers only.
 
 ### Tool Approval
 
