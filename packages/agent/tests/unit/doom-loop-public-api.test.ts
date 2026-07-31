@@ -90,6 +90,104 @@ describe('DoomLoopMonitor via the public entrypoint', () => {
     expect(last).toBe('stop');
   });
 
+  it('accumulates a fan-out streak across per-turn process boundaries', async () => {
+    /*
+     * The serverless pattern: one round per callModel run, state persisted
+     * between turns. A repeating fan-out must accumulate across those
+     * boundaries — this is why the round's fingerprint SET is persisted.
+     * Before that, each resume re-baselined the fan-out and a loop that
+     * repeated once per turn never tripped anything.
+     */
+    const paths = [
+      'a',
+      'b',
+      'c',
+    ];
+    let wire: unknown;
+    const perTurn: string[] = [];
+    for (let turn = 0; turn < 4; turn++) {
+      const monitor = new DoomLoopMonitor(resolveDoomLoopOption(true), wire);
+      await monitor.declareRound(
+        0,
+        paths.map((path) => ({
+          toolName: 'read',
+          keyMaterial: {
+            path,
+          },
+        })),
+      );
+      let last = '';
+      for (const path of paths) {
+        const record = await monitor.recordToolCall(
+          'read',
+          {
+            path,
+          },
+          0,
+        );
+        last = `${record.streak}:${record.verdict?.action ?? 'none'}`;
+      }
+      perTurn.push(last);
+      wire = JSON.parse(JSON.stringify(monitor.getState()));
+    }
+
+    expect(perTurn).toEqual([
+      '1:none',
+      '2:observe',
+      '3:block',
+      '4:block',
+    ]);
+  });
+
+  it('restores a legacy blob (no roundFingerprints) with single-call semantics', async () => {
+    /*
+     * Pre-existing persisted state has no `roundFingerprints` field. It must
+     * restore exactly as before: the lone fingerprint describes the round, a
+     * different call resets to 1, the same call continues. Malformed sets
+     * (non-string entries) degrade the same way instead of being dropped.
+     */
+    const legacy = {
+      tools: {
+        read: {
+          fingerprint: 'not-a-real-fingerprint',
+          streak: 2,
+        },
+      },
+    };
+    const monitor = new DoomLoopMonitor(resolveDoomLoopOption(true), legacy);
+    const different = await monitor.recordToolCall(
+      'read',
+      {
+        path: 'x',
+      },
+      0,
+    );
+    expect(different.streak).toBe(1);
+
+    const hostile = {
+      tools: {
+        read: {
+          fingerprint: 'ab',
+          streak: 2,
+          roundFingerprints: [
+            1,
+            {},
+            null,
+          ],
+        },
+      },
+    };
+    const survives = new DoomLoopMonitor(resolveDoomLoopOption(true), hostile);
+    const record = await survives.recordToolCall(
+      'read',
+      {
+        path: 'x',
+      },
+      0,
+    );
+    expect(record.streak).toBe(1);
+  });
+
   it('round-trips state across a process boundary via plain JSON', async () => {
     const first = new DoomLoopMonitor(resolveDoomLoopOption(true));
     await first.recordToolCall(

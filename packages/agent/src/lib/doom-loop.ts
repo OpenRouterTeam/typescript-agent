@@ -193,6 +193,17 @@ export type DoomLoopOption = boolean | DoomLoopConfig;
 export interface DoomLoopStreak {
   fingerprint: string;
   streak: number;
+  /**
+   * The full fingerprint set of the tool's last round, present only when that
+   * round had more than one distinct call. `fingerprint`+`streak` alone cannot
+   * say WHICH set earned a count, so without this a fan-out streak either
+   * attached to one arbitrary member (refusing a lesser resumed call on first
+   * appearance) or had to be discarded at every save — losing block-level
+   * evidence across approval pauses and re-baselining on every per-turn
+   * resume. Absent for single-call rounds and in pre-existing blobs, where
+   * `fingerprint` fully describes the round. Never present on text streaks.
+   */
+  roundFingerprints?: readonly string[];
 }
 
 /**
@@ -351,7 +362,16 @@ function warnOnLadderHazards(ladder: Required<DoomLoopLadder>): void {
 /**
  * Normalize the `doomLoop` option. `undefined` / `false` → null (detection
  * off — the SDK's default posture: explicit control over implicit magic).
+ *
+ * Overloaded so the direct-construction pattern compiles without a null
+ * check: `true` or a config object always yields a resolved config, so
+ * `new DoomLoopMonitor(resolveDoomLoopOption(true))` is well-typed. Only the
+ * engine's pass-through of a caller's raw option can produce `null`.
  */
+export function resolveDoomLoopOption(option: DoomLoopConfig | true): ResolvedDoomLoopConfig;
+export function resolveDoomLoopOption(
+  option: DoomLoopOption | undefined,
+): ResolvedDoomLoopConfig | null;
 export function resolveDoomLoopOption(
   option: DoomLoopOption | undefined,
 ): ResolvedDoomLoopConfig | null {
@@ -951,21 +971,22 @@ export class DoomLoopMonitor {
           name,
           {
             fingerprint: entry.fingerprint,
+            streak: entry.streak,
             /*
-             * A MULTI-CALL round's streak is persisted as 1, because the shape
-             * carries one fingerprint and cannot express "this count was earned
-             * by the set {a,b,c}". Restoring it verbatim would attach the whole
-             * count to whichever call happened to be recorded last, so a
-             * resumed round consisting of just that one call would inherit a
-             * fan-out's evidence and could be refused on its first appearance —
-             * despite the model doing strictly LESS work than before the save.
-             * Under-counting on resume is the safe direction: the round is
-             * re-observed and re-accumulates from a correct baseline.
-             *
-             * Single-call rounds are unaffected: their fingerprint fully
-             * describes the round, so the streak survives intact.
+             * A multi-call round persists its full set, so a resumed run knows
+             * WHICH set earned the count. Without it, the streak either
+             * attached to one arbitrary member — a resumed round of just that
+             * call inherited a fan-out's whole evidence and could be refused
+             * on its first appearance — or had to be discarded at every save,
+             * which reset condemned fan-outs across approval pauses and made
+             * per-turn-resume topologies never accumulate. Single-call rounds
+             * omit it: their fingerprint fully describes the round.
              */
-            streak: (entry.roundFingerprints?.length ?? 1) > 1 ? 1 : entry.streak,
+            ...((entry.roundFingerprints?.length ?? 0) > 1
+              ? {
+                  roundFingerprints: entry.roundFingerprints,
+                }
+              : {}),
           },
         ]),
       ),
@@ -997,21 +1018,31 @@ export class DoomLoopMonitor {
     if (typeof candidate.tools === 'object' && candidate.tools !== null) {
       for (const [name, entry] of Object.entries(candidate.tools)) {
         if (isValidStreak(entry)) {
+          /*
+           * The persisted set (when the last round was multi-call) restores
+           * the round's identity exactly, so a resumed fan-out continues its
+           * streak and a resumed SUBSET cannot match it — the false-positive
+           * and false-negative failure modes of a single-fingerprint save.
+           * Older blobs (and single-call rounds) carry no set; the lone
+           * fingerprint fully describes those rounds. Entries with a
+           * malformed set fall back the same way rather than being dropped.
+           */
+          const persistedSet =
+            Array.isArray(entry.roundFingerprints) &&
+            entry.roundFingerprints.length > 1 &&
+            entry.roundFingerprints.every((value) => typeof value === 'string')
+              ? [
+                  ...entry.roundFingerprints,
+                ].sort()
+              : [
+                  entry.fingerprint,
+                ];
           tools.set(name, {
             fingerprint: entry.fingerprint,
             streak: entry.streak,
             // `round` intentionally absent: the first resumed record is
             // always a new round, so it increments whatever the numbering.
-            //
-            // The round set is run-local, so only one fingerprint survives a
-            // save. A resumed round therefore compares against that single
-            // fingerprint: a single-call streak continues seamlessly, and a
-            // FAN-OUT streak restarts — enforced at save time by `getState`,
-            // which persists a multi-call round's streak as 1 rather than
-            // letting its last call carry the whole count into the next run.
-            roundFingerprints: [
-              entry.fingerprint,
-            ],
+            roundFingerprints: persistedSet,
           });
         }
       }

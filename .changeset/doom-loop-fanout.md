@@ -29,14 +29,16 @@ A call that a round's declaration could not include (unhashable key material)
 is likewise scored on its own, and cannot move the round's counters — one
 unhashable argument costs detection for its own call only, never for the tool.
 
-**Resumed runs**: a *multi-call* round's streak now restarts after a
-save/resume. The persisted shape carries one fingerprint per tool and cannot
-express which set earned a count, so keeping it would attach a fan-out's
-evidence to whichever member was recorded last — a resumed round of just that
-one call would then be refused on its first appearance, despite the model doing
-less work than before the save. A repeating fan-out is re-detected from a clean
-baseline instead (observe at the second repeat after resume). Single-call
-streaks still continue across a resume exactly as before.
+**Resumed runs**: a multi-call round's fingerprint set is persisted alongside
+its streak (a new optional `roundFingerprints` on `DoomLoopStreak` — additive;
+pre-existing blobs restore with their old single-call semantics). A repeating
+fan-out therefore keeps its evidence across save/resume boundaries: approval
+pauses no longer reset a fan-out sitting at the block rung, and per-turn-resume
+topologies (one `callModel` per user turn, state persisted between) accumulate
+across turns instead of re-baselining on every one. Because the streak travels
+with the exact set that earned it, a resumed round containing only a subset of
+that set is a different round and starts at 1 — a lesser call can never inherit
+a fan-out's evidence. Single-call streaks behave exactly as before.
 
 **New API**: `DoomLoopMonitor.declareRound(round, calls)` — declares a round's
 complete call set before any of it is scored. `DoomLoopMonitor` is exported, so
@@ -45,9 +47,10 @@ touch it (the engine calls it); direct `DoomLoopMonitor` users and SDK ports
 should, since an undeclared multi-call round falls back to per-call scoring and
 its fan-out goes undetected.
 
-Single-call round timing, in-round duplicate collapsing, persisted state
-*shape*, verdict payloads, and the number of times a tool's `loopKey` is invoked
-(once per checked call) are unchanged.
+Single-call round timing, in-round duplicate collapsing, verdict payloads, and
+the number of times a tool's `loopKey` is invoked (once per checked call) are
+unchanged. The persisted shape gains one optional field (`roundFingerprints`,
+above); everything existing is untouched and old blobs restore cleanly.
 
 Known limit, unchanged by this fix: a call that repeats inside a round whose
 other members keep varying (`[a,b]`, `[a,c]`, `[a,d]`) does not accumulate,
@@ -91,8 +94,9 @@ const result = callModel(client, {
 // A round that ADDS work is progress and resets to 1:
 //   round 3: read(a), read(b), read(c), read(d)   <- no verdict
 //
-// `loopKey` still runs exactly once per checked call, and persisted
-// `ConversationState.doomLoop` is byte-identical to before.
+// `loopKey` still runs exactly once per checked call. Persisted state gains
+// one optional field so fan-out streaks survive save/resume; old state
+// restores cleanly.
 ```
 
 Driving `DoomLoopMonitor` directly (or porting it) is the case that needs the

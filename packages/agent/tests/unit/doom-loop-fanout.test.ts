@@ -975,7 +975,14 @@ describe('same-tool fan-out streaks', () => {
     expect(messages[0]).toContain('3 parallel calls');
   });
 
-  it('restarts a resumed FAN-OUT streak at 1, unlike a single-call streak', async () => {
+  it('continues a resumed FAN-OUT streak, exactly like a single-call streak', async () => {
+    /*
+     * The round SET is persisted (when multi-call), so a doom loop spanning a
+     * serialize/resume boundary is still a doom loop: the resumed identical
+     * fan-out picks its count back up instead of getting a fresh grace window.
+     * Losing this across every save meant approval pauses reset condemned
+     * fan-outs and per-turn-resume topologies never accumulated at all.
+     */
     const detector = monitor();
     for (const round of [
       0,
@@ -1005,15 +1012,9 @@ describe('same-tool fan-out streaks', () => {
       }
     }
 
-    /*
-     * Only the last fingerprint survives serialization, so the round SET is
-     * lost across a resume and the fan-out starts over — a doom loop spanning
-     * a serialize/resume boundary gets a fresh grace window before it trips
-     * again. Pinned deliberately: the round set is run-local by design
-     * (persisting it would change the state shape), and the single-call case
-     * above shows the contrast.
-     */
-    const resumed = new DoomLoopMonitor(resolveDoomLoopOption(true), detector.getState());
+    /* JSON round-trip: the set must survive real serialization. */
+    const wire = JSON.parse(JSON.stringify(detector.getState())) as unknown;
+    const resumed = new DoomLoopMonitor(resolveDoomLoopOption(true), wire);
     await resumed.declareRound(
       0,
       [
@@ -1034,22 +1035,19 @@ describe('same-tool fan-out streaks', () => {
       0,
     );
 
-    expect(record.streak).toBe(1);
+    /* Streak was 2 at save; the identical resumed fan-out continues to 3. */
+    expect(record.streak).toBe(3);
+    expect(record.verdict?.action).toBe('block');
   });
 
   it('does not refuse a resumed SINGLE call that inherits a fan-out streak', async () => {
     /*
-     * The persisted shape holds one fingerprint per tool, so it cannot express
-     * "this count was earned by the set {a,b,c}". Restoring a fan-out's streak
-     * verbatim attached the whole count to whichever call was recorded last:
-     * a resumed round consisting of just that one call then matched, inherited
-     * the fan-out's evidence, and was BLOCKED on its first appearance — while
-     * the model had done strictly less work than before the save. It was also
-     * arbitrary, since it depended on which member happened to be last.
-     *
-     * `getState` therefore persists a multi-call round's streak as 1.
-     * Under-counting on resume is the safe direction; the loop is re-observed
-     * and re-accumulates from a correct baseline (asserted below).
+     * The streak persists together with the SET that earned it, so a resumed
+     * round consisting of only one member of that set is a different round —
+     * it cannot match the persisted identity and scores 1. Persisting the
+     * count against a single fingerprint instead attached a fan-out's whole
+     * evidence to whichever call was recorded last: a lesser resumed call was
+     * BLOCKED on its first appearance, arbitrarily by emission order.
      */
     const detector = monitor();
     const paths = [
@@ -1080,19 +1078,18 @@ describe('same-tool fan-out streaks', () => {
         );
       }
     }
-    /* Round 1 reached observe (streak 2) before the save. */
-    expect(
-      (
-        detector.getState() as {
-          tools: Record<
-            string,
-            {
-              streak: number;
-            }
-          >;
+    /* The streak survives the save, paired with its full set. */
+    const saved = detector.getState() as {
+      tools: Record<
+        string,
+        {
+          streak: number;
+          roundFingerprints?: string[];
         }
-      ).tools.read.streak,
-    ).toBe(1);
+      >;
+    };
+    expect(saved.tools.read.streak).toBe(2);
+    expect(saved.tools.read.roundFingerprints).toHaveLength(3);
 
     /* Resume with ONE call — the same one that was recorded last. */
     const resumed = new DoomLoopMonitor(resolveDoomLoopOption(true), detector.getState());
@@ -1111,8 +1108,9 @@ describe('same-tool fan-out streaks', () => {
       },
       0,
     );
-    expect(solo.streak).toBe(2);
-    expect(solo.verdict?.action).not.toBe('block');
+    /* A subset is a different round: no inherited evidence, no refusal. */
+    expect(solo.streak).toBe(1);
+    expect(solo.verdict).toBeUndefined();
 
     /* Detection is not lost: a repeating fan-out trips again after the resume. */
     const afterResume: number[] = [];
