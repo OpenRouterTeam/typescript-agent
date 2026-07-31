@@ -9,7 +9,7 @@ Async tool support: a unified `run()` tool interface with lifecycles, model-side
 - `'background'` — the loop keeps going. Work settling within the grace window (`graceMs`, default 250ms) behaves like a sync call; otherwise the model receives a pending placeholder immediately (satisfying the provider requirement that every `function_call` in follow-up history has a paired output) and the result is injected as a `tool_task_result` user message when it settles. `asyncTools.onRunEnd: 'drain' (default) | 'detach' | 'cancel'` governs run end.
 - `'deferred'` — `run` returns `ctx.defer(taskId)` to park the call on durable external work; the run pauses with the new `ConversationStatus` `'awaiting_async_tools'`. The built tool carries typed `.resolve()` / `.fail()` / `.cancel()` completion methods (output checked against `outputSchema` at compile time and runtime), callable from any process holding the `StateAccessor`; `resumeToolResults()` is the low-level batch entry point. Double resolution throws `ToolTaskAlreadySettledError`.
 
-**Model-side check-ins.** An unblocked agent can check on a long-running task by calling the SAME tool with a `taskId` (the pending placeholder tells it how). The engine routes such calls to the tool's `check` config — `check: { schema, execute }` for custom check params (e.g. a `steer` field) and handlers, or the SDK default which answers three views: `status` (state, elapsed, last log), `logs` (last `tail` entries), and `transcript` (full detail). Check handlers receive `turnContext.toolCallStatus`, `turnContext.accumulatedYieldedEvents`, and a `turnContext.task` handle (`statusView` / `tailLogs` / `transcript` / `send` / `cancel`). Check calls are doom-loop-exempt and bypass concurrency/timeout gates. Opt out with `asyncTools: { checkins: false }`. After a process restart, deferred tasks answer `status` from persisted state (including a bounded `lastLog` — a new additive `PendingAsyncTool` field).
+**Model-side task interactions.** When any long-running tool is registered, the SDK appends ONE universal `task` tool — a single static wire definition no matter how many async tools exist (per-tool schemas are never augmented; context cost stays constant). The model addresses tasks by `taskId`: `action: 'check' (default) | 'steer' | 'result' | 'cancel'`, with `view: 'status' | 'logs' | 'transcript'` for checks. Calls are engine-intercepted and dispatched to the OWNING tool's `check: { schema, execute }` config when declared (custom `params` validated against `check.schema`), else the SDK default views — universal interface, tool-specific handling. Check handlers receive `turnContext.toolCallStatus`, `turnContext.accumulatedYieldedEvents`, and a `turnContext.task` handle (`statusView` / `tailLogs` / `transcript` / `send` / `cancel`). Task-tool calls are doom-loop-exempt and bypass concurrency/timeout gates. Opt out with `asyncTools: { checkins: false }`. After a process restart, deferred tasks answer `status` from persisted state (including a bounded `lastLog` — a new additive `PendingAsyncTool` field).
 
 **Steering.** Running tasks have an inbox: `run` bodies opt in via `ctx.onMessage(handler)`; deliver from code with `ModelResult.sendToTask(taskId, message)` or from the model via a custom check param forwarded with `turnContext.task.send(...)`. New `ModelResult.queueUserMessage(text)` injects a user message at the next safe turn boundary.
 
@@ -21,7 +21,7 @@ Async tool support: a unified `run()` tool interface with lifecycles, model-side
 
 **Events.** New `tool.async_started` / `tool.async_settled` (with `delivery: 'injected' | 'pending_resume' | 'dropped'`); progress reuses `tool.preliminary_result`; `tool.result` fires exactly once per call with the final value. `ModelResult.getAsyncTasks()` inspects live tasks. Doom-loop detection treats a late-result delivery as forward progress.
 
-State fields (`pendingAsyncTools` with `lastLog`, `settledAsyncCallIds`) are additive within ConversationState version 1. New subpath exports: `resume-tool-results`, `tool-concurrency`, `async-tool-registry`, `tool-task`, `tool-check`, `agent-tool`.
+State fields (`pendingAsyncTools` with `lastLog`, `settledAsyncCallIds`) are additive within ConversationState version 1. New subpath exports: `resume-tool-results`, `tool-concurrency`, `async-tool-registry`, `tool-task`, `tool-check`, `agent-tool`. The reserved tool name `task` is rejected by `tool()` and, when supplied dynamically, suppresses the built-in with a warning.
 
 Note: `tool.background()` and `tool.deferred()` existed only on this PR's branch and were never published; they are replaced by `lifecycle`. No released consumer is affected.
 
@@ -40,12 +40,9 @@ const renderVideo = tool({
   ack: 'Rendering started.',
   timeoutMs: 300_000,
   check: {
-    schema: z.object({
-      view: z.enum(['status', 'logs', 'transcript']).optional(),
-      steer: z.string().optional(),
-    }),
+    schema: z.object({ focus: z.string().optional() }),   // validates task({ params })
     execute: async (params, turnContext) => {
-      if (params.steer) turnContext.task?.send(params.steer);
+      if (params.focus) turnContext.task?.send(params.focus);
       return turnContext.task?.statusView();
     },
   },
@@ -87,11 +84,12 @@ const result = callModel(client, {
   toolConcurrency: { round: 4 },
 });
 
-// The model can now check on any running task by re-calling its tool:
-//   render_video({ taskId: "task_7f3" })                → status view
-//   render_video({ taskId, view: "logs", tail: 5 })     → recent progress
-//   research_topic({ taskId, view: "transcript" })      → child conversation
-//   render_video({ taskId, steer: "make it shorter" })  → steers the job
+// The model interacts with running tasks through ONE universal tool:
+//   task({ taskId: "task_7f3" })                          → status view
+//   task({ taskId, view: "logs", tail: 5 })               → recent progress
+//   task({ taskId, view: "transcript" })                  → agent child conversation
+//   task({ taskId, action: "steer", message: "shorter" }) → steers the job
+//   task({ taskId, action: "cancel" })                    → stops it
 
 // Developer-side observability & control:
 result.getAsyncTasks();

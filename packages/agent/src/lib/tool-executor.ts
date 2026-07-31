@@ -3,7 +3,6 @@ import * as z4 from 'zod/v4';
 import type { $ZodObject, $ZodShape, $ZodType } from 'zod/v4/core';
 import { isContentArray } from './conversation-state.js';
 import { isFunctionCallItem, isFunctionCallOutputItem } from './stream-type-guards.js';
-import { buildToolParametersWithCheck } from './tool-check.js';
 import type { ToolContextStore, ToolExecutionExtras } from './tool-context.js';
 import { buildToolExecuteContext, buildToolRunContext } from './tool-context.js';
 import type {
@@ -111,10 +110,12 @@ export function convertZodToJsonSchema(zodSchema: $ZodType): Record<string, unkn
 /**
  * Convert tools to OpenRouter API format. Server tools pass their SDK-shaped
  * config through untouched; client tools are packaged into the function-call
- * shape. Long-running unified tools get an `anyOf: [start, check]` parameter
- * schema so the model can call the SAME tool with a `taskId` to check on a
- * running task. Return type widens to the SDK's full request-tool union so
- * any new server-tool variant added upstream flows through automatically.
+ * shape — their wire definitions are NEVER augmented per tool (interacting
+ * with long-running tasks goes through the single universal `task` tool,
+ * appended by callModel when warranted, so the per-tool context cost stays
+ * constant no matter how many async tools are registered). Return type
+ * widens to the SDK's full request-tool union so any new server-tool
+ * variant added upstream flows through automatically.
  */
 export function convertToolsToAPIFormat(
   tools: readonly Tool[],
@@ -123,13 +124,12 @@ export function convertToolsToAPIFormat(
     if (isServerTool(tool)) {
       return tool.config;
     }
-    const startSchema = convertZodToJsonSchema(tool.function.inputSchema);
     const apiTool: APITool = {
       type: 'function' as const,
       name: tool.function.name,
       description: tool.function.description || null,
       strict: null,
-      parameters: buildToolParametersWithCheck(tool, startSchema, convertZodToJsonSchema),
+      parameters: convertZodToJsonSchema(tool.function.inputSchema),
     };
     return apiTool;
   });

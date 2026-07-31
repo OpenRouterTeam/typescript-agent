@@ -590,20 +590,21 @@ export type AsyncToolAck<TInput> =
 export type ToolLifecycle = 'sync' | 'background' | 'deferred';
 
 /**
- * Check-in configuration for a long-running tool. The model checks on a
- * running task by calling THE SAME TOOL with a `taskId` argument; the engine
- * routes such calls here instead of starting new work.
+ * Check-in configuration for a long-running tool. The model interacts with
+ * running tasks through the SINGLE universal `task` tool (`action:
+ * 'check' | 'steer' | 'result' | 'cancel'`, addressed by `taskId`); the
+ * engine dispatches those calls to the owning tool's config here — so the
+ * wire surface stays constant while the implementation stays tool-specific.
  *
- * - `true` — explicit opt-in to the SDK default check (long-running tools
- *   get it even without this).
- * - `schema` — extra check parameters the model may pass alongside `taskId`
- *   (e.g. a `steer` string). Defaults to
- *   `{ view?: 'status'|'logs'|'transcript', tail?: number }`.
- * - `execute` — custom check handler. Receives the validated check params
- *   and a TurnContext populated with `toolCallStatus`,
+ * - `true` — explicit opt-in to the SDK default handling (long-running
+ *   tools get it even without this).
+ * - `schema` — validates the task tool's free-form `params` object when the
+ *   model passes one to this tool's custom handler.
+ * - `execute` — custom check handler, replacing the SDK default for
+ *   `action: 'check'` calls targeting this tool's tasks. Receives the
+ *   validated `params` and a TurnContext populated with `toolCallStatus`,
  *   `accumulatedYieldedEvents`, and the `task` handle. Its return value is
- *   the tool output the model sees. When absent, the SDK default answers
- *   with status / logs / transcript views.
+ *   the tool output the model sees.
  */
 export type ToolCheckConfig<TCheckParams = Record<string, unknown>> =
   | true

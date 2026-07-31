@@ -61,7 +61,15 @@ import {
   isResponseIncompleteEvent,
   isServerToolResultItem,
 } from './stream-type-guards.js';
-import { defaultCheckResult, persistedTaskCheckResult, resolveCheckConfig } from './tool-check.js';
+import type { TaskToolInput } from './tool-check.js';
+import {
+  buildTaskToolStub,
+  defaultCheckResult,
+  persistedTaskCheckResult,
+  resolveCheckConfig,
+  TASK_TOOL_NAME,
+  TaskToolInputSchema,
+} from './tool-check.js';
 import type { Semaphore as ToolSemaphore } from './tool-concurrency.js';
 import { acquireAll, Semaphore } from './tool-concurrency.js';
 import type { ContextInput, ToolExecutionExtras } from './tool-context.js';
@@ -1238,6 +1246,10 @@ export class ModelResult<
    */
   private hasExecutableToolCalls(toolCalls: ParsedToolCall<Tool>[]): boolean {
     return toolCalls.some((toolCall) => {
+      // The universal task tool is engine-intercepted — always executable.
+      if (toolCall.name === TASK_TOOL_NAME && this.taskToolActive()) {
+        return true;
+      }
       const tool = this.options.tools?.find(
         (t) => isClientTool(t) && t.function.name === toolCall.name,
       );
@@ -2320,7 +2332,6 @@ export class ModelResult<
    */
   private async settleAsyncInvocationAsUnsent(
     tc: ParsedToolCall<TTools[number]>,
-    tool: Tool,
     invocation: AsyncToolInvocation,
   ): Promise<UnsentToolResult<TTools>> {
     if (invocation.asyncMode === 'background') {
@@ -2371,7 +2382,6 @@ export class ModelResult<
       });
     }
     const placeholder = this.buildPendingPlaceholder(
-      tool,
       tc as ParsedToolCall<Tool>,
       invocation.taskId,
       invocation.ack,
@@ -2432,7 +2442,7 @@ export class ModelResult<
       }
 
       if (isAsyncToolInvocation(result)) {
-        return this.settleAsyncInvocationAsUnsent(tc, tool, result);
+        return this.settleAsyncInvocationAsUnsent(tc, result);
       }
 
       if (result.error) {
@@ -2879,24 +2889,22 @@ export class ModelResult<
         preliminaryResultsForCall: InferToolEventsUnion<TTools>[];
       }
   > {
+    // Universal task-tool dispatch: ONE static tool ("task") handles every
+    // check/steer/result/cancel interaction with running tasks, addressed
+    // by taskId — the wire surface stays constant regardless of how many
+    // async tools are registered, while the handling stays tool-resident
+    // (the owning tool's `check` config). Engine-intercepted: bypasses
+    // gates, deadlines, and Pre/PostToolUse hooks (engine bookkeeping, not
+    // user work) and never reaches the doom-loop checkpoint.
+    if (toolCall.name === TASK_TOOL_NAME && this.taskToolActive()) {
+      return this.answerTaskToolCall(toolCall);
+    }
+
     const tool = this.options.tools?.find(
       (t) => isClientTool(t) && t.function.name === toolCall.name,
     );
     if (!tool || !isAutoResolvableTool(tool)) {
       return null;
-    }
-
-    // Check-in dispatch: a call to a long-running tool whose args carry a
-    // `taskId` matching a known task is a CHECK on that task, not new work.
-    // Answered from the live registry / persisted state; bypasses gates,
-    // deadlines, and Pre/PostToolUse hooks (engine bookkeeping, not user
-    // work) and is loopKey-exempt by construction (never reaches the
-    // doom-loop checkpoint in runToolWithHooks).
-    if (isLongRunningTool(tool) && this.options.asyncTools?.checkins !== false) {
-      const checkOutcome = await this.tryAnswerCheckCall(tool, toolCall);
-      if (checkOutcome) {
-        return checkOutcome;
-      }
     }
 
     // PermissionRequest hook denied this call without pausing: synthesize a
@@ -3301,7 +3309,6 @@ export class ModelResult<
       this.broadcastAsyncStarted(toolCall, 'defer', invocation.taskId, invocation.ack);
       return {
         output: this.buildPendingPlaceholder(
-          tool,
           toolCall,
           invocation.taskId,
           invocation.ack,
@@ -3410,7 +3417,7 @@ export class ModelResult<
     );
     this.broadcastAsyncStarted(toolCall, liveTask.mode, taskId, invocation.ack);
     return {
-      output: this.buildPendingPlaceholder(tool, toolCall, taskId, invocation.ack),
+      output: this.buildPendingPlaceholder(toolCall, taskId, invocation.ack),
     };
   }
 
@@ -3535,11 +3542,10 @@ export class ModelResult<
    * call. Pairs the `function_call` immediately (providers 400 on unpaired
    * calls in follow-up history); the real result arrives later as a
    * `tool_task_result` envelope. The note steers the model: with check-ins
-   * enabled it explains HOW to check on the task (same tool + taskId);
-   * with check-ins disabled it forbids re-calling entirely.
+   * enabled it points at the universal `task` tool; with check-ins
+   * disabled it forbids re-calling entirely.
    */
   private buildPendingPlaceholder(
-    tool: Tool,
     toolCall: ParsedToolCall<Tool>,
     taskId: string,
     ack?: unknown,
@@ -3556,9 +3562,8 @@ export class ModelResult<
         check: true,
       }),
     };
-    const toolName = isClientTool(tool) ? tool.function.name : String(toolCall.name);
     const directive = checkinsEnabled
-      ? `The result will be delivered to you automatically when ready. To check progress (status, recent logs, or the full transcript), call ${toolName} again with { "taskId": "${taskId}" }. Keep working on other steps meanwhile.`
+      ? `The result will be delivered to you automatically when ready. To check progress, steer, or cancel, call the task tool with { "taskId": "${taskId}" }. Keep working on other steps meanwhile.`
       : 'The result will be delivered to you automatically when ready — do not call this tool again to check on it.';
     if (typeof ack === 'string') {
       payload['note'] = `${ack} ${directive}`;
@@ -3576,20 +3581,27 @@ export class ModelResult<
     };
   }
 
+  /** True when the built-in task tool is active for this run. */
+  private taskToolActive(): boolean {
+    if (this.options.asyncTools?.checkins === false) {
+      return false;
+    }
+    return (this.options.tools ?? []).some((t) => isLongRunningTool(t));
+  }
+
   /**
-   * Try to answer a tool call as a CHECK on a running task. Returns null
-   * when the args carry no known taskId (the call starts new work instead).
+   * Answer a call to the universal `task` tool: resolve the taskId to its
+   * live registry task (or persisted pendingAsyncTools entry, post-restart)
+   * and its OWNING tool, then dispatch by action:
    *
-   * A known taskId = a live registry task OR a persisted pendingAsyncTools
-   * entry (deferred / cross-process after a restart). The check runs the
-   * tool's `check.execute` (or the SDK default views) with a TurnContext
-   * populated with `toolCallStatus`, `accumulatedYieldedEvents`, and the
-   * `task` handle.
+   * - `check` (default): the owning tool's `check.execute` when declared
+   *   (custom `params` validated against `check.schema`), else the SDK
+   *   default status / logs / transcript views.
+   * - `steer`: deliver `message` to the run body's inbox.
+   * - `result`: the final result if settled, else the status view.
+   * - `cancel`: cancel the task.
    */
-  private async tryAnswerCheckCall(
-    tool: Tool,
-    toolCall: ParsedToolCall<Tool>,
-  ): Promise<{
+  private async answerTaskToolCall(toolCall: ParsedToolCall<Tool>): Promise<{
     type: 'execution';
     toolCall: ParsedToolCall<Tool>;
     tool: Tool;
@@ -3598,61 +3610,121 @@ export class ModelResult<
       error?: Error;
     };
     preliminaryResultsForCall: InferToolEventsUnion<TTools>[];
-  } | null> {
-    const args = toolCall.arguments;
-    if (!isRecord(args) || typeof args['taskId'] !== 'string') {
-      return null;
-    }
-    const taskId = args['taskId'];
-
-    const liveTask = this.asyncToolRegistry?.getTask(taskId);
-    const persisted = this.currentState?.pendingAsyncTools?.find((t) => t.taskId === taskId);
-    if (!liveTask && !persisted) {
-      // Unknown taskId: NOT a check — unless the tool's start schema could
-      // never produce a `taskId` arg, in which case answering with an error
-      // beats starting phantom work. We treat unknown ids as errors: a
-      // model echoing a stale/foreign taskId should hear that, not spawn a
-      // new task with misinterpreted args.
+  }> {
+    const taskTool = buildTaskToolStub();
+    const answer = (result: unknown, error?: Error) => {
+      if (error === undefined) {
+        this.broadcastToolResult(toolCall.id, 'client', result as InferToolOutputsUnion<TTools>);
+      }
       return {
         type: 'execution' as const,
         toolCall,
-        tool,
-        result: {
-          result: {
-            error: 'unknown_task',
-            taskId,
-            hint: 'No task with this id exists in this conversation. It may belong to another conversation, or its record was dropped.',
-          },
-        },
-        preliminaryResultsForCall: [],
+        tool: taskTool,
+        result: error
+          ? {
+              result: null,
+              error,
+            }
+          : {
+              result,
+            },
+        preliminaryResultsForCall: [] as InferToolEventsUnion<TTools>[],
       };
-    }
+    };
 
-    const config = isUnifiedTool(tool) ? tool.function.check : undefined;
-    const { schema, execute } = resolveCheckConfig(config);
-
-    // Validate the check params (taskId stripped — it addressed the task).
-    const { taskId: _ignored, ...checkArgs } = args;
-    let validatedParams: Record<string, unknown>;
+    let input: TaskToolInput;
     try {
-      validatedParams = validateToolInput(schema, checkArgs) as Record<string, unknown>;
+      input = validateToolInput(TaskToolInputSchema, toolCall.arguments ?? {}) as TaskToolInput;
     } catch (error) {
-      return {
-        type: 'execution' as const,
-        toolCall,
-        tool,
-        result: {
-          result: null,
-          error: error instanceof Error ? error : new Error(String(error)),
-        },
-        preliminaryResultsForCall: [],
-      };
+      return answer(null, error instanceof Error ? error : new Error(String(error)));
     }
 
-    const maxTranscriptChars = this.options.asyncTools?.maxTranscriptChars ?? 20_000;
+    const liveTask = this.asyncToolRegistry?.getTask(input.taskId);
+    const persisted = this.currentState?.pendingAsyncTools?.find((t) => t.taskId === input.taskId);
+    if (!liveTask && !persisted) {
+      return answer({
+        error: 'unknown_task',
+        taskId: input.taskId,
+        hint: 'No task with this id exists in this conversation. It may belong to another conversation, or its record was dropped.',
+      });
+    }
 
-    let checkResult: unknown;
+    const owningToolName = liveTask?.toolName ?? persisted?.name ?? '';
+    const owningTool = this.options.tools?.find(
+      (t) => isClientTool(t) && t.function.name === owningToolName,
+    );
+    const config = owningTool && isUnifiedTool(owningTool) ? owningTool.function.check : undefined;
+    const { schema, execute } = resolveCheckConfig(config);
+    const maxTranscriptChars = this.options.asyncTools?.maxTranscriptChars ?? 20_000;
+    const action = input.action ?? 'check';
+
     try {
+      if (action === 'cancel') {
+        const cancelled = liveTask
+          ? (this.asyncToolRegistry?.cancelTask(input.taskId, input.reason) ?? false)
+          : false;
+        return answer(
+          cancelled
+            ? {
+                taskId: input.taskId,
+                status: 'cancelled',
+              }
+            : {
+                taskId: input.taskId,
+                error: 'not_cancellable',
+                hint: liveTask
+                  ? 'The task has already settled.'
+                  : 'This task is owned by an external system — cancel it there (or via the tool’s .cancel() method).',
+              },
+        );
+      }
+
+      if (action === 'steer') {
+        if (typeof input.message !== 'string' || input.message.length === 0) {
+          return answer(null, new Error("action 'steer' requires a non-empty `message`"));
+        }
+        if (!liveTask || liveTask.mode === 'defer') {
+          return answer({
+            taskId: input.taskId,
+            error: 'not_steerable',
+            hint: 'This task runs in an external system — steer it there.',
+          });
+        }
+        liveTask.send(input.message);
+        return answer({
+          taskId: input.taskId,
+          steered: true,
+        });
+      }
+
+      if (action === 'result') {
+        if (liveTask?.status === 'completed') {
+          return answer({
+            taskId: input.taskId,
+            status: 'completed',
+            result: liveTask.result,
+          });
+        }
+        if (liveTask && liveTask.status !== 'working') {
+          return answer({
+            taskId: input.taskId,
+            status: liveTask.status,
+            ...(liveTask.error !== undefined && {
+              error: liveTask.error,
+            }),
+          });
+        }
+        // Not settled: fall through to the status view.
+      }
+
+      // action === 'check' (or 'result' on an unsettled task).
+      // Custom params for the owning tool's handler are validated against
+      // its check.schema when both are present.
+      let customParams: Record<string, unknown> = input.params ?? {};
+      if (schema && input.params !== undefined) {
+        customParams = validateToolInput(schema, input.params) as Record<string, unknown>;
+      }
+
       if (liveTask) {
         const handle = this.buildTaskHandle(liveTask, maxTranscriptChars);
         const checkTurnContext: TurnContext = {
@@ -3661,55 +3733,46 @@ export class ModelResult<
           accumulatedYieldedEvents: liveTask.accumulatedYieldedEvents,
           task: handle,
         };
-        checkResult = execute
-          ? await Promise.resolve(execute(validatedParams, checkTurnContext))
-          : defaultCheckResult(validatedParams, checkTurnContext, {
-              maxTranscriptChars,
-            });
-      } else if (persisted) {
-        // Cross-process / post-restart: only persisted status survives. A
-        // custom check.execute still runs, with a state-backed context (no
-        // live task handle).
-        const checkTurnContext: TurnContext = {
-          numberOfTurns: this.allToolExecutionRounds.length + 1,
-          toolCallStatus: persisted.status,
-          accumulatedYieldedEvents: persisted.lastLog
-            ? [
-                persisted.lastLog.text,
-              ]
-            : [],
-        };
-        checkResult = execute
-          ? await Promise.resolve(execute(validatedParams, checkTurnContext))
-          : persistedTaskCheckResult(validatedParams, persisted);
+        const checkResult = execute
+          ? await Promise.resolve(execute(customParams, checkTurnContext))
+          : defaultCheckResult(
+              {
+                view: input.view,
+                tail: input.tail,
+              },
+              checkTurnContext,
+              {
+                maxTranscriptChars,
+              },
+            );
+        return answer(checkResult);
       }
-    } catch (error) {
-      return {
-        type: 'execution' as const,
-        toolCall,
-        tool,
-        result: {
-          result: null,
-          error: error instanceof Error ? error : new Error(String(error)),
-        },
-        preliminaryResultsForCall: [],
-      };
-    }
 
-    this.broadcastToolResult(
-      toolCall.id,
-      isMcpTool(tool) ? 'mcp' : 'client',
-      checkResult as InferToolOutputsUnion<TTools>,
-    );
-    return {
-      type: 'execution' as const,
-      toolCall,
-      tool,
-      result: {
-        result: checkResult,
-      },
-      preliminaryResultsForCall: [],
-    };
+      // Cross-process / post-restart: only persisted status survives. A
+      // custom check.execute still runs, with a state-backed context (no
+      // live task handle).
+      const persistedEntry = persisted as PendingAsyncTool;
+      const checkTurnContext: TurnContext = {
+        numberOfTurns: this.allToolExecutionRounds.length + 1,
+        toolCallStatus: persistedEntry.status,
+        accumulatedYieldedEvents: persistedEntry.lastLog
+          ? [
+              persistedEntry.lastLog.text,
+            ]
+          : [],
+      };
+      const checkResult = execute
+        ? await Promise.resolve(execute(customParams, checkTurnContext))
+        : persistedTaskCheckResult(
+            {
+              view: input.view,
+            },
+            persistedEntry,
+          );
+      return answer(checkResult);
+    } catch (error) {
+      return answer(null, error instanceof Error ? error : new Error(String(error)));
+    }
   }
 
   /** Build the narrow ToolTaskHandle façade for check.execute handlers. */
@@ -4769,7 +4832,6 @@ export class ModelResult<
         unsentResults.push(
           await this.settleAsyncInvocationAsUnsent(
             toolCall as ParsedToolCall<TTools[number]>,
-            tool,
             result,
           ),
         );

@@ -468,37 +468,45 @@ await legalReview.resolve(client, {
 
 ### Checking On Long-Running Tasks
 
-The model checks on a running task by calling **the same tool** with a `taskId` (advertised in the pending placeholder). The engine routes such calls to the tool's check-in handler instead of starting new work:
+When any long-running tool is registered, the SDK appends **one universal `task` tool** to the request — a single static wire definition regardless of how many async tools exist (per-tool schemas are never augmented, so context cost stays constant). The pending placeholder tells the model to use it:
+
+```typescript
+task({ taskId: "task_7f3" })                          // status: state, elapsed, last log
+task({ taskId, view: "logs", tail: 5 })               // recent progress entries
+task({ taskId, view: "transcript" })                  // full detail (agents: child conversation)
+task({ taskId, action: "steer", message: "..." })     // send guidance to the running task
+task({ taskId, action: "result" })                    // final result if settled, else status
+task({ taskId, action: "cancel", reason: "..." })     // stop the task
+```
+
+Calls are engine-intercepted and dispatched to the **owning tool's** `check` config — the wire surface is universal, the handling stays tool-specific:
 
 ```typescript
 const renderVideo = tool({
   name: 'render_video',
   lifecycle: 'background',
   // ... as above ...
-  check: {                                          // optional — SDK default when absent
-    schema: z.object({
-      view: z.enum(['status', 'logs', 'transcript']).optional(),
-      steer: z.string().optional(),                 // authors can expose steering
-    }),
+  check: {                                     // optional — SDK default when absent
+    schema: z.object({ focus: z.string().optional() }),   // validates task({ params })
     execute: async (params, turnContext) => {
       // turnContext.toolCallStatus           → 'working' | 'completed' | ...
       // turnContext.accumulatedYieldedEvents → every run yield so far
       // turnContext.task                     → { statusView, tailLogs, transcript, send, cancel }
-      if (params.steer) turnContext.task?.send(params.steer);
+      if (params.focus) turnContext.task?.send(params.focus);
       return turnContext.task?.statusView();
     },
   },
 });
 ```
 
-Without a custom `check`, the SDK default answers three views: `status` (state, elapsed, last log, and for agents turns completed + current activity), `logs` (last `tail` entries, default 20), and `transcript` (full rendered detail, truncated to `asyncTools.maxTranscriptChars`, default 20k). Check calls are doom-loop-exempt, bypass per-tool concurrency/timeout gates, and never fire Pre/PostToolUse hooks. Disable model-side check-ins entirely with `asyncTools: { checkins: false }`.
+Without a custom `check`, the SDK default answers the three views (`status` / `logs` / `transcript`, truncated to `asyncTools.maxTranscriptChars`, default 20k). Task-tool calls are doom-loop-exempt, bypass per-tool concurrency/timeout gates, and never fire Pre/PostToolUse hooks. Disable entirely with `asyncTools: { checkins: false }` (placeholders then revert to "do not call this tool again"). A user tool named `task` suppresses the built-in with a warning.
 
 After a process restart, deferred tasks answer `status` from persisted state (including a bounded `lastLog`); full logs and transcripts are in-memory only and report an explanatory note instead.
 
 ### Steering Running Tasks
 
 - **From code:** `result.sendToTask(taskId, message)` delivers into the run body's `ctx.onMessage` handler (queued until one registers). Deferred tasks throw — their work runs in an external system.
-- **From the model:** expose a check param (e.g. `steer`) and forward it with `turnContext.task.send(...)` in `check.execute`.
+- **From the model:** `task({ taskId, action: 'steer', message })` delivers directly, or expose custom `params` handled by `check.execute` with `turnContext.task.send(...)`.
 - **Agent tools** forward steering messages into the child conversation automatically (as user messages at the child's next turn boundary).
 
 ### Agent Tools (Subagents)

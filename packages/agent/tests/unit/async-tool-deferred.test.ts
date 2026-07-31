@@ -169,9 +169,9 @@ describe('tool.deferred — pause & placeholder', () => {
     expect(placeholder?.output).toContain('"status":"pending"');
     expect(placeholder?.output).toContain('ticket_c-9');
     expect(placeholder?.output).toContain('Legal review requested.');
-    // Check-ins are on by default: the note tells the model HOW to check.
+    // Check-ins are on by default: the note points at the task tool.
     expect(placeholder?.output).toContain('To check progress');
-    expect(placeholder?.output).toContain('request_legal_review');
+    expect(placeholder?.output).toContain('call the task tool');
 
     expect(await result.requiresApproval()).toBe(true);
   });

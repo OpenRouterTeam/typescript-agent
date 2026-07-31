@@ -4,6 +4,7 @@ import type { $ZodObject, $ZodShape, $ZodType, infer as zodInfer } from 'zod/v4/
 import { agentToolBuilder } from './agent-tool.js';
 import type { CallModelInput } from './async-params.js';
 import type { ModelResult } from './model-result.js';
+import { TASK_TOOL_NAME } from './tool-check.js';
 import type { TaskLogLimits } from './tool-task.js';
 import type {
   AsyncToolAck,
@@ -493,6 +494,14 @@ export function tool(
   if (config.name === SHARED_CONTEXT_KEY) {
     throw new Error(
       `Tool name "${SHARED_CONTEXT_KEY}" is reserved for shared context. Choose a different name.`,
+    );
+  }
+
+  // 'task' is reserved for the universal task-interaction tool the engine
+  // registers alongside long-running tools.
+  if (config.name === TASK_TOOL_NAME) {
+    throw new Error(
+      `Tool name "${TASK_TOOL_NAME}" is reserved for the built-in task-interaction tool. Choose a different name.`,
     );
   }
 

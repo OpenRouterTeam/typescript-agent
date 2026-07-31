@@ -216,9 +216,9 @@ export {
 export type { BuiltDeferredTool, DeferredToolMethods } from './lib/tool.js';
 // Tool creation helpers (tool also carries tool.background / tool.deferred)
 export { markMcp, serverTool, tool } from './lib/tool.js';
-// Check-in helpers
-export type { DefaultCheckParams } from './lib/tool-check.js';
-export { DefaultCheckParamsSchema } from './lib/tool-check.js';
+// Universal task-tool helpers
+export type { TaskToolInput } from './lib/tool-check.js';
+export { TASK_TOOL_NAME, TaskToolInputSchema } from './lib/tool-check.js';
 // Tool concurrency primitives
 export type { SemaphoreRelease } from './lib/tool-concurrency.js';
 export { acquireAll, Semaphore } from './lib/tool-concurrency.js';

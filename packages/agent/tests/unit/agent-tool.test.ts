@@ -317,7 +317,7 @@ describe('tool.agent — child conversation as a background task', () => {
             value: makeResponse('p2', [
               functionCallItem(
                 'call_check',
-                'research_topic',
+                'task',
                 JSON.stringify({
                   taskId,
                   view: 'transcript',

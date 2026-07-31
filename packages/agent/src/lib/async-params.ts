@@ -191,6 +191,14 @@ type BaseCallModelInput<
     onRunEnd?: 'drain' | 'detach' | 'cancel';
     drainTimeoutMs?: number;
     maxDrainTurns?: number;
+    /**
+     * Whether the single universal `task` tool is registered so the model
+     * can check/steer/result/cancel running tasks by taskId. Default true
+     * when any long-running tool is present.
+     */
+    checkins?: boolean;
+    /** Max characters for the `transcript` check view. Default 20_000. */
+    maxTranscriptChars?: number;
   };
 };
 

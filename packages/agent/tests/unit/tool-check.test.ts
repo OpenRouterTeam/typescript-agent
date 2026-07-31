@@ -5,6 +5,7 @@ import { z } from 'zod/v4';
 import type { ConversationState, StateAccessor } from '../../src/index.js';
 import { callModel } from '../../src/inner-loop/call-model.js';
 import { tool } from '../../src/lib/tool.js';
+import { needsTaskTool } from '../../src/lib/tool-check.js';
 import { convertToolsToAPIFormat } from '../../src/lib/tool-executor.js';
 
 const mockBetaResponsesSend = vi.hoisted(() => vi.fn());
@@ -125,8 +126,12 @@ function makeObservableTool() {
   };
 }
 
-describe('check-in wire schema', () => {
-  it('long-running tools get anyOf [start, check] parameters; sync tools do not', () => {
+describe('universal task tool registration', () => {
+  beforeEach(() => {
+    mockBetaResponsesSend.mockReset();
+  });
+
+  it('convertToolsToAPIFormat never augments per-tool schemas', () => {
     const longRunning = tool({
       name: 'lr',
       lifecycle: 'background',
@@ -140,81 +145,164 @@ describe('check-in wire schema', () => {
         ok: true,
       }),
     });
-    const syncTool = tool({
-      name: 'sync',
-      inputSchema: z.object({
-        q: z.string(),
-      }),
-      run: async () => ({
-        ok: true,
-      }),
-    });
 
     const api = convertToolsToAPIFormat([
       longRunning,
-      syncTool,
     ]) as Array<{
       name: string;
       parameters: Record<string, unknown>;
     }>;
-
-    const lrParams = api[0]?.parameters as {
-      anyOf?: Array<Record<string, unknown>>;
-    };
-    expect(lrParams.anyOf).toHaveLength(2);
-    const checkBranch = lrParams.anyOf?.[1] as {
-      properties: Record<string, unknown>;
-      required: string[];
-    };
-    expect(checkBranch.required).toEqual([
-      'taskId',
+    // The tool's own schema is untouched — no anyOf, no taskId.
+    expect(api[0]?.parameters['anyOf']).toBeUndefined();
+    expect(
+      Object.keys((api[0]?.parameters['properties'] as Record<string, unknown>) ?? {}),
+    ).toEqual([
+      'q',
     ]);
-    expect(Object.keys(checkBranch.properties)).toContain('view');
-    expect(Object.keys(checkBranch.properties)).toContain('tail');
-
-    const syncParams = api[1]?.parameters as {
-      anyOf?: unknown;
-    };
-    expect(syncParams.anyOf).toBeUndefined();
   });
 
-  it("custom check.schema shapes the check branch's params", () => {
-    const custom = tool({
-      name: 'custom_check',
+  it('needsTaskTool: true with a long-running tool, false without, false on name collision', () => {
+    const longRunning = tool({
+      name: 'lr',
       lifecycle: 'background',
-      inputSchema: z.object({
-        q: z.string(),
-      }),
+      inputSchema: z.object({}),
       outputSchema: z.object({
         ok: z.boolean(),
       }),
-      check: {
-        schema: z.object({
-          steer: z.string().optional(),
-        }),
-      },
       run: async () => ({
         ok: true,
       }),
     });
-    const api = convertToolsToAPIFormat([
-      custom,
-    ]) as Array<{
-      parameters: {
-        anyOf: Array<{
-          properties: Record<string, unknown>;
-        }>;
-      };
+    const syncTool = tool({
+      name: 'sync',
+      inputSchema: z.object({}),
+      run: async () => ({
+        ok: true,
+      }),
+    });
+
+    expect(
+      needsTaskTool([
+        longRunning,
+        syncTool,
+      ]),
+    ).toBe(true);
+    expect(
+      needsTaskTool([
+        syncTool,
+      ]),
+    ).toBe(false);
+
+    // tool() rejects the reserved name outright...
+    expect(() =>
+      tool({
+        name: 'task',
+        inputSchema: z.object({}),
+        execute: async () => ({}),
+      }),
+    ).toThrow('reserved');
+
+    // ...but a dynamically-built tool list can bypass tool(); the built-in
+    // is suppressed with a warning instead of silently colliding.
+    const collider = {
+      type: 'function' as const,
+      function: {
+        name: 'task',
+        inputSchema: z.object({}),
+        execute: async () => ({}),
+      },
+    } as unknown as Parameters<typeof needsTaskTool>[0][number];
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    expect(
+      needsTaskTool([
+        longRunning,
+        collider,
+      ]),
+    ).toBe(false);
+    expect(warnSpy).toHaveBeenCalled();
+    warnSpy.mockRestore();
+  });
+
+  it('callModel appends the single task tool to the API tool list when warranted', async () => {
+    const longRunning = tool({
+      name: 'lr',
+      lifecycle: 'background',
+      inputSchema: z.object({}),
+      outputSchema: z.object({
+        ok: z.boolean(),
+      }),
+      run: async () => ({
+        ok: true,
+      }),
+    });
+
+    mockBetaResponsesSend.mockResolvedValueOnce({
+      ok: true,
+      value: makeResponse('resp_1', [
+        messageItem('msg_1', 'hi'),
+      ]),
+    });
+
+    await callModel(client, {
+      model: 'test-model',
+      input: 'hello',
+      tools: [
+        longRunning,
+      ] as const,
+    }).getText();
+
+    const requestTools = mockBetaResponsesSend.mock.calls[0]?.[1]?.responsesRequest
+      ?.tools as Array<{
+      name?: string;
     }>;
-    const checkBranch = api[0]?.parameters.anyOf[1];
-    expect(Object.keys(checkBranch?.properties ?? {})).toEqual([
-      'taskId',
-      'steer',
+    expect(requestTools.map((t) => t.name)).toEqual([
+      'lr',
+      'task',
+    ]);
+  });
+
+  it('asyncTools.checkins: false suppresses the task tool', async () => {
+    const longRunning = tool({
+      name: 'lr',
+      lifecycle: 'background',
+      inputSchema: z.object({}),
+      outputSchema: z.object({
+        ok: z.boolean(),
+      }),
+      run: async () => ({
+        ok: true,
+      }),
+    });
+
+    mockBetaResponsesSend.mockResolvedValueOnce({
+      ok: true,
+      value: makeResponse('resp_1', [
+        messageItem('msg_1', 'hi'),
+      ]),
+    });
+
+    await callModel(client, {
+      model: 'test-model',
+      input: 'hello',
+      tools: [
+        longRunning,
+      ] as const,
+      asyncTools: {
+        checkins: false,
+      },
+    }).getText();
+
+    const requestTools = mockBetaResponsesSend.mock.calls[0]?.[1]?.responsesRequest
+      ?.tools as Array<{
+      name?: string;
+    }>;
+    expect(requestTools.map((t) => t.name)).toEqual([
+      'lr',
     ]);
   });
 });
 
-describe('check-in dispatch (same-tool taskId call)', () => {
+describe('task-tool dispatch', () => {
   beforeEach(() => {
     mockBetaResponsesSend.mockReset();
   });
@@ -259,7 +347,7 @@ describe('check-in dispatch (same-tool taskId call)', () => {
           value: makeResponse('resp_2', [
             functionCallItem(
               'call_check',
-              'render_video',
+              'task',
               JSON.stringify({
                 taskId,
                 ...checkArgs,
@@ -361,7 +449,7 @@ describe('check-in dispatch (same-tool taskId call)', () => {
       .mockResolvedValueOnce({
         ok: true,
         value: makeResponse('resp_2', [
-          functionCallItem('call_check', 'render_video', '{"taskId":"task_nope"}'),
+          functionCallItem('call_check', 'task', '{"taskId":"task_nope"}'),
         ]),
       })
       .mockImplementationOnce(async () => {
@@ -419,11 +507,11 @@ describe('check-in dispatch (same-tool taskId call)', () => {
       graceMs: 0,
       check: {
         schema: z.object({
-          steer: z.string().optional(),
+          focus: z.string().optional(),
         }),
         execute: async (params, turnContext) => {
-          if (typeof params['steer'] === 'string') {
-            turnContext.task?.send(params['steer']);
+          if (typeof params['focus'] === 'string') {
+            turnContext.task?.send(params['focus']);
           }
           return {
             state: turnContext.toolCallStatus,
@@ -464,10 +552,12 @@ describe('check-in dispatch (same-tool taskId call)', () => {
           value: makeResponse('resp_2', [
             functionCallItem(
               'call_check',
-              'steerable',
+              'task',
               JSON.stringify({
                 taskId,
-                steer: 'focus on pricing',
+                params: {
+                  focus: 'focus on pricing',
+                },
               }),
             ),
           ]),
@@ -547,7 +637,7 @@ describe('check-in dispatch (same-tool taskId call)', () => {
           value: makeResponse(`resp_check_${i}`, [
             functionCallItem(
               `call_check_${i}`,
-              'render_video',
+              'task',
               JSON.stringify({
                 taskId,
               }),
@@ -697,11 +787,7 @@ describe('check-in dispatch (same-tool taskId call)', () => {
       .mockResolvedValueOnce({
         ok: true,
         value: makeResponse('resp_2', [
-          functionCallItem(
-            'call_check',
-            'legal_review',
-            '{"taskId":"ticket_c1","view":"transcript"}',
-          ),
+          functionCallItem('call_check', 'task', '{"taskId":"ticket_c1","view":"transcript"}'),
         ]),
       })
       .mockResolvedValueOnce({
