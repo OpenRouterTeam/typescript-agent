@@ -40,6 +40,8 @@ export interface RehydrateMCPToolsOptions {
   excludeTools?: readonly string[];
   resources?: ResourcesOption;
   emitProgress?: boolean;
+  /** Doom-loop identities for wrapped tools, keyed by unprefixed MCP name. */
+  loopKeys?: CreateMCPToolsOptions['loopKeys'];
   autoRefreshOnListChanged?: boolean;
   cacheCredentials?: boolean;
   clientInfo?: {
@@ -61,6 +63,9 @@ function snapshotToToolDefs(snapshot: SerializedMCPServer): McpToolDef[] {
       outputSchema: {
         ...t.outputSchema,
       },
+    }),
+    ...(t.loopKey !== undefined && {
+      loopKey: t.loopKey,
     }),
   }));
 }
@@ -100,57 +105,58 @@ function authFromSnapshot(snapshot: SerializedMCPServer): MCPAuth | undefined {
   return undefined;
 }
 
+/**
+ * Options copied straight from a rehydrate call onto the `createMCPTools`
+ * options used for the fresh-connect fallback. `satisfies` keeps this honest:
+ * a key that isn't on both types fails to compile rather than silently
+ * dropping.
+ *
+ * `staleness` is deliberately absent — it compares a snapshot's age, and the
+ * fallback path has no snapshot to compare.
+ */
+const PASS_THROUGH_CREATE_KEYS = [
+  'fetch',
+  'onUnconvertibleSchema',
+  'onElicitation',
+  'signal',
+  'clientInfo',
+  'toolNamePrefix',
+  'includeTools',
+  'excludeTools',
+  'resources',
+  'emitProgress',
+  'loopKeys',
+  'autoRefreshOnListChanged',
+  'cacheCredentials',
+  'cache',
+] as const satisfies readonly (keyof RehydrateMCPToolsOptions & keyof CreateMCPToolsOptions)[];
+
 function toCreateOptions(
   options: RehydrateMCPToolsOptions,
   snapshot: SerializedMCPServer,
   effectiveAuth: MCPAuth | undefined,
 ): CreateMCPToolsOptions {
-  return {
+  const out: CreateMCPToolsOptions = {
     url: snapshot.url,
     transport: snapshot.transport,
     ...(effectiveAuth !== undefined && {
       auth: effectiveAuth,
     }),
-    ...(options.fetch !== undefined && {
-      fetch: options.fetch,
-    }),
-    ...(options.onUnconvertibleSchema !== undefined && {
-      onUnconvertibleSchema: options.onUnconvertibleSchema,
-    }),
-    ...(options.onElicitation !== undefined && {
-      onElicitation: options.onElicitation,
-    }),
-    ...(options.signal !== undefined && {
-      signal: options.signal,
-    }),
-    ...(options.clientInfo !== undefined && {
-      clientInfo: options.clientInfo,
-    }),
-    ...(options.toolNamePrefix !== undefined && {
-      toolNamePrefix: options.toolNamePrefix,
-    }),
-    ...(options.includeTools !== undefined && {
-      includeTools: options.includeTools,
-    }),
-    ...(options.excludeTools !== undefined && {
-      excludeTools: options.excludeTools,
-    }),
-    ...(options.resources !== undefined && {
-      resources: options.resources,
-    }),
-    ...(options.emitProgress !== undefined && {
-      emitProgress: options.emitProgress,
-    }),
-    ...(options.autoRefreshOnListChanged !== undefined && {
-      autoRefreshOnListChanged: options.autoRefreshOnListChanged,
-    }),
-    ...(options.cacheCredentials !== undefined && {
-      cacheCredentials: options.cacheCredentials,
-    }),
-    ...(options.cache !== undefined && {
-      cache: options.cache,
-    }),
   };
+  // Copy every defined pass-through key in one pass. Written as a loop rather
+  // than a spread per key so adding an option doesn't push this function's
+  // cyclomatic complexity past the structural gate's ceiling; it also mirrors
+  // `forwardedRehydrateOptions` in create-mcp-tools.ts, which forwards the same
+  // set in the opposite direction.
+  for (const key of PASS_THROUGH_CREATE_KEYS) {
+    const value = options[key];
+    if (value !== undefined) {
+      Object.assign(out, {
+        [key]: value,
+      });
+    }
+  }
+  return out;
 }
 
 /**
