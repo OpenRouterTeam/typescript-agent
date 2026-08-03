@@ -61,6 +61,8 @@ export interface RehydrateMCPToolsOptions {
   excludeTools?: readonly string[];
   resources?: ResourcesOption;
   emitProgress?: boolean;
+  /** Doom-loop identities for wrapped tools, keyed by unprefixed MCP name. */
+  loopKeys?: CreateMCPToolsOptions['loopKeys'];
   autoRefreshOnListChanged?: boolean;
   cacheCredentials?: boolean;
   clientInfo?: {
@@ -82,6 +84,9 @@ function snapshotToToolDefs(snapshot: SerializedMCPServer): McpToolDef[] {
       outputSchema: {
         ...t.outputSchema,
       },
+    }),
+    ...(t.loopKey !== undefined && {
+      loopKey: t.loopKey,
     }),
   }));
 }
@@ -151,6 +156,7 @@ const PASS_THROUGH_CREATE_KEYS = [
   'excludeTools',
   'resources',
   'emitProgress',
+  'loopKeys',
   'autoRefreshOnListChanged',
   'cacheCredentials',
   'cache',

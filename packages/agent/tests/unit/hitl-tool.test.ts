@@ -175,6 +175,81 @@ describe('executeHITLTool', () => {
     });
   });
 
+  it('threads the executed tool call into the hook context (streaming turn contexts omit it)', async () => {
+    let seenToolCall: models.FunctionCallItem | undefined;
+    const t = tool({
+      name: 'approve',
+      inputSchema: z.object({
+        amount: z.number(),
+      }),
+      outputSchema: z.object({
+        ok: z.boolean(),
+      }),
+      onToolCalled: async (_input, context) => {
+        seenToolCall = context?.toolCall;
+        return null;
+      },
+    });
+
+    // A streaming-loop turn context: numberOfTurns only, no toolCall.
+    const result = await executeHITLTool(
+      t,
+      makeToolCall('approve', 'call_stream_1', {
+        amount: 5,
+      }),
+      {
+        numberOfTurns: 1,
+      },
+    );
+    expect(result).toBeNull();
+    expect(seenToolCall).toEqual({
+      type: 'function_call',
+      id: 'call_stream_1',
+      callId: 'call_stream_1',
+      name: 'approve',
+      arguments: JSON.stringify({
+        amount: 5,
+      }),
+    });
+  });
+
+  it('prefers a caller-provided turn-context toolCall over the synthesized one', async () => {
+    let seenToolCall: models.FunctionCallItem | undefined;
+    const orchestratorToolCall: models.FunctionCallItem = {
+      type: 'function_call',
+      id: 'call_rich_1',
+      callId: 'call_rich_1',
+      name: 'approve',
+      arguments: '{"amount":5}',
+      status: 'completed',
+    };
+    const t = tool({
+      name: 'approve',
+      inputSchema: z.object({
+        amount: z.number(),
+      }),
+      outputSchema: z.object({
+        ok: z.boolean(),
+      }),
+      onToolCalled: async (_input, context) => {
+        seenToolCall = context?.toolCall;
+        return null;
+      },
+    });
+
+    await executeHITLTool(
+      t,
+      makeToolCall('approve', 'call_rich_1', {
+        amount: 5,
+      }),
+      {
+        numberOfTurns: 1,
+        toolCall: orchestratorToolCall,
+      },
+    );
+    expect(seenToolCall).toBe(orchestratorToolCall);
+  });
+
   it('returns null when onToolCalled returns null (pause)', async () => {
     const t = tool({
       name: 'approve',
@@ -298,6 +373,41 @@ describe('executeTool dispatcher with HITL tools', () => {
     );
     expect(result).toBeNull();
   });
+
+  it('threads the executed tool call into execute context for regular tools too', async () => {
+    let seenToolCall: models.FunctionCallItem | undefined;
+    const t = tool({
+      name: 'regular',
+      inputSchema: z.object({
+        x: z.number(),
+      }),
+      execute: async (_input, context) => {
+        seenToolCall = context?.toolCall;
+        return {
+          y: 1,
+        };
+      },
+    });
+
+    await executeTool(
+      t,
+      makeToolCall('regular', 'call_reg_1', {
+        x: 2,
+      }),
+      {
+        numberOfTurns: 1,
+      },
+    );
+    expect(seenToolCall).toEqual({
+      type: 'function_call',
+      id: 'call_reg_1',
+      callId: 'call_reg_1',
+      name: 'regular',
+      arguments: JSON.stringify({
+        x: 2,
+      }),
+    });
+  });
 });
 
 describe('applyOnResponseReceivedHooks', () => {
@@ -373,6 +483,51 @@ describe('applyOnResponseReceivedHooks', () => {
         reviewedAt: 1234,
       }),
     );
+  });
+
+  it('does not synthesize a toolCall for onResponseReceived (only the output item is in scope)', async () => {
+    let seenToolCall: models.FunctionCallItem | undefined;
+    let hookRan = false;
+    const t = tool({
+      name: 'approve',
+      inputSchema: z.object({
+        amount: z.number(),
+      }),
+      outputSchema: z.object({
+        ok: z.boolean(),
+      }),
+      onToolCalled: async () => null,
+      onResponseReceived: async (raw, context) => {
+        hookRan = true;
+        seenToolCall = context?.toolCall;
+        return raw as {
+          ok: boolean;
+        };
+      },
+    });
+
+    const input: models.InputsUnion = [
+      callItem('c1', 'approve'),
+      outputItem(
+        'c1',
+        JSON.stringify({
+          ok: true,
+        }),
+      ),
+    ];
+
+    // A streaming-shaped turn context: no caller-provided toolCall.
+    await applyOnResponseReceivedHooks(
+      input,
+      [
+        t,
+      ],
+      {
+        numberOfTurns: 1,
+      },
+    );
+    expect(hookRan).toBe(true);
+    expect(seenToolCall).toBeUndefined();
   });
 
   it('leaves output unchanged when no matching tool has a hook', async () => {

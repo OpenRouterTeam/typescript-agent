@@ -1,6 +1,6 @@
 import type { Client, Progress } from '@modelcontextprotocol/client';
 import { markMcp, tool } from '@openrouter/agent/tool';
-import type { McpBranded } from '@openrouter/agent/tool-types';
+import type { McpBranded, ToolLoopKey } from '@openrouter/agent/tool-types';
 import * as z from 'zod';
 import type { RawCallToolResult } from './result-mapper.js';
 import { mapCallToolResult } from './result-mapper.js';
@@ -14,6 +14,15 @@ export interface McpToolDef {
   description?: string;
   inputSchema: Record<string, unknown>;
   outputSchema?: Record<string, unknown>;
+  /**
+   * Doom-loop identity advertised by the server via
+   * `_meta['openrouter/loopKey']` on the tool definition: a field-name
+   * array (the declarative subset of arguments that identifies a call) or
+   * `false` (the tool is exempt — repetition is its job, e.g. polling).
+   * Data, not code — survives cache snapshots. A client-side `loopKeys`
+   * entry in {@link WrapToolOptions} takes precedence.
+   */
+  loopKey?: readonly string[] | false;
 }
 
 export interface WrapToolOptions {
@@ -22,6 +31,12 @@ export interface WrapToolOptions {
   schemaMode?: UnconvertibleSchemaMode;
   emitProgress?: boolean;
   signal?: AbortSignal;
+  /**
+   * Per-tool doom-loop identities, keyed by the tool's UNPREFIXED MCP name.
+   * Any `ToolLoopKey` form (function | field list | `false`). Takes
+   * precedence over a server-advertised `loopKey` on the definition.
+   */
+  loopKeys?: Readonly<Record<string, ToolLoopKey<Record<string, unknown>>>>;
 }
 
 /** Event yielded by a progress-emitting generator tool. */
@@ -82,6 +97,18 @@ export function wrapMcpTool(def: McpToolDef, options: WrapToolOptions): McpBrand
     def.outputSchema !== undefined
       ? convertMcpInputSchema(def.outputSchema, options.schemaMode)
       : undefined;
+  // Client-side config wins over the server-advertised declaration; both
+  // ride markMcp's injection point so every tool kind gets the same wiring.
+  const loopKey =
+    options.loopKeys !== undefined && Object.hasOwn(options.loopKeys, def.name)
+      ? options.loopKeys[def.name]
+      : def.loopKey;
+  const markOptions =
+    loopKey !== undefined
+      ? {
+          loopKey,
+        }
+      : undefined;
 
   if (options.emitProgress === true) {
     return markMcp(
@@ -141,6 +168,7 @@ export function wrapMcpTool(def: McpToolDef, options: WrapToolOptions): McpBrand
           return await finalize;
         },
       }),
+      markOptions,
     );
   }
 
@@ -161,5 +189,6 @@ export function wrapMcpTool(def: McpToolDef, options: WrapToolOptions): McpBrand
           args,
         }),
     }),
+    markOptions,
   );
 }
