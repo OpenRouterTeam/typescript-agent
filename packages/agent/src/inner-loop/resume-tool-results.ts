@@ -156,10 +156,12 @@ export async function resumeToolResults<TTools extends readonly Tool[]>(
     );
     if (!task) {
       const key = entry.taskId ?? entry.callId;
-      // In-process delivery removes the pending entry entirely (only the
-      // callId lands on settledAsyncCallIds) — surface a late external
-      // resolution for such a task as the at-most-once error, same as a
-      // replayed webhook against a still-listed settled entry.
+      // Settled tasks normally stay in pendingAsyncTools with a terminal
+      // status (both here and in the in-process delivery path), so lookups
+      // by taskId or callId hit the already-settled branch below. This
+      // callId fallback covers states persisted by older SDK versions
+      // whose in-process delivery REMOVED the entry, leaving only the
+      // callId on settledAsyncCallIds.
       if (entry.callId !== undefined && settledIds.has(entry.callId)) {
         if (request.ifSettled === 'ignore') {
           continue;

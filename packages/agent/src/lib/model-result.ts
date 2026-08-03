@@ -2763,16 +2763,26 @@ export class ModelResult<
           }),
         }),
       );
-      // Record settlement for the at-most-once guard.
+      // Record settlement for the at-most-once guard. The pending entry is
+      // KEPT with its terminal status (not removed) — same policy as
+      // resumeToolResults — so a late external resolution by taskId OR
+      // callId resolves to ToolTaskAlreadySettledError, never "not found".
       if (this.currentState) {
+        const terminalStatus =
+          task.status === 'completed' || task.status === 'cancelled' ? task.status : 'failed';
         this.currentState = updateState(this.currentState, {
           settledAsyncCallIds: [
             ...(this.currentState.settledAsyncCallIds ?? []),
             task.callId,
           ],
           ...(this.currentState.pendingAsyncTools !== undefined && {
-            pendingAsyncTools: this.currentState.pendingAsyncTools.filter(
-              (t) => t.callId !== task.callId,
+            pendingAsyncTools: this.currentState.pendingAsyncTools.map((t) =>
+              t.callId === task.callId
+                ? {
+                    ...t,
+                    status: terminalStatus,
+                  }
+                : t,
             ),
           }),
         });
@@ -3367,6 +3377,10 @@ export class ModelResult<
     // Grace window: work settling in time yields a plain synchronous output.
     const graceMs = invocation.graceMs;
     if (graceMs > 0) {
+      // The timer is cleared when the work settles first (same discipline
+      // as raceToolDeadline) — it's unref'd, but a leaked timer is still a
+      // leaked timer.
+      let graceTimer: ReturnType<typeof setTimeout> | undefined;
       const settled = await Promise.race([
         work.then(
           (result) => ({
@@ -3379,12 +3393,19 @@ export class ModelResult<
           }),
         ),
         new Promise<'pending'>((resolve) => {
-          const timer = setTimeout(() => resolve('pending'), graceMs);
-          if (typeof timer === 'object' && 'unref' in timer && typeof timer.unref === 'function') {
-            timer.unref();
+          graceTimer = setTimeout(() => resolve('pending'), graceMs);
+          if (
+            typeof graceTimer === 'object' &&
+            'unref' in graceTimer &&
+            typeof graceTimer.unref === 'function'
+          ) {
+            graceTimer.unref();
           }
         }),
       ]);
+      if (graceTimer !== undefined) {
+        clearTimeout(graceTimer);
+      }
 
       if (settled !== 'pending') {
         // Settled in-window: behave exactly like a regular tool. The call
@@ -6352,7 +6373,10 @@ function buildRunExtras(tool: Tool, runBinding: RunBinding): Record<string, unkn
       }),
     log: runBinding.log,
     onMessage: runBinding.onMessage,
-    task: {
+    // Transcript slot only — deliberately NOT `task`: TurnContext.task is
+    // the ToolTaskHandle facade (check calls only) and a run body must not
+    // see a transcript-only object under that name.
+    taskTranscript: {
       set transcriptSource(source: NonNullable<ToolTask['transcriptSource']>) {
         runBinding.setTranscriptSource(source);
       },

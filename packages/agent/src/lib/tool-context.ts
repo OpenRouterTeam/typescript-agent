@@ -156,8 +156,13 @@ export interface ToolExecutionExtras {
     log?: (entry: unknown) => void;
     onMessage?: (handler: (message: unknown) => void) => void;
     taskId?: string;
-    /** Narrow task facade (agent tools attach their transcript source here). */
-    task?: unknown;
+    /**
+     * Transcript-source slot (agent tools attach their live transcript
+     * here). Deliberately NOT named `task`: `TurnContext.task` is typed
+     * `ToolTaskHandle` (check calls only) and must not be shadowed by a
+     * transcript-only object in run bodies.
+     */
+    taskTranscript?: unknown;
   };
 }
 
@@ -293,8 +298,8 @@ export function buildToolRunContext<
     ...(runExtras?.taskId !== undefined && {
       taskId: runExtras.taskId,
     }),
-    ...(runExtras?.task !== undefined && {
-      task: runExtras.task,
+    ...(runExtras?.taskTranscript !== undefined && {
+      taskTranscript: runExtras.taskTranscript,
     }),
     ...(extras?.client !== undefined && {
       client: extras.client,

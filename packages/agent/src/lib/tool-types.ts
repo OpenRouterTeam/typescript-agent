@@ -173,9 +173,19 @@ declare const DEFERRED_BRAND: unique symbol;
  *
  * Branded with TOutput so a handle from one tool cannot be returned from
  * another whose outputSchema differs.
+ *
+ * Two distinct markers, deliberately:
+ * - `[DEFERRED_BRAND]` is TYPE-ONLY (`declare const` — no runtime value
+ *   exists) and carries the TOutput brand for compile-time safety.
+ * - `__deferred` is the RUNTIME marker {@link isDeferredHandle} checks.
+ *   `ctx.defer()` (the sole creator, in model-result.ts) always sets it.
+ * Changing either without the other breaks deferred-handle detection —
+ * keep them in sync.
  */
 export interface DeferredHandle<TOutput = unknown> {
   readonly [DEFERRED_BRAND]: TOutput;
+  /** Runtime marker set by `ctx.defer()`; checked by {@link isDeferredHandle}. */
+  readonly __deferred: true;
   readonly taskId: string;
   readonly pollAfterMs?: number;
   readonly expiresAt?: number;

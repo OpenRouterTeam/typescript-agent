@@ -1,5 +1,5 @@
 import * as z4 from 'zod/v4';
-import type { $ZodObject, $ZodShape } from 'zod/v4/core';
+import type { $ZodObject, $ZodShape, $ZodType } from 'zod/v4/core';
 import type {
   APITool,
   PendingAsyncTool,
@@ -67,7 +67,7 @@ export type TaskToolInput = z4.infer<typeof TaskToolInputSchema>;
  * regardless of how many long-running tools are registered.
  */
 export function buildTaskToolApiDefinition(
-  convertZod: (schema: never) => Record<string, unknown>,
+  convertZod: (schema: $ZodType) => Record<string, unknown>,
 ): APITool {
   return {
     type: 'function',
@@ -75,7 +75,7 @@ export function buildTaskToolApiDefinition(
     description:
       'Interact with a long-running task started by another tool: check progress (status, recent logs, or the full transcript), steer it with a message, fetch its result, or cancel it. Task ids come from pending tool outputs.',
     strict: null,
-    parameters: convertZod(TaskToolInputSchema as never),
+    parameters: convertZod(TaskToolInputSchema),
   };
 }
 

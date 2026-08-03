@@ -234,7 +234,7 @@ export function agentToolBuilder<
       client?: OpenRouterCore;
       log?: (entry: unknown) => void;
       onMessage?: (handler: (message: unknown) => void) => void;
-      task?: {
+      taskTranscript?: {
         transcriptSource?: TaskTranscriptSource;
       };
     },
@@ -261,8 +261,8 @@ export function agentToolBuilder<
     };
 
     const transcript = new AgentTranscriptSource(() => childState);
-    if (ctx?.task) {
-      ctx.task.transcriptSource = transcript;
+    if (ctx?.taskTranscript) {
+      ctx.taskTranscript.transcriptSource = transcript;
     }
 
     // Lazy import: agent-tool → call-model → model-result would otherwise
