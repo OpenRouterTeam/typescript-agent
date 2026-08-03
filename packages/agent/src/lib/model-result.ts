@@ -458,7 +458,9 @@ export class ModelResult<
     ResponseStreamEvent<InferToolEventsUnion<TTools>, InferToolOutputsUnion<TTools>>
   > | null = null;
   private initialStreamPipeStarted = false;
+  private turnStreamRequested = false;
   private initialPipePromise: Promise<void> | null = null;
+  private initialResponsePromise: Promise<models.OpenResponsesResult> | null = null;
 
   // Context store for typed tool context (persists across turns)
   private contextStore: ToolContextStore | null = null;
@@ -606,27 +608,52 @@ export class ModelResult<
 
     const stream = this.reusableStream;
 
-    // biome-ignore lint: IIFE used for fire-and-forget async pipe
-    this.initialPipePromise = (async () => {
-      broadcaster.push({
-        type: 'turn.start',
-        turnNumber: 0,
-        timestamp: Date.now(),
-      } satisfies TurnStartEvent);
+    this.initialResponsePromise = this.pipeInitialStream(stream);
+    this.initialPipePromise = this.initialResponsePromise.then(
+      () => undefined,
+      (error) => {
+        broadcaster.complete(error instanceof Error ? error : new Error(String(error)));
+        throw error;
+      },
+    );
+  }
 
-      const consumer = stream.createConsumer();
-      for await (const event of consumer) {
-        broadcaster.push(event);
+  private async pipeInitialStream(
+    stream: ReusableReadableStream<models.StreamEvents>,
+  ): Promise<models.OpenResponsesResult> {
+    const broadcaster = this.ensureTurnBroadcaster();
+    broadcaster.push({
+      type: 'turn.start',
+      turnNumber: 0,
+      timestamp: Date.now(),
+    } satisfies TurnStartEvent);
+
+    const consumer = stream.createConsumer();
+    let completedResponse: models.OpenResponsesResult | null = null;
+    let streamError: Error | null = null;
+    for await (const event of consumer) {
+      broadcaster.push(event);
+      if (isResponseCompletedEvent(event) || isResponseIncompleteEvent(event)) {
+        completedResponse = event.response;
       }
+      if (isResponseFailedEvent(event)) {
+        streamError = new Error(`Response failed: ${JSON.stringify(event.response.error)}`);
+      }
+    }
 
-      broadcaster.push({
-        type: 'turn.end',
-        turnNumber: 0,
-        timestamp: Date.now(),
-      } satisfies TurnEndEvent);
-    })().catch((error) => {
-      broadcaster.complete(error instanceof Error ? error : new Error(String(error)));
-    });
+    broadcaster.push({
+      type: 'turn.end',
+      turnNumber: 0,
+      timestamp: Date.now(),
+    } satisfies TurnEndEvent);
+
+    if (streamError) {
+      throw streamError;
+    }
+    if (!completedResponse) {
+      throw new Error('Initial stream ended without a completed response');
+    }
+    return completedResponse;
   }
 
   /**
@@ -634,7 +661,7 @@ export class ModelResult<
    * Emits turn.start / turn.end delimiters around the stream events.
    */
   private async pipeAndConsumeStream(
-    stream: ReusableReadableStream<models.StreamEvents>,
+    stream: ReadableStream<models.StreamEvents>,
     turnNumber: number,
   ): Promise<models.OpenResponsesResult> {
     const broadcaster = this.turnBroadcaster!;
@@ -645,21 +672,30 @@ export class ModelResult<
       timestamp: Date.now(),
     } satisfies TurnStartEvent);
 
-    const consumer = stream.createConsumer();
+    const reader = stream.getReader();
     let completedResponse: models.OpenResponsesResult | null = null;
 
-    for await (const event of consumer) {
-      broadcaster.push(event);
-      if (isResponseCompletedEvent(event)) {
-        completedResponse = event.response;
+    try {
+      while (true) {
+        const result = await reader.read();
+        if (result.done) {
+          break;
+        }
+        const event = result.value;
+        broadcaster.push(event);
+        if (isResponseCompletedEvent(event)) {
+          completedResponse = event.response;
+        }
+        if (isResponseFailedEvent(event)) {
+          const errorMsg = 'message' in event ? String(event.message) : 'Response failed';
+          throw new Error(errorMsg);
+        }
+        if (isResponseIncompleteEvent(event)) {
+          completedResponse = event.response;
+        }
       }
-      if (isResponseFailedEvent(event)) {
-        const errorMsg = 'message' in event ? String(event.message) : 'Response failed';
-        throw new Error(errorMsg);
-      }
-      if (isResponseIncompleteEvent(event)) {
-        completedResponse = event.response;
-      }
+    } finally {
+      reader.releaseLock();
     }
 
     broadcaster.push({
@@ -786,11 +822,12 @@ export class ModelResult<
     turnNumber: number,
   ): Promise<models.OpenResponsesResult> {
     if (isEventStream(value)) {
-      const stream = new ReusableReadableStream(value);
       if (this.turnBroadcaster) {
-        return this.pipeAndConsumeStream(stream, turnNumber);
+        // The turn broadcaster is the replay owner for follow-up turns, so a
+        // second per-turn ReusableReadableStream would retain every event twice.
+        return this.pipeAndConsumeStream(value, turnNumber);
       }
-      return consumeStreamForCompletion(stream);
+      return consumeStreamForCompletion(new ReusableReadableStream(value));
     }
     if (this.isNonStreamingResponse(value)) {
       return value;
@@ -812,6 +849,14 @@ export class ModelResult<
   private async getInitialResponse(): Promise<models.OpenResponsesResult> {
     if (this.finalResponse) {
       return this.finalResponse;
+    }
+    if (this.turnStreamRequested && this.reusableStream && !this.initialStreamPipeStarted) {
+      this.startInitialStreamPipe();
+    }
+    if (this.initialResponsePromise) {
+      const response = await this.initialResponsePromise;
+      await this.emitPendingModelCallOnce(response);
+      return response;
     }
     if (this.reusableStream) {
       const response = await consumeStreamForCompletion(this.reusableStream);
@@ -4213,6 +4258,9 @@ export class ModelResult<
     ResponseStreamEvent<InferToolEventsUnion<TTools>, InferToolOutputsUnion<TTools>>
   > {
     return async function* (this: ModelResult<TTools, TShared>) {
+      if (this.options.tools?.length) {
+        this.turnStreamRequested = true;
+      }
       await this.initStreamGuarded();
 
       if (!this.options.tools?.length) {
@@ -4250,6 +4298,9 @@ export class ModelResult<
    */
   getTextStream(): AsyncIterableIterator<string> {
     return async function* (this: ModelResult<TTools, TShared>) {
+      if (this.options.tools?.length) {
+        this.turnStreamRequested = true;
+      }
       await this.initStreamGuarded();
 
       if (!this.options.tools?.length) {
@@ -4323,6 +4374,9 @@ export class ModelResult<
     };
 
     return async function* (this: ModelResult<TTools, TShared>) {
+      if (this.options.tools?.length) {
+        this.turnStreamRequested = true;
+      }
       await this.initStreamGuarded();
 
       // No tools — stream single turn directly (no broadcaster needed)
@@ -4563,6 +4617,9 @@ export class ModelResult<
    */
   getReasoningStream(): AsyncIterableIterator<string> {
     return async function* (this: ModelResult<TTools, TShared>) {
+      if (this.options.tools?.length) {
+        this.turnStreamRequested = true;
+      }
       await this.initStreamGuarded();
 
       if (!this.options.tools?.length) {
@@ -4600,6 +4657,9 @@ export class ModelResult<
    */
   getToolStream(): AsyncIterableIterator<ToolStreamEvent<InferToolEventsUnion<TTools>>> {
     return async function* (this: ModelResult<TTools, TShared>) {
+      if (this.options.tools?.length) {
+        this.turnStreamRequested = true;
+      }
       await this.initStreamGuarded();
 
       if (!this.options.tools?.length) {
@@ -4725,6 +4785,7 @@ export class ModelResult<
     type Snapshot = ToolContextMapWithShared<TTools, TShared>;
     const store = this.contextStore;
     const queue: Snapshot[] = [];
+    let queueHead = 0;
     let resolve: (() => void) | null = null;
     let done = false;
 
@@ -4756,8 +4817,12 @@ export class ModelResult<
 
     try {
       while (!done) {
-        if (queue.length > 0) {
-          yield queue.shift()!;
+        if (queueHead < queue.length) {
+          yield queue[queueHead++]!;
+          if (queueHead === queue.length) {
+            queue.length = 0;
+            queueHead = 0;
+          }
         } else {
           // Wait for next update or completion
           await new Promise<void>((r) => {
@@ -4766,8 +4831,8 @@ export class ModelResult<
         }
       }
       // Drain any remaining queued snapshots
-      while (queue.length > 0) {
-        yield queue.shift()!;
+      while (queueHead < queue.length) {
+        yield queue[queueHead++]!;
       }
     } finally {
       unsubscribe();

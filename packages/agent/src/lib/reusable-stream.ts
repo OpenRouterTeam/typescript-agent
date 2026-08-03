@@ -17,7 +17,7 @@ export class ReusableReadableStream<T> {
   private sourceError: Error | null = null;
   private pumpStarted = false;
 
-  constructor(private sourceStream: ReadableStream<T>) {}
+  constructor(private sourceStream: ReadableStream<T> | null) {}
 
   /**
    * True once the source stream has been fully read into the buffer.
@@ -152,7 +152,17 @@ export class ReusableReadableStream<T> {
       return;
     }
     this.pumpStarted = true;
-    this.sourceReader = this.sourceStream.getReader();
+    const sourceStream = this.sourceStream;
+    if (!sourceStream) {
+      this.sourceComplete = true;
+      this.notifyAllConsumers();
+      return;
+    }
+    // The reader owns the source from this point forward. Dropping our stream
+    // reference avoids retaining the SDK EventStream wrapper after completion
+    // while the replay buffer remains intentionally available.
+    this.sourceStream = null;
+    this.sourceReader = sourceStream.getReader();
 
     // biome-ignore lint: IIFE used for fire-and-forget stream pump
     void (async () => {
@@ -176,8 +186,10 @@ export class ReusableReadableStream<T> {
         this.sourceError = error instanceof Error ? error : new Error(String(error));
         this.notifyAllConsumers();
       } finally {
-        if (this.sourceReader) {
-          this.sourceReader.releaseLock();
+        const reader = this.sourceReader;
+        this.sourceReader = null;
+        if (reader) {
+          reader.releaseLock();
         }
       }
     })();
@@ -213,10 +225,15 @@ export class ReusableReadableStream<T> {
     this.consumers.clear();
 
     // Cancel the source stream
-    if (this.sourceReader) {
-      await this.sourceReader.cancel();
-      this.sourceReader.releaseLock();
+    const reader = this.sourceReader;
+    this.sourceReader = null;
+    this.sourceStream = null;
+    this.sourceComplete = true;
+    if (reader) {
+      await reader.cancel();
+      reader.releaseLock();
     }
+    this.notifyAllConsumers();
   }
 }
 

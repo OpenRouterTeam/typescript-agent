@@ -37,6 +37,19 @@ Build the deterministic stream benchmark:
 pnpm benchmark:memory:synthetic
 ```
 
+Record raw, gzip, and Brotli sizes for the explicitly tree-shaken, minified
+agent and SDK-only Worker bundles:
+
+```bash
+pnpm benchmark:memory:bundle-sizes
+```
+
+Run randomized fresh-process import measurements (20 runs per case by default):
+
+```bash
+pnpm benchmark:memory:imports
+```
+
 Run the complete live benchmark:
 
 ```bash
