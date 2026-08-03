@@ -457,11 +457,39 @@ export function resolveLoopKeyMaterial(
     };
   }
   if (Array.isArray(loopKey)) {
+    /*
+     * An empty field list would make EVERY call to the tool fingerprint
+     * identically — `ls` and `rm -rf /` collapse to one identity — so a
+     * detector armed to block a repeat would refuse the second unrelated call.
+     * That is a footgun from a local declaration and a vector once the list can
+     * be advertised over the wire by an MCP server (`_meta['openrouter/loopKey']`).
+     * Fall back to full arguments with a warning, mirroring how the function
+     * form handles a degenerate result rather than trusting it.
+     */
+    if (loopKey.length === 0) {
+      return {
+        kind: 'fallback',
+        keyMaterial: args,
+        warning:
+          'loopKey is an empty field list, which would give every call to this tool the same identity; falling back to full arguments. Use `false` to exempt the tool.',
+      };
+    }
     const subset: Record<string, unknown> = Object.create(null) as Record<string, unknown>;
     for (const field of loopKey) {
       if (typeof field === 'string' && field in args) {
         subset[field] = args[field];
       }
+    }
+    /*
+     * Every declared field missing from the arguments is the same collapse by
+     * another route: the subset is empty, so identity is again constant.
+     */
+    if (Object.keys(subset).length === 0) {
+      return {
+        kind: 'fallback',
+        keyMaterial: args,
+        warning: `loopKey fields [${loopKey.filter((f) => typeof f === 'string').join(', ')}] are all absent from the arguments, which would give every call the same identity; falling back to full arguments.`,
+      };
     }
     return {
       kind: 'key',
