@@ -89,6 +89,57 @@ export function buildTaskResultMessage(envelope: ToolTaskResultEnvelope): models
 }
 
 /**
+ * Find the pending task an incoming result belongs to, or `null` when the entry
+ * is already settled and the caller asked to ignore that.
+ *
+ * Settled tasks deliberately STAY in `pendingAsyncTools` with a terminal
+ * status, so a replayed webhook resolves to `ToolTaskAlreadySettledError`
+ * rather than "not found".
+ *
+ * @throws ToolTaskAlreadySettledError when the task already settled and
+ * `ifSettled` is `'throw'` (the default).
+ * @throws Error when no pending task matches the entry at all.
+ */
+function resolvePendingTask({
+  entry,
+  pending,
+  settledIds,
+  ifSettled,
+}: {
+  entry: ResumeToolResultEntry;
+  pending: readonly PendingAsyncTool[];
+  settledIds: ReadonlySet<string>;
+  ifSettled: 'throw' | 'ignore' | undefined;
+}): PendingAsyncTool | null {
+  const task = pending.find((t) =>
+    'taskId' in entry && entry.taskId !== undefined
+      ? t.taskId === entry.taskId
+      : t.callId === entry.callId,
+  );
+  if (!task) {
+    // The callId fallback covers states persisted by older SDK versions whose
+    // in-process delivery REMOVED the entry, leaving only the callId on
+    // settledAsyncCallIds.
+    if (entry.callId !== undefined && settledIds.has(entry.callId)) {
+      if (ifSettled === 'ignore') {
+        return null;
+      }
+      throw new ToolTaskAlreadySettledError(entry.taskId ?? entry.callId, entry.callId);
+    }
+    throw new Error(
+      `resumeToolResults: no pending async tool task found for "${entry.taskId ?? entry.callId}"`,
+    );
+  }
+  if (settledIds.has(task.callId) || task.status !== 'working') {
+    if (ifSettled === 'ignore') {
+      return null;
+    }
+    throw new ToolTaskAlreadySettledError(task.taskId, task.callId);
+  }
+  return task;
+}
+
+/**
  * Deliver results for pending async tool tasks (started by `tool.deferred`,
  * or background tasks orphaned across a run boundary) into a persisted
  * conversation — typically from a different process than the one that
@@ -159,35 +210,14 @@ export async function resumeToolResults<TTools extends readonly Tool[]>(
   const settledNow = new Map<string, ToolTaskStatus>();
 
   for (const entry of request.results) {
-    const task = pending.find((t) =>
-      'taskId' in entry && entry.taskId !== undefined
-        ? t.taskId === entry.taskId
-        : t.callId === entry.callId,
-    );
+    const task = resolvePendingTask({
+      entry,
+      pending,
+      settledIds,
+      ifSettled: request.ifSettled,
+    });
     if (!task) {
-      const key = entry.taskId ?? entry.callId;
-      // Settled tasks normally stay in pendingAsyncTools with a terminal
-      // status (both here and in the in-process delivery path), so lookups
-      // by taskId or callId hit the already-settled branch below. This
-      // callId fallback covers states persisted by older SDK versions
-      // whose in-process delivery REMOVED the entry, leaving only the
-      // callId on settledAsyncCallIds.
-      if (entry.callId !== undefined && settledIds.has(entry.callId)) {
-        if (request.ifSettled === 'ignore') {
-          continue;
-        }
-        throw new ToolTaskAlreadySettledError(entry.taskId ?? entry.callId, entry.callId);
-      }
-      throw new Error(`resumeToolResults: no pending async tool task found for "${key}"`);
-    }
-
-    // Settled tasks stay in the table (with terminal status) precisely so a
-    // replayed webhook resolves to THIS error instead of "not found".
-    if (settledIds.has(task.callId) || task.status !== 'working') {
-      if (request.ifSettled === 'ignore') {
-        continue;
-      }
-      throw new ToolTaskAlreadySettledError(task.taskId, task.callId);
+      continue; // already settled and the caller asked to ignore it
     }
 
     const envelope = buildResumeEnvelope(entry, task, request.tools);

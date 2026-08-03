@@ -6,8 +6,20 @@ import type * as models from '@openrouter/sdk/models';
 import type { $ZodObject, $ZodShape } from 'zod/v4/core';
 import type { CallModelInput, ResolvedCallModelInput } from './async-params.js';
 import { hasAsyncFunctions, resolveAsyncFunctions } from './async-params.js';
-import type { SettledToolTask } from './async-tool-registry.js';
-import { AsyncToolRegistry } from './async-tool-registry.js';
+import type { SettledToolTask, TaskToolInput, ToolSemaphore, ToolTaskMode } from './async-tools.js';
+import {
+  AsyncToolRegistry,
+  acquireAll,
+  buildTaskToolStub,
+  defaultCheckResult,
+  hasTaskToolNameCollision,
+  persistedTaskCheckResult,
+  resolveCheckConfig,
+  Semaphore,
+  TASK_TOOL_NAME,
+  TaskToolInputSchema,
+  ToolTask,
+} from './async-tools.js';
 import {
   appendToMessages,
   createInitialState,
@@ -61,18 +73,6 @@ import {
   isResponseIncompleteEvent,
   isServerToolResultItem,
 } from './stream-type-guards.js';
-import type { TaskToolInput } from './tool-check.js';
-import {
-  buildTaskToolStub,
-  defaultCheckResult,
-  hasTaskToolNameCollision,
-  persistedTaskCheckResult,
-  resolveCheckConfig,
-  TASK_TOOL_NAME,
-  TaskToolInputSchema,
-} from './tool-check.js';
-import type { Semaphore as ToolSemaphore } from './tool-concurrency.js';
-import { acquireAll, Semaphore } from './tool-concurrency.js';
 import type { ContextInput, ToolExecutionExtras } from './tool-context.js';
 import { resolveContext, ToolContextStore } from './tool-context.js';
 import { ToolEventBroadcaster } from './tool-event-broadcaster.js';
@@ -83,8 +83,6 @@ import {
   isAsyncToolInvocation,
   validateToolInput,
 } from './tool-executor.js';
-import type { ToolTaskMode } from './tool-task.js';
-import { ToolTask } from './tool-task.js';
 import type {
   ConversationState,
   ConversationStatus,
