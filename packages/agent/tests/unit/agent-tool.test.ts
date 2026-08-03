@@ -146,6 +146,31 @@ describe('tool.agent — child conversation as a background task', () => {
     mockBetaResponsesSend.mockReset();
   });
 
+  it("rejects the reserved names 'shared' and 'task' at definition time", () => {
+    const base = {
+      inputSchema: z.object({}),
+      outputSchema: z.object({
+        text: z.string(),
+      }),
+      agent: () => ({
+        model: 'child-model',
+        input: 'x',
+      }),
+    };
+    expect(() =>
+      tool.agent({
+        ...base,
+        name: 'shared',
+      }),
+    ).toThrow('reserved for shared context');
+    expect(() =>
+      tool.agent({
+        ...base,
+        name: 'task',
+      }),
+    ).toThrow('reserved for the built-in task-interaction tool');
+  });
+
   it('runs the child to completion; default result maps last-message text', async () => {
     let childCalls = 0;
     routeByModel({
@@ -382,7 +407,10 @@ describe('tool.agent — child conversation as a background task', () => {
     ) as Record<string, unknown>;
 
     expect(checkOutput['mode']).toBe('agent');
-    expect(checkOutput['turnsCompleted']).toBeGreaterThanOrEqual(1);
+    // The child's turn 1 follow-up is still gated at check time: the turn
+    // has STARTED but not ended, and turnsCompleted must not count it.
+    expect(checkOutput['turnsStarted']).toBeGreaterThanOrEqual(1);
+    expect(checkOutput['turnsCompleted']).toBe(0);
     expect(checkOutput['transcript']).toContain('child_search');
   });
 

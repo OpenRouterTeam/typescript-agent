@@ -442,10 +442,14 @@ export interface BaseToolFunction<
    */
   timeoutMs?: number;
   /**
-   * Maximum simultaneous in-flight executions of THIS tool across the run.
-   * Typically encodes an external constraint (one DB connection, a
-   * rate-limited API key). Excess calls queue FIFO; queue wait counts
-   * against `timeoutMs`. Unbounded when absent.
+   * Maximum simultaneous in-flight executions of THIS tool across the run
+   * — round-synchronous and background alike (background bodies re-acquire
+   * the gate for their full duration). Typically encodes an external
+   * constraint (one DB connection, a rate-limited API key). Excess calls
+   * queue FIFO. Queue wait does NOT count against `timeoutMs` for
+   * round-synchronous calls (the deadline starts once the slot is held);
+   * background tasks queue against their own registry-tracked timeout.
+   * Unbounded when absent.
    */
   maxConcurrency?: number;
 }

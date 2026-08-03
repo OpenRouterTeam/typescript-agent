@@ -73,11 +73,15 @@ export class AsyncToolRegistry {
         const timeoutError = new Error(
           `Tool "${task.toolName}" task timed out after ${timeoutMs}ms`,
         );
+        // Capture the controller BEFORE settling — settle() drops the
+        // reference as a leak guard, and the running body must still be
+        // told to stop (same pattern as cancelTask / abortAll).
+        const controller = task.controller;
         this.settle(task.callId, {
           status: 'timed_out',
           error: timeoutError.message,
         });
-        task.controller?.abort(timeoutError);
+        controller?.abort(timeoutError);
       }, timeoutMs);
       if (typeof timer === 'object' && 'unref' in timer && typeof timer.unref === 'function') {
         timer.unref();

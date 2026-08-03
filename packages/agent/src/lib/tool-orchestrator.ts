@@ -149,10 +149,23 @@ export async function executeToolLoop(
       }
 
       if (settled.status === 'fulfilled') {
-        // This legacy loop predates async tools; it only aggregates
+        // This legacy loop predates async tools and only understands
         // synchronous execution results (background/deferred invocations
-        // are handled by ModelResult's live loop).
-        if (settled.value !== null && !isAsyncToolInvocation(settled.value)) {
+        // are handled by ModelResult's live loop). Surface an explicit
+        // error rather than silently dropping the call — an unpaired
+        // function_call would poison any history built from these results.
+        if (settled.value !== null && isAsyncToolInvocation(settled.value)) {
+          const asyncTool = findToolByName(tools, toolCall.name);
+          roundResults.push({
+            toolCallId: toolCall.id,
+            toolName: toolCall.name,
+            source: asyncTool !== undefined && isMcpTool(asyncTool) ? 'mcp' : 'client',
+            result: null,
+            error: new Error(
+              `Tool "${toolCall.name}" uses an async lifecycle (background/deferred), which executeToolLoop does not support — run it through callModel instead.`,
+            ),
+          });
+        } else if (settled.value !== null) {
           roundResults.push(settled.value);
         }
       } else {

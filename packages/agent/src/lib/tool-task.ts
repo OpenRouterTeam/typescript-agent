@@ -190,9 +190,10 @@ export class ToolTask {
     return entry;
   }
 
-  /** Last `n` retained entries, oldest first. */
+  /** Last `n` retained entries, oldest first. `n <= 0` returns none. */
   tailLogs(n: number): TaskLogEntry[] {
-    return this.logs.slice(-Math.max(0, n));
+    const count = Math.max(0, Math.floor(n));
+    return count === 0 ? [] : this.logs.slice(-count);
   }
 
   get lastLog(): TaskLogEntry | undefined {

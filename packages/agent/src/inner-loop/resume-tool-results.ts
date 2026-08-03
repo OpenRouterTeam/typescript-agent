@@ -5,7 +5,7 @@ import type { CallModelInput } from '../lib/async-params.js';
 import { appendToMessages, updateState } from '../lib/conversation-state.js';
 import type { ModelResult } from '../lib/model-result.js';
 import { validateToolOutput } from '../lib/tool-executor.js';
-import type { PendingAsyncTool, StateAccessor, Tool } from '../lib/tool-types.js';
+import type { PendingAsyncTool, StateAccessor, Tool, ToolTaskStatus } from '../lib/tool-types.js';
 import { isClientTool, isUnifiedTool } from '../lib/tool-types.js';
 import { callModel } from './call-model.js';
 
@@ -113,7 +113,10 @@ export function buildTaskResultMessage(envelope: ToolTaskResultEnvelope): models
  *    other tasks are still pending).
  * 5. With `run` config: continues the conversation immediately and returns
  *    the `ModelResult`. Without: returns `null` — the recorded results ride
- *    along on the next `callModel({ state })`.
+ *    along on the next `callModel({ state })`. When every entry was skipped
+ *    under `ifSettled: 'ignore'` there is nothing new to deliver, so the
+ *    function returns `null` WITHOUT running — a replayed webhook never
+ *    triggers a duplicate continuation.
  *
  * SECURITY: this call injects a value the model will treat as a tool
  * result. Authenticate the webhook/caller BEFORE invoking it — the SDK
@@ -142,7 +145,8 @@ export async function resumeToolResults<TTools extends readonly Tool[]>(
   const settledIds = new Set(state.settledAsyncCallIds ?? []);
 
   const envelopes: models.BaseInputsUnion[] = [];
-  const settledNow: string[] = [];
+  /** callId → the terminal lifecycle status persisted for that entry. */
+  const settledNow = new Map<string, ToolTaskStatus>();
 
   for (const entry of request.results) {
     const task = pending.find((t) =>
@@ -152,6 +156,16 @@ export async function resumeToolResults<TTools extends readonly Tool[]>(
     );
     if (!task) {
       const key = entry.taskId ?? entry.callId;
+      // In-process delivery removes the pending entry entirely (only the
+      // callId lands on settledAsyncCallIds) — surface a late external
+      // resolution for such a task as the at-most-once error, same as a
+      // replayed webhook against a still-listed settled entry.
+      if (entry.callId !== undefined && settledIds.has(entry.callId)) {
+        if (request.ifSettled === 'ignore') {
+          continue;
+        }
+        throw new ToolTaskAlreadySettledError(entry.taskId ?? entry.callId, entry.callId);
+      }
       throw new Error(`resumeToolResults: no pending async tool task found for "${key}"`);
     }
 
@@ -192,7 +206,14 @@ export async function resumeToolResults<TTools extends readonly Tool[]>(
     }
 
     envelopes.push(buildTaskResultMessage(envelope));
-    settledNow.push(task.callId);
+    // Persist the entry's real terminal status. 'expired' / 'timed_out'
+    // have no ToolTaskStatus member — they persist as 'failed'.
+    settledNow.set(
+      task.callId,
+      envelope.status === 'completed' || envelope.status === 'cancelled'
+        ? envelope.status
+        : 'failed',
+    );
     settledIds.add(task.callId);
   }
 
@@ -203,19 +224,20 @@ export async function resumeToolResults<TTools extends readonly Tool[]>(
 
   // Keep settled entries with a terminal status (rather than dropping them)
   // so a replayed resolution surfaces as ToolTaskAlreadySettledError.
-  const nextPending = pending.map((t) =>
-    settledNow.includes(t.callId)
+  const nextPending = pending.map((t) => {
+    const terminalStatus = settledNow.get(t.callId);
+    return terminalStatus !== undefined
       ? {
           ...t,
-          status: 'completed' as const,
+          status: terminalStatus,
         }
-      : t,
-  );
+      : t;
+  });
   const updated = updateState(state, {
     messages: appendToMessages(state.messages, envelopes),
     settledAsyncCallIds: [
       ...(state.settledAsyncCallIds ?? []),
-      ...settledNow,
+      ...settledNow.keys(),
     ],
     status: nextPending.some((t) => t.status === 'working')
       ? 'awaiting_async_tools'

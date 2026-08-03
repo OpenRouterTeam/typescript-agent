@@ -452,6 +452,8 @@ describe('tool.deferred — cross-process resume', () => {
     );
     expect(envelope?.content).toContain('"status":"failed"');
     expect(envelope?.content).toContain('reviewer unavailable');
+    // The persisted lifecycle status matches the outcome — not 'completed'.
+    expect(get()?.pendingAsyncTools?.[0]?.status).toBe('failed');
   });
 
   it('.cancel() delivers a cancellation envelope', async () => {
@@ -472,6 +474,8 @@ describe('tool.deferred — cross-process resume', () => {
     );
     expect(envelope?.content).toContain('"status":"cancelled"');
     expect(envelope?.content).toContain('contract withdrawn');
+    // The persisted lifecycle status matches the outcome — not 'completed'.
+    expect(get()?.pendingAsyncTools?.[0]?.status).toBe('cancelled');
   });
 
   it('resumeToolResults resolves by callId too and throws for unknown tasks', async () => {

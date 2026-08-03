@@ -3,6 +3,7 @@ import type { $ZodObject, $ZodShape, $ZodType, infer as zodInfer } from 'zod/v4/
 import type { CallModelInput } from './async-params.js';
 import { extractTextFromResponse } from './conversation-state.js';
 import type { ModelResult } from './model-result.js';
+import { TASK_TOOL_NAME } from './tool-check.js';
 import type { TaskTranscriptSource } from './tool-task.js';
 import type {
   AsyncToolAck,
@@ -17,7 +18,7 @@ import type {
   ToolLoopKey,
   UnifiedTool,
 } from './tool-types.js';
-import { ToolType } from './tool-types.js';
+import { SHARED_CONTEXT_KEY, ToolType } from './tool-types.js';
 
 /**
  * The child run spec an agent tool produces per call.
@@ -77,7 +78,10 @@ export class AgentTranscriptSource implements TaskTranscriptSource {
 
   statusExtras(): Record<string, unknown> {
     return {
-      turnsCompleted: Math.max(this.turnsStarted, this.turnsEnded),
+      // Ended turns only — an in-flight turn shows up in turnsStarted and
+      // currentActivity, but is not counted as completed.
+      turnsCompleted: this.turnsEnded,
+      turnsStarted: this.turnsStarted,
       currentActivity: this.currentActivity,
     };
   }
@@ -196,6 +200,20 @@ export function agentToolBuilder<
 >(
   config: AgentToolConfig<TInput, TOutput, TChildTools, TCtx, TName>,
 ): UnifiedTool<TInput, TOutput, $ZodType<unknown>, Record<string, unknown>, TCtx> {
+  // Same reserved-name guards as tool() — a subagent named 'shared' would
+  // collide with the shared-context store key, one named 'task' would
+  // disable the built-in task-interaction tool.
+  if (config.name === SHARED_CONTEXT_KEY) {
+    throw new Error(
+      `Tool name "${SHARED_CONTEXT_KEY}" is reserved for shared context. Choose a different name.`,
+    );
+  }
+  if (config.name === TASK_TOOL_NAME) {
+    throw new Error(
+      `Tool name "${TASK_TOOL_NAME}" is reserved for the built-in task-interaction tool. Choose a different name.`,
+    );
+  }
+
   if (config.outputSchema === undefined) {
     throw new Error(
       `Agent tool "${config.name}" must declare an outputSchema. The child's mapped result is validated when it settles.`,

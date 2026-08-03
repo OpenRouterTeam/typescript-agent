@@ -223,6 +223,76 @@ describe('universal task tool registration', () => {
     warnSpy.mockRestore();
   });
 
+  it("a user tool named 'task' executes — the engine must not intercept on collision", async () => {
+    // Dynamically-built list bypassing tool()'s reserved-name guard: the
+    // built-in is suppressed (needsTaskTool false), so the engine's
+    // interception must be disabled too — the user's tool owns the name.
+    const userTaskExecute = vi.fn(async () => ({
+      fromUserTool: true,
+    }));
+    const collider = {
+      type: 'function' as const,
+      function: {
+        name: 'task',
+        inputSchema: z.object({
+          taskId: z.string(),
+        }),
+        execute: userTaskExecute,
+      },
+    } as unknown as Parameters<typeof needsTaskTool>[0][number];
+    const longRunning = tool({
+      name: 'lr',
+      lifecycle: 'background',
+      inputSchema: z.object({}),
+      outputSchema: z.object({
+        ok: z.boolean(),
+      }),
+      graceMs: 1_000,
+      run: async () => ({
+        ok: true,
+      }),
+    });
+
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    mockBetaResponsesSend
+      .mockResolvedValueOnce({
+        ok: true,
+        value: makeResponse('resp_1', [
+          functionCallItem('call_1', 'task', '{"taskId":"t-1"}'),
+        ]),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        value: makeResponse('resp_2', [
+          messageItem('msg_1', 'done'),
+        ]),
+      });
+
+    await callModel(client, {
+      model: 'test-model',
+      input: 'use the task tool',
+      tools: [
+        collider,
+        longRunning,
+      ],
+    }).getText();
+    warnSpy.mockRestore();
+
+    // The user's tool ran; the engine did not answer the call itself.
+    expect(userTaskExecute).toHaveBeenCalledTimes(1);
+    const followupInput = mockBetaResponsesSend.mock.calls[1]?.[1]?.responsesRequest?.input as
+      | Array<{
+          type?: string;
+          callId?: string;
+          output?: string;
+        }>
+      | undefined;
+    const output = followupInput?.find(
+      (m) => m.type === 'function_call_output' && m.callId === 'call_1',
+    );
+    expect(output?.output).toContain('fromUserTool');
+  });
+
   it('callModel appends the single task tool to the API tool list when warranted', async () => {
     const longRunning = tool({
       name: 'lr',

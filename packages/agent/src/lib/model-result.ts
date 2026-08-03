@@ -65,6 +65,7 @@ import type { TaskToolInput } from './tool-check.js';
 import {
   buildTaskToolStub,
   defaultCheckResult,
+  hasTaskToolNameCollision,
   persistedTaskCheckResult,
   resolveCheckConfig,
   TASK_TOOL_NAME,
@@ -3333,7 +3334,7 @@ export class ModelResult<
       }),
     });
     runBinding.bind(liveTask);
-    const work = this.runBackgroundWork(invocation.run, controller);
+    const work = this.runBackgroundWork(String(toolCall.name), invocation.run, controller);
     // Surface unhandled rejections nowhere — the registry's .then() below
     // (or the grace race) is the sole consumer.
     work.catch(() => undefined);
@@ -3473,17 +3474,26 @@ export class ModelResult<
   }
 
   /**
-   * Run a background tool's work under the background pool. The slot is
-   * held for the work's duration (queue wait counts against the task's own
-   * timeout, tracked by the registry); an abort observed before the slot
-   * frees up short-circuits without running the body.
+   * Run a background tool's work under the background pool AND the tool's
+   * own concurrency gate. The round released its per-tool slot when the
+   * call escaped (the thunk had not run yet), so the gate is re-acquired
+   * here for the body's lifetime — `maxConcurrency` bounds executions of
+   * the BODY, wherever they run. Acquisition order (pool, then gate)
+   * keeps the gate last, matching the round path (round gate, then
+   * per-tool gate), so multi-gate acquisition stays deadlock-free. Queue
+   * wait counts against the task's own timeout (tracked by the registry);
+   * an abort observed before the slots free up short-circuits without
+   * running the body.
    */
   private async runBackgroundWork(
+    toolName: string,
     run: () => Promise<unknown>,
     controller: AbortController,
   ): Promise<unknown> {
     const pool = this.backgroundPool;
-    const release = pool ? await pool.acquire() : undefined;
+    const releasePool = pool ? await pool.acquire() : undefined;
+    const gate = this.perToolGate(toolName);
+    const releaseGate = gate ? await gate.acquire() : undefined;
     try {
       if (controller.signal.aborted) {
         throw controller.signal.reason instanceof Error
@@ -3492,7 +3502,8 @@ export class ModelResult<
       }
       return await run();
     } finally {
-      release?.();
+      releaseGate?.();
+      releasePool?.();
     }
   }
 
@@ -3581,12 +3592,21 @@ export class ModelResult<
     };
   }
 
-  /** True when the built-in task tool is active for this run. */
+  /**
+   * True when the built-in task tool is active for this run. Mirrors
+   * `needsTaskTool` exactly: when a user tool claims the reserved name the
+   * built-in is not registered, so calls named "task" must NOT be
+   * intercepted — they belong to the user's tool.
+   */
   private taskToolActive(): boolean {
     if (this.options.asyncTools?.checkins === false) {
       return false;
     }
-    return (this.options.tools ?? []).some((t) => isLongRunningTool(t));
+    const tools = this.options.tools ?? [];
+    if (hasTaskToolNameCollision(tools)) {
+      return false;
+    }
+    return tools.some((t) => isLongRunningTool(t));
   }
 
   /**

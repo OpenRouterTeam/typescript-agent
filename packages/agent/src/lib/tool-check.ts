@@ -80,12 +80,16 @@ export function buildTaskToolApiDefinition(
 }
 
 /**
- * True when the tool list warrants registering the task tool: at least one
- * long-running-capable tool, and no user tool already claiming the name
+ * True when a user tool already claims the reserved task-tool name
  * (defense for dynamically-built tool lists that bypass `tool()`).
+ *
+ * Shared by registration (`needsTaskTool`) and the engine's interception
+ * guard (`taskToolActive`) so a collision disables BOTH: the built-in
+ * definition is not registered and calls named "task" route to the user's
+ * tool instead of being intercepted.
  */
-export function needsTaskTool(tools: readonly Tool[]): boolean {
-  const collision = tools.some(
+export function hasTaskToolNameCollision(tools: readonly Tool[]): boolean {
+  return tools.some(
     (t) =>
       'function' in t &&
       (
@@ -96,7 +100,14 @@ export function needsTaskTool(tools: readonly Tool[]): boolean {
         }
       ).function?.name === TASK_TOOL_NAME,
   );
-  if (collision) {
+}
+
+/**
+ * True when the tool list warrants registering the task tool: at least one
+ * long-running-capable tool, and no user tool already claiming the name.
+ */
+export function needsTaskTool(tools: readonly Tool[]): boolean {
+  if (hasTaskToolNameCollision(tools)) {
     console.warn(
       `[AsyncTools] a user tool is named "${TASK_TOOL_NAME}" — the built-in task tool is disabled; models cannot check on long-running tasks.`,
     );
