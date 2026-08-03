@@ -3,6 +3,7 @@ import type * as models from '@openrouter/sdk/models';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { z } from 'zod/v4';
 import { toolRequiresApproval } from '../../src/lib/conversation-state.js';
+import { HooksManager } from '../../src/lib/hooks-manager.js';
 import { stepCountIs } from '../../src/lib/stop-conditions.js';
 import { tool } from '../../src/lib/tool.js';
 import type {
@@ -432,5 +433,162 @@ describe('allowFinalResponse path enforces the approval gate (#54)', () => {
     expect(execute).toHaveBeenCalledTimes(1);
     expect(text).toBe('Done.');
     expect(mockBetaResponsesSend).toHaveBeenCalledTimes(2);
+  });
+
+  it('honors a PermissionRequest hook returning deny on the allowFinalResponse path', async () => {
+    const safeExecute = vi.fn(async () => ({
+      ok: true,
+    }));
+    const dangerExecute = vi.fn(async () => ({
+      ok: true,
+    }));
+
+    const safe = tool({
+      name: 'safe',
+      inputSchema: z.object({
+        target: z.string(),
+      }),
+      outputSchema: z.object({
+        ok: z.boolean(),
+      }),
+      execute: safeExecute,
+    });
+
+    const danger = tool({
+      name: 'danger',
+      inputSchema: z.object({
+        target: z.string(),
+      }),
+      outputSchema: z.object({
+        ok: z.boolean(),
+      }),
+      requireApproval: true,
+      execute: dangerExecute,
+    });
+
+    const tools = [
+      safe,
+      danger,
+    ] as const;
+
+    // The hook denies the gated call outright, so the run does NOT pause for a
+    // human: handleApprovalCheck records the denial and returns false, and the
+    // round synthesizes a rejection instead of executing.
+    const hooks = new HooksManager();
+    const permissionHandler = vi.fn(() => ({
+      decision: 'deny' as const,
+      reason: 'blocked by policy',
+    }));
+    hooks.on('PermissionRequest', {
+      handler: permissionHandler,
+    });
+
+    // Same fixture shape as the gate test above: turn 0 calls the ungated tool
+    // so one round completes and the stop condition fires on the NEXT
+    // iteration, reaching the post-loop allowFinalResponse path with the gated
+    // call pending.
+    mockBetaResponsesSend
+      .mockResolvedValueOnce({
+        ok: true,
+        value: makeResponse('resp_turn_0', [
+          makeFunctionCallItem(
+            'call_safe',
+            'safe',
+            JSON.stringify({
+              target: 'staging',
+            }),
+          ),
+        ]),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        value: makeResponse('resp_turn_1', [
+          makeFunctionCallItem(
+            'call_danger',
+            'danger',
+            JSON.stringify({
+              target: 'prod',
+            }),
+          ),
+        ]),
+      })
+      .mockResolvedValue({
+        ok: true,
+        value: makeResponse('resp_final', [
+          {
+            id: 'msg_final',
+            type: 'message',
+            role: 'assistant',
+            status: 'completed',
+            content: [
+              {
+                type: 'output_text',
+                text: 'Denied.',
+                annotations: [],
+              },
+            ],
+          },
+        ]),
+      });
+
+    const { accessor, get } = createMemoryAccessor<typeof tools>();
+
+    const result = new ModelResult<typeof tools>({
+      request: {
+        model: 'test-model',
+        input: 'do the thing',
+        tools: [
+          {
+            type: 'function',
+            name: 'safe',
+            description: null,
+            strict: null,
+            parameters: {},
+          },
+          {
+            type: 'function',
+            name: 'danger',
+            description: null,
+            strict: null,
+            parameters: {},
+          },
+        ],
+      },
+      client: {} as OpenRouterCore,
+      tools,
+      hooks,
+      state: accessor,
+      stopWhen: stepCountIs(1),
+      allowFinalResponse: true,
+    });
+
+    await result.getResponse();
+
+    // The hook was consulted for the gated call — before the fix this path had
+    // no approval check at all, so it never fired here.
+    expect(permissionHandler).toHaveBeenCalledTimes(1);
+
+    // The denied tool must not execute; the ungated one still runs normally.
+    expect(dangerExecute).not.toHaveBeenCalled();
+    expect(safeExecute).toHaveBeenCalledTimes(1);
+
+    // A hook deny resolves the gate without a human, so the run does not pause
+    // for approval.
+    const saved = get();
+    expect(saved?.status).not.toBe('awaiting_approval');
+
+    // The rejection is recorded in state as a synthesized output for the denied
+    // call, carrying the hook's reason.
+    const outputs = (saved?.messages ?? []).filter(
+      (m): m is models.FunctionCallOutputItem =>
+        typeof m === 'object' &&
+        m !== null &&
+        'type' in m &&
+        m.type === 'function_call_output' &&
+        'callId' in m &&
+        m.callId === 'call_danger',
+    );
+    expect(outputs).toHaveLength(1);
+    expect(JSON.stringify(outputs[0]?.output)).toContain('blocked by policy');
   });
 });
