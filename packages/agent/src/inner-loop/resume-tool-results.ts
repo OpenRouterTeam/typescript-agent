@@ -210,15 +210,29 @@ export async function resumeToolResults<TTools extends readonly Tool[]>(
         }
       : t;
   });
+  // Status transition rules:
+  // - Orphaned (detached) tasks never settle — counting them as working
+  //   would leave the conversation reporting 'awaiting_async_tools' forever.
+  // - Only advance a status this delivery OWNS. A conversation can hold a
+  //   non-async pause (awaiting_approval / awaiting_hitl /
+  //   awaiting_client_tools) while async tasks are outstanding; clobbering
+  //   it to 'in_progress' would make the engine skip the decision-resume
+  //   path and drop the caller's approvals.
+  const stillWorking = nextPending.some((t) => t.status === 'working' && t.orphaned !== true);
+  const statusOwnedByAsyncDelivery =
+    state.status === 'awaiting_async_tools' ||
+    state.status === 'in_progress' ||
+    state.status === 'complete' ||
+    state.status === undefined;
   const updated = updateState(state, {
     messages: appendToMessages(state.messages, envelopes),
     settledAsyncCallIds: [
       ...(state.settledAsyncCallIds ?? []),
       ...settledNow.keys(),
     ],
-    status: nextPending.some((t) => t.status === 'working')
-      ? 'awaiting_async_tools'
-      : 'in_progress',
+    ...(statusOwnedByAsyncDelivery && {
+      status: stillWorking ? ('awaiting_async_tools' as const) : ('in_progress' as const),
+    }),
     pendingAsyncTools: nextPending,
   });
   await request.state.save(updated);

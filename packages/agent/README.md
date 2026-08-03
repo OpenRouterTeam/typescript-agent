@@ -910,7 +910,7 @@ import { resumeToolResults } from '@openrouter/agent/resume-tool-results';
 import { Semaphore } from '@openrouter/agent/tool-concurrency';
 import { AsyncToolRegistry } from '@openrouter/agent/async-tool-registry';
 import { ToolTask } from '@openrouter/agent/tool-task';
-import { DefaultCheckParamsSchema } from '@openrouter/agent/tool-check';
+import { TaskToolInputSchema } from '@openrouter/agent/tool-check';
 import { AgentTranscriptSource } from '@openrouter/agent/agent-tool';
 ```
 

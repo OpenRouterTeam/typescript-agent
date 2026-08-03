@@ -8,7 +8,7 @@ import { isFunctionCallItem } from './stream-type-guards.js';
 import type { AsyncToolInvocation } from './tool-executor.js';
 import { executeTool, findToolByName, isAsyncToolInvocation } from './tool-executor.js';
 import type { APITool, ParsedToolCall, Tool, ToolExecutionResult } from './tool-types.js';
-import { isAutoResolvableTool, isMcpTool } from './tool-types.js';
+import { isAutoResolvableTool, isMcpTool, isUnifiedTool } from './tool-types.js';
 import { buildTurnContext } from './turn-context.js';
 
 /**
@@ -274,6 +274,22 @@ async function executeOrchestratedCall(
   if (!isAutoResolvableTool(tool)) {
     // Tool has no execute/onToolCalled - return null to filter out
     return null;
+  }
+
+  // Async lifecycles are unsupported here — short-circuit BEFORE running
+  // the body. This matters for deferred tools especially: their run()
+  // executes in-round and would open an external ticket that this loop can
+  // never resolve (an orphan external task).
+  if (isUnifiedTool(tool) && tool.function.lifecycle && tool.function.lifecycle !== 'sync') {
+    return {
+      toolCallId: toolCall.id,
+      toolName: toolCall.name,
+      source: isMcpTool(tool) ? 'mcp' : 'client',
+      result: null,
+      error: new Error(
+        `Tool "${toolCall.name}" uses an async lifecycle ('${tool.function.lifecycle}'), which executeToolLoop does not support — run it through callModel instead.`,
+      ),
+    } as ToolExecutionResult<Tool>;
   }
 
   // Find the raw tool call from the response output

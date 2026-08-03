@@ -330,6 +330,12 @@ export class AsyncToolRegistry {
    * Cancel one task by task id. Settles it as 'cancelled' immediately
    * (first-writer-wins makes the racing body's own settlement a no-op) and
    * aborts the controller so cooperative bodies stop working.
+   *
+   * Deferred tasks: cancellation is LOCAL-ONLY — the conversation records
+   * the cancel, but the external system is not notified (mirror of the
+   * sendToTask contract; tell the external system yourself, or use the
+   * tool's `.cancel()` method which persists the terminal status for
+   * cross-process callers).
    * @returns true when a working task was found and cancelled.
    */
   cancelTask(taskId: string, reason?: string): boolean {

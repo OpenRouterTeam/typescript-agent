@@ -214,6 +214,9 @@ export function persistedTaskCheckResult(
       note: 'This task was detached; its result will not be delivered.',
     }),
   };
+  // View-specific explanations must not displace the orphaned warning —
+  // "the result will never arrive" is the actionable part.
+  const withNote = (viewNote: string) => ('note' in base ? `${base.note} ${viewNote}` : viewNote);
   const view = input.view ?? 'status';
   if (view === 'logs') {
     return {
@@ -226,17 +229,18 @@ export function persistedTaskCheckResult(
             },
           ]
         : [],
-      note: 'Full logs are not retained across processes.',
+      note: withNote('Full logs are not retained across processes.'),
     };
   }
   if (view === 'transcript') {
     return {
       ...base,
       transcript: '',
-      note:
+      note: withNote(
         pending.mode === 'defer'
           ? 'No transcript available — this task is owned by an external system.'
           : 'No transcript available — the task ran in a previous process.',
+      ),
     };
   }
   return base;
