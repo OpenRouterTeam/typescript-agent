@@ -1358,4 +1358,66 @@ describe('same-tool fan-out streaks', () => {
     expect(fresh.streak).toBe(1);
     expect(fresh.verdict).toBeUndefined();
   });
+
+  /*
+   * The steer rung dedupes queued guidance on exact message text, so one round
+   * of evidence must render ONE string. On the undeclared path (server-tool
+   * records, direct monitor consumers, the SDK ports) each call is recorded
+   * alone, so a round's `callSet` holds only that call: the last-recorded call
+   * tied at `roundStreak == callStreak` and rendered the fingerprint-bearing
+   * single-call text, while its round-mates rendered the fingerprint-free
+   * per-call text — two strings for one round, defeating the dedupe.
+   */
+  it('renders one verdict text per undeclared multi-call round', async () => {
+    const detector = new DoomLoopMonitor(resolveDoomLoopOption(true));
+    for (let round = 1; round <= 4; round++) {
+      const texts: string[] = [];
+      for (const cmd of [
+        'a',
+        'b',
+      ]) {
+        const result = await detector.recordToolCall(
+          'sh',
+          {
+            cmd,
+          },
+          round,
+          {
+            allowBlock: false,
+          },
+        );
+        if (result.verdict) {
+          texts.push(result.verdict.message);
+        }
+      }
+      // Either the round produced no verdict yet, or every member of it
+      // produced byte-identical text.
+      expect(new Set(texts).size).toBeLessThanOrEqual(1);
+    }
+  });
+
+  /* A DECLARED single-call round still names the argument fingerprint. */
+  it('keeps the fingerprint-bearing text for a genuine single-call round', async () => {
+    const detector = new DoomLoopMonitor(resolveDoomLoopOption(true));
+    let last: string | undefined;
+    for (let round = 1; round <= 3; round++) {
+      await detector.declareRound(round, [
+        {
+          toolName: 'read',
+          keyMaterial: {
+            path: 'same',
+          },
+        },
+      ]);
+      const result = await detector.recordToolCall(
+        'read',
+        {
+          path: 'same',
+        },
+        round,
+      );
+      last = result.verdict?.message ?? last;
+    }
+    expect(last).toContain('identical arguments (fingerprint');
+  });
 });

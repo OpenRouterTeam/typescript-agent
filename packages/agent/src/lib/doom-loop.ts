@@ -1332,6 +1332,10 @@ export class DoomLoopMonitor {
           callSet,
           roundStreak: streak,
           callStreak,
+          // An undeclared record's `callSet` is just this one call, which says
+          // nothing about the round's real width — so it may not be described
+          // as a set, nor have its fingerprint quoted as the round's identity.
+          roundDeclared: declaredMember,
         }),
       },
     };
@@ -1468,6 +1472,16 @@ function setsMatch(left: readonly string[], right: readonly string[]): boolean {
  * streak alone decides (its count exceeds the round's), only this one call is
  * the evidence, so quoting its own fingerprint is both accurate and
  * dedupe-safe: no other call of the round carries the same verdict.
+ *
+ * `roundDeclared` says whether the detector was told the round's true
+ * membership. Only then does `callSet` describe the round, so only then may the
+ * text name a set or quote an argument fingerprint. On the UNDECLARED path
+ * (server-tool records, direct `DoomLoopMonitor` consumers, the SDK ports) each
+ * call is recorded alone, so `callSet` holds just that call however wide the
+ * round really was: the last-recorded call tied at `roundStreak == callStreak`
+ * and rendered the fingerprint-bearing single-call text while its round-mates
+ * rendered the per-call text — two strings for one round, which defeats the
+ * exact-text steer dedupe this shaping exists to preserve.
  */
 function buildToolVerdictMessage(input: {
   toolName: string;
@@ -1475,20 +1489,19 @@ function buildToolVerdictMessage(input: {
   callSet: readonly string[];
   roundStreak: number;
   callStreak: number;
+  roundDeclared: boolean;
 }): string {
-  const { toolName, fingerprint, callSet, roundStreak, callStreak } = input;
-  if (callStreak > roundStreak) {
+  const { toolName, fingerprint, callSet, roundStreak, callStreak, roundDeclared } = input;
+  if (callStreak > roundStreak || !roundDeclared) {
     /*
-     * No per-call hash here, deliberately: a wide round can have MANY members
-     * whose per-call counts fire at once (a repeated fan-out plus one new
-     * call), and quoting each call's own fingerprint would queue one steer
-     * message per member. Same tool + same count -> byte-identical text, so
-     * the steer dedupe collapses them to one correction. Block outputs are
-     * attached to the specific refused call anyway, and the verdict payload
-     * carries the exact `fingerprint` for hooks.
+     * Fingerprint-free, so every member of the round renders identically and
+     * the steer dedupe collapses them to one correction. Reached when the
+     * per-call streak decides, and when the round's true membership is unknown
+     * (undeclared path) — in both cases quoting one call's hash would either
+     * be inaccurate for the round or diverge between its members.
      */
     return (
-      `Doom loop suspected: this exact "${toolName}" call was repeated in ${callStreak} ` +
+      `Doom loop suspected: this exact "${toolName}" call was repeated in ${Math.max(roundStreak, callStreak)} ` +
       'consecutive rounds, even as its other calls changed. Repeating it will not change ' +
       'the result. Take a different approach, or explain why repetition is required.'
     );
