@@ -1,0 +1,143 @@
+name: Release train
+
+# Scheduled auto-merge for the "chore: version packages" PR that
+# changesets/action maintains (see publish.yaml). Before this existed, that PR
+# waited for a human to merge it, so shipped features sat unreleased between
+# manual releases. The train bounds that latency: twice a week it finds the
+# Version Packages PR, gates it on Perry + CI via pr-gate.sh (the same gate the
+# SDK-bump flow uses), and squash-merges on green — which triggers publish.yaml
+# on push to main and cuts the actual npm release.
+#
+# Failure modes are alerted, never silently skipped:
+#   - PR exists but is red/stuck  → pr-gate.sh posts to Slack and exits non-zero
+#   - changesets pending on main but no Version PR → Slack alert (changesets/action
+#     failed to open one; investigate publish.yaml runs)
+#   - PR labeled `release:hold`   → skipped on purpose, logged + Slack notice
+#
+# Escape hatches:
+#   - add the `release:hold` label to the Version PR to pause the train
+#     (coordinated @openrouter/agent + @openrouter/sdk releases, etc.)
+#   - workflow_dispatch with dry_run to see what the train would do
+
+on:
+  schedule:
+    # Tue and Thu 09:23 UTC — off the :00 mark (GitHub delays on-the-hour
+    # crons), early enough in the EU/US-overlap day that a red gate alert
+    # lands while people are around to act on it.
+    - cron: '23 9 * * 2,4'
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Report what would happen; do not merge'
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: release-train
+  cancel-in-progress: false
+
+env:
+  REPO: OpenRouterTeam/typescript-agent
+  VERSION_PR_BRANCH: changeset-release/main # changesets/action's fixed head branch
+  HOLD_LABEL: release:hold
+
+jobs:
+  train:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Find Version Packages PR
+        id: find
+        env:
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+        run: |
+          set -euo pipefail
+          PR_JSON="$(gh pr list -R "$REPO" \
+            --head "$VERSION_PR_BRANCH" \
+            --state open \
+            --json number,labels \
+            --jq '.[0] // empty')"
+
+          if [ -z "$PR_JSON" ]; then
+            echo "pr_number=" >> "$GITHUB_OUTPUT"
+            echo "held=false" >> "$GITHUB_OUTPUT"
+            echo "No open Version Packages PR."
+            exit 0
+          fi
+
+          PR_NUMBER="$(echo "$PR_JSON" | python3 -c 'import sys,json; print(json.load(sys.stdin)["number"])')"
+          HELD="$(echo "$PR_JSON" | HOLD_LABEL="$HOLD_LABEL" python3 -c 'import sys,json,os; pr=json.load(sys.stdin); print(str(any(l["name"]==os.environ["HOLD_LABEL"] for l in pr.get("labels",[]))).lower())')"
+          echo "pr_number=$PR_NUMBER" >> "$GITHUB_OUTPUT"
+          echo "held=$HELD" >> "$GITHUB_OUTPUT"
+          echo "Found Version Packages PR #$PR_NUMBER (held=$HELD)"
+
+      # No Version PR is only fine when there is also nothing waiting to ship.
+      # Pending changesets with no PR means changesets/action failed on some
+      # push to main (or someone closed the PR) — exactly the silent-stall case
+      # the train exists to catch, so alert instead of exiting quietly.
+      - name: Check for stranded changesets
+        if: steps.find.outputs.pr_number == ''
+        env:
+          SLACK_BOT_TOKEN: ${{ secrets.CI_RELEASE_ALERT_SLACK_BOT_TOKEN }}
+          SLACK_CHANNEL_ID: ${{ secrets.CI_RELEASE_ALERT_SLACK_CHANNEL_ID }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          PENDING="$(find .changeset -maxdepth 1 -name '*.md' ! -name 'README.md' | wc -l | tr -d ' ')"
+          if [ "$PENDING" = "0" ]; then
+            echo "No pending changesets and no Version PR — nothing to release."
+            exit 0
+          fi
+
+          TEXT=":warning: Release train: ${PENDING} pending changeset(s) on main but no open Version Packages PR. changesets/action may have failed — check recent publish.yaml runs. <${RUN_URL}|run>"
+          echo "::error::${PENDING} pending changeset(s) but no Version Packages PR"
+          if [ -n "${SLACK_BOT_TOKEN:-}" ] && [ -n "${SLACK_CHANNEL_ID:-}" ]; then
+            curl -fsS -X POST https://slack.com/api/chat.postMessage \
+              -H "Authorization: Bearer ${SLACK_BOT_TOKEN}" \
+              -H "Content-type: application/json; charset=utf-8" \
+              --data "$(python3 -c "import json,sys; print(json.dumps({'channel':sys.argv[1],'unfurl_links':False,'text':sys.argv[2]}))" "$SLACK_CHANNEL_ID" "$TEXT")" \
+              >/dev/null || echo "::warning::Slack post failed"
+          else
+            echo "(slack not configured; would have posted) $TEXT"
+          fi
+          exit 1
+
+      - name: Respect release:hold
+        if: steps.find.outputs.pr_number != '' && steps.find.outputs.held == 'true'
+        env:
+          SLACK_BOT_TOKEN: ${{ secrets.CI_RELEASE_ALERT_SLACK_BOT_TOKEN }}
+          SLACK_CHANNEL_ID: ${{ secrets.CI_RELEASE_ALERT_SLACK_CHANNEL_ID }}
+          PR: ${{ steps.find.outputs.pr_number }}
+        run: |
+          set -euo pipefail
+          TEXT=":double_vertical_bar: Release train: Version Packages <${{ github.server_url }}/${REPO}/pull/${PR}|PR #${PR}> has \`${HOLD_LABEL}\` — skipping this run. Remove the label to resume."
+          echo "$TEXT"
+          if [ -n "${SLACK_BOT_TOKEN:-}" ] && [ -n "${SLACK_CHANNEL_ID:-}" ]; then
+            curl -fsS -X POST https://slack.com/api/chat.postMessage \
+              -H "Authorization: Bearer ${SLACK_BOT_TOKEN}" \
+              -H "Content-type: application/json; charset=utf-8" \
+              --data "$(python3 -c "import json,sys; print(json.dumps({'channel':sys.argv[1],'unfurl_links':False,'text':sys.argv[2]}))" "$SLACK_CHANNEL_ID" "$TEXT")" \
+              >/dev/null || echo "::warning::Slack post failed"
+          fi
+
+      - name: Gate and merge Version Packages PR
+        if: steps.find.outputs.pr_number != '' && steps.find.outputs.held != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+          PR: ${{ steps.find.outputs.pr_number }}
+          # REPO comes from the workflow-level env block.
+          # On schedule runs `inputs` is empty, so dry_run != true → AUTO_MERGE=true.
+          AUTO_MERGE: ${{ inputs.dry_run != true }}
+          GATE_LABEL: 'Release train (Version Packages)'
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          SLACK_BOT_TOKEN: ${{ secrets.CI_RELEASE_ALERT_SLACK_BOT_TOKEN }}
+          SLACK_CHANNEL_ID: ${{ secrets.CI_RELEASE_ALERT_SLACK_CHANNEL_ID }}
+        run: |
+          chmod +x .github/scripts/pr-gate.sh
+          ./.github/scripts/pr-gate.sh

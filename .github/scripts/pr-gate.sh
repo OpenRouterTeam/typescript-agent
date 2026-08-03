@@ -13,6 +13,8 @@
 #   REPO              required — owner/name
 #   GH_TOKEN          required — token with merge permission
 #   AUTO_MERGE        "true" to merge on PASS; anything else = report-only
+#   GATE_LABEL        optional — human label for Slack messages
+#                     (default "@openrouter/sdk bump")
 #   SLACK_BOT_TOKEN   optional — Slack bot token for chat.postMessage
 #   SLACK_CHANNEL_ID  optional — Slack channel for alerts
 #   RUN_URL           optional — link back to this workflow run
@@ -24,6 +26,8 @@ set -euo pipefail
 
 : "${PR:?PR is required}"
 : "${REPO:?REPO is required}"
+
+GATE_LABEL="${GATE_LABEL:-@openrouter/sdk bump}"
 
 INTERVAL="${INTERVAL:-30}"
 TIMEOUT="${TIMEOUT:-1800}"      # 30 min overall
@@ -116,7 +120,7 @@ while :; do
 
   case "$STATE" in
     FAIL_CI|FAIL_REVIEWER)
-      slack ":x: @openrouter/sdk bump <${PR_URL}|PR #${PR}> blocked: ${REASON}. Left open for a human. <${RUN_URL:-$PR_URL}|run>"
+      slack ":x: ${GATE_LABEL} <${PR_URL}|PR #${PR}> blocked: ${REASON}. Left open for a human. <${RUN_URL:-$PR_URL}|run>"
       echo "::error::PR #${PR} blocked: ${REASON}"
       exit 1
       ;;
@@ -134,10 +138,10 @@ while :; do
       if [ "${AUTO_MERGE:-false}" = "true" ]; then
         echo "PASS — squash-merging PR #${PR}"
         gh pr merge "$PR" -R "$REPO" --squash --delete-branch
-        slack ":white_check_mark: @openrouter/sdk bump <${PR_URL}|PR #${PR}> passed Perry + CI and was auto-merged."
+        slack ":white_check_mark: ${GATE_LABEL} <${PR_URL}|PR #${PR}> passed Perry + CI and was auto-merged."
       else
         echo "PASS (report-only; AUTO_MERGE!=true) — not merging PR #${PR}"
-        slack ":white_check_mark: @openrouter/sdk bump <${PR_URL}|PR #${PR}> is green and ready for merge."
+        slack ":white_check_mark: ${GATE_LABEL} <${PR_URL}|PR #${PR}> is green and ready for merge."
       fi
       exit 0
       ;;
@@ -145,7 +149,7 @@ while :; do
       # If perry/review never even shows up, the PR was likely opened with a
       # token that doesn't trigger it — surface that rather than hang forever.
       if [ "$REASON" = "waiting for perry/review" ] && [ "$ELAPSED" -ge "$PERRY_TIMEOUT" ]; then
-        slack ":warning: @openrouter/sdk bump <${PR_URL}|PR #${PR}>: perry/review never appeared after ${PERRY_TIMEOUT}s (token/app misconfig?). Not merging. <${RUN_URL:-$PR_URL}|run>"
+        slack ":warning: ${GATE_LABEL} <${PR_URL}|PR #${PR}>: perry/review never appeared after ${PERRY_TIMEOUT}s (token/app misconfig?). Not merging. <${RUN_URL:-$PR_URL}|run>"
         echo "::error::perry/review did not appear within ${PERRY_TIMEOUT}s"
         exit 1
       fi
@@ -153,7 +157,7 @@ while :; do
   esac
 
   if [ "$ELAPSED" -ge "$TIMEOUT" ]; then
-    slack ":warning: @openrouter/sdk bump <${PR_URL}|PR #${PR}> did not settle within ${TIMEOUT}s (last: ${REASON}). Not merging. <${RUN_URL:-$PR_URL}|run>"
+    slack ":warning: ${GATE_LABEL} <${PR_URL}|PR #${PR}> did not settle within ${TIMEOUT}s (last: ${REASON}). Not merging. <${RUN_URL:-$PR_URL}|run>"
     echo "::error::Gate timed out after ${TIMEOUT}s (last: ${REASON})"
     exit 1
   fi

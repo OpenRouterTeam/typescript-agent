@@ -118,7 +118,12 @@ jobs:
           version: pnpm exec changeset version
           publish: pnpm exec changeset publish --no-git-checks
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # PAT, not the Actions GITHUB_TOKEN: PRs created with GITHUB_TOKEN
+          # never trigger other workflows, so the Version Packages PR would get
+          # no CI and no perry/review — and the release-train workflow
+          # (release-train.yaml) gates its auto-merge on exactly those checks.
+          # Same reasoning as the checkout token in bump-openrouter-sdk.yaml.
+          GITHUB_TOKEN: ${{ secrets.GH_TOKEN }}
           # No NODE_AUTH_TOKEN / NPM_TOKEN: auth comes from OIDC trusted
           # publishing. changesets/action logs "No NPM_TOKEN found, but OIDC is
           # available" and leaves .npmrc alone; npm then exchanges the Actions
