@@ -81,6 +81,9 @@ const report = {
 
 const beforeImport = await settledMemory();
 const importPeak = await capturePeak(async () => {
+  if (mode === 'raw-fetch') {
+    return {};
+  }
   if (bundlePath) {
     const agent = await import(pathToFileURL(resolve(bundlePath)).href);
     return {
@@ -131,11 +134,15 @@ if (mode === 'all' || mode === 'synthetic') {
 }
 
 if (mode === 'all' || mode === 'live') {
-  const apiKey = process.env.OPENROUTER_TEST_KEY ?? process.env.OPENROUTER_API_KEY;
-  if (!apiKey) {
-    throw new Error('Set OPENROUTER_TEST_KEY (preferred) or OPENROUTER_API_KEY for live mode.');
-  }
+  const apiKey = getApiKey();
   report.measurements.live = await runLive(importPeak.value.agent, apiKey);
+}
+
+if (mode === 'raw-fetch') {
+  if (bundlePath) {
+    throw new Error('Raw fetch mode cannot run with --bundle.');
+  }
+  report.measurements.rawFetch = await runRawFetch(getApiKey());
 }
 
 console.log(JSON.stringify(report, null, 2));
@@ -241,9 +248,50 @@ async function runLive(agent, apiKey) {
     });
   }
   if (liveSections.includes('multi-turn-long')) {
-    measurements.multiTurnLong = await benchmarkLongMultiTurn(client);
+    measurements.multiTurnLong = await benchmarkLongMultiTurn({
+      executeTurn: async (input) => {
+        let held = client.callModel({
+          model,
+          input,
+          maxOutputTokens: multiTurnOutputWords + 64,
+          temperature: 0,
+        });
+        const response = await held.getResponse();
+        return {
+          text: extractResponseText(response),
+          usage: normalizeUsage(response.usage),
+          release: () => {
+            if (held === null) {
+              return;
+            }
+            held = null;
+          },
+        };
+      },
+    });
   }
   return measurements;
+}
+
+async function runRawFetch(apiKey) {
+  for (let i = 0; i < warmupIterations; i += 1) {
+    const response = await fetchOpenRouter(apiKey, {
+      input: 'Reply with exactly the word ok.',
+      maxOutputTokens: 16,
+    });
+    response.release();
+  }
+
+  return {
+    warmupIterations,
+    multiTurnLong: await benchmarkLongMultiTurn({
+      executeTurn: (input) =>
+        fetchOpenRouter(apiKey, {
+          input,
+          maxOutputTokens: multiTurnOutputWords + 64,
+        }),
+    }),
+  };
 }
 
 async function benchmarkSequential(client) {
@@ -497,7 +545,7 @@ async function benchmarkToolLoop({ client, tool, stepCountIs, z }) {
   };
 }
 
-async function benchmarkLongMultiTurn(client) {
+async function benchmarkLongMultiTurn({ executeTurn }) {
   const initialBaseline = await settledMemory();
   const conversation = [];
   const turns = [];
@@ -510,20 +558,7 @@ async function benchmarkLongMultiTurn(client) {
       content: `Turn ${turn}: output exactly ${multiTurnOutputWords} copies of the word "token", separated by single spaces. Output nothing else.`,
     });
     const turnBaseline = await settledMemory();
-    let held = client.callModel({
-      model,
-      input: conversation,
-      maxOutputTokens: multiTurnOutputWords + 64,
-      temperature: 0,
-    });
-
-    const measured = await capturePeak(async () => {
-      const response = await held.getResponse();
-      return {
-        text: extractResponseText(response),
-        usage: normalizeUsage(response.usage),
-      };
-    });
+    const measured = await capturePeak(() => executeTurn(conversation));
     absolutePeak = maxMemory(absolutePeak, measured.peak);
     addUsage(totalUsage, measured.value.usage);
 
@@ -532,7 +567,7 @@ async function benchmarkLongMultiTurn(client) {
       content: measured.value.text,
     });
     const retainedWithResult = await settledMemory();
-    held = null;
+    measured.value.release();
     const conversationOnly = await settledMemory();
 
     turns.push({
@@ -568,6 +603,40 @@ async function benchmarkLongMultiTurn(client) {
     released,
     releasedDelta: memoryDelta(released, initialBaseline),
     turns,
+  };
+}
+
+async function fetchOpenRouter(apiKey, { input, maxOutputTokens }) {
+  const response = await fetch('https://openrouter.ai/api/v1/responses', {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      model,
+      input,
+      max_output_tokens: maxOutputTokens,
+      temperature: 0,
+    }),
+  });
+  const body = await response.json();
+  if (!response.ok) {
+    throw new Error(
+      `Raw OpenRouter request failed (${response.status}): ${JSON.stringify(body).slice(0, 500)}`,
+    );
+  }
+
+  let held = body;
+  return {
+    text: extractResponseText(body),
+    usage: normalizeUsage(body.usage),
+    release: () => {
+      if (held === null) {
+        return;
+      }
+      held = null;
+    },
   };
 }
 
@@ -657,11 +726,15 @@ function emptyUsage() {
 
 function normalizeUsage(usage) {
   return {
-    inputTokens: usage?.inputTokens ?? 0,
-    outputTokens: usage?.outputTokens ?? 0,
-    totalTokens: usage?.totalTokens ?? 0,
-    cachedTokens: usage?.inputTokensDetails?.cachedTokens ?? 0,
-    reasoningTokens: usage?.outputTokensDetails?.reasoningTokens ?? 0,
+    inputTokens: usage?.inputTokens ?? usage?.input_tokens ?? 0,
+    outputTokens: usage?.outputTokens ?? usage?.output_tokens ?? 0,
+    totalTokens: usage?.totalTokens ?? usage?.total_tokens ?? 0,
+    cachedTokens:
+      usage?.inputTokensDetails?.cachedTokens ?? usage?.input_tokens_details?.cached_tokens ?? 0,
+    reasoningTokens:
+      usage?.outputTokensDetails?.reasoningTokens ??
+      usage?.output_tokens_details?.reasoning_tokens ??
+      0,
     cost: usage?.cost ?? 0,
   };
 }
@@ -793,4 +866,12 @@ function integerListArg(name, fallback) {
     throw new Error(`--${name} must be a comma-separated list of non-negative integers.`);
   }
   return values;
+}
+
+function getApiKey() {
+  const apiKey = process.env.OPENROUTER_TEST_KEY ?? process.env.OPENROUTER_API_KEY;
+  if (!apiKey) {
+    throw new Error('Set OPENROUTER_TEST_KEY (preferred) or OPENROUTER_API_KEY for live mode.');
+  }
+  return apiKey;
 }

@@ -76,8 +76,19 @@ node --expose-gc --max-old-space-size=128 --max-semi-space-size=8 \
   --sections multi-turn-long \
   --multi-turn-count 4 \
   --multi-turn-output-words 2048
+
+# The same multi-turn workload using only non-streaming fetch (no agent or SDK import)
+node --expose-gc --max-old-space-size=128 --max-semi-space-size=8 \
+  benchmarks/agent-memory/benchmark.mjs \
+  --mode raw-fetch \
+  --model openai/gpt-5.6-luna \
+  --multi-turn-count 4 \
+  --multi-turn-output-words 2048
 ```
 
 The Node heap flags create a constrained V8 process for earlier failure detection. They do not
 exactly reproduce Cloudflare's accounting because the Workers limit includes isolate runtime and
 WebAssembly memory, not only V8 old space.
+
+Raw fetch mode is a lower-bound control: unlike the agent path, it requests one non-streaming JSON
+response and therefore does not retain parsed server-sent events for replay.
