@@ -510,6 +510,71 @@ describe('tool.deferred — cross-process resume', () => {
     expect(result).toBeNull();
   });
 
+  it('.resolve() preserves a coexisting non-async pause status (awaiting_approval)', async () => {
+    const { accessor, get } = await pauseConversation();
+
+    // Simulate a later round pausing for approval while the deferred task
+    // is still outstanding — the async delivery must not clobber it.
+    const paused = get();
+    if (!paused) {
+      throw new Error('expected state');
+    }
+    await accessor.save({
+      ...paused,
+      status: 'awaiting_approval',
+    });
+
+    await legalReview.resolve(client, {
+      state: accessor,
+      taskId: 'ticket_c-9',
+      output: {
+        approved: true,
+        notes: 'ok',
+      },
+    });
+
+    // The approval pause survives; the task itself is settled.
+    expect(get()?.status).toBe('awaiting_approval');
+    expect(get()?.pendingAsyncTools?.[0]?.status).toBe('completed');
+  });
+
+  it('.resolve() ignores orphaned tasks when deciding awaiting_async_tools', async () => {
+    const { accessor, get } = await pauseConversation();
+
+    // Add a detached (orphaned) background task alongside the deferred one.
+    const paused = get();
+    if (!paused) {
+      throw new Error('expected state');
+    }
+    await accessor.save({
+      ...paused,
+      pendingAsyncTools: [
+        ...(paused.pendingAsyncTools ?? []),
+        {
+          callId: 'call_orphan',
+          taskId: 'task_orphan',
+          name: 'render_video',
+          mode: 'background' as const,
+          status: 'working' as const,
+          startedAt: Date.now(),
+          orphaned: true,
+        },
+      ],
+    });
+
+    await legalReview.resolve(client, {
+      state: accessor,
+      taskId: 'ticket_c-9',
+      output: {
+        approved: true,
+        notes: 'ok',
+      },
+    });
+
+    // The orphan never settles — it must not keep the conversation parked.
+    expect(get()?.status).toBe('in_progress');
+  });
+
   it('the paused state round-trips through JSON with async fields intact', async () => {
     const { get } = await pauseConversation();
 
