@@ -57,6 +57,9 @@ const liveSections = listArg('sections', [
 if (typeof globalThis.gc !== 'function') {
   throw new Error('Run with --expose-gc so settled heap measurements are meaningful.');
 }
+if (mode === 'sdk-live' && !bundlePath) {
+  throw new Error('SDK live mode requires a tree-shaken SDK-only --bundle.');
+}
 
 const report = {
   metadata: {
@@ -143,6 +146,10 @@ if (mode === 'raw-fetch') {
     throw new Error('Raw fetch mode cannot run with --bundle.');
   }
   report.measurements.rawFetch = await runRawFetch(getApiKey());
+}
+
+if (mode === 'sdk-live') {
+  report.measurements.sdk = await runSdkLive(importPeak.value.agent, getApiKey());
 }
 
 console.log(JSON.stringify(report, null, 2));
@@ -291,6 +298,72 @@ async function runRawFetch(apiKey) {
           maxOutputTokens: multiTurnOutputWords + 64,
         }),
     }),
+  };
+}
+
+async function runSdkLive(sdk, apiKey) {
+  const client = new sdk.OpenRouterCore({
+    apiKey,
+  });
+  const executeTurn = (input, maxOutputTokens) =>
+    sendWithSdk({
+      client,
+      betaResponsesSend: sdk.betaResponsesSend,
+      input,
+      maxOutputTokens,
+    });
+
+  for (let i = 0; i < warmupIterations; i += 1) {
+    const response = await executeTurn('Reply with exactly the word ok.', 16);
+    response.release();
+  }
+
+  return {
+    warmupIterations,
+    multiTurnLong: await benchmarkLongMultiTurn({
+      executeTurn: (input) => executeTurn(input, multiTurnOutputWords + 64),
+    }),
+  };
+}
+
+async function sendWithSdk({ client, betaResponsesSend, input, maxOutputTokens }) {
+  const result = await betaResponsesSend(client, {
+    responsesRequest: {
+      model,
+      input,
+      maxOutputTokens,
+      temperature: 0,
+      stream: true,
+    },
+  });
+  if (!result.ok) {
+    throw result.error;
+  }
+
+  let response;
+  let held = result.value;
+  for await (const event of held) {
+    if (event.type === 'response.completed' || event.type === 'response.incomplete') {
+      response = event.response;
+    }
+    if (event.type === 'response.failed') {
+      throw new Error(`SDK response failed: ${JSON.stringify(event.response.error)}`);
+    }
+  }
+  if (!response) {
+    throw new Error('SDK stream ended without a completed response.');
+  }
+
+  return {
+    text: extractResponseText(response),
+    usage: normalizeUsage(response.usage),
+    release: () => {
+      if (held === null) {
+        return;
+      }
+      held = null;
+      response = null;
+    },
   };
 }
 

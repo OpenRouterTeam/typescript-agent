@@ -84,6 +84,16 @@ node --expose-gc --max-old-space-size=128 --max-semi-space-size=8 \
   --model openai/gpt-5.6-luna \
   --multi-turn-count 4 \
   --multi-turn-output-words 2048
+
+# The same streaming workload using the client SDK without the agent
+pnpm benchmark:memory:sdk-bundle
+node --expose-gc --max-old-space-size=128 --max-semi-space-size=8 \
+  benchmarks/agent-memory/benchmark.mjs \
+  --mode sdk-live \
+  --bundle .turbo/agent-memory/cloudflare-sdk-worker.bundle.mjs \
+  --model openai/gpt-5.6-luna \
+  --multi-turn-count 4 \
+  --multi-turn-output-words 2048
 ```
 
 The Node heap flags create a constrained V8 process for earlier failure detection. They do not
@@ -92,3 +102,7 @@ WebAssembly memory, not only V8 old space.
 
 Raw fetch mode is a lower-bound control: unlike the agent path, it requests one non-streaming JSON
 response and therefore does not retain parsed server-sent events for replay.
+
+SDK live mode streams through `@openrouter/sdk` but does not import or execute
+`@openrouter/agent`. It isolates the generated client's schema and SSE parsing overhead from the
+agent's replay and orchestration layers.
