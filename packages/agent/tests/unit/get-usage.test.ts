@@ -11,6 +11,8 @@
  * - the streaming path: consume getItemsStream() fully, then getUsage()
  * - agreement with the SessionEnd.totalUsage hook payload
  * - usage-less responses still counted in modelCalls, cost omitted
+ * - a run paused at `awaiting_approval` reports only its pre-pause calls,
+ *   including on the approval-resume path that skips executeToolsIfNeeded
  */
 import type * as models from '@openrouter/sdk/models';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -26,6 +28,8 @@ import type { OpenRouterCore } from '@openrouter/sdk/core';
 import { callModel } from '../../src/inner-loop/call-model.js';
 import { HooksManager } from '../../src/lib/hooks-manager.js';
 import type { SessionEndPayload } from '../../src/lib/hooks-types.js';
+import { tool } from '../../src/lib/tool.js';
+import type { ConversationState, StateAccessor, Tool } from '../../src/lib/tool-types.js';
 import { ToolType } from '../../src/lib/tool-types.js';
 
 afterEach(() => {
@@ -73,7 +77,17 @@ function textResponse(id = 'resp_text', usage?: models.Usage | null): models.Ope
   } as unknown as models.OpenResponsesResult;
 }
 
-function toolCallResponse(id = 'resp_tool', usage?: models.Usage): models.OpenResponsesResult {
+function toolCallResponse(
+  id = 'resp_tool',
+  usage?: models.Usage,
+  call: {
+    name: string;
+    arguments: string;
+  } = {
+    name: 'echo',
+    arguments: '{}',
+  },
+): models.OpenResponsesResult {
   return {
     id,
     model: 'test-model-v1',
@@ -82,8 +96,8 @@ function toolCallResponse(id = 'resp_tool', usage?: models.Usage): models.OpenRe
         type: 'function_call',
         id: `out_${id}`,
         callId: `call_${id}`,
-        name: 'echo',
-        arguments: '{}',
+        name: call.name,
+        arguments: call.arguments,
         status: 'completed',
       },
     ],
@@ -105,6 +119,44 @@ function makeEchoTool() {
     },
   };
 }
+
+/** In-memory StateAccessor so an approval pause can be resumed. */
+function makeStateAccessor(): StateAccessor<readonly Tool[]> & {
+  getLatest: () => ConversationState<readonly Tool[]> | null;
+} {
+  let state: ConversationState<readonly Tool[]> | null = null;
+  return {
+    load: async () => state,
+    save: async (s) => {
+      state = s;
+    },
+    getLatest: () => state,
+  };
+}
+
+/** A tool whose every call pauses the run for human approval. */
+const approvalTool = tool({
+  name: 'risky',
+  description: 'Does something that needs a human to sign off.',
+  inputSchema: z.object({
+    target: z.string(),
+  }),
+  outputSchema: z.object({
+    done: z.boolean(),
+  }),
+  requireApproval: true,
+  execute: async () => ({
+    done: true,
+  }),
+});
+
+/** A scripted `function_call` naming the approval-gated tool above. */
+const riskyCall = {
+  name: 'risky',
+  arguments: JSON.stringify({
+    target: 'prod',
+  }),
+};
 
 const client = {} as unknown as OpenRouterCore;
 
@@ -342,5 +394,198 @@ describe('ModelResult.getUsage()', () => {
       totalTokens: 0,
     });
     expect(usage.cost).toBeUndefined();
+  });
+
+  describe('paused at awaiting_approval', () => {
+    it('reports only the model calls that completed before the pause', async () => {
+      // One response: the model calls the approval-gated tool. The tool never
+      // executes and no follow-up request is made — the run parks awaiting a
+      // human decision, so exactly one model call has completed.
+      mockBetaResponsesSend.mockResolvedValueOnce({
+        ok: true,
+        value: toolCallResponse('r1', undefined, riskyCall),
+      });
+
+      const accessor = makeStateAccessor();
+      const result = callModel(client, {
+        model: 'test-model',
+        input: 'do the risky thing',
+        tools: [
+          approvalTool,
+        ] as const,
+        state: accessor,
+      });
+
+      // Drives the loop up to the approval gate (does not throw on a pause).
+      await result.getPendingToolCalls();
+
+      const paused = accessor.getLatest();
+      expect(paused?.status).toBe('awaiting_approval');
+      expect(mockBetaResponsesSend).toHaveBeenCalledTimes(1);
+
+      // Totals reflect the single pre-pause generation, not a zeroed or
+      // speculative aggregate.
+      expect(await result.getUsage()).toEqual({
+        modelCalls: 1,
+        inputTokens: 100,
+        outputTokens: 50,
+        totalTokens: 150,
+        cachedTokens: 25,
+        reasoningTokens: 10,
+        cost: 0.002,
+      });
+    });
+
+    it('is idempotent while paused and drives no further model requests', async () => {
+      mockBetaResponsesSend.mockResolvedValueOnce({
+        ok: true,
+        value: toolCallResponse('r1', undefined, riskyCall),
+      });
+
+      const accessor = makeStateAccessor();
+      const result = callModel(client, {
+        model: 'test-model',
+        input: 'do the risky thing',
+        tools: [
+          approvalTool,
+        ] as const,
+        state: accessor,
+      });
+      await result.getPendingToolCalls();
+      expect(accessor.getLatest()?.status).toBe('awaiting_approval');
+
+      // Repeated reads of a paused run must not re-drive the loop, dispatch a
+      // request, or double-count the pre-pause generation. A further scripted
+      // response is queued precisely so an accidental dispatch would show up
+      // both as a call count bump and as inflated totals.
+      mockBetaResponsesSend.mockResolvedValueOnce({
+        ok: true,
+        value: textResponse('should-not-be-consumed'),
+      });
+
+      const first = await result.getUsage();
+      expect(first.modelCalls).toBe(1);
+      expect(await result.getUsage()).toEqual(first);
+      expect(mockBetaResponsesSend).toHaveBeenCalledTimes(1);
+    });
+
+    it('scopes totals per ModelResult across an approval resume', async () => {
+      // Run 1: model calls risky(...) → parks at the approval gate.
+      mockBetaResponsesSend.mockResolvedValueOnce({
+        ok: true,
+        value: toolCallResponse('r1', undefined, riskyCall),
+      });
+
+      const accessor = makeStateAccessor();
+      const first = callModel(client, {
+        model: 'test-model',
+        input: 'do the risky thing',
+        tools: [
+          approvalTool,
+        ] as const,
+        state: accessor,
+      });
+      await first.getPendingToolCalls();
+
+      const pausedCallId = accessor.getLatest()?.pendingToolCalls?.[0]?.id;
+      expect(pausedCallId).toBeDefined();
+
+      // Resume: approving the call executes the tool and the unsent-results
+      // request lands one further generation (r2). This resumed ModelResult
+      // carries `isResumingFromApproval`, so getUsage() skips
+      // executeToolsIfNeeded() and reports straight from the aggregate.
+      mockBetaResponsesSend.mockResolvedValueOnce({
+        ok: true,
+        value: textResponse(
+          'r2',
+          usageBlock({
+            inputTokens: 200,
+            outputTokens: 100,
+            totalTokens: 300,
+            cost: 0.003,
+          }),
+        ),
+      });
+
+      const resumed = callModel(client, {
+        model: 'test-model',
+        input: undefined as unknown as string,
+        tools: [
+          approvalTool,
+        ] as const,
+        state: accessor,
+        approveToolCalls: [
+          pausedCallId as string,
+        ],
+      });
+      await resumed.getPendingToolCalls();
+
+      // The aggregate is per-ModelResult, not per-conversation: the resumed
+      // run reports only its OWN generation (r2). Run 1's r1 stays on `first`,
+      // so a caller summing across resumes adds them rather than
+      // double-counting a shared running total.
+      expect(await resumed.getUsage()).toMatchObject({
+        modelCalls: 1,
+        inputTokens: 200,
+        outputTokens: 100,
+        totalTokens: 300,
+        cost: 0.003,
+      });
+      expect(await first.getUsage()).toMatchObject({
+        modelCalls: 1,
+        inputTokens: 100,
+        totalTokens: 150,
+        cost: 0.002,
+      });
+    });
+
+    it('does not advance an approval-resumed run when read before the loop', async () => {
+      // Pins the `isResumingFromApproval` guard specifically. Reading usage is
+      // an observation, so on a resumed run it must NOT stand in for driving
+      // the loop: without the guard this call runs executeToolsIfNeeded() and
+      // settles the conversation to 'complete' as a side effect of asking a
+      // question. Totals alone can't catch that — the resume's generation is
+      // dispatched during initStream either way — so assert on run status.
+      mockBetaResponsesSend.mockResolvedValueOnce({
+        ok: true,
+        value: toolCallResponse('r1', undefined, riskyCall),
+      });
+
+      const accessor = makeStateAccessor();
+      const first = callModel(client, {
+        model: 'test-model',
+        input: 'do the risky thing',
+        tools: [
+          approvalTool,
+        ] as const,
+        state: accessor,
+      });
+      await first.getPendingToolCalls();
+      const pausedCallId = accessor.getLatest()?.pendingToolCalls?.[0]?.id;
+
+      mockBetaResponsesSend.mockResolvedValueOnce({
+        ok: true,
+        value: textResponse('r2'),
+      });
+
+      const resumed = callModel(client, {
+        model: 'test-model',
+        input: undefined as unknown as string,
+        tools: [
+          approvalTool,
+        ] as const,
+        state: accessor,
+        approveToolCalls: [
+          pausedCallId as string,
+        ],
+      });
+
+      // getUsage() is the FIRST call on the resumed run — nothing has driven
+      // the loop yet.
+      expect(await resumed.getUsage()).toMatchObject({
+        modelCalls: 1,
+      });
+      expect(accessor.getLatest()?.status).toBe('in_progress');
+    });
   });
 });
