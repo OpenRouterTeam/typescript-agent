@@ -44,6 +44,10 @@
       "types": "./esm/lib/stop-conditions.d.ts",
       "default": "./esm/lib/stop-conditions.js"
     },
+    "./doom-loop": {
+      "types": "./esm/lib/doom-loop.d.ts",
+      "default": "./esm/lib/doom-loop.js"
+    },
     "./tool": {
       "types": "./esm/lib/tool.d.ts",
       "default": "./esm/lib/tool.js"

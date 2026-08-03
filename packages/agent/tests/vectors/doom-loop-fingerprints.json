@@ -1,0 +1,132 @@
+{
+  "description": "Cross-port doom-loop fingerprint conformance vectors. fingerprint = sha256(utf8(toolName + \"\\n\" + jcs(keyMaterial))) for tool calls, sha256(utf8(jcs(keyMaterial))) for bare key material. jcs = RFC 8785 canonical JSON. Ports MUST use an RFC 8785 implementation (pip jcs, cyberphone/json-canonicalization), NOT their stdlib JSON serializer. All hex lowercase.",
+  "toolCallVectors": [
+    {
+      "name": "basic bash identity",
+      "toolName": "bash",
+      "keyMaterial": {
+        "command": "ls -la",
+        "cwd": "/tmp"
+      },
+      "jcs": "{\"command\":\"ls -la\",\"cwd\":\"/tmp\"}",
+      "fingerprint": "c3430466c9a1a7c11c8e23328fcf3057189c44d86839527ac6e61bb4574410d4"
+    },
+    {
+      "name": "key order insensitivity (same fingerprint as basic bash identity)",
+      "toolName": "bash",
+      "keyMaterial": {
+        "cwd": "/tmp",
+        "command": "ls -la"
+      },
+      "jcs": "{\"command\":\"ls -la\",\"cwd\":\"/tmp\"}",
+      "fingerprint": "c3430466c9a1a7c11c8e23328fcf3057189c44d86839527ac6e61bb4574410d4"
+    },
+    {
+      "name": "empty object (repeated empty call)",
+      "toolName": "list_tasks",
+      "keyMaterial": {},
+      "jcs": "{}",
+      "fingerprint": "b84a3e324e9dc95335f72cfee5e5898465349be72cb1348fe7927c49c8d65d92"
+    },
+    {
+      "name": "non-ascii + emoji",
+      "toolName": "web_search",
+      "keyMaterial": {
+        "query": "café 🎉"
+      },
+      "jcs": "{\"query\":\"café 🎉\"}",
+      "fingerprint": "a8bd7e02e874cd1d68db436c3228a42ed2d656ddd30d3195db0e72378479b160"
+    },
+    {
+      "name": "negative zero collapses to 0 (JCS)",
+      "toolName": "calc",
+      "keyMaterial": {
+        "value": 0
+      },
+      "jcs": "{\"value\":0}",
+      "fingerprint": "2c0292f2f8e9099f2879c189b8bd0d61fdc24dea98f06ec1d96f17f8ccb86f7d"
+    },
+    {
+      "name": "large magnitude number 1e21 (JCS exponent form)",
+      "toolName": "calc",
+      "keyMaterial": {
+        "value": 1e+21
+      },
+      "jcs": "{\"value\":1e+21}",
+      "fingerprint": "53f17cc32c78fee57f8e6aba17c4d5f75ca2aa5a1d06d359880c584993dcaaff"
+    },
+    {
+      "name": "nested structures with arrays",
+      "toolName": "query",
+      "keyMaterial": {
+        "filter": {
+          "tags": [
+            "b",
+            "a"
+          ],
+          "depth": 2
+        },
+        "sort": null
+      },
+      "jcs": "{\"filter\":{\"depth\":2,\"tags\":[\"b\",\"a\"]},\"sort\":null}",
+      "fingerprint": "b42e583c626c3b2bcbd5adf86b7099d784ef15398f2e0c530262372e73850f4e"
+    },
+    {
+      "name": "lone surrogate escapes as \\ud800 (JSON.stringify)",
+      "toolName": "echo",
+      "keyMaterial": {
+        "s": "\ud800"
+      },
+      "jcs": "{\"s\":\"\\ud800\"}",
+      "fingerprint": "9d901512fe3c9139d48aeaec555bc91c5b8069950bc17a6d014c85bf03c0d8eb"
+    },
+    {
+      "name": "unicode normalization NOT applied (NFC vs NFD differ)",
+      "toolName": "echo",
+      "keyMaterial": {
+        "s": "é"
+      },
+      "jcs": "{\"s\":\"é\"}",
+      "fingerprint": "a281d1b32556677dee1b6039b78cde21229a6777874c6dc8eafc4bff64058568"
+    },
+    {
+      "name": "string primitive key material",
+      "toolName": "web_search",
+      "keyMaterial": "openrouter agent sdk",
+      "jcs": "\"openrouter agent sdk\"",
+      "fingerprint": "dd066597b3c639cd2c905159c3ee5bda98c29add4deef7d20f723583c1e7e177"
+    }
+  ],
+  "keyMaterialVectors": [
+    {
+      "name": "plain phrase",
+      "keyMaterial": "I am stuck.",
+      "jcs": "\"I am stuck.\"",
+      "fingerprint": "37c38ab53f4c3570d8baf87392cb035ef8b2ad98ca1c1e083ea84184173911aa"
+    },
+    {
+      "name": "whitespace-normalized cross-step text",
+      "keyMaterial": "Retrying the same plan.",
+      "jcs": "\"Retrying the same plan.\"",
+      "fingerprint": "764fb75d0e16f75f0265b68d579c571e704b6ce9ea2b5dea784200cb701fe3df"
+    }
+  ],
+  "rejected": [
+    {
+      "name": "bigint",
+      "reason": "RFC 8785 has no representation; canonicalize throws, engine falls back to full arguments"
+    },
+    {
+      "name": "NaN / Infinity",
+      "reason": "non-finite numbers unrepresentable; throws, engine falls back"
+    },
+    {
+      "name": "circular reference",
+      "reason": "throws, engine falls back"
+    },
+    {
+      "name": "nesting > 64 levels",
+      "reason": "depth cap; throws, engine falls back"
+    }
+  ]
+}
