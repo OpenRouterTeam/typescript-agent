@@ -63,4 +63,11 @@ if [[ $input != *stop_hook_active* ]]; then
   exit 0
 fi
 
+# `pnpm run` resolves scripts against the SESSION's cwd, which in a monorepo is
+# not always the repo root: from `packages/mcp/` it would either run that
+# package's own `lint` (a partial gate reporting green) or die with `Missing
+# script: lint` and block the turn. Anchor to the repo root instead. `|| exit 0`
+# keeps the fail-open posture of the guards above — a cwd we cannot reach is a
+# loud skip, never a spurious block.
+cd "${CLAUDE_PROJECT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}" || exit 0
 pnpm run "$script" >&2 || exit 2
