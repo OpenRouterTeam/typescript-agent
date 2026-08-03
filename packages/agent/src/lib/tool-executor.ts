@@ -212,6 +212,13 @@ function buildExecuteCtx(
  * Convert an executor-shaped {@link ParsedToolCall} (whose `id` is the wire
  * `call_id` and whose `arguments` are already parsed) back into the
  * wire-shaped {@link models.FunctionCallItem} the execute context declares.
+ *
+ * `arguments` is always re-serialized: every executor entry point parses the
+ * wire string first (see `extractToolCallsFromResponse` / the orchestrator),
+ * so a string value here is a *parsed* input for a string-schema tool, not
+ * raw JSON — passing it through unquoted would put invalid JSON on the item.
+ * The re-serialized string is therefore semantically equal to the wire
+ * arguments but not guaranteed byte-identical (key order, whitespace).
  */
 function toFunctionCallItem(toolCall: ParsedToolCall<Tool>): models.FunctionCallItem {
   return {
@@ -219,10 +226,8 @@ function toFunctionCallItem(toolCall: ParsedToolCall<Tool>): models.FunctionCall
     id: toolCall.id,
     callId: toolCall.id,
     name: toolCall.name,
-    arguments:
-      typeof toolCall.arguments === 'string'
-        ? toolCall.arguments
-        : JSON.stringify(toolCall.arguments ?? {}),
+    // JSON.stringify(undefined) is undefined, not a string — fall back to '{}'.
+    arguments: JSON.stringify(toolCall.arguments) ?? '{}',
   };
 }
 
