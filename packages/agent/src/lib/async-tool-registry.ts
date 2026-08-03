@@ -52,6 +52,29 @@ export class AsyncToolRegistry {
   }
 
   /**
+   * Register a task so it is visible to steering / cancel / snapshots.
+   * Used for background tasks DURING their grace window — the work is in
+   * flight but not yet committed to async delivery. `untrack` removes it
+   * again when the work settles in-window (the call behaved
+   * synchronously; no async machinery should remain visible).
+   */
+  register(task: ToolTask): void {
+    this.tasks.set(task.callId, task);
+  }
+
+  /**
+   * Remove a task registered via `register` whose work settled inside the
+   * grace window, along with any settlement queued for it in the meantime
+   * (e.g. a cancelTask racing the in-window completion) — the call is
+   * yielding a synchronous output, so a later envelope for the same callId
+   * would be a double delivery.
+   */
+  untrack(callId: string): void {
+    this.tasks.delete(callId);
+    this.settledQueue = this.settledQueue.filter((s) => s.callId !== callId);
+  }
+
+  /**
    * Track an already-started background/agent task. `work` is the tool's
    * in-flight run promise (output-validated). When `timeoutMs` is set the
    * task is raced against it, so a body that ignores its abort signal still

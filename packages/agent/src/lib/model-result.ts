@@ -3334,6 +3334,11 @@ export class ModelResult<
       }),
     });
     runBinding.bind(liveTask);
+    // Visible to steering / cancel / snapshots from the start — a large
+    // graceMs must not create a window where the running task cannot be
+    // reached (sendToTask queues into the inbox; cancelTask aborts the
+    // controller, which the grace race observes as an error settlement).
+    registry.register(liveTask);
     const work = this.runBackgroundWork(String(toolCall.name), invocation.run, controller);
     // Surface unhandled rejections nowhere — the registry's .then() below
     // (or the grace race) is the sole consumer.
@@ -3362,7 +3367,12 @@ export class ModelResult<
       ]);
 
       if (settled !== 'pending') {
-        // Settled in-window: behave exactly like a regular tool.
+        // Settled in-window: behave exactly like a regular tool. The call
+        // yields a synchronous output, so the task leaves the registry —
+        // including any settlement a racing cancelTask queued for it (the
+        // sync output already reports the outcome; an envelope on top
+        // would be a double delivery).
+        registry.untrack(toolCall.id);
         if (settled.outcome === 'ok') {
           this.broadcastToolResult(
             toolCall.id,

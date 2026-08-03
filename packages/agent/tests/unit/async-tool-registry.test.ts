@@ -84,6 +84,46 @@ describe('AsyncToolRegistry — timeout settlement', () => {
   });
 });
 
+describe('AsyncToolRegistry — grace-window visibility (register/untrack)', () => {
+  it('a registered (not yet tracked) task is reachable by steer and cancel', () => {
+    const registry = new AsyncToolRegistry();
+    const controller = new AbortController();
+    const task = makeTask('call_g1', controller);
+    registry.register(task);
+
+    // Visible to snapshots and lookups during the grace window.
+    expect(registry.getTask(task.taskId)).toBe(task);
+    expect(registry.snapshot()).toHaveLength(1);
+
+    // Steering queues into the task inbox instead of returning false.
+    expect(registry.sendToTask(task.taskId, 'go faster')).toBe(true);
+    const received: unknown[] = [];
+    task.onMessage((m) => received.push(m));
+    expect(received).toEqual([
+      'go faster',
+    ]);
+
+    // Cancel aborts the controller (the grace race observes the rejection).
+    expect(registry.cancelTask(task.taskId, 'changed my mind')).toBe(true);
+    expect(controller.signal.aborted).toBe(true);
+  });
+
+  it('untrack removes the task and any settlement queued for it', () => {
+    const registry = new AsyncToolRegistry();
+    const controller = new AbortController();
+    const task = makeTask('call_g2', controller);
+    registry.register(task);
+    registry.cancelTask(task.taskId, 'racing in-window settle');
+
+    // In-window settle path: the sync output already reports the outcome —
+    // no envelope may remain queued.
+    registry.untrack('call_g2');
+    expect(registry.takeSettled()).toEqual([]);
+    expect(registry.getTask(task.taskId)).toBeUndefined();
+    expect(registry.hasTasks()).toBe(false);
+  });
+});
+
 describe('ToolTask — tailLogs bounds', () => {
   it('tailLogs(0) returns no entries, not the whole log', () => {
     const task = makeTask('call_t3');
