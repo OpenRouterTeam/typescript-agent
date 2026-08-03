@@ -98,4 +98,27 @@ describe('ReusableReadableStream', () => {
       'only',
     ]);
   });
+
+  it('cancels an active transport once and wakes waiting consumers', async () => {
+    let cancelCount = 0;
+    const source = new ReadableStream<string>({
+      pull() {
+        // Stay pending until cancellation.
+      },
+      cancel() {
+        cancelCount += 1;
+      },
+    });
+    const stream = new ReusableReadableStream(source);
+    const consumer = stream.createConsumer();
+    const pending = consumer.next();
+
+    await stream.cancel();
+
+    await expect(pending).resolves.toEqual({
+      done: true,
+      value: undefined,
+    });
+    expect(cancelCount).toBe(1);
+  });
 });
