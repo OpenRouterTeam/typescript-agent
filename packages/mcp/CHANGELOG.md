@@ -1,5 +1,47 @@
 # @openrouter/mcp
 
+## 0.1.0
+
+### Minor Changes
+
+- [#74](https://github.com/OpenRouterTeam/typescript-agent/pull/74) [`f412281`](https://github.com/OpenRouterTeam/typescript-agent/commit/f4122818afe99c2586584a23436da90c10009caf) Thanks [@LukasParke](https://github.com/LukasParke)! - Doom-loop `loopKey` support for MCP-wrapped tools (pairs with `@openrouter/agent`'s `doomLoop` option).
+
+  Two ways to declare a wrapped tool's call identity: a client-side `loopKeys` map on `createMCPTools`/`rehydrateMCPTools` (keyed by unprefixed MCP tool name; any `ToolLoopKey` form — function, field-name array, or `false` to exempt), and a server-advertised `_meta['openrouter/loopKey']` on the tool definition (data-only: field-name array or `false`). Client config takes precedence. Server-advertised declarations ride the cache snapshot (`SerializedMCPToolDef.loopKey`), so rehydrated tool sets keep their identities without a `listTools()` round-trip; function forms are client-side only and cannot be cached.
+
+  ```ts
+  import { createMCPTools } from "@openrouter/mcp";
+
+  const mcp = await createMCPTools({
+    url: "https://mcp.example.com/mcp",
+    // Keyed by the UNPREFIXED MCP tool name, even when toolNamePrefix is set.
+    // Any ToolLoopKey form: a field-name array, `false` to exempt, or a
+    // function computing key material (client-side only — not cacheable).
+    loopKeys: {
+      run_command: ["command", "cwd"],
+      poll_job: false,
+    },
+    cache: { store },
+  });
+
+  const result = client.callModel({
+    model: "z-ai/glm-5.2",
+    input: "Get the build passing.",
+    tools: mcp.tools,
+    doomLoop: true,
+  });
+  ```
+
+  A server can advertise the same thing itself via
+  `_meta['openrouter/loopKey']` on the tool definition (data-only: a field-name
+  array or `false`). Client `loopKeys` win over a server declaration, and
+  server-advertised values survive a cache round-trip via
+  `SerializedMCPToolDef.loopKey`.
+
+### Patch Changes
+
+- Updated dependencies [[`78c562e`](https://github.com/OpenRouterTeam/typescript-agent/commit/78c562ef53da0edd84dfbcc6d6ee38a095d72b37), [`78c562e`](https://github.com/OpenRouterTeam/typescript-agent/commit/78c562ef53da0edd84dfbcc6d6ee38a095d72b37), [`78c562e`](https://github.com/OpenRouterTeam/typescript-agent/commit/78c562ef53da0edd84dfbcc6d6ee38a095d72b37), [`231fb65`](https://github.com/OpenRouterTeam/typescript-agent/commit/231fb6578e13c0a7578e54b78392f4cff57221c9)]:
+  - @openrouter/agent@0.9.0
+
 ## 0.0.1
 
 ### Minor Changes
