@@ -235,6 +235,46 @@ describe('resolveLoopKeyMaterial', () => {
     });
   });
 
+  /*
+   * An empty subset makes identity constant, so a detector armed to block a
+   * repeat refuses the SECOND unrelated call. Reachable from a local
+   * declaration and, once servers can advertise the list over the wire, from a
+   * hostile MCP server.
+   */
+  it('empty field array → warns and falls back to full arguments', () => {
+    const resolution = resolveLoopKeyMaterial([], args);
+    expect(resolution).toEqual({
+      kind: 'fallback',
+      keyMaterial: args,
+      warning: expect.stringContaining('empty field list'),
+    });
+  });
+
+  it('empty field array does not collapse two unrelated calls to one identity', () => {
+    const ls = resolveLoopKeyMaterial([], {
+      command: 'ls',
+    });
+    const rm = resolveLoopKeyMaterial([], {
+      command: 'rm -rf /',
+    });
+    expect(ls.keyMaterial).not.toEqual(rm.keyMaterial);
+  });
+
+  it('field array whose every field is absent → warns and falls back', () => {
+    const resolution = resolveLoopKeyMaterial(
+      [
+        'nope',
+        'also_nope',
+      ],
+      args,
+    );
+    expect(resolution).toEqual({
+      kind: 'fallback',
+      keyMaterial: args,
+      warning: expect.stringContaining('absent from the arguments'),
+    });
+  });
+
   it('preserves __proto__ as a declared field', () => {
     const args = JSON.parse('{"__proto__":"declared"}') as Record<string, unknown>;
     const resolution = resolveLoopKeyMaterial(
