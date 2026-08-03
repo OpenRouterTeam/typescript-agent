@@ -96,6 +96,29 @@ function textResponse(): models.OpenResponsesResult {
   } as models.OpenResponsesResult;
 }
 
+function textDeltaStream(
+  response: models.OpenResponsesResult,
+): ReadableStream<models.StreamEvents> {
+  return new ReadableStream<models.StreamEvents>({
+    start(controller) {
+      controller.enqueue({
+        type: 'response.output_text.delta',
+        delta: 'done',
+        itemId: 'message_text',
+        outputIndex: 0,
+        contentIndex: 0,
+        sequenceNumber: 0,
+      } as models.StreamEvents);
+      controller.enqueue({
+        type: 'response.completed',
+        response,
+        sequenceNumber: 1,
+      } as models.StreamEvents);
+      controller.close();
+    },
+  });
+}
+
 async function collect<T>(iterable: AsyncIterable<T>): Promise<T[]> {
   const values: T[] = [];
   for await (const value of iterable) {
@@ -219,6 +242,28 @@ describe('ModelResult consumption matrix', () => {
         arguments: {},
       },
     ]);
+    expect(mockBetaResponsesSend).toHaveBeenCalledTimes(1);
+  });
+
+  it('supports concurrent no-tool text and completion consumers in active mode', async () => {
+    const response = textResponse();
+    mockBetaResponsesSend.mockResolvedValueOnce({
+      ok: true,
+      value: textDeltaStream(response),
+    });
+    const result = callModel(client, {
+      model: 'test-model',
+      input: 'say done',
+      streamReplay: 'active-consumers',
+    });
+
+    const textPromise = collect(result.getTextStream());
+    const responsePromise = result.getResponse();
+
+    await expect(textPromise).resolves.toEqual([
+      'done',
+    ]);
+    await expect(responsePromise).resolves.toBe(response);
     expect(mockBetaResponsesSend).toHaveBeenCalledTimes(1);
   });
 });
