@@ -20,8 +20,13 @@ export class ReusableReadableStream<T> implements ReplayableReadableStream<T> {
   private sourceComplete = false;
   private sourceError: Error | null = null;
   private pumpStarted = false;
+  private historyStart = 0;
+  private hasConsumerEverJoined = false;
 
-  constructor(private sourceStream: ReadableStream<T> | null) {}
+  constructor(
+    private sourceStream: ReadableStream<T> | null,
+    private readonly retention: 'full' | 'active-consumers' = 'full',
+  ) {}
 
   /**
    * True once the source stream has been fully read into the buffer.
@@ -39,11 +44,16 @@ export class ReusableReadableStream<T> implements ReplayableReadableStream<T> {
   createConsumer(): AsyncIterableIterator<T> {
     const consumerId = this.nextConsumerId++;
     const state: ConsumerState = {
-      position: 0,
+      position:
+        this.retention === 'full' || !this.hasConsumerEverJoined
+          ? this.historyStart
+          : this.historyStart + this.buffer.length,
       waitingPromise: null,
       cancelled: false,
     };
+    this.hasConsumerEverJoined = true;
     this.consumers.set(consumerId, state);
+    this.compactActiveBuffer();
 
     // Start pumping the source stream if not already started
     if (!this.pumpStarted) {
@@ -71,10 +81,11 @@ export class ReusableReadableStream<T> implements ReplayableReadableStream<T> {
         }
 
         // If we have buffered data at this position, return it
-        if (consumer.position < self.buffer.length) {
-          const value = self.buffer[consumer.position]!;
+        const bufferEnd = self.historyStart + self.buffer.length;
+        if (consumer.position < bufferEnd) {
+          const value = self.buffer[consumer.position - self.historyStart]!;
           consumer.position++;
-          // Note: We don't clean up buffer to allow sequential/reusable access
+          self.compactActiveBuffer();
           return {
             done: false,
             value,
@@ -107,7 +118,11 @@ export class ReusableReadableStream<T> implements ReplayableReadableStream<T> {
           // Immediately check if we should resolve after setting up the promise
           // This handles the case where data arrived or source completed
           // between our initial checks and promise creation
-          if (self.sourceComplete || self.sourceError || consumer.position < self.buffer.length) {
+          if (
+            self.sourceComplete ||
+            self.sourceError ||
+            consumer.position < self.historyStart + self.buffer.length
+          ) {
             resolve();
           }
         });
@@ -126,6 +141,7 @@ export class ReusableReadableStream<T> implements ReplayableReadableStream<T> {
         if (consumer) {
           consumer.cancelled = true;
           self.consumers.delete(consumerId);
+          self.compactActiveBuffer();
         }
         return {
           done: true,
@@ -138,6 +154,7 @@ export class ReusableReadableStream<T> implements ReplayableReadableStream<T> {
         if (consumer) {
           consumer.cancelled = true;
           self.consumers.delete(consumerId);
+          self.compactActiveBuffer();
         }
         throw e;
       },
@@ -212,6 +229,22 @@ export class ReusableReadableStream<T> implements ReplayableReadableStream<T> {
         }
         consumer.waitingPromise = null;
       }
+    }
+  }
+
+  private compactActiveBuffer(): void {
+    if (this.retention !== 'active-consumers' || this.buffer.length === 0) {
+      return;
+    }
+    const bufferEnd = this.historyStart + this.buffer.length;
+    let consumedThrough = bufferEnd;
+    for (const consumer of this.consumers.values()) {
+      consumedThrough = Math.min(consumedThrough, consumer.position);
+    }
+    const removeCount = Math.min(this.buffer.length, consumedThrough - this.historyStart);
+    if (removeCount > 0) {
+      this.buffer.splice(0, removeCount);
+      this.historyStart += removeCount;
     }
   }
 

@@ -115,7 +115,7 @@ What each stream emits:
 For long tool-enabled runs where every stream consumer attaches up front, opt
 into active-consumer retention to release unified stream history as soon as
 all attached consumers have advanced past it. Full replay remains the default,
-and no-tool streams always retain their standalone replay history.
+and the option applies to both no-tool streams and multi-turn tool streams.
 
 ```typescript
 const result = openrouter.callModel({

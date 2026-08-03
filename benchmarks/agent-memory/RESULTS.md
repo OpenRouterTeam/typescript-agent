@@ -19,10 +19,18 @@ At 50,000 events, full replay's p95 peak was 22,412,576 bytes and
 active-consumer replay's p95 was 2,710,776 bytes. Post-completion retained
 memory was equivalent after forced garbage collection.
 
+The standalone reusable stream used by no-tool runs was also measured across
+20 randomized fresh processes at 50,000 events:
+
+- Full replay median/p95 peak: 30,290,511 / 30,618,759 bytes.
+- Active-consumer median/p95 peak: 3,717,872 / 4,258,503 bytes.
+- Median peak reduction: 87.7%.
+
 Run:
 
 ```bash
 pnpm benchmark:memory:broadcaster
+pnpm benchmark:memory:reusable
 ```
 
 ## Tree-shaken bundles

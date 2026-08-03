@@ -126,8 +126,8 @@ type BaseCallModelInput<
    *   have already attached. This bounds long-running tool-stream memory but
    *   late consumers only receive future events.
    *
-   * No-tool streams continue to provide full replay because their public
-   * getters consume the standalone reusable stream directly.
+   * The policy applies to both standalone no-tool streams and the unified
+   * multi-turn tool journal.
    */
   streamReplay?: StreamReplayMode;
   /** Hook system for lifecycle events. Accepts inline config or a HooksManager instance. */

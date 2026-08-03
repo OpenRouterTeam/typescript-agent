@@ -121,4 +121,34 @@ describe('ReusableReadableStream', () => {
     });
     expect(cancelCount).toBe(1);
   });
+
+  it('evicts events after active consumers pass them', async () => {
+    const stream = new ReusableReadableStream(
+      streamFrom([
+        1,
+        2,
+        3,
+      ]),
+      'active-consumers',
+    );
+    const first = stream.createConsumer();
+    const internal = stream as unknown as {
+      buffer: number[];
+    };
+
+    expect((await first.next()).value).toBe(1);
+    expect(internal.buffer).toEqual([
+      2,
+      3,
+    ]);
+    expect((await first.next()).value).toBe(2);
+    expect(internal.buffer).toEqual([
+      3,
+    ]);
+
+    const late = stream.createConsumer();
+    expect((await first.next()).value).toBe(3);
+    expect((await late.next()).done).toBe(true);
+    expect((await first.next()).done).toBe(true);
+  });
 });

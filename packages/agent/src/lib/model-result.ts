@@ -902,7 +902,9 @@ export class ModelResult<
         // second per-turn ReusableReadableStream would retain every event twice.
         return this.pipeAndConsumeStream(value, turnNumber);
       }
-      return consumeStreamForCompletion(new ReusableReadableStream(value));
+      return consumeStreamForCompletion(
+        new ReusableReadableStream(value, this.options.streamReplay ?? 'full'),
+      );
     }
     if (this.isNonStreamingResponse(value)) {
       return value;
@@ -3585,7 +3587,10 @@ export class ModelResult<
         if (this.options.tools?.length) {
           this.initialSourceStream = apiResult.value;
         } else {
-          this.reusableStream = new ReusableReadableStream(apiResult.value);
+          this.reusableStream = new ReusableReadableStream(
+            apiResult.value,
+            this.options.streamReplay ?? 'full',
+          );
         }
       } else if (this.isNonStreamingResponse(apiResult.value)) {
         // API returned a complete response directly - use it as the final response
@@ -3847,7 +3852,10 @@ export class ModelResult<
       if (this.options.tools?.length) {
         this.initialSourceStream = apiResult.value;
       } else {
-        this.reusableStream = new ReusableReadableStream(apiResult.value);
+        this.reusableStream = new ReusableReadableStream(
+          apiResult.value,
+          this.options.streamReplay ?? 'full',
+        );
       }
     } else if (this.isNonStreamingResponse(apiResult.value)) {
       this.finalResponse = apiResult.value;
