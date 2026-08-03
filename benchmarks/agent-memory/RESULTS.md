@@ -58,16 +58,25 @@ with one journal changed:
 - Post-completion retained memory while the legacy replay object remained
   reachable: 15,496,338 → 1,058,882 bytes (-93.2%).
 
-The peak improvement is real but small. The main benefit is avoiding retained
-initial-turn history after tool-stream completion.
+The peak improvement is real but small. The retained reduction is not a valid
+drop-in performance claim: it comes from clearing history that the legacy
+initial replay object kept available to later getters. Sequential getter
+compatibility must be restored before this design can ship.
 
 ### Transport-reference cleanup
 
-A synthetic stream with 16 MiB of transport-owned state had unchanged peak
-allocation, but post-completion retained memory fell from 17,744,106 to
-971,450 bytes across the 20-run median. This proves that dropping the source
-stream reference can release transport-owned state. It does not prove that a
-real SDK EventStream retains 16 MiB.
+A real SDK 0.13.7 `EventStream` parsed 5,000 schema-validated text deltas in
+each of 20 fresh processes while both variants retained the same replay
+events:
+
+- Median peak: 31,353,080 → 31,261,432 bytes (-0.3%, noise-sized).
+- Median post-completion retained: 1,648,186 → 1,668,682 bytes (no saving).
+- The SDK stream wrapper remained reachable in 20/20 legacy runs and became
+  unreachable in 20/20 cleanup runs.
+
+The cleanup improves object ownership and collectability, but it produced no
+measurable memory reduction with a real completed SDK stream. The earlier
+artificial 16 MiB attachment test was removed.
 
 ### Context-update queue
 
@@ -85,6 +94,6 @@ Run:
 
 ```bash
 pnpm benchmark:memory:single-journal
-pnpm benchmark:memory:transport-cleanup
+pnpm benchmark:memory:sdk-transport-cleanup
 pnpm benchmark:memory:context-queue
 ```

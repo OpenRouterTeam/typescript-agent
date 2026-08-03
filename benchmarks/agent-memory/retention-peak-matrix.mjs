@@ -71,6 +71,9 @@ export function runRetentionPeakMatrix(
     const durations = values
       .map((value) => value.durationMs)
       .filter((value) => typeof value === 'number');
+    const collectionResults = values
+      .map((value) => value.transportCollected)
+      .filter((value) => typeof value === 'boolean');
     return {
       retention,
       runs,
@@ -90,6 +93,9 @@ export function runRetentionPeakMatrix(
           median: percentile(durations, 0.5),
           p95: percentile(durations, 0.95),
         },
+      }),
+      ...(collectionResults.length > 0 && {
+        transportCollectedRuns: collectionResults.filter(Boolean).length,
       }),
     };
   });
