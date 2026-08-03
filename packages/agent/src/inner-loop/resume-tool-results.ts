@@ -120,7 +120,9 @@ export function buildTaskResultMessage(envelope: ToolTaskResultEnvelope): models
  *
  * SECURITY: this call injects a value the model will treat as a tool
  * result. Authenticate the webhook/caller BEFORE invoking it — the SDK
- * cannot do that for you.
+ * cannot do that for you. And PASS `tools`: without it the output is
+ * appended UNVALIDATED (no outputSchema to check against) — prefer the
+ * typed `.resolve()` methods, which always carry the tool's schema.
  *
  * CONCURRENCY: this is a read-modify-write over the StateAccessor. Two
  * concurrent calls for the SAME conversation (e.g. two webhooks resolving
