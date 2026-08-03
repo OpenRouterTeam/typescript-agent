@@ -129,6 +129,46 @@ describe('ToolContextStore', () => {
 //#region buildToolExecuteContext
 
 describe('buildToolExecuteContext', () => {
+  /*
+   * A never-firing signal never removes its listeners, so sharing ONE across
+   * every context accumulated them for the lifetime of the process. Each
+   * context must get its own, collectable with the context.
+   */
+  it('gives each context its own never-abort signal', () => {
+    const store = new ToolContextStore({});
+    const first = buildToolExecuteContext<'my_tool', Record<string, unknown>>(
+      turnContext,
+      store,
+      'my_tool',
+      undefined,
+    );
+    const second = buildToolExecuteContext<'my_tool', Record<string, unknown>>(
+      turnContext,
+      store,
+      'my_tool',
+      undefined,
+    );
+    expect(first.signal).toBeDefined();
+    expect(second.signal).toBeDefined();
+    expect(first.signal).not.toBe(second.signal);
+    expect(first.signal.aborted).toBe(false);
+  });
+
+  /* A caller-supplied signal is still threaded through untouched. */
+  it('prefers a caller-supplied signal over a fresh one', () => {
+    const controller = new AbortController();
+    const ctx = buildToolExecuteContext<'my_tool', Record<string, unknown>>(
+      turnContext,
+      new ToolContextStore({}),
+      'my_tool',
+      undefined,
+      undefined,
+      {
+        signal: controller.signal,
+      },
+    );
+    expect(ctx.signal).toBe(controller.signal);
+  });
   const turnContext: TurnContext = {
     numberOfTurns: 1,
   };

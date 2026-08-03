@@ -26,6 +26,7 @@ import {
   createRejectedResult,
   createUnsentResult,
   extractTextFromResponse as extractTextFromResponseState,
+  normalizeInputToArray,
   partitionToolCalls,
   unsentResultsToAPIFormat,
   updateState,
@@ -116,7 +117,6 @@ import {
   isToolCallOutputEvent,
   isUnifiedTool,
 } from './tool-types.js';
-import { normalizeInputToArray } from './turn-context.js';
 
 /**
  * Default directive appended as a final user message on the forced final

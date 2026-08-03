@@ -1,5 +1,5 @@
 import type { Client } from '@modelcontextprotocol/sdk/client/index.js';
-import type { Tool } from '@openrouter/agent/tool-types';
+import type { Tool, ToolLoopKey } from '@openrouter/agent/tool-types';
 import { MCPError } from './errors.js';
 import { buildResourceTools } from './resource-tools.js';
 import type { UnconvertibleSchemaMode } from './schema/json-schema-to-zod.js';
@@ -15,6 +15,8 @@ export interface BuildToolsOptions {
   excludeTools?: readonly string[];
   schemaMode?: UnconvertibleSchemaMode;
   emitProgress?: boolean;
+  /** Per-tool doom-loop identities, keyed by unprefixed MCP tool name. */
+  loopKeys?: Readonly<Record<string, ToolLoopKey<Record<string, unknown>>>>;
   signal?: AbortSignal;
   resources?: ResourcesOption;
   /** Whether the server advertised the resources capability. */
@@ -62,6 +64,9 @@ export function buildTools(options: BuildToolsOptions): Tool[] {
     }),
     ...(options.emitProgress !== undefined && {
       emitProgress: options.emitProgress,
+    }),
+    ...(options.loopKeys !== undefined && {
+      loopKeys: options.loopKeys,
     }),
     ...(options.signal !== undefined && {
       signal: options.signal,

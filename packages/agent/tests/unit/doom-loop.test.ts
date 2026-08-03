@@ -216,6 +216,84 @@ describe('resolveLoopKeyMaterial', () => {
     });
   });
 
+  it('field array → declarative subset (missing fields simply absent)', () => {
+    expect(
+      resolveLoopKeyMaterial(
+        [
+          'command',
+          'cwd',
+          'not_a_field',
+        ],
+        args,
+      ),
+    ).toEqual({
+      kind: 'key',
+      keyMaterial: {
+        command: 'ls',
+        cwd: '/tmp',
+      },
+    });
+  });
+
+  /*
+   * An empty subset makes identity constant, so a detector armed to block a
+   * repeat refuses the SECOND unrelated call. Reachable from a local
+   * declaration and, once servers can advertise the list over the wire, from a
+   * hostile MCP server.
+   */
+  it('empty field array → warns and falls back to full arguments', () => {
+    const resolution = resolveLoopKeyMaterial([], args);
+    expect(resolution).toEqual({
+      kind: 'fallback',
+      keyMaterial: args,
+      warning: expect.stringContaining('empty field list'),
+    });
+  });
+
+  it('empty field array does not collapse two unrelated calls to one identity', () => {
+    const ls = resolveLoopKeyMaterial([], {
+      command: 'ls',
+    });
+    const rm = resolveLoopKeyMaterial([], {
+      command: 'rm -rf /',
+    });
+    expect(ls.keyMaterial).not.toEqual(rm.keyMaterial);
+  });
+
+  it('field array whose every field is absent → warns and falls back', () => {
+    const resolution = resolveLoopKeyMaterial(
+      [
+        'nope',
+        'also_nope',
+      ],
+      args,
+    );
+    expect(resolution).toEqual({
+      kind: 'fallback',
+      keyMaterial: args,
+      warning: expect.stringContaining('absent from the arguments'),
+    });
+  });
+
+  it('preserves __proto__ as a declared field', () => {
+    const args = JSON.parse('{"__proto__":"declared"}') as Record<string, unknown>;
+    const resolution = resolveLoopKeyMaterial(
+      [
+        '__proto__',
+      ],
+      args,
+    );
+    expect(resolution).toEqual({
+      kind: 'key',
+      keyMaterial: expect.objectContaining({
+        ['__proto__']: 'declared',
+      }),
+    });
+    if (resolution.kind === 'key') {
+      expect(Object.getPrototypeOf(resolution.keyMaterial)).toBeNull();
+    }
+  });
+
   it('function returning a value → that value', () => {
     const resolution = resolveLoopKeyMaterial(
       (a: Record<string, unknown>) => String(a['command']).trim(),

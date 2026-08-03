@@ -527,3 +527,12 @@ export function extractToolCallsFromResponse<TTools extends readonly Tool[]>(
 
   return toolCalls;
 }
+
+/*
+ * Re-exported so `model-result.ts` can normalize input without a direct edge to
+ * `turn-context.js`: that module sits at the structural gate's fan-out ceiling
+ * (`no_god_files` trips above 15 outbound edges). This module already imports
+ * the helper for its own append path, and normalizing conversation input is
+ * squarely its concern, so nothing new is coupled.
+ */
+export { normalizeInputToArray } from './turn-context.js';

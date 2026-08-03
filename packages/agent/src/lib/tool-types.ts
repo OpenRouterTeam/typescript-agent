@@ -360,11 +360,14 @@ export type ToolLoopKeyFn<TInput> = {
  *   `({ command, cwd }) => ({ command, cwd })` for a bash tool. Returning
  *   `null` exempts individual calls (a legitimate repeat the tool can
  *   recognize from its arguments).
+ * - field-name array — the declarative subset identifying a call, e.g.
+ *   `['command', 'cwd']` for a bash tool. Data, not code: serializable, so
+ *   it survives tool caches and can be advertised over the MCP wire.
  * - `false` — this tool is statically exempt (repetition is its job, e.g. a
  *   status poller).
  * - absent — the full validated arguments object is the identity.
  */
-export type ToolLoopKey<TInput> = ToolLoopKeyFn<TInput> | false;
+export type ToolLoopKey<TInput> = ToolLoopKeyFn<TInput> | readonly string[] | false;
 
 /**
  * Content item types for tool output to model.

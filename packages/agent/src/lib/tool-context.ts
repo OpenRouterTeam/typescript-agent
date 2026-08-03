@@ -166,10 +166,21 @@ export interface ToolExecutionExtras {
   };
 }
 
-// Shared never-aborting signal for contexts built without cancellation
-// sources — keeps `ctx.signal` always present so tool bodies can pass it
-// to fetch/etc. unconditionally.
-const NEVER_ABORT_SIGNAL = new AbortController().signal;
+/*
+ * A never-aborting signal for contexts built without cancellation sources —
+ * keeps `ctx.signal` always present so tool bodies can pass it to fetch/etc.
+ * unconditionally.
+ *
+ * Deliberately a FACTORY, not one shared module-level signal. A tool body may
+ * `signal.addEventListener('abort', …)` and, since this signal never fires,
+ * nothing ever removes that listener. Sharing one object across every such call
+ * accumulated listeners on it for the lifetime of the process — unbounded in a
+ * long-lived server, and eventually a MaxListenersExceededWarning. A fresh
+ * signal per context is garbage-collected with the context that owns it.
+ */
+function neverAbortSignal(): AbortSignal {
+  return new AbortController().signal;
+}
 
 /**
  * Build a flat ToolExecuteContext for a specific tool.
@@ -210,7 +221,7 @@ export function buildToolExecuteContext<
   const ctx: ToolExecuteContext<TName, TContext, TShared> = {
     ...turnContext,
 
-    signal: extras?.signal ?? NEVER_ABORT_SIGNAL,
+    signal: extras?.signal ?? neverAbortSignal(),
     ...(extras?.callId !== undefined && {
       callId: extras.callId,
     }),
