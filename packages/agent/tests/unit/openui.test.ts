@@ -54,6 +54,89 @@ describe('serializeExpr', () => {
     ).toBe('null');
   });
 
+  /*
+   * Keys arrive from arbitrary tool-authored objects via `toExpr`, so a key
+   * with spaces, quotes, punctuation, or a leading digit would emit source the
+   * parser rejects. The grammar accepts a quoted key, so quoting round-trips.
+   */
+  it('quotes object keys that are not bare identifiers', () => {
+    expect(
+      serializeExpr({
+        kind: 'object',
+        entries: [
+          {
+            key: 'ok_key1',
+            value: {
+              kind: 'literal',
+              value: 1,
+            },
+          },
+          {
+            key: 'has space',
+            value: {
+              kind: 'literal',
+              value: 2,
+            },
+          },
+          {
+            key: '2leading',
+            value: {
+              kind: 'literal',
+              value: 3,
+            },
+          },
+          {
+            key: 'has"quote',
+            value: {
+              kind: 'literal',
+              value: 4,
+            },
+          },
+          {
+            key: '',
+            value: {
+              kind: 'literal',
+              value: 5,
+            },
+          },
+        ],
+      }),
+    ).toBe('{ok_key1: 1, "has space": 2, "2leading": 3, "has\\"quote": 4, "": 5}');
+  });
+
+  /*
+   * `String(NaN)`/`String(Infinity)` emit bare identifiers, which parse back as
+   * refs to undefined names rather than numbers. JSON has the same hole and
+   * resolves it as null.
+   */
+  it('serializes non-finite numbers as null rather than bare identifiers', () => {
+    expect(
+      serializeExpr({
+        kind: 'literal',
+        value: Number.NaN,
+      }),
+    ).toBe('null');
+    expect(
+      serializeExpr({
+        kind: 'literal',
+        value: Number.POSITIVE_INFINITY,
+      }),
+    ).toBe('null');
+    expect(
+      serializeExpr({
+        kind: 'literal',
+        value: Number.NEGATIVE_INFINITY,
+      }),
+    ).toBe('null');
+    /* Finite numbers, including negative zero, are untouched. */
+    expect(
+      serializeExpr({
+        kind: 'literal',
+        value: -1.5,
+      }),
+    ).toBe('-1.5');
+  });
+
   it('serializes refs, state refs, and member access', () => {
     expect(
       serializeExpr({

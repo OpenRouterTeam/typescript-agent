@@ -14,6 +14,15 @@ function describeSchema(schema: $ZodType): string {
     const json = z4.toJSONSchema(schema, {
       io: 'input',
     });
+    /*
+     * Before `type`: an enum serializes as `{type: 'string', enum: [...]}`, so
+     * checking `type` first labels every enum prop a plain `string` and the
+     * model never learns which values are legal for `Badge.tone`,
+     * `Stack.direction`, `Button.variant`, and the rest.
+     */
+    if (Array.isArray(json.enum)) {
+      return json.enum.map((v) => JSON.stringify(v)).join(' | ');
+    }
     if (typeof json.type === 'string') {
       return json.type;
     }
@@ -24,9 +33,6 @@ function describeSchema(schema: $ZodType): string {
       if (types.length > 0) {
         return types.join(' | ');
       }
-    }
-    if (Array.isArray(json.enum)) {
-      return json.enum.map((v) => JSON.stringify(v)).join(' | ');
     }
   } catch {
     // Exotic schema — fall through to the permissive label.
