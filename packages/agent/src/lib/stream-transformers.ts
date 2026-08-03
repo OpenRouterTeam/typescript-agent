@@ -6,7 +6,7 @@ import type {
   ClaudeTextCitation,
   UnsupportedContent,
 } from '../api-shape-helpers/claude-message.js';
-import type { ReusableReadableStream } from './reusable-stream.js';
+import type { ReplayableReadableStream } from './reusable-stream.js';
 import {
   isFileCitationAnnotation,
   isFilePathAnnotation,
@@ -36,7 +36,7 @@ import type { ClientTool, ParsedToolCall, ServerTool, Tool } from './tool-types.
  * Extract text deltas from responses stream events
  */
 export async function* extractTextDeltas(
-  stream: ReusableReadableStream<models.StreamEvents>,
+  stream: ReplayableReadableStream<models.StreamEvents>,
 ): AsyncIterableIterator<string> {
   const consumer = stream.createConsumer();
 
@@ -53,7 +53,7 @@ export async function* extractTextDeltas(
  * Extract reasoning deltas from responses stream events
  */
 export async function* extractReasoningDeltas(
-  stream: ReusableReadableStream<models.StreamEvents>,
+  stream: ReplayableReadableStream<models.StreamEvents>,
 ): AsyncIterableIterator<string> {
   const consumer = stream.createConsumer();
 
@@ -70,7 +70,7 @@ export async function* extractReasoningDeltas(
  * Extract tool call argument deltas from responses stream events
  */
 export async function* extractToolDeltas(
-  stream: ReusableReadableStream<models.StreamEvents>,
+  stream: ReplayableReadableStream<models.StreamEvents>,
 ): AsyncIterableIterator<string> {
   const consumer = stream.createConsumer();
 
@@ -88,7 +88,7 @@ export async function* extractToolDeltas(
  * Accumulates text deltas and yields updates
  */
 async function* buildMessageStreamCore(
-  stream: ReusableReadableStream<models.StreamEvents>,
+  stream: ReplayableReadableStream<models.StreamEvents>,
 ): AsyncIterableIterator<{
   type: 'delta' | 'complete';
   text?: string;
@@ -164,7 +164,7 @@ async function* buildMessageStreamCore(
  * Returns OutputMessage (assistant/responses format)
  */
 export async function* buildResponsesMessageStream(
-  stream: ReusableReadableStream<models.StreamEvents>,
+  stream: ReplayableReadableStream<models.StreamEvents>,
 ): AsyncIterableIterator<models.OutputMessage> {
   for await (const update of buildMessageStreamCore(stream)) {
     if (update.type === 'delta' && update.text !== undefined && update.messageId !== undefined) {
@@ -584,7 +584,7 @@ export const streamTerminationEvents = new Set([
  * with the same ID but progressively updated content as streaming progresses.
  */
 export async function* buildItemsStream(
-  stream: ReusableReadableStream<models.StreamEvents>,
+  stream: ReplayableReadableStream<models.StreamEvents>,
 ): AsyncIterableIterator<StreamableOutputItem> {
   const consumer = stream.createConsumer();
   const itemsInProgress = new Map<string, ItemInProgress>();
@@ -613,7 +613,7 @@ export async function* buildItemsStream(
  * Returns ChatAssistantMessage (chat format) instead of OutputMessage
  */
 export async function* buildMessageStream(
-  stream: ReusableReadableStream<models.StreamEvents>,
+  stream: ReplayableReadableStream<models.StreamEvents>,
 ): AsyncIterableIterator<models.ChatAssistantMessage> {
   for await (const update of buildMessageStreamCore(stream)) {
     if (update.type === 'delta' && update.text !== undefined) {
@@ -633,7 +633,7 @@ export async function* buildMessageStream(
  * Consume stream until completion and return the complete response
  */
 export async function consumeStreamForCompletion(
-  stream: ReusableReadableStream<models.StreamEvents>,
+  stream: ReplayableReadableStream<models.StreamEvents>,
 ): Promise<models.OpenResponsesResult> {
   const consumer = stream.createConsumer();
 
@@ -788,7 +788,7 @@ export function extractToolCallsFromResponse(
  * Yields structured tool call objects as they're built from deltas
  */
 export async function* buildToolCallStream(
-  stream: ReusableReadableStream<models.StreamEvents>,
+  stream: ReplayableReadableStream<models.StreamEvents>,
 ): AsyncIterableIterator<ParsedToolCall<Tool>> {
   const consumer = stream.createConsumer();
 

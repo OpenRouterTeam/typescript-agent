@@ -31,6 +31,7 @@ import {
   applyNextTurnParamsToRequest,
   executeNextTurnParamsFunctions,
 } from './next-turn-params.js';
+import type { ReplayableReadableStream } from './reusable-stream.js';
 import { ReusableReadableStream } from './reusable-stream.js';
 import { isStopConditionMet } from './stop-conditions.js';
 import type { ItemInProgress, StreamableOutputItem } from './stream-transformers.js';
@@ -458,7 +459,8 @@ export class ModelResult<
     ResponseStreamEvent<InferToolEventsUnion<TTools>, InferToolOutputsUnion<TTools>>
   > | null = null;
   private initialStreamPipeStarted = false;
-  private turnStreamRequested = false;
+  private initialSourceStream: ReadableStream<models.StreamEvents> | null = null;
+  private initialSourceReader: ReadableStreamDefaultReader<models.StreamEvents> | null = null;
   private initialPipePromise: Promise<void> | null = null;
   private initialResponsePromise: Promise<models.OpenResponsesResult> | null = null;
 
@@ -602,11 +604,14 @@ export class ModelResult<
 
     const broadcaster = this.ensureTurnBroadcaster();
 
-    if (!this.reusableStream) {
+    let stream = this.initialSourceStream;
+    if (stream) {
+      this.initialSourceStream = null;
+    } else if (this.reusableStream) {
+      stream = this.readableFromReplay(this.reusableStream);
+    } else {
       return;
     }
-
-    const stream = this.reusableStream;
 
     this.initialResponsePromise = this.pipeInitialStream(stream);
     this.initialPipePromise = this.initialResponsePromise.then(
@@ -618,8 +623,27 @@ export class ModelResult<
     );
   }
 
+  private readableFromReplay(
+    replay: ReplayableReadableStream<models.StreamEvents>,
+  ): ReadableStream<models.StreamEvents> {
+    const consumer = replay.createConsumer();
+    return new ReadableStream<models.StreamEvents>({
+      async pull(controller) {
+        const result = await consumer.next();
+        if (result.done) {
+          controller.close();
+        } else {
+          controller.enqueue(result.value);
+        }
+      },
+      async cancel(reason) {
+        await consumer.return?.(reason);
+      },
+    });
+  }
+
   private async pipeInitialStream(
-    stream: ReusableReadableStream<models.StreamEvents>,
+    stream: ReadableStream<models.StreamEvents>,
   ): Promise<models.OpenResponsesResult> {
     const broadcaster = this.ensureTurnBroadcaster();
     broadcaster.push({
@@ -628,17 +652,33 @@ export class ModelResult<
       timestamp: Date.now(),
     } satisfies TurnStartEvent);
 
-    const consumer = stream.createConsumer();
+    const reader = stream.getReader();
+    this.initialSourceReader = reader;
     let completedResponse: models.OpenResponsesResult | null = null;
     let streamError: Error | null = null;
-    for await (const event of consumer) {
-      broadcaster.push(event);
-      if (isResponseCompletedEvent(event) || isResponseIncompleteEvent(event)) {
-        completedResponse = event.response;
+    try {
+      while (true) {
+        const result = await reader.read();
+        if (result.done) {
+          break;
+        }
+        const event = result.value;
+        broadcaster.push(event);
+        if (isResponseCompletedEvent(event) || isResponseIncompleteEvent(event)) {
+          completedResponse = event.response;
+        }
+        if (isResponseFailedEvent(event)) {
+          streamError = new Error(`Response failed: ${JSON.stringify(event.response.error)}`);
+        }
       }
-      if (isResponseFailedEvent(event)) {
-        streamError = new Error(`Response failed: ${JSON.stringify(event.response.error)}`);
+    } catch (error) {
+      await reader.cancel(error).catch(() => undefined);
+      throw error;
+    } finally {
+      if (this.initialSourceReader === reader) {
+        this.initialSourceReader = null;
       }
+      reader.releaseLock();
     }
 
     broadcaster.push({
@@ -654,6 +694,36 @@ export class ModelResult<
       throw new Error('Initial stream ended without a completed response');
     }
     return completedResponse;
+  }
+
+  private initialApiEventReplay(): ReplayableReadableStream<models.StreamEvents> {
+    return {
+      createConsumer: () => this.iterateInitialApiEvents(),
+    };
+  }
+
+  private async *iterateInitialApiEvents(): AsyncIterableIterator<models.StreamEvents> {
+    this.startInitialStreamPipe();
+    const consumer = this.ensureTurnBroadcaster().createConsumer();
+    for await (const event of consumer) {
+      if (event.type === 'turn.start') {
+        continue;
+      }
+      if (event.type === 'turn.end') {
+        return;
+      }
+      if (
+        event.type === 'tool.preliminary_result' ||
+        event.type === 'tool.result' ||
+        event.type === 'tool.call_output'
+      ) {
+        continue;
+      }
+      yield event as models.StreamEvents;
+      if (streamTerminationEvents.has(event.type)) {
+        return;
+      }
+    }
   }
 
   /**
@@ -853,7 +923,7 @@ export class ModelResult<
     if (this.finalResponse) {
       return this.finalResponse;
     }
-    if (this.turnStreamRequested && this.reusableStream && !this.initialStreamPipeStarted) {
+    if (this.initialSourceStream && !this.initialStreamPipeStarted) {
       this.startInitialStreamPipe();
     }
     if (this.initialResponsePromise) {
@@ -2027,7 +2097,13 @@ export class ModelResult<
     const requireStream = options?.requireStream ?? true;
     try {
       await this.initStream();
-      if (requireStream && !this.reusableStream && !this.finalResponse) {
+      if (
+        requireStream &&
+        !this.reusableStream &&
+        !this.initialSourceStream &&
+        !this.initialResponsePromise &&
+        !this.finalResponse
+      ) {
         throw new Error('Stream not initialized');
       }
     } catch (error) {
@@ -3504,7 +3580,11 @@ export class ModelResult<
       // Handle both streaming and non-streaming responses
       // The API may return a non-streaming response even when stream: true is requested
       if (isEventStream(apiResult.value)) {
-        this.reusableStream = new ReusableReadableStream(apiResult.value);
+        if (this.options.tools?.length) {
+          this.initialSourceStream = apiResult.value;
+        } else {
+          this.reusableStream = new ReusableReadableStream(apiResult.value);
+        }
       } else if (this.isNonStreamingResponse(apiResult.value)) {
         // API returned a complete response directly - use it as the final response
         this.finalResponse = apiResult.value;
@@ -3762,7 +3842,11 @@ export class ModelResult<
 
     // Handle both streaming and non-streaming responses
     if (isEventStream(apiResult.value)) {
-      this.reusableStream = new ReusableReadableStream(apiResult.value);
+      if (this.options.tools?.length) {
+        this.initialSourceStream = apiResult.value;
+      } else {
+        this.reusableStream = new ReusableReadableStream(apiResult.value);
+      }
     } else if (this.isNonStreamingResponse(apiResult.value)) {
       this.finalResponse = apiResult.value;
       await this.emitPendingModelCallOnce(this.finalResponse);
@@ -4261,9 +4345,6 @@ export class ModelResult<
     ResponseStreamEvent<InferToolEventsUnion<TTools>, InferToolOutputsUnion<TTools>>
   > {
     return async function* (this: ModelResult<TTools, TShared>) {
-      if (this.options.tools?.length) {
-        this.turnStreamRequested = true;
-      }
       await this.initStreamGuarded();
 
       if (!this.options.tools?.length) {
@@ -4301,9 +4382,6 @@ export class ModelResult<
    */
   getTextStream(): AsyncIterableIterator<string> {
     return async function* (this: ModelResult<TTools, TShared>) {
-      if (this.options.tools?.length) {
-        this.turnStreamRequested = true;
-      }
       await this.initStreamGuarded();
 
       if (!this.options.tools?.length) {
@@ -4377,9 +4455,6 @@ export class ModelResult<
     };
 
     return async function* (this: ModelResult<TTools, TShared>) {
-      if (this.options.tools?.length) {
-        this.turnStreamRequested = true;
-      }
       await this.initStreamGuarded();
 
       // No tools — stream single turn directly (no broadcaster needed)
@@ -4559,8 +4634,13 @@ export class ModelResult<
       await this.initStreamGuarded();
 
       // First yield messages from the stream in responses format
-      if (this.reusableStream) {
-        yield* buildResponsesMessageStream(this.reusableStream);
+      const initialEvents =
+        this.reusableStream ??
+        (this.initialSourceStream || this.initialResponsePromise
+          ? this.initialApiEventReplay()
+          : null);
+      if (initialEvents) {
+        yield* buildResponsesMessageStream(initialEvents);
       }
 
       // Execute tools if needed
@@ -4620,9 +4700,6 @@ export class ModelResult<
    */
   getReasoningStream(): AsyncIterableIterator<string> {
     return async function* (this: ModelResult<TTools, TShared>) {
-      if (this.options.tools?.length) {
-        this.turnStreamRequested = true;
-      }
       await this.initStreamGuarded();
 
       if (!this.options.tools?.length) {
@@ -4660,9 +4737,6 @@ export class ModelResult<
    */
   getToolStream(): AsyncIterableIterator<ToolStreamEvent<InferToolEventsUnion<TTools>>> {
     return async function* (this: ModelResult<TTools, TShared>) {
-      if (this.options.tools?.length) {
-        this.turnStreamRequested = true;
-      }
       await this.initStreamGuarded();
 
       if (!this.options.tools?.length) {
@@ -4736,11 +4810,14 @@ export class ModelResult<
       return extractToolCallsFromResponse(this.finalResponse) as ParsedToolCall<TTools[number]>[];
     }
 
-    if (!this.reusableStream) {
+    if (!this.reusableStream && !this.initialSourceStream && !this.initialResponsePromise) {
       throw new Error('Stream not initialized');
     }
 
-    const completedResponse = await consumeStreamForCompletion(this.reusableStream);
+    const completedResponse =
+      this.initialSourceStream || this.initialResponsePromise
+        ? await this.getInitialResponse()
+        : await consumeStreamForCompletion(this.reusableStream!);
     await this.emitPendingModelCallOnce(completedResponse);
     return extractToolCallsFromResponse(completedResponse) as ParsedToolCall<TTools[number]>[];
   }
@@ -4754,8 +4831,13 @@ export class ModelResult<
       // Guarded: hook-session teardown on init failure (see initStreamGuarded).
       await this.initStreamGuarded();
 
-      if (this.reusableStream) {
-        yield* buildToolCallStream(this.reusableStream) as AsyncIterableIterator<
+      const initialEvents =
+        this.reusableStream ??
+        (this.initialSourceStream || this.initialResponsePromise
+          ? this.initialApiEventReplay()
+          : null);
+      if (initialEvents) {
+        yield* buildToolCallStream(initialEvents) as AsyncIterableIterator<
           ParsedToolCall<TTools[number]>
         >;
       }
@@ -4849,6 +4931,14 @@ export class ModelResult<
     if (this.reusableStream) {
       await this.reusableStream.cancel();
     }
+    if (this.initialSourceReader) {
+      await this.initialSourceReader.cancel();
+    } else if (this.initialSourceStream) {
+      const source = this.initialSourceStream;
+      this.initialSourceStream = null;
+      await source.cancel();
+    }
+    this.turnBroadcaster?.complete();
   }
 
   // =========================================================================

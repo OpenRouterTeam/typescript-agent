@@ -30,6 +30,33 @@ function completedStream(
   });
 }
 
+function completedToolStream(
+  response: models.OpenResponsesResult,
+): ReadableStream<models.StreamEvents> {
+  return new ReadableStream<models.StreamEvents>({
+    start(controller) {
+      controller.enqueue({
+        type: 'response.output_item.added',
+        item: response.output[0],
+        outputIndex: 0,
+        sequenceNumber: 0,
+      } as models.StreamEvents);
+      controller.enqueue({
+        type: 'response.output_item.done',
+        item: response.output[0],
+        outputIndex: 0,
+        sequenceNumber: 1,
+      } as models.StreamEvents);
+      controller.enqueue({
+        type: 'response.completed',
+        response,
+        sequenceNumber: 2,
+      } as models.StreamEvents);
+      controller.close();
+    },
+  });
+}
+
 function toolResponse(): models.OpenResponsesResult {
   return {
     id: 'response_tool',
@@ -83,7 +110,7 @@ afterEach(() => {
 });
 
 describe('ModelResult consumption matrix', () => {
-  it('shares one initial replay consumer between full streaming and tool execution', async () => {
+  it('uses the unified journal as the single replay owner for tool streaming', async () => {
     mockBetaResponsesSend
       .mockResolvedValueOnce({
         ok: true,
@@ -143,7 +170,7 @@ describe('ModelResult consumption matrix', () => {
     expect(response.id).toBe('response_text');
     expect(executions).toBe(1);
     expect(mockBetaResponsesSend).toHaveBeenCalledTimes(2);
-    expect(createConsumer).toHaveBeenCalledTimes(1);
+    expect(createConsumer).not.toHaveBeenCalled();
     expect(contextUpdates).toHaveLength(100);
     expect(contextUpdates.map((snapshot) => snapshot.echo.update)).toEqual(
       Array.from(
@@ -165,5 +192,35 @@ describe('ModelResult consumption matrix', () => {
     ];
     expect(firstEvents.map((event) => event.type)).toEqual(expectedEventTypes);
     expect(secondEvents.map((event) => event.type)).toEqual(expectedEventTypes);
+  });
+
+  it('replays initial tool calls from the unified journal without executing them', async () => {
+    mockBetaResponsesSend.mockResolvedValueOnce({
+      ok: true,
+      value: completedToolStream(toolResponse()),
+    });
+    const manualEcho = tool({
+      name: 'echo',
+      inputSchema: z.object({}),
+      execute: false,
+    });
+    const result = callModel(client, {
+      model: 'test-model',
+      input: 'call echo',
+      tools: [
+        manualEcho,
+      ],
+    });
+
+    const calls = await collect(result.getToolCallsStream());
+
+    expect(calls).toEqual([
+      {
+        id: 'call_echo',
+        name: 'echo',
+        arguments: {},
+      },
+    ]);
+    expect(mockBetaResponsesSend).toHaveBeenCalledTimes(1);
   });
 });

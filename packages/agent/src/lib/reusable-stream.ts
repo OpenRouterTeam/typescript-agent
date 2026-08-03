@@ -8,7 +8,11 @@
  * - Efficient memory management with automatic cleanup
  * - Each consumer can read at their own pace
  */
-export class ReusableReadableStream<T> {
+export interface ReplayableReadableStream<T> {
+  createConsumer(): AsyncIterableIterator<T>;
+}
+
+export class ReusableReadableStream<T> implements ReplayableReadableStream<T> {
   private buffer: T[] = [];
   private consumers = new Map<number, ConsumerState>();
   private nextConsumerId = 0;
