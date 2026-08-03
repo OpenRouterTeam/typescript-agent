@@ -1,4 +1,14 @@
-import type { ToolTaskStatus } from './tool-types.js';
+/**
+ * Lifecycle status of a tool task. Deliberately matches the MCP Tasks
+ * extension (SEP 2663) status vocabulary so MCP task handles can map onto
+ * this without translation.
+ *
+ * Defined here (not tool-types.ts) because ToolTask is the primary
+ * consumer and tool-types already imports task types from this module —
+ * defining it there would create an import cycle. Re-exported from
+ * tool-types alongside PendingAsyncTool.
+ */
+export type ToolTaskStatus = 'working' | 'input_required' | 'completed' | 'failed' | 'cancelled';
 
 /**
  * One entry in a task's log. Yields from a tool's `run` (and `ctx.log()`

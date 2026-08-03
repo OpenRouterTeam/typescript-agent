@@ -2911,20 +2911,9 @@ export class ModelResult<
     // PermissionRequest hook denied this call without pausing: synthesize a
     // rejection instead of executing. Consume the entry so a later round
     // with a reused id is not affected.
-    const denialReason = this.hookDeniedCalls.get(toolCall.id);
-    if (denialReason !== undefined) {
-      this.hookDeniedCalls.delete(toolCall.id);
-      return {
-        type: 'hook_blocked' as const,
-        output: {
-          type: 'function_call_output' as const,
-          id: `output_${toolCall.id}`,
-          callId: toolCall.id,
-          output: JSON.stringify({
-            error: denialReason,
-          }),
-        },
-      };
+    const hookDenied = this.consumeHookDenial(toolCall.id);
+    if (hookDenied !== null) {
+      return hookDenied;
     }
 
     const preliminaryResultsForCall: InferToolEventsUnion<TTools>[] = [];
@@ -2982,26 +2971,7 @@ export class ModelResult<
             conversationId: this.currentState.id,
           }),
           client: this.options.client,
-          runExtras: {
-            ...(isUnifiedTool(tool) &&
-              tool.function.lifecycle === 'deferred' && {
-                defer: (taskId: string, options?: Record<string, unknown>) => ({
-                  __deferred: true,
-                  taskId,
-                  ...(options ?? {}),
-                }),
-              }),
-            log: runBinding.log,
-            onMessage: runBinding.onMessage,
-            task: {
-              set transcriptSource(source: NonNullable<ToolTask['transcriptSource']>) {
-                runBinding.setTranscriptSource(source);
-              },
-              get transcriptSource(): ToolTask['transcriptSource'] {
-                return runBinding.task()?.transcriptSource;
-              },
-            },
-          },
+          runExtras: buildRunExtras(tool, runBinding),
         },
       );
 
@@ -3013,22 +2983,7 @@ export class ModelResult<
       );
 
       if (executed === 'timeout') {
-        const message = `Tool "${toolCall.name}" timed out after ${timeoutMs}ms`;
-        this.broadcastToolResult(toolCall.id, isMcpTool(tool) ? 'mcp' : 'client', {
-          error: message,
-        } as InferToolOutputsUnion<TTools>);
-        return {
-          type: 'execution' as const,
-          toolCall,
-          tool,
-          result: {
-            result: null,
-            error: Object.assign(new Error(message), {
-              code: 'tool_timeout',
-            }),
-          },
-          preliminaryResultsForCall,
-        };
+        return this.buildToolTimeoutOutcome(toolCall, tool, timeoutMs, preliminaryResultsForCall);
       }
 
       if (executed.type === 'parse_error') {
@@ -3080,6 +3035,71 @@ export class ModelResult<
       // teardown from here (cancelTask / abortAll).
       this.inflightToolControllers.delete(toolCall.id);
     }
+  }
+
+  /**
+   * The `tool_timeout` execution outcome for a call whose deadline fired:
+   * the model receives an error output immediately (the abandoned body
+   * keeps running detached).
+   */
+  private buildToolTimeoutOutcome(
+    toolCall: ParsedToolCall<Tool>,
+    tool: Tool,
+    timeoutMs: number | undefined,
+    preliminaryResultsForCall: InferToolEventsUnion<TTools>[],
+  ): {
+    type: 'execution';
+    toolCall: ParsedToolCall<Tool>;
+    tool: Tool;
+    result: {
+      result: unknown;
+      error?: Error;
+    };
+    preliminaryResultsForCall: InferToolEventsUnion<TTools>[];
+  } {
+    const message = `Tool "${toolCall.name}" timed out after ${timeoutMs}ms`;
+    this.broadcastToolResult(toolCall.id, isMcpTool(tool) ? 'mcp' : 'client', {
+      error: message,
+    } as InferToolOutputsUnion<TTools>);
+    return {
+      type: 'execution' as const,
+      toolCall,
+      tool,
+      result: {
+        result: null,
+        error: Object.assign(new Error(message), {
+          code: 'tool_timeout',
+        }),
+      },
+      preliminaryResultsForCall,
+    };
+  }
+
+  /**
+   * PermissionRequest-hook denial for a call, as a `hook_blocked` outcome —
+   * or null when the call was not denied. Consumes the entry so a later
+   * round with a reused id is not affected.
+   */
+  private consumeHookDenial(callId: string): {
+    type: 'hook_blocked';
+    output: models.FunctionCallOutputItem;
+  } | null {
+    const denialReason = this.hookDeniedCalls.get(callId);
+    if (denialReason === undefined) {
+      return null;
+    }
+    this.hookDeniedCalls.delete(callId);
+    return {
+      type: 'hook_blocked' as const,
+      output: {
+        type: 'function_call_output' as const,
+        id: `output_${callId}`,
+        callId,
+        output: JSON.stringify({
+          error: denialReason,
+        }),
+      },
+    };
   }
 
   /**
@@ -3679,6 +3699,90 @@ export class ModelResult<
       });
     }
 
+    try {
+      switch (input.action ?? 'check') {
+        case 'cancel':
+          return answer(this.taskToolCancel(input, liveTask));
+        case 'steer':
+          return answer(...this.taskToolSteer(input, liveTask));
+        case 'result': {
+          const settled = taskToolResultIfSettled(input, liveTask);
+          if (settled !== null) {
+            return answer(settled);
+          }
+          // Not settled: fall through to the status view.
+          return answer(await this.taskToolCheck(input, liveTask, persisted as PendingAsyncTool));
+        }
+        default:
+          return answer(await this.taskToolCheck(input, liveTask, persisted as PendingAsyncTool));
+      }
+    } catch (error) {
+      return answer(null, error instanceof Error ? error : new Error(String(error)));
+    }
+  }
+
+  /** `task` tool, action=cancel. */
+  private taskToolCancel(input: TaskToolInput, liveTask: ToolTask | undefined): unknown {
+    const cancelled = liveTask
+      ? (this.asyncToolRegistry?.cancelTask(input.taskId, input.reason) ?? false)
+      : false;
+    return cancelled
+      ? {
+          taskId: input.taskId,
+          status: 'cancelled',
+        }
+      : {
+          taskId: input.taskId,
+          error: 'not_cancellable',
+          hint: liveTask
+            ? 'The task has already settled.'
+            : 'This task is owned by an external system — cancel it there (or via the tool’s .cancel() method).',
+        };
+  }
+
+  /** `task` tool, action=steer. Returns [result, error?] for `answer`. */
+  private taskToolSteer(
+    input: TaskToolInput,
+    liveTask: ToolTask | undefined,
+  ): [
+    unknown,
+    Error?,
+  ] {
+    if (typeof input.message !== 'string' || input.message.length === 0) {
+      return [
+        null,
+        new Error("action 'steer' requires a non-empty `message`"),
+      ];
+    }
+    if (!liveTask || liveTask.mode === 'defer') {
+      return [
+        {
+          taskId: input.taskId,
+          error: 'not_steerable',
+          hint: 'This task runs in an external system — steer it there.',
+        },
+      ];
+    }
+    liveTask.send(input.message);
+    return [
+      {
+        taskId: input.taskId,
+        steered: true,
+      },
+    ];
+  }
+
+  /**
+   * `task` tool, action=check (and the status-view fallback for `result`
+   * on an unsettled task): the owning tool's `check.execute` when
+   * declared, else the SDK default views — live-task-backed when the task
+   * is in this process, persisted-state-backed post-restart.
+   */
+  private async taskToolCheck(
+    input: TaskToolInput,
+    liveTask: ToolTask | undefined,
+    persisted: PendingAsyncTool,
+  ): Promise<unknown> {
     const owningToolName = liveTask?.toolName ?? persisted?.name ?? '';
     const owningTool = this.options.tools?.find(
       (t) => isClientTool(t) && t.function.name === owningToolName,
@@ -3686,123 +3790,56 @@ export class ModelResult<
     const config = owningTool && isUnifiedTool(owningTool) ? owningTool.function.check : undefined;
     const { schema, execute } = resolveCheckConfig(config);
     const maxTranscriptChars = this.options.asyncTools?.maxTranscriptChars ?? 20_000;
-    const action = input.action ?? 'check';
 
-    try {
-      if (action === 'cancel') {
-        const cancelled = liveTask
-          ? (this.asyncToolRegistry?.cancelTask(input.taskId, input.reason) ?? false)
-          : false;
-        return answer(
-          cancelled
-            ? {
-                taskId: input.taskId,
-                status: 'cancelled',
-              }
-            : {
-                taskId: input.taskId,
-                error: 'not_cancellable',
-                hint: liveTask
-                  ? 'The task has already settled.'
-                  : 'This task is owned by an external system — cancel it there (or via the tool’s .cancel() method).',
-              },
-        );
-      }
+    // Custom params for the owning tool's handler are validated against
+    // its check.schema when both are present.
+    let customParams: Record<string, unknown> = input.params ?? {};
+    if (schema && input.params !== undefined) {
+      customParams = validateToolInput(schema, input.params) as Record<string, unknown>;
+    }
 
-      if (action === 'steer') {
-        if (typeof input.message !== 'string' || input.message.length === 0) {
-          return answer(null, new Error("action 'steer' requires a non-empty `message`"));
-        }
-        if (!liveTask || liveTask.mode === 'defer') {
-          return answer({
-            taskId: input.taskId,
-            error: 'not_steerable',
-            hint: 'This task runs in an external system — steer it there.',
-          });
-        }
-        liveTask.send(input.message);
-        return answer({
-          taskId: input.taskId,
-          steered: true,
-        });
-      }
-
-      if (action === 'result') {
-        if (liveTask?.status === 'completed') {
-          return answer({
-            taskId: input.taskId,
-            status: 'completed',
-            result: liveTask.result,
-          });
-        }
-        if (liveTask && liveTask.status !== 'working') {
-          return answer({
-            taskId: input.taskId,
-            status: liveTask.status,
-            ...(liveTask.error !== undefined && {
-              error: liveTask.error,
-            }),
-          });
-        }
-        // Not settled: fall through to the status view.
-      }
-
-      // action === 'check' (or 'result' on an unsettled task).
-      // Custom params for the owning tool's handler are validated against
-      // its check.schema when both are present.
-      let customParams: Record<string, unknown> = input.params ?? {};
-      if (schema && input.params !== undefined) {
-        customParams = validateToolInput(schema, input.params) as Record<string, unknown>;
-      }
-
-      if (liveTask) {
-        const handle = this.buildTaskHandle(liveTask, maxTranscriptChars);
-        const checkTurnContext: TurnContext = {
-          numberOfTurns: this.allToolExecutionRounds.length + 1,
-          toolCallStatus: liveTask.status,
-          accumulatedYieldedEvents: liveTask.accumulatedYieldedEvents,
-          task: handle,
-        };
-        const checkResult = execute
-          ? await Promise.resolve(execute(customParams, checkTurnContext))
-          : defaultCheckResult(
-              {
-                view: input.view,
-                tail: input.tail,
-              },
-              checkTurnContext,
-              {
-                maxTranscriptChars,
-              },
-            );
-        return answer(checkResult);
-      }
-
-      // Cross-process / post-restart: only persisted status survives. A
-      // custom check.execute still runs, with a state-backed context (no
-      // live task handle).
-      const persistedEntry = persisted as PendingAsyncTool;
+    if (liveTask) {
+      const handle = this.buildTaskHandle(liveTask, maxTranscriptChars);
       const checkTurnContext: TurnContext = {
         numberOfTurns: this.allToolExecutionRounds.length + 1,
-        toolCallStatus: persistedEntry.status,
-        accumulatedYieldedEvents: persistedEntry.lastLog
-          ? [
-              persistedEntry.lastLog.text,
-            ]
-          : [],
+        toolCallStatus: liveTask.status,
+        accumulatedYieldedEvents: liveTask.accumulatedYieldedEvents,
+        task: handle,
       };
-      const checkResult = execute
+      return execute
         ? await Promise.resolve(execute(customParams, checkTurnContext))
-        : persistedTaskCheckResult(
+        : defaultCheckResult(
             {
               view: input.view,
+              tail: input.tail,
             },
-            persistedEntry,
+            checkTurnContext,
+            {
+              maxTranscriptChars,
+            },
           );
-      return answer(checkResult);
-    } catch (error) {
-      return answer(null, error instanceof Error ? error : new Error(String(error)));
     }
+
+    // Cross-process / post-restart: only persisted status survives. A
+    // custom check.execute still runs, with a state-backed context (no
+    // live task handle).
+    const checkTurnContext: TurnContext = {
+      numberOfTurns: this.allToolExecutionRounds.length + 1,
+      toolCallStatus: persisted.status,
+      accumulatedYieldedEvents: persisted.lastLog
+        ? [
+            persisted.lastLog.text,
+          ]
+        : [],
+    };
+    return execute
+      ? await Promise.resolve(execute(customParams, checkTurnContext))
+      : persistedTaskCheckResult(
+          {
+            view: input.view,
+          },
+          persisted,
+        );
   }
 
   /** Build the narrow ToolTaskHandle façade for check.execute handlers. */
@@ -3994,28 +4031,12 @@ export class ModelResult<
 
     if (mode === 'cancel') {
       registry.abortAll('Run ended (onRunEnd: cancel)');
-      for (const settled of registry.takeSettled()) {
-        this.broadcastAsyncSettled(settled, 'dropped');
-      }
+      this.dropSettledTasks();
       return currentResponse;
     }
 
     if (mode === 'detach') {
-      const orphaned = registry.markWorkingAsOrphaned();
-      for (const settled of registry.takeSettled()) {
-        this.broadcastAsyncSettled(settled, 'dropped');
-      }
-      if (orphaned.length > 0 && this.stateAccessor && this.currentState) {
-        const existing = (this.currentState.pendingAsyncTools ?? []).filter(
-          (t) => !orphaned.some((o) => o.callId === t.callId),
-        );
-        await this.saveStateSafely({
-          pendingAsyncTools: [
-            ...existing,
-            ...orphaned,
-          ],
-        });
-      }
+      await this.detachWorkingTasks();
       return currentResponse;
     }
 
@@ -4052,12 +4073,46 @@ export class ModelResult<
     // Drain budget exhausted with work still in flight: cut it loose.
     if (registry.hasInFlight()) {
       registry.abortAll('Async tool drain budget exhausted at run end');
-      for (const settled of registry.takeSettled()) {
-        this.broadcastAsyncSettled(settled, 'dropped');
-      }
+      this.dropSettledTasks();
     }
 
     return response;
+  }
+
+  /** Broadcast every unharvested settlement as dropped (no delivery). */
+  private dropSettledTasks(): void {
+    const registry = this.asyncToolRegistry;
+    if (!registry) {
+      return;
+    }
+    for (const settled of registry.takeSettled()) {
+      this.broadcastAsyncSettled(settled, 'dropped');
+    }
+  }
+
+  /**
+   * `onRunEnd: 'detach'`: mark still-working tasks orphaned on persisted
+   * state (their eventual results are dropped) and drop unharvested
+   * settlements.
+   */
+  private async detachWorkingTasks(): Promise<void> {
+    const registry = this.asyncToolRegistry;
+    if (!registry) {
+      return;
+    }
+    const orphaned = registry.markWorkingAsOrphaned();
+    this.dropSettledTasks();
+    if (orphaned.length > 0 && this.stateAccessor && this.currentState) {
+      const existing = (this.currentState.pendingAsyncTools ?? []).filter(
+        (t) => !orphaned.some((o) => o.callId === t.callId),
+      );
+      await this.saveStateSafely({
+        pendingAsyncTools: [
+          ...existing,
+          ...orphaned,
+        ],
+      });
+    }
   }
 
   /**
@@ -6278,4 +6333,60 @@ export class ModelResult<
     }
     return this.doomLoopStop;
   }
+}
+
+/**
+ * The unified-run affordances (`ctx.defer` for deferred tools, `ctx.log`,
+ * `ctx.onMessage`, the transcript-source slot) threaded into a tool's run
+ * context via `runExtras`.
+ */
+function buildRunExtras(tool: Tool, runBinding: RunBinding): Record<string, unknown> {
+  return {
+    ...(isUnifiedTool(tool) &&
+      tool.function.lifecycle === 'deferred' && {
+        defer: (taskId: string, options?: Record<string, unknown>) => ({
+          __deferred: true,
+          taskId,
+          ...(options ?? {}),
+        }),
+      }),
+    log: runBinding.log,
+    onMessage: runBinding.onMessage,
+    task: {
+      set transcriptSource(source: NonNullable<ToolTask['transcriptSource']>) {
+        runBinding.setTranscriptSource(source);
+      },
+      get transcriptSource(): ToolTask['transcriptSource'] {
+        return runBinding.task()?.transcriptSource;
+      },
+    },
+  };
+}
+
+/**
+ * `task` tool, action=result on a SETTLED live task: the final result
+ * (completed) or terminal status + error. Null when the task is not
+ * settled in-process — the caller falls back to the status view.
+ */
+function taskToolResultIfSettled(
+  input: TaskToolInput,
+  liveTask: ToolTask | undefined,
+): Record<string, unknown> | null {
+  if (liveTask?.status === 'completed') {
+    return {
+      taskId: input.taskId,
+      status: 'completed',
+      result: liveTask.result,
+    };
+  }
+  if (liveTask && liveTask.status !== 'working') {
+    return {
+      taskId: input.taskId,
+      status: liveTask.status,
+      ...(liveTask.error !== undefined && {
+        error: liveTask.error,
+      }),
+    };
+  }
+  return null;
 }

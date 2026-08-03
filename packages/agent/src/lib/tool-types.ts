@@ -2,7 +2,7 @@ import type * as models from '@openrouter/sdk/models';
 import type { StreamEvents } from '@openrouter/sdk/models';
 import type { $ZodObject, $ZodShape, $ZodType, infer as zodInfer } from 'zod/v4/core';
 import type { DoomLoopSerializedState } from './doom-loop.js';
-import type { TaskLogLimits, ToolTaskMode } from './tool-task.js';
+import type { TaskLogLimits, ToolTaskMode, ToolTaskStatus } from './tool-task.js';
 
 /**
  * Tool type enum for enhanced tools
@@ -1528,12 +1528,7 @@ export type ConversationStatus =
   | 'awaiting_async_tools'
   | 'in_progress';
 
-/**
- * Lifecycle status of a tool task. Deliberately matches the MCP Tasks
- * extension (SEP 2663) status vocabulary so MCP task handles can map onto
- * this without translation.
- */
-export type ToolTaskStatus = 'working' | 'input_required' | 'completed' | 'failed' | 'cancelled';
+export type { ToolTaskStatus } from './tool-task.js';
 
 /**
  * A pending (or settled) async tool task tracked on

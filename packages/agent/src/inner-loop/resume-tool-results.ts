@@ -178,32 +178,7 @@ export async function resumeToolResults<TTools extends readonly Tool[]>(
       throw new ToolTaskAlreadySettledError(task.taskId, task.callId);
     }
 
-    let envelope: ToolTaskResultEnvelope;
-    if ('output' in entry && entry.error === undefined) {
-      // Validate against the tool's outputSchema when the tool is available.
-      const tool = request.tools?.find((t) => isClientTool(t) && t.function.name === task.name);
-      let output = entry.output;
-      if (tool && isUnifiedTool(tool) && tool.function.outputSchema !== undefined) {
-        output = validateToolOutput(tool.function.outputSchema, output);
-      }
-      envelope = {
-        type: 'tool_task_result',
-        tool: task.name,
-        taskId: task.taskId,
-        callId: task.callId,
-        status: 'completed',
-        result: output,
-      };
-    } else {
-      envelope = {
-        type: 'tool_task_result',
-        tool: task.name,
-        taskId: task.taskId,
-        callId: task.callId,
-        status: entry.status ?? 'failed',
-        error: entry.error ?? 'Task failed',
-      };
-    }
+    const envelope = buildResumeEnvelope(entry, task, request.tools);
 
     envelopes.push(buildTaskResultMessage(envelope));
     // Persist the entry's real terminal status. 'expired' / 'timed_out'
@@ -264,4 +239,40 @@ export async function resumeToolResults<TTools extends readonly Tool[]>(
     },
     options,
   );
+}
+
+/**
+ * Build the `tool_task_result` envelope for one resume entry. Successful
+ * outputs are validated against the owning tool's `outputSchema` when the
+ * tool is available; error entries carry the caller's refined status
+ * (default `'failed'`).
+ */
+function buildResumeEnvelope(
+  entry: ResumeToolResultEntry,
+  task: PendingAsyncTool,
+  tools: readonly Tool[] | undefined,
+): ToolTaskResultEnvelope {
+  if ('output' in entry && entry.error === undefined) {
+    const tool = tools?.find((t) => isClientTool(t) && t.function.name === task.name);
+    let output = entry.output;
+    if (tool && isUnifiedTool(tool) && tool.function.outputSchema !== undefined) {
+      output = validateToolOutput(tool.function.outputSchema, output);
+    }
+    return {
+      type: 'tool_task_result',
+      tool: task.name,
+      taskId: task.taskId,
+      callId: task.callId,
+      status: 'completed',
+      result: output,
+    };
+  }
+  return {
+    type: 'tool_task_result',
+    tool: task.name,
+    taskId: task.taskId,
+    callId: task.callId,
+    status: entry.status ?? 'failed',
+    error: entry.error ?? 'Task failed',
+  };
 }
