@@ -490,6 +490,65 @@ describe('tool concurrency controls', () => {
     ]);
   });
 
+  it('a background tool with maxConcurrency: 1 completes without self-deadlock', async () => {
+    // Load-bearing ordering invariant: the round's per-tool gate is
+    // released (executeSingleToolCall's finally) BEFORE runBackgroundWork
+    // re-acquires the same gate for the body. If background work ever
+    // started while the round still held the gate, this run would hang.
+    const bgLimited = tool({
+      name: 'bg_limited',
+      lifecycle: 'background',
+      inputSchema: z.object({
+        id: z.number(),
+      }),
+      outputSchema: z.object({
+        id: z.number(),
+      }),
+      maxConcurrency: 1,
+      graceMs: 0,
+      run: async ({ id }) => {
+        await new Promise((resolve) => setTimeout(resolve, 5));
+        return {
+          id,
+        };
+      },
+    });
+
+    mockBetaResponsesSend
+      .mockResolvedValueOnce({
+        ok: true,
+        value: makeResponse('resp_1', [
+          functionCallItem('b1', 'bg_limited', '{"id":1}'),
+          functionCallItem('b2', 'bg_limited', '{"id":2}'),
+        ]),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        value: makeResponse('resp_2', [
+          messageItem('msg_1', 'both running'),
+        ]),
+      })
+      .mockResolvedValue({
+        ok: true,
+        value: makeResponse('resp_3', [
+          messageItem('msg_2', 'done'),
+        ]),
+      });
+
+    // Would time out (vitest default) on a gate self-deadlock.
+    const text = await callModel(client, {
+      model: 'test-model',
+      input: 'go',
+      tools: [
+        bgLimited,
+      ] as const,
+      asyncTools: {
+        drainTimeoutMs: 5_000,
+      },
+    }).getText();
+    expect(text.length).toBeGreaterThan(0);
+  });
+
   it('semaphore releases on tool throw (later calls still run)', async () => {
     let secondRan = false;
     const flaky = tool({

@@ -561,8 +561,11 @@ export async function prepareUnifiedInvocation(
   // human-readable progress notes: the task log models them explicitly
   // (TaskLogEntry.kind 'text'), so a tool that declares a structured
   // eventSchema can still log a plain sentence.
-  const runExtras = {
-    ...extras?.runExtras,
+  //
+  // Object.create (not spread): the engine's runExtras exposes `taskId` as
+  // a LIVE getter backed by the run binding — a spread would snapshot its
+  // current value (undefined; the ToolTask doesn't exist yet).
+  const runExtras = Object.assign(Object.create(extras?.runExtras ?? null), {
     log: (entry: unknown) => {
       const validated =
         fn.eventSchema && typeof entry !== 'string'
@@ -570,7 +573,7 @@ export async function prepareUnifiedInvocation(
           : entry;
       onYield(validated);
     },
-  };
+  }) as NonNullable<ToolExecutionExtras['runExtras']>;
   const runContext = buildToolRunContext(
     context,
     contextStore,

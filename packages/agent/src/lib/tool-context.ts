@@ -285,7 +285,7 @@ export function buildToolRunContext<
     extras,
   );
   const runExtras = extras?.runExtras;
-  return Object.assign(base, {
+  const ctx = Object.assign(base, {
     defer:
       runExtras?.defer ??
       (() => {
@@ -295,9 +295,6 @@ export function buildToolRunContext<
       }),
     log: runExtras?.log ?? (() => undefined),
     onMessage: runExtras?.onMessage ?? (() => undefined),
-    ...(runExtras?.taskId !== undefined && {
-      taskId: runExtras.taskId,
-    }),
     ...(runExtras?.taskTranscript !== undefined && {
       taskTranscript: runExtras.taskTranscript,
     }),
@@ -305,6 +302,18 @@ export function buildToolRunContext<
       client: extras.client,
     }),
   });
+  // Live delegation: the engine's runExtras exposes taskId as a getter
+  // backed by the run binding, because the ToolTask (and its id) is only
+  // created after the call escapes the round — a static copy taken here
+  // would always be undefined.
+  if (runExtras && 'taskId' in runExtras) {
+    Object.defineProperty(ctx, 'taskId', {
+      get: () => runExtras.taskId,
+      enumerable: true,
+      configurable: true,
+    });
+  }
+  return ctx;
 }
 
 //#endregion

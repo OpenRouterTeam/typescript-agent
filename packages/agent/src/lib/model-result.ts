@@ -6292,11 +6292,15 @@ export class ModelResult<
 
   /**
    * Check if the conversation requires human/client input to continue.
-   * Returns true when the conversation is paused waiting for caller-supplied
-   * decisions — approval/rejection (`awaiting_approval`), HITL tool resume
-   * (`awaiting_hitl`), or client-executed manual tools (`awaiting_client_tools`).
-   * Also returns true whenever `pendingToolCalls` is populated regardless of
-   * status.
+   * Returns true when the conversation is paused waiting on the CALLER —
+   * approval/rejection (`awaiting_approval`), HITL tool resume
+   * (`awaiting_hitl`), client-executed manual tools
+   * (`awaiting_client_tools`), or an external async task resolution
+   * (`awaiting_async_tools`, cleared via the deferred tool's `.resolve()` /
+   * `.fail()` / `.cancel()` or `resumeToolResults()` — NOT via
+   * `approveToolCalls`). Also returns true whenever `pendingToolCalls` is
+   * populated regardless of status. To branch on the pause KIND, read
+   * `(await getState()).status` instead.
    */
   async requiresApproval(): Promise<boolean> {
     await this.initStreamGuarded({
@@ -6393,6 +6397,11 @@ function buildRunExtras(tool: Tool, runBinding: RunBinding): Record<string, unkn
       }),
     log: runBinding.log,
     onMessage: runBinding.onMessage,
+    // Live getter through the binding — the ToolTask (and its id) is only
+    // created when the call escapes the round, after this object is built.
+    get taskId(): string | undefined {
+      return runBinding.task()?.taskId;
+    },
     // Transcript slot only — deliberately NOT `task`: TurnContext.task is
     // the ToolTaskHandle facade (check calls only) and a run body must not
     // see a transcript-only object under that name.
