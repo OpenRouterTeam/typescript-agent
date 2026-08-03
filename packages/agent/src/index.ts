@@ -86,6 +86,7 @@ export type {
   CallModelInput,
   CallModelInputWithState,
   ResolvedCallModelInput,
+  StreamReplayMode,
 } from './lib/async-params.js';
 export { hasAsyncFunctions, resolveAsyncFunctions } from './lib/async-params.js';
 export { fromChatMessages, toChatMessage } from './lib/chat-compat.js';

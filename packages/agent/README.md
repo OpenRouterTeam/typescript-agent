@@ -112,6 +112,20 @@ What each stream emits:
 | `getItemsStream()` | all output items (messages, function calls, …) |
 | `getFullResponsesStream()` | every response event, including `tool.result` / `tool.call_output` execution events |
 
+For long tool-enabled runs where every stream consumer attaches up front, opt
+into active-consumer retention to release unified stream history as soon as
+all attached consumers have advanced past it. Full replay remains the default,
+and no-tool streams always retain their standalone replay history.
+
+```typescript
+const result = openrouter.callModel({
+  model: 'openai/gpt-5.6-luna',
+  input: 'Use the tools and stream the answer.',
+  tools,
+  streamReplay: 'active-consumers',
+});
+```
+
 ### Tool Types
 
 The `tool()` factory creates type-safe tools with full Zod schema inference. Three tool types are supported:

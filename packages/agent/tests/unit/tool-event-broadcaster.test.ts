@@ -137,6 +137,71 @@ describe('ToolEventBroadcaster', () => {
     });
   });
 
+  describe('active-consumers retention', () => {
+    it('lets the first consumer catch startup history while later consumers join live', async () => {
+      const broadcaster = new ToolEventBroadcaster<number>('active-consumers');
+      broadcaster.push(1);
+      const first = broadcaster.createConsumer();
+      broadcaster.push(2);
+      const second = broadcaster.createConsumer();
+
+      broadcaster.push(3);
+      broadcaster.complete();
+
+      const firstResults: number[] = [];
+      for await (const event of first) {
+        firstResults.push(event);
+      }
+      const secondResults: number[] = [];
+      for await (const event of second) {
+        secondResults.push(event);
+      }
+      expect(firstResults).toEqual([
+        1,
+        2,
+        3,
+      ]);
+      expect(secondResults).toEqual([
+        3,
+      ]);
+    });
+
+    it('retains only the prefix still needed by the slowest active consumer', async () => {
+      const broadcaster = new ToolEventBroadcaster<number>('active-consumers');
+      const fast = broadcaster.createConsumer();
+      const slow = broadcaster.createConsumer();
+      const internal = broadcaster as unknown as {
+        buffer: number[];
+      };
+
+      broadcaster.push(1);
+      broadcaster.push(2);
+      expect((await fast.next()).value).toBe(1);
+      expect((await fast.next()).value).toBe(2);
+      expect(internal.buffer).toEqual([
+        1,
+        2,
+      ]);
+
+      expect((await slow.next()).value).toBe(1);
+      expect(internal.buffer).toEqual([
+        2,
+      ]);
+      expect((await slow.next()).value).toBe(2);
+      expect(internal.buffer).toEqual([]);
+
+      broadcaster.complete();
+      await expect(fast.next()).resolves.toEqual({
+        done: true,
+        value: undefined,
+      });
+      await expect(slow.next()).resolves.toEqual({
+        done: true,
+        value: undefined,
+      });
+    });
+  });
+
   describe('async waiting', () => {
     it('should wait for events when consumer is ahead of buffer', async () => {
       const broadcaster = new ToolEventBroadcaster<number>();

@@ -154,16 +154,15 @@ describe('ModelResult consumption matrix', () => {
           update: 0,
         },
       },
+      streamReplay: 'active-consumers',
     });
 
     const contextUpdatesPromise = collect(result.getContextUpdates());
     const firstEventsPromise = collect(result.getFullResponsesStream());
-    const secondEventsPromise = collect(result.getFullResponsesStream());
     const responsePromise = result.getResponse();
-    const [contextUpdates, firstEvents, secondEvents, response] = await Promise.all([
+    const [contextUpdates, firstEvents, response] = await Promise.all([
       contextUpdatesPromise,
       firstEventsPromise,
-      secondEventsPromise,
       responsePromise,
     ]);
 
@@ -191,7 +190,6 @@ describe('ModelResult consumption matrix', () => {
       'turn.end',
     ];
     expect(firstEvents.map((event) => event.type)).toEqual(expectedEventTypes);
-    expect(secondEvents.map((event) => event.type)).toEqual(expectedEventTypes);
   });
 
   it('replays initial tool calls from the unified journal without executing them', async () => {

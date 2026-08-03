@@ -50,6 +50,13 @@ Run randomized fresh-process import measurements (20 runs per case by default):
 pnpm benchmark:memory:imports
 ```
 
+Compare full replay with active-consumer retention across 20 randomized fresh
+processes and 50,000 events:
+
+```bash
+pnpm benchmark:memory:broadcaster
+```
+
 Run the complete live benchmark:
 
 ```bash

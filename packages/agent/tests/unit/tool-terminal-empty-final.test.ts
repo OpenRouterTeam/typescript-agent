@@ -375,6 +375,7 @@ describe('tool-terminal empty final response (PR-2)', () => {
       input: 'Hello',
       strictFinalResponse: true,
       allowFinalResponse: true,
+      streamReplay: 'active-consumers',
     }).getText();
 
     const request = mockBetaResponsesSend.mock.calls[0]?.[1]?.responsesRequest as Record<
@@ -384,6 +385,7 @@ describe('tool-terminal empty final response (PR-2)', () => {
     expect(request).toBeDefined();
     expect(request).not.toHaveProperty('strictFinalResponse');
     expect(request).not.toHaveProperty('allowFinalResponse');
+    expect(request).not.toHaveProperty('streamReplay');
     expect(request).not.toHaveProperty('stopWhen');
     expect(request).not.toHaveProperty('sharedContextSchema');
     expect(request).not.toHaveProperty('onTurnStart');

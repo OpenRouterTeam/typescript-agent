@@ -49,6 +49,8 @@ function buildResolvedRequest(
  */
 export type FieldOrAsyncFunction<T> = T | ((context: TurnContext) => T | Promise<T>);
 
+export type StreamReplayMode = 'full' | 'active-consumers';
+
 /**
  * Base input type for callModel without approval-related fields
  */
@@ -116,6 +118,18 @@ type BaseCallModelInput<
    * finals after tool work are retried once, then accepted with empty text.
    */
   strictFinalResponse?: boolean;
+  /**
+   * Controls how unified multi-turn stream events are retained.
+   *
+   * - `full` (default): preserve history for consumers that attach later.
+   * - `active-consumers`: retain only events still needed by consumers that
+   *   have already attached. This bounds long-running tool-stream memory but
+   *   late consumers only receive future events.
+   *
+   * No-tool streams continue to provide full replay because their public
+   * getters consume the standalone reusable stream directly.
+   */
+  streamReplay?: StreamReplayMode;
   /** Hook system for lifecycle events. Accepts inline config or a HooksManager instance. */
   hooks?: InlineHookConfig | HooksManager;
   /**
@@ -248,6 +262,7 @@ export async function resolveAsyncFunctions<TTools extends readonly Tool[] = rea
     'onTurnEnd', // Client-side turn end callback
     'allowFinalResponse', // Client-side: tunes the default toolChoice:'none' final turn when stopWhen breaks the loop
     'strictFinalResponse', // Client-side: restore throw on empty final after tool rounds
+    'streamReplay', // Client-side unified stream retention policy
     'hooks', // Client-side hook system
     'doomLoop', // Client-side doom-loop detection config
     'signal', // Client-side run cancellation

@@ -14,10 +14,16 @@ export class ToolEventBroadcaster<T> {
   private nextConsumerId = 0;
   private isComplete = false;
   private completionError: Error | null = null;
+  private historyStart = 0;
+  private hasConsumerEverJoined = false;
+
+  constructor(private readonly retention: 'full' | 'active-consumers' = 'full') {}
 
   /**
    * Push a new event to all consumers.
-   * Events are buffered so late-joining consumers can catch up.
+   * Full-retention events are buffered so late consumers can catch up.
+   * Active-consumer retention evicts an event after every attached consumer
+   * has advanced past it.
    */
   push(event: T): void {
     if (this.isComplete) {
@@ -53,17 +59,23 @@ export class ToolEventBroadcaster<T> {
 
   /**
    * Create a new consumer that can independently iterate over events.
-   * Consumers can join at any time and will receive events from position 0.
-   * Multiple consumers can be created and will all receive the same events.
+   * In full mode, consumers receive all retained history. In active-consumer
+   * mode, the first consumer receives history accumulated while the source was
+   * starting; later consumers join at the current live position.
    */
   createConsumer(): AsyncIterableIterator<T> {
     const consumerId = this.nextConsumerId++;
     const state: ConsumerState = {
-      position: 0,
+      position:
+        this.retention === 'full' || !this.hasConsumerEverJoined
+          ? this.historyStart
+          : this.historyStart + this.buffer.length,
       waitingPromise: null,
       cancelled: false,
     };
+    this.hasConsumerEverJoined = true;
     this.consumers.set(consumerId, state);
+    this.compactActiveBuffer();
 
     // eslint-disable-next-line @typescript-eslint/no-this-alias
     const self = this;
@@ -86,9 +98,11 @@ export class ToolEventBroadcaster<T> {
         }
 
         // Return buffered event if available
-        if (consumer.position < self.buffer.length) {
-          const value = self.buffer[consumer.position]!;
+        const bufferEnd = self.historyStart + self.buffer.length;
+        if (consumer.position < bufferEnd) {
+          const value = self.buffer[consumer.position - self.historyStart]!;
           consumer.position++;
+          self.compactActiveBuffer();
           return {
             done: false,
             value,
@@ -116,7 +130,11 @@ export class ToolEventBroadcaster<T> {
           };
 
           // Immediately check if we should resolve after setting up promise
-          if (self.isComplete || self.completionError || consumer.position < self.buffer.length) {
+          if (
+            self.isComplete ||
+            self.completionError ||
+            consumer.position < self.historyStart + self.buffer.length
+          ) {
             resolve();
           }
         });
@@ -133,6 +151,7 @@ export class ToolEventBroadcaster<T> {
         if (consumer) {
           consumer.cancelled = true;
           self.consumers.delete(consumerId);
+          self.compactActiveBuffer();
           self.cleanup();
         }
         return {
@@ -146,6 +165,7 @@ export class ToolEventBroadcaster<T> {
         if (consumer) {
           consumer.cancelled = true;
           self.consumers.delete(consumerId);
+          self.compactActiveBuffer();
           self.cleanup();
         }
         throw e;
@@ -170,6 +190,22 @@ export class ToolEventBroadcaster<T> {
         }
         consumer.waitingPromise = null;
       }
+    }
+  }
+
+  private compactActiveBuffer(): void {
+    if (this.retention !== 'active-consumers' || this.buffer.length === 0) {
+      return;
+    }
+    const bufferEnd = this.historyStart + this.buffer.length;
+    let consumedThrough = bufferEnd;
+    for (const consumer of this.consumers.values()) {
+      consumedThrough = Math.min(consumedThrough, consumer.position);
+    }
+    const removeCount = Math.min(this.buffer.length, consumedThrough - this.historyStart);
+    if (removeCount > 0) {
+      this.buffer.splice(0, removeCount);
+      this.historyStart += removeCount;
     }
   }
 }

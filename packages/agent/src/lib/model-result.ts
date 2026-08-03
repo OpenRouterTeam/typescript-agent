@@ -4,7 +4,7 @@ import type { EventStream } from '@openrouter/sdk/lib/event-streams';
 import type { RequestOptions } from '@openrouter/sdk/lib/sdks';
 import type * as models from '@openrouter/sdk/models';
 import type { $ZodObject, $ZodShape } from 'zod/v4/core';
-import type { CallModelInput, ResolvedCallModelInput } from './async-params.js';
+import type { CallModelInput, ResolvedCallModelInput, StreamReplayMode } from './async-params.js';
 import { hasAsyncFunctions, resolveAsyncFunctions } from './async-params.js';
 import {
   appendToMessages,
@@ -361,6 +361,8 @@ export interface GetResponseOptions<
    * so tool-terminal runs are not reported as failures.
    */
   strictFinalResponse?: boolean;
+  /** Unified multi-turn stream retention policy. Defaults to full replay. */
+  streamReplay?: StreamReplayMode;
   /** Hook system for lifecycle events */
   hooks?: HooksManager;
   /**
@@ -586,7 +588,7 @@ export class ModelResult<
     ResponseStreamEvent<InferToolEventsUnion<TTools>, InferToolOutputsUnion<TTools>>
   > {
     if (!this.turnBroadcaster) {
-      this.turnBroadcaster = new ToolEventBroadcaster();
+      this.turnBroadcaster = new ToolEventBroadcaster(this.options.streamReplay ?? 'full');
     }
     return this.turnBroadcaster;
   }
