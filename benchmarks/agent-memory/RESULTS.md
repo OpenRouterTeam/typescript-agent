@@ -38,8 +38,8 @@ pnpm benchmark:memory:reusable
 Every bundle uses esbuild 0.28.1 with ESM output, browser platform, ES2022
 target, minification, and explicit `treeShaking: true`.
 
-- Agent Worker: 508,573 raw / 111,310 gzip / 93,850 Brotli bytes.
+- Agent Worker: 510,095 raw / 111,581 gzip / 94,108 Brotli bytes.
 - SDK-only Worker: 217,945 raw / 55,301 gzip / 47,257 Brotli bytes.
 
-Twenty-run randomized fresh-import medians were 42,208,756 tracked bytes for
-the agent bundle and 40,487,076 bytes for the SDK-only bundle.
+Twenty-run randomized fresh-import medians were 42,210,052 tracked bytes for
+the agent bundle and 40,498,156 bytes for the SDK-only bundle.
