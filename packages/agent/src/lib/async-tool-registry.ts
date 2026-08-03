@@ -78,7 +78,10 @@ export class AsyncToolRegistry {
    * Track an already-started background/agent task. `work` is the tool's
    * in-flight run promise (output-validated). When `timeoutMs` is set the
    * task is raced against it, so a body that ignores its abort signal still
-   * settles as `timed_out` instead of hanging the drain.
+   * settles as `timed_out` instead of hanging the drain. The deadline is
+   * anchored at `task.startedAt` (the work started before tracking — a
+   * grace window may already have elapsed), so `timeoutMs` bounds the
+   * task's TOTAL runtime, matching the documented contract.
    */
   trackBackground(
     task: ToolTask,
@@ -92,6 +95,7 @@ export class AsyncToolRegistry {
     let timer: ReturnType<typeof setTimeout> | undefined;
     const timeoutMs = options?.timeoutMs;
     if (timeoutMs !== undefined && timeoutMs > 0) {
+      const remainingMs = Math.max(0, timeoutMs - (Date.now() - task.startedAt));
       timer = setTimeout(() => {
         const timeoutError = new Error(
           `Tool "${task.toolName}" task timed out after ${timeoutMs}ms`,
@@ -105,7 +109,7 @@ export class AsyncToolRegistry {
           error: timeoutError.message,
         });
         controller?.abort(timeoutError);
-      }, timeoutMs);
+      }, remainingMs);
       if (typeof timer === 'object' && 'unref' in timer && typeof timer.unref === 'function') {
         timer.unref();
       }

@@ -556,12 +556,18 @@ export async function prepareUnifiedInvocation(
   };
 
   // The run context routes ctx.log through the same pipeline as a yield —
-  // but with eventSchema validation applied here (runUnifiedTool only
-  // validates generator yields).
+  // with eventSchema validation applied to STRUCTURED entries only
+  // (runUnifiedTool only validates generator yields). Bare strings are
+  // human-readable progress notes: the task log models them explicitly
+  // (TaskLogEntry.kind 'text'), so a tool that declares a structured
+  // eventSchema can still log a plain sentence.
   const runExtras = {
     ...extras?.runExtras,
     log: (entry: unknown) => {
-      const validated = fn.eventSchema ? validateToolOutput(fn.eventSchema, entry) : entry;
+      const validated =
+        fn.eventSchema && typeof entry !== 'string'
+          ? validateToolOutput(fn.eventSchema, entry)
+          : entry;
       onYield(validated);
     },
   };

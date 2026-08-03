@@ -3168,6 +3168,26 @@ export class ModelResult<
     const pausedCalls: ParsedToolCall<Tool>[] = [];
     const deferredTasks: PendingAsyncTool[] = [];
 
+    // Start ALL async invocations before consuming any outcome: the work
+    // (and its grace window) begins in handleAsyncInvocation, so awaiting
+    // it inside the ordered loop below would serialize N background calls
+    // into (N-1)×graceMs of stagger. Kicked off here in parallel; the
+    // ordered loop awaits the per-call promise, so OUTPUT order stays call
+    // order (prompt-cache stability).
+    const asyncOutcomes = new Map<
+      number,
+      Promise<{
+        output: models.FunctionCallOutputItem;
+        deferredTask?: PendingAsyncTool;
+      }>
+    >();
+    for (let i = 0; i < settledResults.length; i++) {
+      const settled = settledResults[i];
+      if (settled?.status === 'fulfilled' && settled.value?.type === 'async') {
+        asyncOutcomes.set(i, this.handleAsyncInvocation(settled.value));
+      }
+    }
+
     for (let i = 0; i < settledResults.length; i++) {
       const settled = settledResults[i];
       const originalToolCall = toolCalls[i];
@@ -3230,11 +3250,11 @@ export class ModelResult<
       }
 
       if (value.type === 'async') {
-        // Background / deferred: the call escapes the round. Handle it
-        // (grace-window race for background, registry tracking, placeholder
-        // synthesis) and push the resulting output — placeholder or real —
-        // so the round stays fully paired.
-        const asyncOutcome = await this.handleAsyncInvocation(value);
+        // Background / deferred: the call escapes the round. Its handling
+        // (grace-window race, registry tracking, placeholder synthesis)
+        // was started above in parallel with the round's other async
+        // calls; awaiting here keeps outputs in call order.
+        const asyncOutcome = await (asyncOutcomes.get(i) ?? this.handleAsyncInvocation(value));
         toolResults.push(asyncOutcome.output);
         this.turnBroadcaster?.push({
           type: 'tool.call_output' as const,

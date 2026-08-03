@@ -121,6 +121,14 @@ export function buildTaskResultMessage(envelope: ToolTaskResultEnvelope): models
  * SECURITY: this call injects a value the model will treat as a tool
  * result. Authenticate the webhook/caller BEFORE invoking it — the SDK
  * cannot do that for you.
+ *
+ * CONCURRENCY: this is a read-modify-write over the StateAccessor. Two
+ * concurrent calls for the SAME conversation (e.g. two webhooks resolving
+ * two different tasks) can interleave load/save and the later save wins,
+ * silently dropping the earlier envelope. Serialize calls per conversation
+ * — a per-conversation lock or queue in your StateAccessor, or batch
+ * concurrent completions into one call via `results: [...]` (which settles
+ * any number of tasks atomically).
  */
 export async function resumeToolResults<TTools extends readonly Tool[]>(
   client: OpenRouterCore,
@@ -218,11 +226,15 @@ export async function resumeToolResults<TTools extends readonly Tool[]>(
   //   awaiting_client_tools) while async tasks are outstanding; clobbering
   //   it to 'in_progress' would make the engine skip the decision-resume
   //   path and drop the caller's approvals.
+  // - A 'complete' conversation is only reopened when the caller asked to
+  //   continue (`run` config). Record-only delivery on a finished
+  //   conversation keeps it finished — the envelope rides along if the
+  //   caller ever resumes it.
   const stillWorking = nextPending.some((t) => t.status === 'working' && t.orphaned !== true);
   const statusOwnedByAsyncDelivery =
     state.status === 'awaiting_async_tools' ||
     state.status === 'in_progress' ||
-    state.status === 'complete' ||
+    (state.status === 'complete' && request.run !== undefined) ||
     state.status === undefined;
   const updated = updateState(state, {
     messages: appendToMessages(state.messages, envelopes),
