@@ -43,3 +43,48 @@ target, minification, and explicit `treeShaking: true`.
 
 Twenty-run randomized fresh-import medians were 42,210,052 tracked bytes for
 the agent bundle and 40,498,156 bytes for the SDK-only bundle.
+
+## Other implementation ablations
+
+Each result below also uses 20 randomized fresh processes.
+
+### Single tool-stream journal
+
+At 50,000 events, replacing the legacy reusable-stream plus broadcaster pair
+with one journal changed:
+
+- Median peak: 31,593,352 → 30,535,023 bytes (-3.3%).
+- p95 peak: 32,039,048 → 30,645,615 bytes (-4.3%).
+- Post-completion retained memory while the legacy replay object remained
+  reachable: 15,496,338 → 1,058,882 bytes (-93.2%).
+
+The peak improvement is real but small. The main benefit is avoiding retained
+initial-turn history after tool-stream completion.
+
+### Transport-reference cleanup
+
+A synthetic stream with 16 MiB of transport-owned state had unchanged peak
+allocation, but post-completion retained memory fell from 17,744,106 to
+971,450 bytes across the 20-run median. This proves that dropping the source
+stream reference can release transport-owned state. It does not prove that a
+real SDK EventStream retains 16 MiB.
+
+### Context-update queue
+
+At the production characterization size of 100 queued updates:
+
+- `Array.shift()` median drain time: 0.011 ms.
+- Head-index median drain time: 0.004 ms.
+- Peak memory was identical.
+
+At an extreme 50,000-update backlog, drain time changed from 960.9 ms to
+0.41 ms, but this is not representative of current web usage. The queue change
+is defensive and has no material measured memory benefit.
+
+Run:
+
+```bash
+pnpm benchmark:memory:single-journal
+pnpm benchmark:memory:transport-cleanup
+pnpm benchmark:memory:context-queue
+```
