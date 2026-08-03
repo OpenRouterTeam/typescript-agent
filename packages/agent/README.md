@@ -68,9 +68,13 @@ const result = callModel(client, { model, input, tools });
 // Await the final text
 const text = await result.getText();
 
-// Await the full response with usage data
+// Await the full response with usage data (the FINAL round only)
 const response = await result.getResponse();
 console.log(response.usage); // { inputTokens, outputTokens, cost, ... }
+
+// Await aggregate usage across EVERY round of the tool loop
+const usage = await result.getUsage();
+console.log(usage); // { modelCalls, inputTokens, outputTokens, totalTokens, cachedTokens, reasoningTokens, cost? }
 
 // Stream text deltas
 for await (const delta of result.getTextStream()) {
@@ -109,8 +113,43 @@ What each stream emits:
 | `getReasoningStream()` | reasoning deltas |
 | `getToolStream()` | tool-call **argument deltas**; `preliminary_result` events for generator tools — *not* execution results |
 | `getToolCallsStream()` | parsed tool calls as they complete |
-| `getItemsStream()` | all output items (messages, function calls, …) |
-| `getFullResponsesStream()` | every response event, including `tool.result` / `tool.call_output` execution events |
+| `getItemsStream()` | all output items (messages, function calls, …) — output items **only**, no usage/response metadata |
+| `getFullResponsesStream()` | every response event, including `tool.result` / `tool.call_output` execution events, and each round's `response.completed` (with that round's usage block) |
+
+#### Usage across a multi-round tool loop
+
+`getResponse()` resolves to the **final** round's response, so in a
+multi-round tool loop the tokens spent on the intermediate `tool_calls`
+generations are not in `response.usage`. `getItemsStream()` carries output
+items only and never surfaces `response.completed`, so usage is not reachable
+from that stream either.
+
+`getUsage()` closes the gap with aggregate totals across every model call the
+run made — the initial request, each tool-round follow-up, the empty-final
+retry, the `allowFinalResponse` final turn, and approval-resume requests:
+
+```typescript
+const result = callModel(client, { model, input, tools });
+
+for await (const item of result.getItemsStream()) {
+  render(item);
+}
+
+const usage = await result.getUsage();
+console.log(usage.modelCalls, usage.totalTokens, usage.cost);
+```
+
+It gates on run completion like `getResponse()` does, so the totals are final
+whether you await it directly, after `getResponse()`, or after draining any of
+the streaming getters. Unlike `getResponse()` it never rejects — a failed run
+still consumed tokens — and returns the totals accrued so far, with
+`modelCalls: 0` and zeroed tokens when no model call completed. `cost` is
+present only when the server reported cost accounting.
+
+Same `SessionUsageTotals` shape and numbers as the `SessionEnd` hook's
+`totalUsage`. For **per-call** granularity use the `PostModelCall` hook (one
+emit per model call, with `turnType`/`turnNumber`) or read each round's
+`response.completed` off `getFullResponsesStream()`.
 
 ### Tool Types
 
@@ -534,6 +573,9 @@ a materialized response emits no `PostModelCall`; a `response.incomplete`
 response (e.g. truncated at `max_output_tokens`) **does** emit — it carries a
 real generation id and consumed tokens. Note `usage.cost` is only present when
 the request had usage accounting enabled server-side.
+
+`SessionEnd.totalUsage` is push-based; for the same totals without registering
+a hook, await [`getUsage()`](#usage-across-a-multi-round-tool-loop).
 Every handler receives `(payload, context)` — `context` carries the
 `sessionId` (the single source of session identity; payloads do not repeat
 it), the `hookName`, and an `AbortSignal` for cooperative cancellation. The
