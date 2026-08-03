@@ -34,6 +34,8 @@ const concurrencyLevels = integerListArg(
   ],
 );
 const concurrencyOutputWords = integerArg('concurrency-output-words', 0);
+const multiTurnCount = integerArg('multi-turn-count', 4);
+const multiTurnOutputWords = integerArg('multi-turn-output-words', 2_048);
 const outputWordCounts = integerListArg(
   'output-words',
   [
@@ -49,6 +51,7 @@ const liveSections = listArg('sections', [
   'concurrency',
   'output-scaling',
   'tool-loop',
+  'multi-turn-long',
 ]);
 
 if (typeof globalThis.gc !== 'function') {
@@ -66,6 +69,8 @@ const report = {
     liveSections,
     concurrencyLevels,
     concurrencyOutputWords,
+    multiTurnCount,
+    multiTurnOutputWords,
     outputWordCounts,
     workersLimitBytes: WORKERS_LIMIT_BYTES,
     v8HeapSizeLimitBytes: getHeapStatistics().heap_size_limit,
@@ -234,6 +239,9 @@ async function runLive(agent, apiKey) {
       stepCountIs,
       z,
     });
+  }
+  if (liveSections.includes('multi-turn-long')) {
+    measurements.multiTurnLong = await benchmarkLongMultiTurn(client);
   }
   return measurements;
 }
@@ -489,6 +497,80 @@ async function benchmarkToolLoop({ client, tool, stepCountIs, z }) {
   };
 }
 
+async function benchmarkLongMultiTurn(client) {
+  const initialBaseline = await settledMemory();
+  const conversation = [];
+  const turns = [];
+  let absolutePeak = initialBaseline;
+  const totalUsage = emptyUsage();
+
+  for (let turn = 1; turn <= multiTurnCount; turn += 1) {
+    conversation.push({
+      role: 'user',
+      content: `Turn ${turn}: output exactly ${multiTurnOutputWords} copies of the word "token", separated by single spaces. Output nothing else.`,
+    });
+    const turnBaseline = await settledMemory();
+    let held = client.callModel({
+      model,
+      input: conversation,
+      maxOutputTokens: multiTurnOutputWords + 64,
+      temperature: 0,
+    });
+
+    const measured = await capturePeak(async () => {
+      const response = await held.getResponse();
+      return {
+        text: extractResponseText(response),
+        usage: normalizeUsage(response.usage),
+      };
+    });
+    absolutePeak = maxMemory(absolutePeak, measured.peak);
+    addUsage(totalUsage, measured.value.usage);
+
+    conversation.push({
+      role: 'assistant',
+      content: measured.value.text,
+    });
+    const retainedWithResult = await settledMemory();
+    held = null;
+    const conversationOnly = await settledMemory();
+
+    turns.push({
+      turn,
+      conversationCharacters: conversation.reduce(
+        (sum, message) => sum + message.content.length,
+        0,
+      ),
+      outputCharacters: measured.value.text.length,
+      usage: measured.value.usage,
+      baseline: turnBaseline,
+      peak: measured.peak,
+      peakDelta: memoryDelta(measured.peak, turnBaseline),
+      retainedWithResult,
+      retainedWithResultDelta: memoryDelta(retainedWithResult, turnBaseline),
+      conversationOnly,
+      totalDelta: memoryDelta(conversationOnly, initialBaseline),
+    });
+  }
+
+  const conversationRetained = await settledMemory();
+  conversation.length = 0;
+  const released = await settledMemory();
+  return {
+    turnCount: multiTurnCount,
+    targetOutputWordsPerTurn: multiTurnOutputWords,
+    totalUsage,
+    initialBaseline,
+    peak: absolutePeak,
+    peakDelta: memoryDelta(absolutePeak, initialBaseline),
+    conversationRetained,
+    conversationRetainedDelta: memoryDelta(conversationRetained, initialBaseline),
+    released,
+    releasedDelta: memoryDelta(released, initialBaseline),
+    turns,
+  };
+}
+
 async function runShortRequest(client) {
   const result = client.callModel(shortRequest());
   const response = await result.getResponse();
@@ -560,6 +642,34 @@ function extractResponseText(response) {
     }
   }
   return text.join('');
+}
+
+function emptyUsage() {
+  return {
+    inputTokens: 0,
+    outputTokens: 0,
+    totalTokens: 0,
+    cachedTokens: 0,
+    reasoningTokens: 0,
+    cost: 0,
+  };
+}
+
+function normalizeUsage(usage) {
+  return {
+    inputTokens: usage?.inputTokens ?? 0,
+    outputTokens: usage?.outputTokens ?? 0,
+    totalTokens: usage?.totalTokens ?? 0,
+    cachedTokens: usage?.inputTokensDetails?.cachedTokens ?? 0,
+    reasoningTokens: usage?.outputTokensDetails?.reasoningTokens ?? 0,
+    cost: usage?.cost ?? 0,
+  };
+}
+
+function addUsage(total, usage) {
+  for (const key of Object.keys(total)) {
+    total[key] += usage[key];
+  }
 }
 
 async function settledMemory() {

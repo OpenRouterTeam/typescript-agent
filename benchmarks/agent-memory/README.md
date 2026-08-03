@@ -66,6 +66,16 @@ node --expose-gc --max-old-space-size=128 --max-semi-space-size=8 \
   --sections concurrency \
   --concurrency-levels 16,32,64 \
   --concurrency-output-words 1024
+
+# Growing multi-turn conversation with long outputs and per-turn token usage
+node --expose-gc --max-old-space-size=128 --max-semi-space-size=8 \
+  benchmarks/agent-memory/benchmark.mjs \
+  --mode live \
+  --bundle .turbo/agent-memory/cloudflare-worker.bundle.mjs \
+  --model openai/gpt-5.6-luna \
+  --sections multi-turn-long \
+  --multi-turn-count 4 \
+  --multi-turn-output-words 2048
 ```
 
 The Node heap flags create a constrained V8 process for earlier failure detection. They do not
