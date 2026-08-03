@@ -110,6 +110,7 @@ What each stream emits:
 | `getToolStream()` | tool-call **argument deltas**; `preliminary_result` events for generator tools — *not* execution results |
 | `getToolCallsStream()` | parsed tool calls as they complete |
 | `getItemsStream()` | all output items (messages, function calls, …) |
+| `getUiStream()` | OpenUI events — `statement` / `fragment` / `document` — from tools declaring `toUIOutput` and from the `openui` plugin |
 | `getFullResponsesStream()` | every response event, including `tool.result` / `tool.call_output` execution events |
 
 ### Tool Types
