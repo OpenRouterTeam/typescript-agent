@@ -85,6 +85,114 @@ function str(value: unknown): string | undefined {
  * `tool.ui_fragment` and the API's `response.openui.*` wire events (including
  * their pre-regen `Unknown` encoding).
  */
+/** `tool.ui_fragment`: a local tool's fragment, carried on the tool stream. */
+function toolFragmentEvent(payload: Record<string, unknown>): UiStreamEvent | null {
+  const fragment = payload['fragment'];
+  if (!isRecord(fragment)) {
+    return null;
+  }
+  const dialect = str(fragment['dialect']);
+  const source = str(fragment['source']);
+  if (dialect === undefined || source === undefined) {
+    return null;
+  }
+  const result: UiFragmentEvent = {
+    type: 'fragment',
+    dialect,
+    source,
+  };
+  const toolCallId = str(payload['toolCallId']);
+  if (toolCallId !== undefined) {
+    result.toolCallId = toolCallId;
+  }
+  const toolName = str(payload['toolName']);
+  if (toolName !== undefined) {
+    result.toolName = toolName;
+  }
+  return result;
+}
+
+/** `response.openui.statement`: one completed assignment from the API. */
+function statementEvent(payload: Record<string, unknown>): UiStreamEvent | null {
+  const ref = str(payload['ref']);
+  const kind = str(payload['kind']);
+  const source = str(payload['source']);
+  if (ref === undefined || kind === undefined || source === undefined) {
+    return null;
+  }
+  return {
+    type: 'statement',
+    ref,
+    kind,
+    source,
+  };
+}
+
+/** `response.openui.fragment`: a server tool's fragment. */
+function wireFragmentEvent(payload: Record<string, unknown>): UiStreamEvent | null {
+  const dialect = str(payload['dialect']);
+  const source = str(payload['source']);
+  if (dialect === undefined || source === undefined) {
+    return null;
+  }
+  const result: UiFragmentEvent = {
+    type: 'fragment',
+    dialect,
+    source,
+  };
+  // Wire field is snake_case; tolerate camelCase for forward compat.
+  const callId = str(payload['call_id']) ?? str(payload['callId']);
+  if (callId !== undefined) {
+    result.toolCallId = callId;
+  }
+  return result;
+}
+
+/** Diagnostics on a document event, skipping any entry without a message. */
+function documentDiagnostics(raw: unknown): UiDocumentEvent['diagnostics'] {
+  if (!Array.isArray(raw)) {
+    return [];
+  }
+  return raw.filter(isRecord).flatMap((d) => {
+    const message = str(d['message']);
+    if (message === undefined) {
+      return [];
+    }
+    const diagnostic: UiDocumentEvent['diagnostics'][number] = {
+      message,
+    };
+    if (typeof d['line'] === 'number') {
+      diagnostic.line = d['line'];
+    }
+    const source = str(d['source']);
+    if (source !== undefined) {
+      diagnostic.source = source;
+    }
+    return [
+      diagnostic,
+    ];
+  });
+}
+
+/** `response.openui.document`: turn-end summary (root ref + diagnostics). */
+function documentEvent(payload: Record<string, unknown>): UiStreamEvent | null {
+  const dialect = str(payload['dialect']);
+  if (dialect === undefined) {
+    return null;
+  }
+  return {
+    type: 'document',
+    root: str(payload['root']) ?? null,
+    dialect,
+    diagnostics: documentDiagnostics(payload['diagnostics']),
+  };
+}
+
+/*
+ * Wire event -> stream event. Each case is its own function: the switch was one
+ * body holding every field-validation branch, which put it over the structural
+ * gate's per-function complexity ceiling.
+ */
 export function translateUiEvent(event: unknown): UiStreamEvent | null {
   const payload = unwrapEvent(event);
   if (!payload) {
@@ -92,102 +200,14 @@ export function translateUiEvent(event: unknown): UiStreamEvent | null {
   }
 
   switch (payload['type']) {
-    case 'tool.ui_fragment': {
-      const fragment = payload['fragment'];
-      if (!isRecord(fragment)) {
-        return null;
-      }
-      const dialect = str(fragment['dialect']);
-      const source = str(fragment['source']);
-      if (dialect === undefined || source === undefined) {
-        return null;
-      }
-      const result: UiFragmentEvent = {
-        type: 'fragment',
-        dialect,
-        source,
-      };
-      const toolCallId = str(payload['toolCallId']);
-      if (toolCallId !== undefined) {
-        result.toolCallId = toolCallId;
-      }
-      const toolName = str(payload['toolName']);
-      if (toolName !== undefined) {
-        result.toolName = toolName;
-      }
-      return result;
-    }
-
-    case OPENUI_WIRE_EVENT.Statement: {
-      const ref = str(payload['ref']);
-      const kind = str(payload['kind']);
-      const source = str(payload['source']);
-      if (ref === undefined || kind === undefined || source === undefined) {
-        return null;
-      }
-      return {
-        type: 'statement',
-        ref,
-        kind,
-        source,
-      };
-    }
-
-    case OPENUI_WIRE_EVENT.Fragment: {
-      const dialect = str(payload['dialect']);
-      const source = str(payload['source']);
-      if (dialect === undefined || source === undefined) {
-        return null;
-      }
-      const result: UiFragmentEvent = {
-        type: 'fragment',
-        dialect,
-        source,
-      };
-      // Wire field is snake_case; tolerate camelCase for forward compat.
-      const callId = str(payload['call_id']) ?? str(payload['callId']);
-      if (callId !== undefined) {
-        result.toolCallId = callId;
-      }
-      return result;
-    }
-
-    case OPENUI_WIRE_EVENT.Document: {
-      const dialect = str(payload['dialect']);
-      if (dialect === undefined) {
-        return null;
-      }
-      const root = str(payload['root']) ?? null;
-      const rawDiagnostics = payload['diagnostics'];
-      const diagnostics: UiDocumentEvent['diagnostics'] = Array.isArray(rawDiagnostics)
-        ? rawDiagnostics.filter(isRecord).flatMap((d) => {
-            const message = str(d['message']);
-            if (message === undefined) {
-              return [];
-            }
-            const diagnostic: UiDocumentEvent['diagnostics'][number] = {
-              message,
-            };
-            if (typeof d['line'] === 'number') {
-              diagnostic.line = d['line'];
-            }
-            const source = str(d['source']);
-            if (source !== undefined) {
-              diagnostic.source = source;
-            }
-            return [
-              diagnostic,
-            ];
-          })
-        : [];
-      return {
-        type: 'document',
-        root,
-        dialect,
-        diagnostics,
-      };
-    }
-
+    case 'tool.ui_fragment':
+      return toolFragmentEvent(payload);
+    case OPENUI_WIRE_EVENT.Statement:
+      return statementEvent(payload);
+    case OPENUI_WIRE_EVENT.Fragment:
+      return wireFragmentEvent(payload);
+    case OPENUI_WIRE_EVENT.Document:
+      return documentEvent(payload);
     default:
       return null;
   }

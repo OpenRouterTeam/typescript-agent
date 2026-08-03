@@ -14,7 +14,7 @@
  * count, token usage, cost) so the playground doubles as an eval harness.
  */
 
-import type { UiLibrary } from '@openrouter/agent';
+import type { UiLibrary, UiStreamEvent } from '@openrouter/agent';
 import { callModel, openui, serializeExpr } from '@openrouter/agent';
 import type { OpenRouterCore } from '@openrouter/sdk/core';
 import type { UiAssignment, UiDocument } from './lang/parser.js';
@@ -110,6 +110,31 @@ function extractUsage(response: unknown): UsageSummary {
   };
 }
 
+/*
+ * One native `getUiStream()` event -> one playground event. Split out of
+ * `generate` so the per-variant field mapping does not count toward that
+ * function's complexity, which the structural gate caps.
+ */
+function toPlaygroundEvent(event: UiStreamEvent, at: number, statements: number): PlaygroundEvent {
+  if (event.type === 'document') {
+    return {
+      type: 'document',
+      root: event.root,
+      dialect: event.dialect,
+      statements,
+      diagnostics: event.diagnostics.map((d) => ({
+        line: d.line ?? 0,
+        message: d.message,
+        source: d.source ?? '',
+      })),
+    };
+  }
+  return {
+    ...event,
+    at,
+  };
+}
+
 /**
  * Run one generation and yield playground events as they materialize.
  */
@@ -148,28 +173,8 @@ export async function* generate(
         }
         statements += 1;
         chars += event.source.length;
-        yield {
-          ...event,
-          at: Date.now() - start,
-        };
-      } else if (event.type === 'fragment') {
-        yield {
-          ...event,
-          at: Date.now() - start,
-        };
-      } else {
-        yield {
-          type: 'document',
-          root: event.root,
-          dialect: event.dialect,
-          statements,
-          diagnostics: event.diagnostics.map((d) => ({
-            line: d.line ?? 0,
-            message: d.message,
-            source: d.source ?? '',
-          })),
-        };
       }
+      yield toPlaygroundEvent(event, Date.now() - start, statements);
     }
 
     const usage = extractUsage(await result.getResponse());

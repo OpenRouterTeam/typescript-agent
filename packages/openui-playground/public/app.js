@@ -216,96 +216,13 @@ function propsOf(call) {
   return props;
 }
 
-function renderCall(call, depth) {
-  if (call.builtin) {
-    return null; // @Run/@Set/... are action steps, not DOM
-  }
-  const p = propsOf(call);
-  const val = (name, fallback) => {
-    const v = p[name] !== undefined ? evalExpr(p[name], depth + 1) : undefined;
-    return v === undefined || v === null || (v && v.kind === 'call') ? fallback : v;
-  };
-  const children = (name) => (p[name] ? renderExpr(p[name], depth + 1) : null);
-
+/*
+ * Form controls and meters, split out of `renderCall` so neither function
+ * exceeds the structural gate's per-function complexity ceiling. `val` and
+ * `children` are passed in rather than recomputed — they close over `depth`.
+ */
+function renderControl(call, val) {
   switch (call.fn) {
-    case 'Stack': {
-      const node = el('div', `ui-stack${val('direction', 'column') === 'row' ? ' row' : ''}`, [
-        children('children'),
-      ]);
-      const gap = val('gap', null);
-      if (typeof gap === 'number') {
-        node.style.gap = `${gap}px`;
-      }
-      return node;
-    }
-    case 'Card': {
-      const kids = [];
-      const title = val('title', null);
-      const titleIsText = typeof title === 'string';
-      if (titleIsText) {
-        kids.push(textNode(title, 'title'));
-      }
-      // Card("x", [...]) puts children second; Card([...]) puts them first.
-      const body = titleIsText ? children('children') : (children('title') ?? children('children'));
-      if (body) {
-        kids.push(body);
-      }
-      return el('div', 'ui-card', kids);
-    }
-    case 'Heading': {
-      const level = Math.min(3, Math.max(1, val('level', 2)));
-      return textNode(String(val('text', '')), `ui-heading${level}`);
-    }
-    case 'Text':
-      return textNode(String(val('value', '')), `ui-text${val('muted', false) ? ' muted' : ''}`);
-    case 'Stat': {
-      const kids = [
-        textNode(String(val('value', '')), 'v'),
-        textNode(String(val('label', '')), 'l'),
-      ];
-      const delta = val('delta', null);
-      if (delta) {
-        kids.push(textNode(String(delta), 'd'));
-      }
-      return el('div', 'ui-stat', kids);
-    }
-    case 'Badge':
-      return textNode(String(val('text', '')), `ui-badge ${val('tone', 'neutral')}`);
-    case 'Table': {
-      const columns = val('columns', []);
-      const rows = val('rows', []);
-      const table = document.createElement('table');
-      table.className = 'ui-table';
-      if (Array.isArray(columns)) {
-        const tr = document.createElement('tr');
-        for (const c of columns) {
-          tr.appendChild(
-            el('th', null, [
-              document.createTextNode(String(c)),
-            ]),
-          );
-        }
-        table.appendChild(tr);
-      }
-      if (Array.isArray(rows)) {
-        for (const row of rows) {
-          const tr = document.createElement('tr');
-          for (const cell of Array.isArray(row)
-            ? row
-            : [
-                row,
-              ]) {
-            tr.appendChild(
-              el('td', null, [
-                document.createTextNode(String(cell)),
-              ]),
-            );
-          }
-          table.appendChild(tr);
-        }
-      }
-      return table;
-    }
     case 'Input': {
       const input = document.createElement('input');
       input.type = 'text';
@@ -351,6 +268,110 @@ function renderCall(call, depth) {
           ])
         : bar;
     }
+    default:
+      return undefined; // not a control — caller falls through
+  }
+}
+
+/** Tabular data, split out for the same reason as `renderControl`. */
+function renderTable(val) {
+  const columns = val('columns', []);
+  const rows = val('rows', []);
+  const table = document.createElement('table');
+  table.className = 'ui-table';
+  if (Array.isArray(columns)) {
+    const tr = document.createElement('tr');
+    for (const c of columns) {
+      tr.appendChild(
+        el('th', null, [
+          document.createTextNode(String(c)),
+        ]),
+      );
+    }
+    table.appendChild(tr);
+  }
+  if (Array.isArray(rows)) {
+    for (const row of rows) {
+      const tr = document.createElement('tr');
+      for (const cell of Array.isArray(row)
+        ? row
+        : [
+            row,
+          ]) {
+        tr.appendChild(
+          el('td', null, [
+            document.createTextNode(String(cell)),
+          ]),
+        );
+      }
+      table.appendChild(tr);
+    }
+  }
+  return table;
+}
+
+function renderCall(call, depth) {
+  if (call.builtin) {
+    return null; // @Run/@Set/... are action steps, not DOM
+  }
+  const p = propsOf(call);
+  const val = (name, fallback) => {
+    const v = p[name] !== undefined ? evalExpr(p[name], depth + 1) : undefined;
+    return v === undefined || v === null || (v && v.kind === 'call') ? fallback : v;
+  };
+  const children = (name) => (p[name] ? renderExpr(p[name], depth + 1) : null);
+
+  const control = renderControl(call, val);
+  if (control !== undefined) {
+    return control;
+  }
+
+  switch (call.fn) {
+    case 'Stack': {
+      const node = el('div', `ui-stack${val('direction', 'column') === 'row' ? ' row' : ''}`, [
+        children('children'),
+      ]);
+      const gap = val('gap', null);
+      if (typeof gap === 'number') {
+        node.style.gap = `${gap}px`;
+      }
+      return node;
+    }
+    case 'Card': {
+      const kids = [];
+      const title = val('title', null);
+      const titleIsText = typeof title === 'string';
+      if (titleIsText) {
+        kids.push(textNode(title, 'title'));
+      }
+      // Card("x", [...]) puts children second; Card([...]) puts them first.
+      const body = titleIsText ? children('children') : (children('title') ?? children('children'));
+      if (body) {
+        kids.push(body);
+      }
+      return el('div', 'ui-card', kids);
+    }
+    case 'Heading': {
+      const level = Math.min(3, Math.max(1, val('level', 2)));
+      return textNode(String(val('text', '')), `ui-heading${level}`);
+    }
+    case 'Text':
+      return textNode(String(val('value', '')), `ui-text${val('muted', false) ? ' muted' : ''}`);
+    case 'Stat': {
+      const kids = [
+        textNode(String(val('value', '')), 'v'),
+        textNode(String(val('label', '')), 'l'),
+      ];
+      const delta = val('delta', null);
+      if (delta) {
+        kids.push(textNode(String(delta), 'd'));
+      }
+      return el('div', 'ui-stat', kids);
+    }
+    case 'Badge':
+      return textNode(String(val('text', '')), `ui-badge ${val('tone', 'neutral')}`);
+    case 'Table':
+      return renderTable(val);
     case 'Query':
     case 'Mutation':
     case 'Action':

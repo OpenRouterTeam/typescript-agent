@@ -94,6 +94,32 @@ interface ScannedStatement {
  * Consume raw text, returning each completed top-level statement line.
  * Newlines inside brackets or strings do not terminate a statement.
  */
+/** Advance string-literal state for one character inside a string. */
+function scanInString(state: ScannerState, ch: string): void {
+  if (state.escaped) {
+    state.escaped = false;
+    return;
+  }
+  if (ch === '\\') {
+    state.escaped = true;
+    return;
+  }
+  if (ch === '"') {
+    state.inString = false;
+  }
+}
+
+/** Track bracket nesting so a statement can span lines. */
+function scanDepth(state: ScannerState, ch: string): void {
+  if (ch === '(' || ch === '[' || ch === '{') {
+    state.depth += 1;
+    return;
+  }
+  if (ch === ')' || ch === ']' || ch === '}') {
+    state.depth -= 1;
+  }
+}
+
 function scanStatements(state: ScannerState, text: string): ScannedStatement[] {
   const completed: ScannedStatement[] = [];
   for (const ch of text) {
@@ -103,26 +129,14 @@ function scanStatements(state: ScannerState, text: string): ScannedStatement[] {
     }
     state.buffer += ch;
     if (state.inString) {
-      if (state.escaped) {
-        state.escaped = false;
-      } else if (ch === '\\') {
-        state.escaped = true;
-      } else if (ch === '"') {
-        state.inString = false;
-      }
+      scanInString(state, ch);
       continue;
     }
     if (ch === '"') {
       state.inString = true;
       continue;
     }
-    if (ch === '(' || ch === '[' || ch === '{') {
-      state.depth += 1;
-      continue;
-    }
-    if (ch === ')' || ch === ']' || ch === '}') {
-      state.depth -= 1;
-    }
+    scanDepth(state, ch);
   }
   return completed;
 }

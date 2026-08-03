@@ -31,11 +31,9 @@ import {
   applyNextTurnParamsToRequest,
   executeNextTurnParamsFunctions,
 } from './next-turn-params.js';
-import type { UiStreamEvent } from './openui/ui-stream.js';
-import { translateUiEvent } from './openui/ui-stream.js';
 import { ReusableReadableStream } from './reusable-stream.js';
 import { isStopConditionMet } from './stop-conditions.js';
-import type { ItemInProgress, StreamableOutputItem } from './stream-transformers.js';
+import type { ItemInProgress, StreamableOutputItem, UiStreamEvent } from './stream-transformers.js';
 import {
   buildItemsStream,
   buildResponsesMessageStream,
@@ -49,6 +47,7 @@ import {
   extractToolDeltas,
   itemsStreamHandlers,
   streamTerminationEvents,
+  translateUiEvent,
 } from './stream-transformers.js';
 import {
   hasTypeProperty,
