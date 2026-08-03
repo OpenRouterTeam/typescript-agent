@@ -1,5 +1,33 @@
 # @openrouter/agent
 
+## 0.9.0
+
+### Minor Changes
+
+- [#73](https://github.com/OpenRouterTeam/typescript-agent/pull/73) [`78c562e`](https://github.com/OpenRouterTeam/typescript-agent/commit/78c562ef53da0edd84dfbcc6d6ee38a095d72b37) Thanks [@LukasParke](https://github.com/LukasParke)! - Doom-loop detection for the tool-execution loop (opt-in via `doomLoop` on `callModel`).
+
+  Catches runs that stop making progress while continuing to spend: the model re-issuing the same tool call with identical arguments in consecutive rounds (including repeated empty `{}` calls and repeated invalid-JSON calls), repeating identical server-tool requests (`web_search_call` etc., detected post-execution at the step checkpoint), or emitting the same text tokens over and over. Detection is deterministic — a verdict is a pure function of the transcript — and responds through a configurable graduated ladder: `observe` (emit the new `DoomLoopDetected` hook) → `steer` (inject corrective guidance; queued guidance persists across pauses) → `block` (refuse the call with an explanatory tool error, before execution) → `stop` (halt before any further model request; unresolved calls in the final turn get synthesized halt-error outputs so persisted history stays well-formed; `SessionEnd.reason: 'doom_loop'`).
+
+  Streaks are round-scoped: N identical calls fanned out in parallel within one round count once (a streak measures the model re-issuing a call after seeing its result). Tools declare call identity via `loopKey` on the tool definition — a function computing key material (`null` exempts a call), a declarative field list (`['command', 'cwd']` — data, not code), or `false` (statically exempt); absent means the full validated arguments. MCP-wrapped tools accept `loopKey` via `markMcp(tool, { loopKey })`. Fingerprints are a cross-port contract: RFC 8785 (JCS) canonicalization + SHA-256 over UTF-8 via WebCrypto, with conformance vectors in `tests/vectors/doom-loop-fingerprints.json` for the Python/Go ports. Unhashable key material (bigint, circular, >64 deep) falls back to the full-arguments identity — detection never fails a run.
+
+  Detector state persists inside `ConversationState.doomLoop`: streaks survive serialize → resume, a `stop` verdict survives decision-only resumes (approve/reject) and clears on a fresh conversational turn, and queued steer guidance is delivered on resume. Ladder configs warn on dead rungs and on `block` with `stop: false` (unbounded block/re-issue). Documented, test-locked limits: varying-input (nonce) loops evade the default identity without a `loopKey`; paraphrased text repetition is not detected; manual/client-executed calls are not recorded. New `@openrouter/agent/doom-loop` subpath exports the primitives; `ModelResult.getDoomLoopVerdict()` reports a stopping verdict.
+
+- [#73](https://github.com/OpenRouterTeam/typescript-agent/pull/73) [`78c562e`](https://github.com/OpenRouterTeam/typescript-agent/commit/78c562ef53da0edd84dfbcc6d6ee38a095d72b37) Thanks [@LukasParke](https://github.com/LukasParke)! - Doom-loop escalation recovery: a new `escalate` ladder rung between `steer` and `block` that unblocks a stuck run by throwing more intelligence at the next turn instead of refusing or halting.
+
+  Configure via `doomLoop.escalation`: `model` runs the NEXT turn on a stronger model (one-turn override, automatic revert), and/or `advisor` forces an `openrouter:advisor` consult (the advisor server tool is appended with `forwardTranscript: true` and loop-diagnosing instructions, and `toolChoice` is pinned to it via `allowed_tools`/`required` so the stuck model must ask for guidance first; an object form passes through as advisor parameters). A user notice naming the detected loop accompanies the escalated turn.
+
+  Escalations are real spend on a run already suspected of wasting it, so they are budgeted: `maxEscalations` (default 2) caps recoveries per conversation, budget is consumed when a recovery is _applied_ (not at verdict time), `escalationsUsed` persists in `ConversationState.doomLoop` so resumes cannot reset it, and concurrent detector verdicts in one window escalate once. Exhausted or unconfigured escalations fall through to the weaker rungs; resolve-time warnings flag an `escalate` rung without a mechanism (and vice versa). The `DoomLoopDetected` hook's `action`/`overrideAction` enums gain `'escalate'` — an override without config/budget downgrades to `observe`, never silently to a stronger action.
+
+- [#73](https://github.com/OpenRouterTeam/typescript-agent/pull/73) [`78c562e`](https://github.com/OpenRouterTeam/typescript-agent/commit/78c562ef53da0edd84dfbcc6d6ee38a095d72b37) Thanks [@LukasParke](https://github.com/LukasParke)! - Run-level cancellation and per-request timeout composition.
+
+  New `signal` option on `callModel`: aborting it stops the tool-execution loop at the next turn boundary AND aborts the in-flight API request/stream, so a stalled provider fails fast with the abort reason instead of hanging until an outer caller/test timeout. A pre-aborted signal fails before any network dispatch.
+
+  `RequestOptions.timeoutMs` (the third `callModel` argument) now reliably bounds _each_ request the loop makes even when a signal is present: the underlying SDK skips its own `timeoutMs` wiring whenever a request carries a signal, so the engine composes `{run signal, caller signal, per-request timeout}` via `AbortSignal.any` per dispatch — each request gets a fresh timeout budget (not one shared per-run timer), and whichever bound fires first wins.
+
+### Patch Changes
+
+- [#91](https://github.com/OpenRouterTeam/typescript-agent/pull/91) [`231fb65`](https://github.com/OpenRouterTeam/typescript-agent/commit/231fb6578e13c0a7578e54b78392f4cff57221c9) Thanks [@w0nche0l](https://github.com/w0nche0l)! - Thread the executed tool call into the hook execute context. `context.toolCall` is part of the tool-facing contract, but only the non-streaming orchestrator populated it — the streaming `ModelResult` loop builds its turn context with just `numberOfTurns`, so `execute` / `onToolCalled` hooks saw `toolCall: undefined` on the streaming path. `buildExecuteCtx` now fills the gap from the executed call: a caller-provided `turnContext.toolCall` still wins (the orchestrator's carries `status`), and otherwise the executed `ParsedToolCall` is converted back to a wire-shaped `FunctionCallItem`. The `onResponseReceived` path intentionally threads nothing — only the `function_call_output` item is in scope there.
+
 ## 0.8.0
 
 ### Minor Changes
