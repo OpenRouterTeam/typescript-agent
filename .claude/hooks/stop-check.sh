@@ -69,5 +69,9 @@ fi
 # script: lint` and block the turn. Anchor to the repo root instead. `|| exit 0`
 # keeps the fail-open posture of the guards above — a cwd we cannot reach is a
 # loud skip, never a spurious block.
-cd "${CLAUDE_PROJECT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}" || exit 0
+root="${CLAUDE_PROJECT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}"
+if ! cd "$root"; then
+  echo "stop-check: cannot enter project root '$root'; skipping $script" >&2
+  exit 0
+fi
 pnpm run "$script" >&2 || exit 2
