@@ -5,9 +5,10 @@ import {
 } from './next-turn-params.js';
 import { extractToolCallsFromResponse, responseHasToolCalls } from './stream-transformers.js';
 import { isFunctionCallItem } from './stream-type-guards.js';
-import { executeTool, findToolByName } from './tool-executor.js';
-import type { APITool, Tool, ToolExecutionResult } from './tool-types.js';
-import { isAutoResolvableTool, isMcpTool } from './tool-types.js';
+import type { AsyncToolInvocation } from './tool-executor.js';
+import { executeTool, findToolByName, isAsyncToolInvocation } from './tool-executor.js';
+import type { APITool, ParsedToolCall, Tool, ToolExecutionResult } from './tool-types.js';
+import { isAutoResolvableTool, isMcpTool, isUnifiedTool } from './tool-types.js';
 import { buildTurnContext } from './turn-context.js';
 
 /**
@@ -87,55 +88,15 @@ export async function executeToolLoop(
     }
 
     // Execute all tool calls in parallel (parallel tool calling)
-    const toolCallPromises = toolCalls.map(async (toolCall) => {
-      const tool = findToolByName(tools, toolCall.name);
-
-      if (!tool) {
-        // Tool not found in definitions
-        return {
-          toolCallId: toolCall.id,
-          toolName: toolCall.name,
-          source: 'client',
-          result: null,
-          error: new Error(`Tool "${toolCall.name}" not found in tool definitions`),
-        } as ToolExecutionResult<Tool>;
-      }
-
-      if (!isAutoResolvableTool(tool)) {
-        // Tool has no execute/onToolCalled - return null to filter out
-        return null;
-      }
-
-      // Find the raw tool call from the response output
-      const rawToolCall = currentResponse.output.find(
-        (item): item is models.OutputFunctionCallItem =>
-          isFunctionCallItem(item) && item.callId === toolCall.id,
-      );
-
-      if (!rawToolCall) {
-        throw new Error(`Could not find raw tool call for ${toolCall.id}`);
-      }
-
-      // Convert to FunctionCallItem format
-      const openResponsesToolCall: models.FunctionCallItem = {
-        type: 'function_call' as const,
-        callId: rawToolCall.callId,
-        name: rawToolCall.name,
-        arguments: rawToolCall.arguments,
-        id: rawToolCall.callId,
-        status: rawToolCall.status,
-      };
-
-      // Build turn context with full information
-      const turnContext = buildTurnContext({
-        numberOfTurns: currentRound,
-        toolCall: openResponsesToolCall,
-        turnRequest: currentRequest,
-      });
-
-      // Execute the tool
-      return executeTool(tool, toolCall, turnContext, onPreliminaryResult);
-    });
+    const toolCallPromises = toolCalls.map((toolCall) =>
+      executeOrchestratedCall(toolCall, {
+        tools,
+        response: currentResponse,
+        request: currentRequest,
+        round: currentRound,
+        onPreliminaryResult,
+      }),
+    );
 
     // Wait for all tool executions to complete in parallel
     const settledResults = await Promise.allSettled(toolCallPromises);
@@ -148,21 +109,41 @@ export async function executeToolLoop(
         return;
       }
 
+      const errorResult = (error: Error): ToolExecutionResult<Tool> => {
+        const failedTool = findToolByName(tools, toolCall.name);
+        return {
+          toolCallId: toolCall.id,
+          toolName: toolCall.name,
+          source: failedTool !== undefined && isMcpTool(failedTool) ? 'mcp' : 'client',
+          result: null,
+          error,
+        };
+      };
+
       if (settled.status === 'fulfilled') {
-        if (settled.value !== null) {
+        // This legacy loop predates async tools and only understands
+        // synchronous execution results (background/deferred invocations
+        // are handled by ModelResult's live loop). Surface an explicit
+        // error rather than silently dropping the call — an unpaired
+        // function_call would poison any history built from these results.
+        if (settled.value !== null && isAsyncToolInvocation(settled.value)) {
+          roundResults.push(
+            errorResult(
+              new Error(
+                `Tool "${toolCall.name}" uses an async lifecycle (background/deferred), which executeToolLoop does not support — run it through callModel instead.`,
+              ),
+            ),
+          );
+        } else if (settled.value !== null) {
           roundResults.push(settled.value);
         }
       } else {
         // Promise rejected - create error result
-        const rejectedTool = findToolByName(tools, toolCall.name);
-        roundResults.push({
-          toolCallId: toolCall.id,
-          toolName: toolCall.name,
-          source: rejectedTool !== undefined && isMcpTool(rejectedTool) ? 'mcp' : 'client',
-          result: null,
-          error:
+        roundResults.push(
+          errorResult(
             settled.reason instanceof Error ? settled.reason : new Error(String(settled.reason)),
-        });
+          ),
+        );
       }
     });
 
@@ -259,4 +240,85 @@ export function getToolExecutionErrors(results: ToolExecutionResult<Tool>[]): Er
       } => result.error !== undefined,
     )
     .map((result) => result.error);
+}
+
+/**
+ * Execute one orchestrated tool call: resolve the tool, rebuild the raw
+ * `function_call` item, build the turn context, and run the tool. Returns
+ * `null` for calls with nothing to execute (manual tools), an error-shaped
+ * result for unknown tools.
+ */
+async function executeOrchestratedCall(
+  toolCall: ParsedToolCall<Tool>,
+  round: {
+    tools: Tool[];
+    response: models.OpenResponsesResult;
+    request: models.ResponsesRequest;
+    round: number;
+    onPreliminaryResult: ((toolCallId: string, result: unknown) => void) | undefined;
+  },
+): Promise<ToolExecutionResult<Tool> | AsyncToolInvocation | null> {
+  const tool = findToolByName(round.tools, toolCall.name);
+
+  if (!tool) {
+    // Tool not found in definitions
+    return {
+      toolCallId: toolCall.id,
+      toolName: toolCall.name,
+      source: 'client',
+      result: null,
+      error: new Error(`Tool "${toolCall.name}" not found in tool definitions`),
+    } as ToolExecutionResult<Tool>;
+  }
+
+  if (!isAutoResolvableTool(tool)) {
+    // Tool has no execute/onToolCalled - return null to filter out
+    return null;
+  }
+
+  // Async lifecycles are unsupported here — short-circuit BEFORE running
+  // the body. This matters for deferred tools especially: their run()
+  // executes in-round and would open an external ticket that this loop can
+  // never resolve (an orphan external task).
+  if (isUnifiedTool(tool) && tool.function.lifecycle && tool.function.lifecycle !== 'sync') {
+    return {
+      toolCallId: toolCall.id,
+      toolName: toolCall.name,
+      source: isMcpTool(tool) ? 'mcp' : 'client',
+      result: null,
+      error: new Error(
+        `Tool "${toolCall.name}" uses an async lifecycle ('${tool.function.lifecycle}'), which executeToolLoop does not support — run it through callModel instead.`,
+      ),
+    } as ToolExecutionResult<Tool>;
+  }
+
+  // Find the raw tool call from the response output
+  const rawToolCall = round.response.output.find(
+    (item): item is models.OutputFunctionCallItem =>
+      isFunctionCallItem(item) && item.callId === toolCall.id,
+  );
+
+  if (!rawToolCall) {
+    throw new Error(`Could not find raw tool call for ${toolCall.id}`);
+  }
+
+  // Convert to FunctionCallItem format
+  const openResponsesToolCall: models.FunctionCallItem = {
+    type: 'function_call' as const,
+    callId: rawToolCall.callId,
+    name: rawToolCall.name,
+    arguments: rawToolCall.arguments,
+    id: rawToolCall.callId,
+    status: rawToolCall.status,
+  };
+
+  // Build turn context with full information
+  const turnContext = buildTurnContext({
+    numberOfTurns: round.round,
+    toolCall: openResponsesToolCall,
+    turnRequest: round.request,
+  });
+
+  // Execute the tool
+  return executeTool(tool, toolCall, turnContext, round.onPreliminaryResult);
 }

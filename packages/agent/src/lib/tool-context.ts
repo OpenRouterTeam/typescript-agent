@@ -134,6 +134,55 @@ function validatePartialAgainstSchema(
 }
 
 /**
+ * Per-execution extras threaded into the ToolExecuteContext: the composed
+ * abort signal for this call, the call id, the conversation id, and (for
+ * unified `run` tools) the async-task affordances.
+ */
+export interface ToolExecutionExtras {
+  signal?: AbortSignal;
+  callId?: string;
+  conversationId?: string;
+  /** The parent run's client — agent tools use it to start child runs. */
+  client?: unknown;
+  /**
+   * Unified-run affordances, wired by the engine per call:
+   * - `defer` — create a DeferredHandle (deferred lifecycle only)
+   * - `log` — append a task log entry (same pipeline as a yield)
+   * - `onMessage` — register the steering-inbox handler
+   * - `taskId` — the task id once assigned
+   */
+  runExtras?: {
+    defer?: (taskId: string, options?: Record<string, unknown>) => unknown;
+    log?: (entry: unknown) => void;
+    onMessage?: (handler: (message: unknown) => void) => void;
+    taskId?: string;
+    /**
+     * Transcript-source slot (agent tools attach their live transcript
+     * here). Deliberately NOT named `task`: `TurnContext.task` is typed
+     * `ToolTaskHandle` (check calls only) and must not be shadowed by a
+     * transcript-only object in run bodies.
+     */
+    taskTranscript?: unknown;
+  };
+}
+
+/*
+ * A never-aborting signal for contexts built without cancellation sources —
+ * keeps `ctx.signal` always present so tool bodies can pass it to fetch/etc.
+ * unconditionally.
+ *
+ * Deliberately a FACTORY, not one shared module-level signal. A tool body may
+ * `signal.addEventListener('abort', …)` and, since this signal never fires,
+ * nothing ever removes that listener. Sharing one object across every such call
+ * accumulated listeners on it for the lifetime of the process — unbounded in a
+ * long-lived server, and eventually a MaxListenersExceededWarning. A fresh
+ * signal per context is garbage-collected with the context that owns it.
+ */
+function neverAbortSignal(): AbortSignal {
+  return new AbortController().signal;
+}
+
+/**
  * Build a flat ToolExecuteContext for a specific tool.
  * Returns a merged object with TurnContext fields, a `local` getter
  * (reads from the store on each access), `shared` getter, and mutation methods.
@@ -146,6 +195,7 @@ function validatePartialAgainstSchema(
  * @param toolName - The tool's name
  * @param schema - The tool's contextSchema (for validation)
  * @param sharedSchema - The shared contextSchema (for validation)
+ * @param extras - Per-execution extras (abort signal, call id, conversation id)
  * @returns A flat ToolExecuteContext
  */
 export function buildToolExecuteContext<
@@ -158,6 +208,7 @@ export function buildToolExecuteContext<
   toolName: TName,
   schema: $ZodObject<$ZodShape> | undefined,
   sharedSchema?: $ZodObject<$ZodShape> | undefined,
+  extras?: ToolExecutionExtras,
 ): ToolExecuteContext<TName, TContext, TShared> {
   // Validate initial context eagerly (throws on bad data)
   if (store && schema) {
@@ -169,6 +220,14 @@ export function buildToolExecuteContext<
 
   const ctx: ToolExecuteContext<TName, TContext, TShared> = {
     ...turnContext,
+
+    signal: extras?.signal ?? neverAbortSignal(),
+    ...(extras?.callId !== undefined && {
+      callId: extras.callId,
+    }),
+    ...(extras?.conversationId !== undefined && {
+      conversationId: extras.conversationId,
+    }),
 
     get local(): Readonly<TContext> {
       const data = store ? store.getToolContext(toolName) : {};
@@ -203,6 +262,68 @@ export function buildToolExecuteContext<
     },
   };
 
+  return ctx;
+}
+
+/**
+ * Build a ToolRunContext for a unified `run` tool: the base execute context
+ * plus the async-task affordances (`defer`, `log`, `onMessage`, `taskId`,
+ * `client`). Attached onto the built object (not via spread) because
+ * `local`/`shared` are live getters a spread would flatten.
+ */
+export function buildToolRunContext<
+  TName extends string,
+  TContext extends Record<string, unknown>,
+  TShared extends Record<string, unknown> = Record<string, unknown>,
+>(
+  turnContext: TurnContext,
+  store: ToolContextStore | undefined,
+  toolName: TName,
+  schema: $ZodObject<$ZodShape> | undefined,
+  sharedSchema?: $ZodObject<$ZodShape> | undefined,
+  extras?: ToolExecutionExtras,
+): ToolExecuteContext<TName, TContext, TShared> & {
+  defer: (taskId: string, options?: Record<string, unknown>) => unknown;
+  log: (entry: unknown) => void;
+  onMessage: (handler: (message: unknown) => void) => void;
+} {
+  const base = buildToolExecuteContext<TName, TContext, TShared>(
+    turnContext,
+    store,
+    toolName,
+    schema,
+    sharedSchema,
+    extras,
+  );
+  const runExtras = extras?.runExtras;
+  const ctx = Object.assign(base, {
+    defer:
+      runExtras?.defer ??
+      (() => {
+        throw new Error(
+          `Tool "${toolName}": ctx.defer() is only available on lifecycle: 'deferred' tools`,
+        );
+      }),
+    log: runExtras?.log ?? (() => undefined),
+    onMessage: runExtras?.onMessage ?? (() => undefined),
+    ...(runExtras?.taskTranscript !== undefined && {
+      taskTranscript: runExtras.taskTranscript,
+    }),
+    ...(extras?.client !== undefined && {
+      client: extras.client,
+    }),
+  });
+  // Live delegation: the engine's runExtras exposes taskId as a getter
+  // backed by the run binding, because the ToolTask (and its id) is only
+  // created after the call escapes the round — a static copy taken here
+  // would always be undefined.
+  if (runExtras && 'taskId' in runExtras) {
+    Object.defineProperty(ctx, 'taskId', {
+      get: () => runExtras.taskId,
+      enumerable: true,
+      configurable: true,
+    });
+  }
   return ctx;
 }
 
