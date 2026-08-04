@@ -66,7 +66,14 @@ jobs:
       (github.event_name == 'workflow_dispatch' &&
       inputs.mode == 'publish' && inputs.dry-run)
     steps:
+      # No credentials persisted: install/build/test below execute dependency
+      # lifecycle scripts and test code, which must not be able to read a
+      # long-lived cross-repo PAT out of .git/config. Git push credentials are
+      # injected by the "Configure git push credentials" step *after* those,
+      # immediately before the only steps that push.
       - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
 
       - uses: pnpm/action-setup@v6
 
@@ -106,19 +113,40 @@ jobs:
 
       - run: pnpm run test
 
+      # Deliberately after install/build/test (see the checkout comment).
+      # changesets/action pushes changeset-release/main (and release tags on
+      # the publish leg) with plain `git push`, which uses the remote's
+      # embedded credentials. It must be the PAT, not the Actions
+      # GITHUB_TOKEN: GITHUB_TOKEN-attributed pushes never trigger workflows,
+      # so Version PR updates would get no CI / perry/review and the release
+      # train (release-train.yaml) could merge on checks from the first
+      # revision.
+      - name: Configure git push credentials (PAT)
+        run: |
+          git remote set-url origin \
+            "https://x-access-token:${{ secrets.GH_TOKEN }}@github.com/${{ github.repository }}.git"
+
       - name: Version PR or Publish (changesets)
         id: changesets
         if: >
           github.event_name == 'push' ||
           (github.event_name == 'workflow_dispatch' && inputs.mode == 'version')
-        uses: changesets/action@v1
+        # SHA-pinned (= v1.9.0): this step receives the cross-repo PAT and
+        # runs with it in .git/config, so a floating tag would let a
+        # compromised action release exfiltrate it. Bump deliberately.
+        uses: changesets/action@a45c4d594aa4e2c509dc14a9f2b3b67ba3780d0d
         with:
           title: 'chore: version packages'
           commit: 'chore: version packages'
           version: pnpm exec changeset version
           publish: pnpm exec changeset publish --no-git-checks
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # PAT, not the Actions GITHUB_TOKEN: PRs created with GITHUB_TOKEN
+          # never trigger other workflows, so the Version Packages PR would get
+          # no CI and no perry/review — and the release-train workflow
+          # (release-train.yaml) gates its auto-merge on exactly those checks.
+          # Same reasoning as the checkout token in bump-openrouter-sdk.yaml.
+          GITHUB_TOKEN: ${{ secrets.GH_TOKEN }}
           # No NODE_AUTH_TOKEN / NPM_TOKEN: auth comes from OIDC trusted
           # publishing. changesets/action logs "No NPM_TOKEN found, but OIDC is
           # available" and leaves .npmrc alone; npm then exchanges the Actions
@@ -150,6 +178,16 @@ jobs:
         if: github.event_name == 'workflow_dispatch' && inputs.mode == 'publish' && !inputs.dry-run
         continue-on-error: true
         run: git push origin --tags
+
+      # Nothing below pushes via git (the HOP dispatches use `gh api` with
+      # GH_TOKEN from env), so drop the PAT from .git/config the moment the
+      # last push consumer is done. `always()`: scrub even when a publish
+      # step failed, since later/rerun steps still see the workspace.
+      - name: Scrub git push credentials
+        if: always()
+        run: |
+          git remote set-url origin \
+            "https://github.com/${{ github.repository }}.git"
 
       # `changeset publish` has no native --dry-run. Fall back to pnpm's
       # recursive dry-run, which simulates publishing every workspace package
@@ -253,7 +291,13 @@ jobs:
           # an unresolvable ref would make the ports fail on checkout rather than
           # degrade, so fall back to this run's commit SHA — which points at the
           # same published tree.
-          if git ls-remote --exit-code --tags origin "refs/tags/${TAG}" >/dev/null 2>&1; then
+          #
+          # gh api rather than `git ls-remote origin`: the credential scrub above
+          # leaves origin tokenless, so a git-side lookup would silently fail if
+          # this repo ever goes private and the fallback would fire every time.
+          # gh authenticates from GH_TOKEN in env, independent of .git/config.
+          ENCODED_TAG="$(jq -rn --arg t "$TAG" '$t|@uri')"
+          if gh api "repos/${{ github.repository }}/git/ref/tags/${ENCODED_TAG}" >/dev/null 2>&1; then
             REF="$TAG"
           else
             REF="${{ github.sha }}"
