@@ -57,8 +57,12 @@ write-back: the snapshot it would write is the one just read, so it was a store 
 per rehydrate buying nothing. Two maintenance writes survive, both best-effort: an OAuth
 provider under `cacheCredentials: true` re-persists its current tokens (so the stored entry
 tracks rotation instead of expiring into a forced fresh connect), and an entry carrying a
-legacy `sessionId` from an earlier version is rewritten once without it, scrubbing the
-bearer-equivalent value from the store.
+legacy `sessionId` from an earlier version is rewritten once without it — the scrub reads the
+store first and rewrites only bytes it already holds, so it can never introduce credentials
+into a store that lacked them. If your store implementation extends entry TTLs on write
+(Redis `SETEX`-style), note that warm hits no longer touch the store, so such entries now
+expire on their own schedule rather than being kept alive by access; size the TTL to the
+staleness window you actually want.
 
 `MCPConnectionError` now carries every underlying failure in `errors` (matching
 `AggregateError`), flat and in attempt order across both negotiation passes, so a caller sees

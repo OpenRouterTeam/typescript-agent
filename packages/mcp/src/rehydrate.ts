@@ -316,12 +316,11 @@ async function refreshStaleReplay(handle: MCPToolsHandle): Promise<void> {
  */
 async function maintainReplayedEntry(args: {
   options: RehydrateMCPToolsOptions;
-  snapshot: SerializedMCPServer;
   handle: MCPToolsHandle;
   cacheKey: string;
   effectiveAuth: MCPAuth | undefined;
 }): Promise<void> {
-  const { options, snapshot, handle, cacheKey, effectiveAuth } = args;
+  const { options, handle, cacheKey, effectiveAuth } = args;
   const store = options.cache?.store;
   if (store === undefined) {
     return;
@@ -331,13 +330,29 @@ async function maintainReplayedEntry(args: {
       await store.set(cacheKey, await handle.serialize());
       return;
     }
-    if (snapshot.sessionId !== undefined) {
-      const scrubbed = {
-        ...snapshot,
-      };
-      delete scrubbed.sessionId;
-      await store.set(cacheKey, scrubbed);
+    // Scrub only what the store itself holds. Reading back before writing does
+    // two jobs at once: it confirms the credential-bearing entry actually lives
+    // in THIS store (a direct rehydrate may have loaded the snapshot from a
+    // file or another key, and writing its auth block into a store that never
+    // held it would introduce credentials without the `cacheCredentials`
+    // opt-in), and it makes the write a rewrite of existing bytes minus one
+    // field rather than new material. Entries without a `sessionId` — including
+    // any entry a stale refresh just rewrote, since serialize no longer emits
+    // the field — produce no write at all.
+    const stored = await store.get(cacheKey);
+    if (
+      stored === null ||
+      stored === undefined ||
+      !isSerializedMCPServer(stored) ||
+      stored.sessionId === undefined
+    ) {
+      return;
     }
+    const scrubbed = {
+      ...stored,
+    };
+    delete scrubbed.sessionId;
+    await store.set(cacheKey, scrubbed);
   } catch {
     // Best-effort, like every other store write: a cache outage never fails a
     // working replay.
@@ -416,16 +431,20 @@ export async function rehydrateMCPTools(
     });
 
     if (staleSnapshot) {
+      // `refresh()` re-listed and wrote the entry through `serialize` — which
+      // carries the provider's current tokens and omits `sessionId` — so every
+      // maintenance concern below is already satisfied. Running the scrub here
+      // would clobber the just-refreshed entry with the caller's older input
+      // snapshot.
       await refreshStaleReplay(handle);
+    } else {
+      await maintainReplayedEntry({
+        options,
+        handle,
+        cacheKey,
+        effectiveAuth,
+      });
     }
-
-    await maintainReplayedEntry({
-      options,
-      snapshot,
-      handle,
-      cacheKey,
-      effectiveAuth,
-    });
 
     return handle;
   } catch (err) {

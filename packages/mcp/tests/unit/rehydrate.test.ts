@@ -534,18 +534,21 @@ describe('replay preserves snapshot age', () => {
    *    (DEV-766).
    */
   it('scrubs a legacy sessionId from the stored entry on replay', async () => {
+    const snap = {
+      ...snapshotWithHeaders(),
+      sessionId: 'legacy-bearer-equivalent',
+    };
     const writes: unknown[] = [];
     const store = {
-      get: () => Promise.resolve(null),
+      // The credential-bearing legacy entry lives in THIS store — the scrub
+      // reads back before writing, so it only ever rewrites bytes the store
+      // already holds.
+      get: () => Promise.resolve(snap),
       set: (_key: string, value: unknown) => {
         writes.push(value);
         return Promise.resolve();
       },
       delete: () => Promise.resolve(),
-    };
-    const snap = {
-      ...snapshotWithHeaders(),
-      sessionId: 'legacy-bearer-equivalent',
     };
 
     await rehydrateMCPTools({
@@ -563,6 +566,88 @@ describe('replay preserves snapshot age', () => {
     // re-serialize under unset cacheCredentials would have dropped.
     expect(written['auth']).toEqual(snap.auth);
     expect(written['cachedAt']).toBe(snap.cachedAt);
+  });
+
+  /**
+   * The scrub must not introduce credentials into a store that never held them.
+   *
+   * A direct rehydrate may load its snapshot from a file or a different store;
+   * writing that snapshot's auth block into this store — even sessionId-scrubbed
+   * — would persist credentials without the `cacheCredentials` opt-in. The
+   * read-back gate means an empty (or sessionId-free) store entry produces no
+   * write at all.
+   */
+  /**
+   * A stale refresh must not be clobbered by the maintenance scrub.
+   *
+   * On the over-age + `reconnectOnExpiry: false` path, `refresh()` re-lists and
+   * writes the fresh entry (serialize omits `sessionId`, carries current
+   * tokens). Running the scrub after that would overwrite the just-refreshed
+   * entry with the caller's older input snapshot — the store would go straight
+   * back to being out of date, and every subsequent load would pay the re-list
+   * again.
+   */
+  it('does not clobber a stale-refresh write with the older snapshot', async () => {
+    const snap = {
+      ...snapshotWithHeaders(),
+      sessionId: 'legacy-bearer-equivalent',
+    };
+    snap.cachedAt = Date.now() - 120_000;
+    const writes: Record<string, unknown>[] = [];
+    const store = {
+      get: () => Promise.resolve(snap),
+      set: (_key: string, value: unknown) => {
+        writes.push(value as Record<string, unknown>);
+        return Promise.resolve();
+      },
+      delete: () => Promise.resolve(),
+    };
+
+    await rehydrateMCPTools({
+      snapshot: snap,
+      staleness: {
+        maxAgeMs: 60_000,
+      },
+      reconnectOnExpiry: false,
+      cache: {
+        store,
+        key: 'warm',
+      },
+    });
+
+    // Exactly one write: the refresh's. No scrub write behind it re-persisting
+    // the stale tool set or the old cachedAt.
+    expect(writes).toHaveLength(1);
+    const written = writes[0] as Record<string, unknown>;
+    expect(Object.hasOwn(written, 'sessionId')).toBe(false);
+    expect(written['cachedAt']).not.toBe(snap.cachedAt);
+  });
+
+  it('does not write when the store itself holds no legacy sessionId', async () => {
+    const writes: unknown[] = [];
+    const store = {
+      get: () => Promise.resolve(null),
+      set: (_key: string, value: unknown) => {
+        writes.push(value);
+        return Promise.resolve();
+      },
+      delete: () => Promise.resolve(),
+    };
+    const snap = {
+      ...snapshotWithHeaders(),
+      // The caller's input snapshot carries one — but the store does not.
+      sessionId: 'from-somewhere-else',
+    };
+
+    await rehydrateMCPTools({
+      snapshot: snap,
+      cache: {
+        store,
+        key: 'warm',
+      },
+    });
+
+    expect(writes).toHaveLength(0);
   });
 
   it('skips the write-back entirely on a replay, but writes after refresh', async () => {
