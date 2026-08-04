@@ -194,7 +194,24 @@ export function defaultCheckResult(
       budget -= size;
       firstKept = i;
     }
-    const kept = entries.slice(firstKept);
+    let kept = entries.slice(firstKept);
+    // Never answer with NOTHING when progress exists: if even the newest
+    // entry alone exceeds the budget, return it truncated to the budget
+    // rather than an empty list (a smaller tail could not help, and the
+    // transcript view is capped by the same number).
+    const newest = entries[entries.length - 1];
+    if (kept.length === 0 && newest !== undefined) {
+      const body =
+        typeof newest.data === 'string'
+          ? newest.data
+          : (JSON.stringify(newest.data) ?? String(newest.data));
+      kept = [
+        {
+          ...newest,
+          data: `${body.slice(0, Math.max(0, options.maxTranscriptChars - 12))}…[truncated]`,
+        },
+      ];
+    }
     return {
       ...statusView,
       logs: kept,

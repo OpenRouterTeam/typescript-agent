@@ -4245,12 +4245,18 @@ export class ModelResult<
   }
 
   /**
-   * Broadcast every unharvested settlement as dropped (no delivery) and
-   * mirror the terminal status onto persisted `pendingAsyncTools`. Without
-   * the mirror, an entry persisted as `working` for a task that only ever
-   * settles in-memory (abortAll at drain exhaustion / run cancel) would
-   * pin a later cross-process resume to `awaiting_async_tools` forever —
-   * no other process can settle an in-memory background task.
+   * Broadcast every unharvested settlement as dropped (no in-run delivery),
+   * mirror the terminal status onto persisted `pendingAsyncTools`, and
+   * append a terminal `tool_task_result` envelope to persisted history.
+   *
+   * The status mirror prevents a stuck resume: an entry persisted as
+   * `working` for a task that only ever settles in-memory (abortAll at
+   * drain exhaustion / run cancel) would pin a later cross-process resume
+   * to `awaiting_async_tools` forever. The envelope keeps the pending
+   * placeholder's "the result will be delivered" promise honest for
+   * PERSISTED conversations: the run is over (no more model dispatch), but
+   * the terminal outcome rides along on the next `callModel({ state })`
+   * instead of vanishing.
    */
   private async dropSettledTasks(): Promise<void> {
     const registry = this.asyncToolRegistry;
@@ -4261,14 +4267,38 @@ export class ModelResult<
     for (const task of settled) {
       this.broadcastAsyncSettled(task, 'dropped');
     }
-    if (settled.length > 0 && this.stateAccessor && this.currentState?.pendingAsyncTools?.length) {
-      const terminalByCallId = new Map(
-        settled.map((t) => [
-          t.callId,
-          t.status === 'completed' || t.status === 'cancelled' ? t.status : ('failed' as const),
-        ]),
-      );
-      await this.saveStateSafely({
+    if (settled.length === 0 || !this.stateAccessor || !this.currentState) {
+      return;
+    }
+    const terminalByCallId = new Map(
+      settled.map((t) => [
+        t.callId,
+        t.status === 'completed' || t.status === 'cancelled' ? t.status : ('failed' as const),
+      ]),
+    );
+    const envelopes = settled.map((t) =>
+      JSON.stringify({
+        type: 'tool_task_result',
+        tool: t.name,
+        taskId: t.taskId,
+        callId: t.callId,
+        status: t.status,
+        ...(t.result !== undefined && {
+          result: t.result,
+        }),
+        ...(t.error !== undefined && {
+          error: t.error,
+        }),
+      }),
+    );
+    await this.saveStateSafely({
+      messages: appendToMessages(this.currentState.messages, [
+        {
+          role: 'user',
+          content: `${TASK_RESULT_BOUNDARY}\n${envelopes.join('\n')}`,
+        } as models.BaseInputsUnion,
+      ]),
+      ...(this.currentState.pendingAsyncTools?.length && {
         pendingAsyncTools: this.currentState.pendingAsyncTools.map((entry) => {
           const terminal = terminalByCallId.get(entry.callId);
           return terminal !== undefined
@@ -4278,8 +4308,8 @@ export class ModelResult<
               }
             : entry;
         }),
-      });
-    }
+      }),
+    });
   }
 
   /**
