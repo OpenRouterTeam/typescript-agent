@@ -100,7 +100,7 @@
 <header>
   <h1>OpenUI Playground</h1>
   <span class="dialect" id="dialect"></span>
-  <span class="dialect" style="margin-left:auto" id="status"></span>
+  <span class="dialect" style="margin-left:auto" id="status" role="status" aria-live="polite"></span>
 </header>
 <main>
   <div class="col">
@@ -130,7 +130,7 @@
     <h2 class="pane">Rendered surface</h2>
     <div id="surface"><div class="placeholder">Run a prompt to render generated UI here.</div></div>
     <h2 class="pane">Diagnostics</h2>
-    <div id="diagnostics"><span style="color:var(--muted)">—</span></div>
+    <div id="diagnostics" aria-live="polite"><span style="color:var(--muted)">—</span></div>
   </div>
 
   <div class="col">

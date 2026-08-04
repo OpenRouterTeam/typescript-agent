@@ -2582,6 +2582,10 @@ export class ModelResult<
     const settledResults = await Promise.allSettled(toolCallPromises);
     const toolResults: models.FunctionCallOutputItem[] = [];
     const pausedCalls: ParsedToolCall<Tool>[] = [];
+    // Render-only work (toUiOutput) collected during aggregation and awaited
+    // as one batch below, so user-supplied fragment builders don't serially
+    // delay the follow-up model turn.
+    const uiFragmentPromises: Promise<void>[] = [];
 
     for (let i = 0; i < settledResults.length; i++) {
       const settled = settledResults[i];
@@ -2673,8 +2677,12 @@ export class ModelResult<
         timestamp: Date.now(),
       } satisfies ToolCallOutputEvent);
 
-      await this.broadcastUiFragment(value);
+      uiFragmentPromises.push(this.broadcastUiFragment(value));
     }
+
+    // broadcastUiFragment never rejects (errors degrade to a console.warn),
+    // so a plain all() is safe here.
+    await Promise.all(uiFragmentPromises);
 
     return {
       toolResults,
@@ -2685,7 +2693,7 @@ export class ModelResult<
   /**
    * Compute and broadcast a tool-authored OpenUI fragment for a successful
    * execution. Render-only: the fragment never reaches the model, so a
-   * throwing `toUIOutput` degrades to "no fragment" instead of failing the
+   * throwing `toUiOutput` degrades to "no fragment" instead of failing the
    * round — the model-facing output has already been pushed.
    */
   private async broadcastUiFragment(value: {
@@ -2699,7 +2707,7 @@ export class ModelResult<
     if (
       value.result.error ||
       !isAutoResolvableTool(value.tool) ||
-      !value.tool.function.toUIOutput
+      !value.tool.function.toUiOutput
     ) {
       return;
     }
@@ -2708,7 +2716,7 @@ export class ModelResult<
       return;
     }
     try {
-      const fragment = await value.tool.function.toUIOutput({
+      const fragment = await value.tool.function.toUiOutput({
         output: value.result.result,
         input: rawArgs,
       });
@@ -2725,8 +2733,14 @@ export class ModelResult<
         },
         timestamp: Date.now(),
       } satisfies ToolUiFragmentEvent);
-    } catch {
-      // Fragment construction failed — drop it; rendering is best-effort.
+    } catch (error) {
+      // Fragment construction failed — drop it; rendering is best-effort. But
+      // surface the cause, or a throwing toUiOutput is undebuggable ("no
+      // fragment ever arrives", with nothing in the console).
+      console.warn(
+        `toUiOutput for tool "${value.toolCall.name}" (call ${value.toolCall.id}) threw; dropping UI fragment:`,
+        error,
+      );
     }
   }
 
@@ -4648,7 +4662,7 @@ export class ModelResult<
    * Stream OpenUI events from all turns: completed OpenUI Lang statements
    * authored by the model (`response.openui.*` wire events from the `openui`
    * plugin) and tool-authored fragments (`tool.ui_fragment` events produced
-   * by tools declaring `toUIOutput`).
+   * by tools declaring `toUiOutput`).
    *
    * Wire events not yet in the SDK's stream-event union arrive through its
    * forward-compat catch-all; translation reads the raw payload, so this

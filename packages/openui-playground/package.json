@@ -7,7 +7,6 @@
   "scripts": {
     "lint": "biome check src tests public",
     "lint:fix": "biome check --write src tests public",
-    "build": "tsc",
     "typecheck": "tsc --noEmit",
     "test": "vitest --run",
     "dev": "tsx watch src/server.ts",

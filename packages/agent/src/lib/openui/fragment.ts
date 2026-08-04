@@ -16,6 +16,21 @@ import { componentProps } from './library.js';
 
 const FRAGMENT_EXPR: unique symbol = Symbol.for('openrouter.openui.fragment-expr');
 
+/*
+ * Ref/state/builtin names are emitted verbatim into OpenUI Lang source (every
+ * other value channel is quoted/JSON-escaped by the serializer), so a name
+ * derived from model-controlled input could otherwise inject arbitrary
+ * expressions into what the client treats as trusted tool-authored UI.
+ */
+const IDENT_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
+
+function assertIdent(kind: string, name: string): string {
+  if (!IDENT_RE.test(name)) {
+    throw new Error(`${kind} name ${JSON.stringify(name)} must match ${IDENT_RE.source}`);
+  }
+  return name;
+}
+
 /** A composable fragment node: a {@link UiFragment} that also nests as a child argument. */
 export interface FragmentNode extends UiFragment {
   [FRAGMENT_EXPR]: UiExpr;
@@ -71,7 +86,7 @@ function makeNode(dialect: string, expr: UiExpr): FragmentNode {
 export function uiRef(name: string, dialect?: string): FragmentNode {
   return makeNode(dialect ?? OPENUI_LANG_DIALECT, {
     kind: 'ref',
-    name,
+    name: assertIdent('uiRef', name),
   });
 }
 
@@ -79,7 +94,7 @@ export function uiRef(name: string, dialect?: string): FragmentNode {
 export function uiState(name: string, dialect?: string): FragmentNode {
   return makeNode(dialect ?? OPENUI_LANG_DIALECT, {
     kind: 'state-ref',
-    name,
+    name: assertIdent('uiState', name),
   });
 }
 
@@ -87,7 +102,7 @@ export function uiState(name: string, dialect?: string): FragmentNode {
 export function uiBuiltin(fn: string, ...args: FragmentArg[]): FragmentNode {
   return makeNode(OPENUI_LANG_DIALECT, {
     kind: 'call',
-    fn,
+    fn: assertIdent('uiBuiltin', fn),
     builtin: true,
     args: args.map(toExpr),
   });

@@ -15,7 +15,7 @@ import type {
   ToolLoopKey,
   ToolWithExecute,
   ToolWithGenerator,
-  ToUIOutputFunction,
+  ToUiOutputFunction,
 } from './tool-types.js';
 import { isClientTool, SHARED_CONTEXT_KEY, ToolType } from './tool-types.js';
 
@@ -50,7 +50,7 @@ type RegularToolConfigWithOutput<
   /** Convert tool execution output to model-facing output */
   toModelOutput?: ToModelOutputFunction<zodInfer<TInput>, zodInfer<TOutput>>;
   /** Convert tool execution output to a renderable OpenUI fragment */
-  toUIOutput?: ToUIOutputFunction<zodInfer<TInput>, zodInfer<TOutput>>;
+  toUiOutput?: ToUiOutputFunction<zodInfer<TInput>, zodInfer<TOutput>>;
 };
 
 /**
@@ -80,7 +80,7 @@ type RegularToolConfigWithoutOutput<
   /** Convert tool execution output to model-facing output */
   toModelOutput?: ToModelOutputFunction<zodInfer<TInput>, TReturn>;
   /** Convert tool execution output to a renderable OpenUI fragment */
-  toUIOutput?: ToUIOutputFunction<zodInfer<TInput>, TReturn>;
+  toUiOutput?: ToUiOutputFunction<zodInfer<TInput>, TReturn>;
 };
 
 /**
@@ -111,7 +111,7 @@ type GeneratorToolConfig<
   /** Convert tool execution output to model-facing output */
   toModelOutput?: ToModelOutputFunction<zodInfer<TInput>, zodInfer<TOutput>>;
   /** Convert tool execution output to a renderable OpenUI fragment */
-  toUIOutput?: ToUIOutputFunction<zodInfer<TInput>, zodInfer<TOutput>>;
+  toUiOutput?: ToUiOutputFunction<zodInfer<TInput>, zodInfer<TOutput>>;
 };
 
 /**
@@ -179,7 +179,7 @@ type HITLToolConfig<
   /** Convert tool execution output to model-facing output */
   toModelOutput?: ToModelOutputFunction<zodInfer<TInput>, zodInfer<TOutput>>;
   /** Convert tool execution output to a renderable OpenUI fragment */
-  toUIOutput?: ToUIOutputFunction<zodInfer<TInput>, zodInfer<TOutput>>;
+  toUiOutput?: ToUiOutputFunction<zodInfer<TInput>, zodInfer<TOutput>>;
 };
 
 /**
@@ -213,7 +213,7 @@ type ToolConfigWithSharedContext<
   /** Convert tool execution output to model-facing output */
   toModelOutput?: ToModelOutputFunction<Record<string, unknown>, unknown>;
   /** Convert tool execution output to a renderable OpenUI fragment */
-  toUIOutput?: ToUIOutputFunction<Record<string, unknown>, unknown>;
+  toUiOutput?: ToUiOutputFunction<Record<string, unknown>, unknown>;
 };
 
 //#endregion
@@ -390,8 +390,8 @@ export function tool(
       fn.toModelOutput = config.toModelOutput;
     }
 
-    if (config.toUIOutput !== undefined) {
-      fn.toUIOutput = config.toUIOutput;
+    if (config.toUiOutput !== undefined) {
+      fn.toUiOutput = config.toUiOutput;
     }
 
     return {
@@ -479,8 +479,8 @@ export function tool(
       fn.toModelOutput = config.toModelOutput;
     }
 
-    if ('toUIOutput' in config && config.toUIOutput !== undefined) {
-      fn.toUIOutput = config.toUIOutput;
+    if ('toUiOutput' in config && config.toUiOutput !== undefined) {
+      fn.toUiOutput = config.toUiOutput;
     }
 
     return {
@@ -516,9 +516,9 @@ export function tool(
       config.toModelOutput !== undefined && {
         toModelOutput: config.toModelOutput,
       }),
-    ...('toUIOutput' in config &&
-      config.toUIOutput !== undefined && {
-        toUIOutput: config.toUIOutput,
+    ...('toUiOutput' in config &&
+      config.toUiOutput !== undefined && {
+        toUiOutput: config.toUiOutput,
       }),
   };
 

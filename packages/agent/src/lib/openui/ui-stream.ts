@@ -4,7 +4,7 @@
  *
  * Two sources feed the UI stream:
  * - `tool.ui_fragment` — SDK-synthetic events broadcast when a local tool's
- *   `toUIOutput` produces a fragment.
+ *   `toUiOutput` produces a fragment.
  * - `response.openui.*` — API wire events emitted by the `openui` plugin.
  *   Until `@openrouter/sdk` regenerates with these union members (DEV-772),
  *   they arrive through the SDK's forward-compat catch-all as
@@ -23,7 +23,7 @@ export interface UiStatementEvent {
   source: string;
 }
 
-/** A tool-authored fragment (local `toUIOutput` or API `response.openui.fragment`). */
+/** A tool-authored fragment (local `toUiOutput` or API `response.openui.fragment`). */
 export interface UiFragmentEvent {
   type: 'fragment';
   /** The tool call this fragment belongs to, when tool-authored. */

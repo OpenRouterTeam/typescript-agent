@@ -14,7 +14,7 @@
 import { readFile } from 'node:fs/promises';
 import type { ServerResponse } from 'node:http';
 import { createServer } from 'node:http';
-import { dirname, extname, join, normalize } from 'node:path';
+import { dirname, extname, join, normalize, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { OpenRouter } from '@openrouter/agent';
 import { demoLibrary } from './demo-library.js';
@@ -92,7 +92,9 @@ function parseGenerateRequest(body: unknown): GenerateRequest | null {
 async function serveStatic(res: ServerResponse, urlPath: string): Promise<void> {
   const rel = urlPath === '/' ? 'index.html' : urlPath.slice(1);
   const file = normalize(join(PUBLIC_DIR, rel));
-  if (!file.startsWith(PUBLIC_DIR)) {
+  // Trailing separator so `public.bak`/`public-anything` siblings can't
+  // satisfy a bare prefix check.
+  if (!file.startsWith(PUBLIC_DIR + sep)) {
     sendJson(res, 404, {
       error: 'not found',
     });
@@ -187,6 +189,8 @@ const server = createServer((req, res) => {
   });
 });
 
-server.listen(PORT, () => {
+// Local-only tool backed by the developer's API key — never expose it to the
+// LAN by listening on all interfaces.
+server.listen(PORT, '127.0.0.1', () => {
   console.log(`OpenUI playground → http://localhost:${PORT} (default model: ${DEFAULT_MODEL})`);
 });

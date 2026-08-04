@@ -286,7 +286,7 @@ export type {
   ToolUiFragmentEvent,
   ToolWithExecute,
   ToolWithGenerator,
-  ToUIOutputFunction,
+  ToUiOutputFunction,
   TurnContext,
   TurnEndEvent,
   TurnStartEvent,

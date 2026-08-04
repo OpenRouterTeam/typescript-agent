@@ -228,6 +228,12 @@ function renderControl(call, val) {
       input.type = 'text';
       input.className = 'ui-input';
       input.placeholder = String(val('placeholder', ''));
+      // Placeholder text is not an accessible name — surface `name` to AT.
+      const name = val('name', '');
+      if (name) {
+        input.name = String(name);
+        input.setAttribute('aria-label', String(name));
+      }
       const v = val('value', '');
       if (v) {
         input.value = String(v);
@@ -237,6 +243,11 @@ function renderControl(call, val) {
     case 'Select': {
       const select = document.createElement('select');
       select.className = 'ui-select';
+      const name = val('name', '');
+      if (name) {
+        select.name = String(name);
+        select.setAttribute('aria-label', String(name));
+      }
       for (const opt of val('options', [])) {
         const o = document.createElement('option');
         o.textContent = String(opt);
@@ -260,10 +271,18 @@ function renderControl(call, val) {
         el('div'),
       ]);
       bar.firstChild.style.width = `${value}%`;
+      // The fill width is invisible to AT — mirror the value into ARIA.
+      bar.setAttribute('role', 'progressbar');
+      bar.setAttribute('aria-valuenow', String(value));
+      bar.setAttribute('aria-valuemin', '0');
+      bar.setAttribute('aria-valuemax', '100');
       const label = val('label', null);
+      if (label) {
+        bar.setAttribute('aria-label', String(label));
+      }
       return label
         ? el('div', null, [
-            textNode(String(label), 'ui-text muted'),
+            textNode(`${String(label)} (${value}%)`, 'ui-text muted'),
             bar,
           ])
         : bar;
@@ -445,7 +464,7 @@ function renderHistory() {
   const rows = history
     .map(
       (h) =>
-        `<tr><td>${h.model} · ${h.mode}</td><td>${h.ttfbMs ?? '—'}</td><td>${h.firstStatementMs ?? '—'}</td><td>${h.totalMs}</td><td>${h.statements}</td><td>${h.diagnostics}</td><td>${h.outputTokens ?? '—'}</td><td>${h.cost !== null ? `$${h.cost.toFixed(5)}` : '—'}</td></tr>`,
+        `<tr><td>${escapeHtml(`${h.model} · ${h.mode}`)}</td><td>${h.ttfbMs ?? '—'}</td><td>${h.firstStatementMs ?? '—'}</td><td>${h.totalMs}</td><td>${h.statements}</td><td>${h.diagnostics}</td><td>${h.outputTokens ?? '—'}</td><td>${h.cost !== null ? `$${h.cost.toFixed(5)}` : '—'}</td></tr>`,
     )
     .join('');
   $('history').innerHTML =
@@ -478,9 +497,17 @@ async function boot() {
   }
 }
 
+/*
+ * Whether the current run streamed an `error` frame. The server always ends
+ * the SSE stream normally after an error frame, so `run()` must not overwrite
+ * the error status with a green "done" when the reader drains.
+ */
+let streamErrored = false;
+
 async function run() {
   const runBtn = $('run');
   runBtn.disabled = true;
+  streamErrored = false;
   resetDoc();
   $('lang').replaceChildren();
   $('events').textContent = '';
@@ -537,7 +564,9 @@ async function run() {
         handleEvent(JSON.parse(payload));
       }
     }
-    setStatus('done');
+    if (!streamErrored) {
+      setStatus('done');
+    }
   } catch (error) {
     setStatus(String(error.message ?? error), true);
   } finally {
@@ -570,7 +599,10 @@ function handleEvent(event) {
     case 'document': {
       if (event.diagnostics.length) {
         $('diagnostics').innerHTML = event.diagnostics
-          .map((d) => `<div class="diag">L${d.line}: ${d.message} — ${escapeHtml(d.source)}</div>`)
+          .map(
+            (d) =>
+              `<div class="diag">L${d.line}: ${escapeHtml(d.message)} — ${escapeHtml(d.source)}</div>`,
+          )
           .join('');
       } else {
         $('diagnostics').innerHTML =
@@ -584,6 +616,7 @@ function handleEvent(event) {
       renderHistory();
       break;
     case 'error':
+      streamErrored = true;
       setStatus(event.message, true);
       break;
   }

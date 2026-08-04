@@ -2,7 +2,7 @@
 '@openrouter/agent': minor
 ---
 
-OpenUI bindings: a component-library model (`defineComponent`, `createLibrary`, `componentProps`), a typed fragment builder (`fragment`, `uiRef`, `uiState`, `uiBuiltin`), the `openui` plugin helper, `serializeExpr`/`OPENUI_LANG_DIALECT` for emitting OpenUI Lang, a `toUIOutput` tool option that renders a tool's result as UI, and `ModelResult.getUiStream()` for consuming fragments as they arrive.
+OpenUI bindings: a component-library model (`defineComponent`, `createLibrary`, `componentProps`), a typed fragment builder (`fragment`, `uiRef`, `uiState`, `uiBuiltin`), the `openui` plugin helper, `serializeExpr`/`OPENUI_LANG_DIALECT` for emitting OpenUI Lang, a `toUiOutput` tool option that renders a tool's result as UI, and `ModelResult.getUiStream()` for consuming fragments as they arrive.
 
 A tool declares how its output renders, and the caller streams the fragments:
 
@@ -48,7 +48,7 @@ const weather = tool({
     summary: `Clear in ${city}`,
   }),
   // Renders the tool's result instead of leaving the model to describe it.
-  toUIOutput: ({ input, output }) =>
+  toUiOutput: ({ input, output }) =>
     ui.Card(input.city, [
       ui.Text(output.summary),
     ]),

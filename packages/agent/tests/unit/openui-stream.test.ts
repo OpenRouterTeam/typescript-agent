@@ -1,5 +1,5 @@
 /**
- * Tests for the OpenUI streaming half: toUIOutput plumbing through tool(),
+ * Tests for the OpenUI streaming half: toUiOutput plumbing through tool(),
  * the tool.ui_fragment broadcast, translateUiEvent (including the SDK's
  * forward-compat Unknown encoding of response.openui.* wire events), and
  * getUiStream()'s no-tools fast path.
@@ -32,7 +32,7 @@ const library = createLibrary([
 ]);
 const ui = fragment(library);
 
-describe('tool() carries toUIOutput', () => {
+describe('tool() carries toUiOutput', () => {
   it('regular tool', () => {
     const t = tool({
       name: 'usage',
@@ -42,9 +42,9 @@ describe('tool() carries toUIOutput', () => {
       execute: async () => ({
         total: 12,
       }),
-      toUIOutput: ({ output }) => ui.Card(`$${output.total}`),
+      toUiOutput: ({ output }) => ui.Card(`$${output.total}`),
     });
-    expect(t.function.toUIOutput).toBeTypeOf('function');
+    expect(t.function.toUiOutput).toBeTypeOf('function');
   });
 
   it('generator tool', () => {
@@ -62,9 +62,9 @@ describe('tool() carries toUIOutput', () => {
           done: true,
         };
       },
-      toUIOutput: () => ui.Text('done'),
+      toUiOutput: () => ui.Text('done'),
     });
-    expect(t.function.toUIOutput).toBeTypeOf('function');
+    expect(t.function.toUiOutput).toBeTypeOf('function');
   });
 
   it('HITL tool', () => {
@@ -75,9 +75,9 @@ describe('tool() carries toUIOutput', () => {
         ok: z.boolean(),
       }),
       onToolCalled: () => null,
-      toUIOutput: () => ui.Text('pending'),
+      toUiOutput: () => ui.Text('pending'),
     });
-    expect(t.function.toUIOutput).toBeTypeOf('function');
+    expect(t.function.toUiOutput).toBeTypeOf('function');
   });
 
   it('omitted stays absent', () => {
@@ -86,7 +86,7 @@ describe('tool() carries toUIOutput', () => {
       inputSchema: z.object({}),
       execute: async () => 'ok',
     });
-    expect('toUIOutput' in t.function && t.function.toUIOutput !== undefined).toBe(false);
+    expect('toUiOutput' in t.function && t.function.toUiOutput !== undefined).toBe(false);
   });
 });
 
@@ -394,7 +394,7 @@ describe('broadcastUiFragment', () => {
       execute: async () => ({
         total: 12,
       }),
-      toUIOutput: ({ output, input }) => ui.Card(`$${output.total} over ${input.days}d`),
+      toUiOutput: ({ output, input }) => ui.Card(`$${output.total} over ${input.days}d`),
     });
 
     await internal.broadcastUiFragment(
@@ -419,7 +419,7 @@ describe('broadcastUiFragment', () => {
     });
   });
 
-  it('skips tools without toUIOutput and errored executions', async () => {
+  it('skips tools without toUiOutput and errored executions', async () => {
     const { internal, pushed } = makeHarness();
     const plain = tool({
       name: 'plain',
@@ -440,7 +440,7 @@ describe('broadcastUiFragment', () => {
         days: z.number(),
       }),
       execute: async () => 'ok',
-      toUIOutput: () => ui.Text('never'),
+      toUiOutput: () => ui.Text('never'),
     });
     await internal.broadcastUiFragment(
       makeCall(withUi, {
@@ -452,7 +452,7 @@ describe('broadcastUiFragment', () => {
     expect(pushed).toEqual([]);
   });
 
-  it('drops the fragment when toUIOutput returns null or throws', async () => {
+  it('drops the fragment when toUiOutput returns null or throws', async () => {
     const { internal, pushed } = makeHarness();
     const nullTool = tool({
       name: 'null_ui',
@@ -460,7 +460,7 @@ describe('broadcastUiFragment', () => {
         days: z.number(),
       }),
       execute: async () => 'ok',
-      toUIOutput: () => null,
+      toUiOutput: () => null,
     });
     await internal.broadcastUiFragment(
       makeCall(nullTool, {
@@ -474,7 +474,7 @@ describe('broadcastUiFragment', () => {
         days: z.number(),
       }),
       execute: async () => 'ok',
-      toUIOutput: () => {
+      toUiOutput: () => {
         throw new Error('render bug');
       },
     });

@@ -275,7 +275,7 @@ export type ToModelOutputFunction<TInput, TOutput> = {
  * @template TOutput - The tool's output type
  */
 // Object-with-method form for bivariant param checking — see ToModelOutputFunction.
-export type ToUIOutputFunction<TInput, TOutput> = {
+export type ToUiOutputFunction<TInput, TOutput> = {
   bivarianceHack(params: {
     output: TOutput;
     input: TInput;
@@ -337,7 +337,7 @@ export interface ToolFunctionWithExecute<
   /** Convert tool execution output to model-facing output */
   toModelOutput?: ToModelOutputFunction<zodInfer<TInput>, zodInfer<TOutput>>;
   /** Convert tool execution output to a renderable OpenUI fragment */
-  toUIOutput?: ToUIOutputFunction<zodInfer<TInput>, zodInfer<TOutput>>;
+  toUiOutput?: ToUiOutputFunction<zodInfer<TInput>, zodInfer<TOutput>>;
 }
 
 /**
@@ -380,7 +380,7 @@ export interface ToolFunctionWithGenerator<
   /** Convert tool execution output to model-facing output */
   toModelOutput?: ToModelOutputFunction<zodInfer<TInput>, zodInfer<TOutput>>;
   /** Convert tool execution output to a renderable OpenUI fragment */
-  toUIOutput?: ToUIOutputFunction<zodInfer<TInput>, zodInfer<TOutput>>;
+  toUiOutput?: ToUiOutputFunction<zodInfer<TInput>, zodInfer<TOutput>>;
 }
 
 /**
@@ -431,7 +431,7 @@ export interface HITLToolFunction<
   ): Promise<zodInfer<TOutput>> | zodInfer<TOutput>;
   toModelOutput?: ToModelOutputFunction<zodInfer<TInput>, zodInfer<TOutput>>;
   /** Convert tool execution output to a renderable OpenUI fragment */
-  toUIOutput?: ToUIOutputFunction<zodInfer<TInput>, zodInfer<TOutput>>;
+  toUiOutput?: ToUiOutputFunction<zodInfer<TInput>, zodInfer<TOutput>>;
 }
 
 /**
@@ -990,7 +990,7 @@ export type ToolCallOutputEvent = {
 /**
  * Tool UI fragment event carrying a tool-authored OpenUI fragment.
  * Broadcast by executeToolRound after a successful execution when the tool
- * declares `toUIOutput`. Client-render only — never sent to the model.
+ * declares `toUiOutput`. Client-render only — never sent to the model.
  */
 export type ToolUiFragmentEvent = {
   type: 'tool.ui_fragment';

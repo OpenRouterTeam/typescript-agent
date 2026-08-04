@@ -407,8 +407,14 @@ class ExprParser {
     }
   }
 
+  // Sticky (`y`) regexes anchored via `lastIndex` — scanning must not slice
+  // the remaining source per token, or long statements parse in O(n²).
+  private static readonly NUMBER_RE = /-?\d+(\.\d+)?([eE][+-]?\d+)?/y;
+  private static readonly IDENT_RE = /[A-Za-z_][A-Za-z0-9_]*/y;
+
   private parseNumber(): number {
-    const match = /^-?\d+(\.\d+)?([eE][+-]?\d+)?/.exec(this.src.slice(this.pos));
+    ExprParser.NUMBER_RE.lastIndex = this.pos;
+    const match = ExprParser.NUMBER_RE.exec(this.src);
     if (!match) {
       throw new ParseFailure('invalid number');
     }
@@ -417,7 +423,8 @@ class ExprParser {
   }
 
   private parseIdent(): string {
-    const match = /^[A-Za-z_][A-Za-z0-9_]*/.exec(this.src.slice(this.pos));
+    ExprParser.IDENT_RE.lastIndex = this.pos;
+    const match = ExprParser.IDENT_RE.exec(this.src);
     if (!match) {
       throw new ParseFailure(`expected identifier at '${this.src.slice(this.pos, this.pos + 8)}'`);
     }
@@ -438,8 +445,14 @@ class ExprParser {
   }
 
   private skipWs(): void {
-    while (this.pos < this.src.length && /\s/.test(this.src[this.pos] ?? '')) {
-      this.pos += 1;
+    // charCode comparison instead of a per-character regex: space, tab, LF, CR.
+    for (;;) {
+      const c = this.src.charCodeAt(this.pos);
+      if (c === 32 || c === 9 || c === 10 || c === 13) {
+        this.pos += 1;
+      } else {
+        return;
+      }
     }
   }
 }
