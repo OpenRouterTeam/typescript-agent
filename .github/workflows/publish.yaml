@@ -66,7 +66,15 @@ jobs:
       (github.event_name == 'workflow_dispatch' &&
       inputs.mode == 'publish' && inputs.dry-run)
     steps:
+      # PAT for the same reason as the changesets step below: changesets/action
+      # pushes the changeset-release/main branch with plain `git push`, which
+      # uses the credentials checkout persisted. Under the default Actions
+      # GITHUB_TOKEN those pushes never trigger workflows, so updates to an
+      # already-open Version Packages PR would run no CI / perry/review and the
+      # release train could merge on stale checks.
       - uses: actions/checkout@v6
+        with:
+          token: ${{ secrets.GH_TOKEN }}
 
       - uses: pnpm/action-setup@v6
 
