@@ -18,6 +18,9 @@ let listToolsRejects = false;
 // fallback guard: rejected credentials must not trigger a third reconnect.
 let connectRejectsAuth = false;
 
+// When set, `connect` rejects with exactly this error (non-auth).
+let connectRejects: Error | undefined;
+
 // When true, the connection's `close()` throws synchronously rather than
 // returning a rejected promise — the case a bare `.catch()` cannot intercept.
 let closeThrowsSync = false;
@@ -35,6 +38,9 @@ vi.mock('../../src/mcp-connection.js', () => ({
           isFakeAuthFailure: true,
         }),
       );
+    }
+    if (connectRejects !== undefined) {
+      return Promise.reject(connectRejects);
     }
     const connection: MCPConnection = {
       // Minimal client stand-in: buildTools stores the reference but these tests
@@ -153,6 +159,7 @@ describe('rehydrateMCPTools', () => {
     closeCount = 0;
     listToolsRejects = false;
     connectRejectsAuth = false;
+    connectRejects = undefined;
     closeThrowsSync = false;
   });
 
@@ -227,6 +234,7 @@ describe('staleness on the direct rehydrate path', () => {
     closeCount = 0;
     listToolsRejects = false;
     connectRejectsAuth = false;
+    connectRejects = undefined;
     closeThrowsSync = false;
   });
 
@@ -437,6 +445,30 @@ describe('staleness on the direct rehydrate path', () => {
    * `redirectToAuthorization` and overwrites the saved PKCE verifier — so letting
    * the rehydrate fallback do the same one layer up would defeat both guards.
    */
+  /**
+   * An aborted caller gets no freshConnect fallback — the third reconnect
+   * layer, matching the SSE-fallback and legacy-retry guards. A cancelled
+   * setup must not dial the server again, and the caller should see their
+   * cancellation, not a fabricated connect failure.
+   */
+  it('does not fall back to freshConnect when the caller aborted', async () => {
+    const controller = new AbortController();
+    connectRejectsAuth = false;
+    // The replay's connect fails because the abort landed during it.
+    connectRejects = new Error('aborted mid-connect');
+    controller.abort();
+
+    await expect(
+      rehydrateMCPTools({
+        snapshot: snapshotWithHeaders(),
+        signal: controller.signal,
+      }),
+    ).rejects.toThrow(MCPCacheError);
+
+    // One connect only — the replay attempt. No fresh dial behind an abort.
+    expect(connectCalls).toHaveLength(1);
+  });
+
   it('does not fall back to freshConnect on an auth failure', async () => {
     connectRejectsAuth = true;
 
@@ -486,6 +518,7 @@ describe('replay preserves snapshot age', () => {
     closeCount = 0;
     listToolsRejects = false;
     connectRejectsAuth = false;
+    connectRejects = undefined;
     closeThrowsSync = false;
   });
 

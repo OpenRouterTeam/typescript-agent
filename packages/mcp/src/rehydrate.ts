@@ -479,7 +479,15 @@ export async function rehydrateMCPTools(
     // re-drive the OAuth flow — a third `redirectToAuthorization` behind the two
     // layers below that already guard against exactly this. Rejected credentials
     // are not something a fresh connection fixes.
-    if (reconnectOnExpiry && !isAuthFailure(err, effectiveAuth)) {
+    // An aborted caller gets no fallback either — the third reconnect layer,
+    // matching the guards on the SSE fallback and the legacy retry. Dialling a
+    // fresh connection after the caller cancelled would both waste the dial and
+    // bury the cancellation under a "failed to connect" it didn't cause.
+    if (
+      reconnectOnExpiry &&
+      options.signal?.aborted !== true &&
+      !isAuthFailure(err, effectiveAuth)
+    ) {
       return freshConnect(createOptions, url, cacheKey);
     }
     throw new MCPCacheError('Failed to rehydrate MCP connection from snapshot', {
