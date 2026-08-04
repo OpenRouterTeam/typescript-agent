@@ -4153,10 +4153,11 @@ export class ModelResult<
     // would forbid the model from ever answering in text, looping it through
     // tool calls until the step budget runs out (DEV-785). Relax it to `auto`
     // so the model can either call another tool or synthesize its answer.
-    this.resolvedRequest = this.applyForcedToolChoicePolicy({
+    this.resolvedRequest = {
       ...this.resolvedRequest,
       input: newInput,
-    });
+    };
+    this.resolvedRequest = this.applyForcedToolChoicePolicy(this.resolvedRequest);
 
     // Escalation recovery: one-turn overrides (model swap / forced advisor
     // consult) applied to THIS dispatch only — `resolvedRequest` above keeps
