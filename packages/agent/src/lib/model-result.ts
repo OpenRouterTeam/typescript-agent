@@ -2958,9 +2958,12 @@ export class ModelResult<
     // async tools are registered, while the handling stays tool-resident
     // (the owning tool's `check` config). Engine-intercepted: bypasses
     // gates, deadlines, and Pre/PostToolUse hooks (engine bookkeeping, not
-    // user work) and never reaches the doom-loop checkpoint.
+    // user work) and never reaches the doom-loop checkpoint. A
+    // PermissionRequest denial recorded for the call IS honored — cancel
+    // is destructive and steer reshapes a running task, so a policy layer
+    // that vetoed the call wins over the interception.
     if (toolCall.name === TASK_TOOL_NAME && this.taskToolActive()) {
-      return this.answerTaskToolCall(toolCall);
+      return this.consumeHookDenial(toolCall.id) ?? this.answerTaskToolCall(toolCall);
     }
 
     const tool = this.options.tools?.find(
