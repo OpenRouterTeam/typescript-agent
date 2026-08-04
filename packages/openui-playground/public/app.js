@@ -228,25 +228,27 @@ function renderControl(call, val) {
       input.type = 'text';
       input.className = 'ui-input';
       input.placeholder = String(val('placeholder', ''));
-      // Placeholder text is not an accessible name — surface `name` to AT.
-      const name = val('name', '');
-      if (name) {
-        input.name = String(name);
-        input.setAttribute('aria-label', String(name));
-      }
       const v = val('value', '');
       if (v) {
         input.value = String(v);
+      }
+      // The signature's `name` is the only human label these controls carry;
+      // without it a screen reader announces an unlabelled text field. Fall
+      // back to the placeholder when a name wasn't supplied.
+      const inputLabel = String(val('name', '') || val('placeholder', ''));
+      if (inputLabel) {
+        input.setAttribute('aria-label', inputLabel);
+        input.name = String(val('name', ''));
       }
       return input;
     }
     case 'Select': {
       const select = document.createElement('select');
       select.className = 'ui-select';
-      const name = val('name', '');
-      if (name) {
-        select.name = String(name);
-        select.setAttribute('aria-label', String(name));
+      const selectLabel = String(val('name', ''));
+      if (selectLabel) {
+        select.setAttribute('aria-label', selectLabel);
+        select.name = selectLabel;
       }
       for (const opt of val('options', [])) {
         const o = document.createElement('option');
@@ -599,9 +601,13 @@ function handleEvent(event) {
     case 'document': {
       if (event.diagnostics.length) {
         $('diagnostics').innerHTML = event.diagnostics
+          // Every interpolated field is model-controlled: `source` is the
+          // offending line and `message` carries parser text built from it
+          // (ParseFailure.message), or arrives verbatim off the wire in native
+          // mode. Escaping only `source` left an injection through `message`.
           .map(
             (d) =>
-              `<div class="diag">L${d.line}: ${escapeHtml(d.message)} — ${escapeHtml(d.source)}</div>`,
+              `<div class="diag">L${escapeHtml(String(d.line))}: ${escapeHtml(d.message)} — ${escapeHtml(d.source)}</div>`,
           )
           .join('');
       } else {
