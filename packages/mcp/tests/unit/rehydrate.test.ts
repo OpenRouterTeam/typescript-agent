@@ -522,6 +522,49 @@ describe('replay preserves snapshot age', () => {
    * options (DEV-766). `refresh()` still writes: it re-lists, so it has
    * something new to persist.
    */
+  /**
+   * Two exceptions to the replay-skips-write rule, both maintenance rather
+   * than restamping:
+   *
+   * 1. A legacy `sessionId` in the stored entry is scrubbed — one write of the
+   *    same snapshot minus the field, so the bearer-equivalent value stops
+   *    sitting in the external store indefinitely on the warm path.
+   * 2. The scrub copies rather than re-serializes, so it cannot strip
+   *    credentials the way a re-serialize under this call's options would
+   *    (DEV-766).
+   */
+  it('scrubs a legacy sessionId from the stored entry on replay', async () => {
+    const writes: unknown[] = [];
+    const store = {
+      get: () => Promise.resolve(null),
+      set: (_key: string, value: unknown) => {
+        writes.push(value);
+        return Promise.resolve();
+      },
+      delete: () => Promise.resolve(),
+    };
+    const snap = {
+      ...snapshotWithHeaders(),
+      sessionId: 'legacy-bearer-equivalent',
+    };
+
+    await rehydrateMCPTools({
+      snapshot: snap,
+      cache: {
+        store,
+        key: 'warm',
+      },
+    });
+
+    expect(writes).toHaveLength(1);
+    const written = writes[0] as Record<string, unknown>;
+    expect(Object.hasOwn(written, 'sessionId')).toBe(false);
+    // The scrub preserved everything else — including the credential block a
+    // re-serialize under unset cacheCredentials would have dropped.
+    expect(written['auth']).toEqual(snap.auth);
+    expect(written['cachedAt']).toBe(snap.cachedAt);
+  });
+
   it('skips the write-back entirely on a replay, but writes after refresh', async () => {
     const sets: string[] = [];
     const countingStore = {

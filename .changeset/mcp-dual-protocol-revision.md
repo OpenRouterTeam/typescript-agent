@@ -54,7 +54,11 @@ attempt, the probe, and the implicit legacy retry — so a caller with its own d
 bound the worst case (~3 minutes against a black-holing gateway on the default path). An
 aborted connect is never retried. Snapshot replays also no longer perform the construction
 write-back: the snapshot it would write is the one just read, so it was a store round-trip
-per rehydrate buying nothing.
+per rehydrate buying nothing. Two maintenance writes survive, both best-effort: an OAuth
+provider under `cacheCredentials: true` re-persists its current tokens (so the stored entry
+tracks rotation instead of expiring into a forced fresh connect), and an entry carrying a
+legacy `sessionId` from an earlier version is rewritten once without it, scrubbing the
+bearer-equivalent value from the store.
 
 `MCPConnectionError` now carries every underlying failure in `errors` (matching
 `AggregateError`), flat and in attempt order across both negotiation passes, so a caller sees

@@ -1,4 +1,5 @@
 import type { MCPAuth } from './auth/auth-types.js';
+import { isOAuthAuth } from './auth/auth-types.js';
 import type { MCPCacheStore } from './cache/cache-store.js';
 import { defaultCacheKey } from './cache/cache-store.js';
 import type { SerializedMCPServer } from './cache/cache-types.js';
@@ -290,6 +291,60 @@ async function refreshStaleReplay(handle: MCPToolsHandle): Promise<void> {
 }
 
 /**
+ * The two cases where a successful replay still writes to the cache store.
+ *
+ * The replay write-back is normally skipped as a no-op — the snapshot it would
+ * persist is the one just read. Two exceptions where the write genuinely does
+ * something, both best-effort:
+ *
+ * 1. **OAuth token rotation.** With `cacheCredentials: true` and an OAuth
+ *    provider, the old per-hit write re-serialized the provider's *current*
+ *    tokens; without it the stored entry keeps cold-connect-time tokens, and
+ *    once those pass `expiresAt` every rehydrate takes the fresh-connect
+ *    detour even though the provider holds a valid refreshed token.
+ * 2. **Legacy `sessionId` scrub.** Entries written by earlier versions can
+ *    carry a bearer-equivalent `Mcp-Session-Id` under `cacheCredentials`; with
+ *    the warm path never rewriting, that credential-grade value would sit in
+ *    the external store indefinitely. One write — the entry copied without the
+ *    field — removes it. (The serialize in case 1 also omits `sessionId`, so
+ *    the two compose.)
+ *
+ * The scrub deliberately copies the stored snapshot minus `sessionId` rather
+ * than re-serializing from live state: a re-serialize under this call's options
+ * would strip a credential-bearing entry when `cacheCredentials` was not
+ * repeated — the DEV-766 hazard this path just stopped being exposed to.
+ */
+async function maintainReplayedEntry(args: {
+  options: RehydrateMCPToolsOptions;
+  snapshot: SerializedMCPServer;
+  handle: MCPToolsHandle;
+  cacheKey: string;
+  effectiveAuth: MCPAuth | undefined;
+}): Promise<void> {
+  const { options, snapshot, handle, cacheKey, effectiveAuth } = args;
+  const store = options.cache?.store;
+  if (store === undefined) {
+    return;
+  }
+  try {
+    if (isOAuthAuth(effectiveAuth) && options.cacheCredentials === true) {
+      await store.set(cacheKey, await handle.serialize());
+      return;
+    }
+    if (snapshot.sessionId !== undefined) {
+      const scrubbed = {
+        ...snapshot,
+      };
+      delete scrubbed.sessionId;
+      await store.set(cacheKey, scrubbed);
+    }
+  } catch {
+    // Best-effort, like every other store write: a cache outage never fails a
+    // working replay.
+  }
+}
+
+/**
  * Rebuild an {@link MCPToolsHandle} from a cached snapshot. On the happy path we
  * reconnect the transport and rebuild tools directly from the snapshot —
  * skipping `listTools()`. If cached tokens are expired, credentials are missing,
@@ -363,6 +418,14 @@ export async function rehydrateMCPTools(
     if (staleSnapshot) {
       await refreshStaleReplay(handle);
     }
+
+    await maintainReplayedEntry({
+      options,
+      snapshot,
+      handle,
+      cacheKey,
+      effectiveAuth,
+    });
 
     return handle;
   } catch (err) {
