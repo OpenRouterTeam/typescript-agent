@@ -92,7 +92,12 @@ export interface CreateMCPToolsOptions {
     store: MCPCacheStore;
     key?: string;
   };
-  /** Persist resolved tokens/session into the snapshot. Off by default. */
+  /**
+   * Persist resolved credentials (bearer/header values, or the OAuth provider's
+   * current tokens) into the snapshot. Off by default. Session ids are never
+   * serialized — protocol sessions are removed in revision 2026-07-28
+   * (SEP-2567), and a rehydrate always performs a fresh handshake.
+   */
   cacheCredentials?: boolean;
   /** Re-list tools when a cached snapshot is older than this. */
   staleness?: {

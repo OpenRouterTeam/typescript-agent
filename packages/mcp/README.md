@@ -15,6 +15,9 @@ Expose the tools of a remote [Model Context Protocol](https://modelcontextprotoc
 
 ## Install
 
+Requires **Node 20+** (inherited from `@modelcontextprotocol/client@2`, which declares
+`engines.node: >=20`; this package declares the same).
+
 ```bash
 pnpm add @openrouter/mcp @openrouter/agent
 ```
