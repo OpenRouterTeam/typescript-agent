@@ -308,53 +308,63 @@ async function refreshStaleReplay(handle: MCPToolsHandle): Promise<void> {
  *    carry a bearer-equivalent `Mcp-Session-Id` under `cacheCredentials`; with
  *    the warm path never rewriting, that credential-grade value would sit in
  *    the external store indefinitely. One write — the entry copied without the
- *    field — removes it. (The serialize in case 1 also omits `sessionId`, so
- *    the two compose.)
+ *    field — removes it.
  *
- * The scrub deliberately copies the stored snapshot minus `sessionId` rather
- * than re-serializing from live state: a re-serialize under this call's options
- * would strip a credential-bearing entry when `cacheCredentials` was not
- * repeated — the DEV-766 hazard this path just stopped being exposed to.
+ * Both writes share one invariant: they only ever REWRITE an entry the store
+ * already holds, read back first. The rotation write grafts the provider's
+ * current tokens onto the stored entry rather than re-serializing this call's
+ * live state — a direct `rehydrateMCPTools` may have loaded its snapshot from
+ * a file or another key, and writing that snapshot's (older) tool set and
+ * `cachedAt` over the store's entry would roll back a newer entry written by a
+ * concurrent `refresh()`. Copying the stored entry also cannot strip or
+ * introduce credentials the way a re-serialize under this call's options could
+ * (the DEV-766 hazard): tokens are only updated where the stored entry already
+ * carries tokens.
  */
 
 /**
- * Keep the rotation write from ratcheting `expiresAt` forward.
+ * Graft the provider's current tokens onto the STORED entry — never the other
+ * way round.
  *
- * `serializeServer` stamps `expiresAt` as `Date.now() + expires_in * 1000`,
- * which is only accurate when the token was just obtained: `expires_in` is
- * relative to *issuance* (RFC 6749 §5.1) and the SDK's `StoredOAuthTokens`
- * carries no issued-at, so serialize can't know how much lifetime is already
- * spent. Re-persisting an UNROTATED token on every replay would therefore push
- * the recorded expiry forward each time, and `tokensExpired()` would never
- * trip for a token that is genuinely expired.
+ * Only the token block moves; the stored entry's tool set and `cachedAt` stay
+ * untouched, so a direct rehydrate whose input snapshot is older than the
+ * store's entry (a concurrent `refresh()` having written since) cannot roll the
+ * entry back. Returns undefined — no write — when the stored entry carries no
+ * tokens (grafting would introduce credentials into an entry that never held
+ * them) or the fresh serialize produced none.
  *
- * When the access token matches the input snapshot's, carry the snapshot's
- * `expiresAt` verbatim (including its absence) — that value chains back to a
- * stamp made when the token actually arrived. A rotated token was just saved
- * by the SDK's own flow, so its freshly-relative `expires_in` is accurate and
- * the recomputed expiry stands.
+ * The expiry is not blindly restamped either. `serializeServer` computes
+ * `expiresAt` as `Date.now() + expires_in * 1000`, which is only accurate when
+ * the token was just obtained: `expires_in` is relative to *issuance* (RFC 6749
+ * §5.1), so re-persisting an UNROTATED token on every replay would push the
+ * recorded expiry forward each time and `tokensExpired()` would never trip.
+ * When the access token matches the stored entry's, the stored `expiresAt` is
+ * carried verbatim (including its absence) — it chains back to a stamp made
+ * when the token actually arrived. A rotated token keeps its fresh restamp.
  */
-function withPreservedExpiry(
+function graftRotatedTokens(
+  stored: SerializedMCPServer,
   serialized: SerializedMCPServer,
-  snapshot: SerializedMCPServer,
-): SerializedMCPServer {
+): SerializedMCPServer | undefined {
+  const prev = stored.auth?.tokens;
   const next = serialized.auth?.tokens;
-  const prev = snapshot.auth?.tokens;
-  if (next === undefined || prev === undefined || next.accessToken !== prev.accessToken) {
-    return serialized;
+  if (prev === undefined || next === undefined) {
+    return undefined;
   }
   const tokens = {
     ...next,
   };
-  if (prev.expiresAt !== undefined) {
-    tokens.expiresAt = prev.expiresAt;
-  } else {
-    delete tokens.expiresAt;
+  if (next.accessToken === prev.accessToken) {
+    if (prev.expiresAt !== undefined) {
+      tokens.expiresAt = prev.expiresAt;
+    } else {
+      delete tokens.expiresAt;
+    }
   }
   return {
-    ...serialized,
+    ...stored,
     auth: {
-      ...serialized.auth,
+      ...stored.auth,
       tokens,
     },
   };
@@ -373,7 +383,28 @@ async function maintainReplayedEntry(args: {
   }
   try {
     if (isOAuthAuth(effectiveAuth) && options.cacheCredentials === true) {
-      await store.set(cacheKey, withPreservedExpiry(await handle.serialize(), args.snapshot));
+      // Read back before writing, same as the scrub below: the write must be
+      // a token-graft onto whatever THIS store currently holds. Writing a
+      // serialize of this call's state would clobber a newer entry (a direct
+      // rehydrate's input snapshot may be older than the store's — say a
+      // concurrent refresh() wrote since) and could introduce credentials the
+      // store never held. One read per OAuth replay is the price; the write
+      // was already per-replay.
+      const stored = await store.get(cacheKey);
+      if (stored === null || stored === undefined || !isSerializedMCPServer(stored)) {
+        return;
+      }
+      const grafted = graftRotatedTokens(stored, await handle.serialize());
+      // No tokens to graft — but a legacy sessionId in the stored entry still
+      // gets scrubbed, composing the two maintenance jobs into one write.
+      if (grafted === undefined && stored.sessionId === undefined) {
+        return;
+      }
+      const next = {
+        ...(grafted ?? stored),
+      };
+      delete next.sessionId;
+      await store.set(cacheKey, next);
       return;
     }
     // Cheap gate first: the scrub can only be needed when the *input* snapshot

@@ -241,8 +241,15 @@ export async function makeHandle(args: MakeHandleArgs): Promise<MCPToolsHandle> 
     if (store === undefined) {
       return;
     }
+    // Built OUTSIDE the try: `snapshot()` can reject from the caller's own
+    // OAuth provider (`provider.tokens()`), and relabelling that as a cache
+    // write failure would send it down every "store outages are harmless"
+    // path — swallowed by the list_changed handler, ignored by
+    // `refreshStaleReplay`, and dismissed by callers following the documented
+    // `MCPCacheWriteError` pattern. Only the store op earns the tag.
+    const payload = await snapshot();
     try {
-      await store.set(context.cacheKey, await snapshot());
+      await store.set(context.cacheKey, payload);
     } catch (writeErr) {
       // Tagged so callers can tell a store outage from a failed read. The two
       // look identical coming out of `refresh()` but mean opposite things: a

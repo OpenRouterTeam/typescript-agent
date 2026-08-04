@@ -706,7 +706,9 @@ describe('replay preserves snapshot age', () => {
     };
     const writes: Record<string, unknown>[] = [];
     const store = {
-      get: () => Promise.resolve(null),
+      // Warm path: the store holds the entry being replayed. The maintenance
+      // write reads back first and grafts tokens onto THIS.
+      get: () => Promise.resolve(snap),
       set: (_key: string, value: unknown) => {
         writes.push(value as Record<string, unknown>);
         return Promise.resolve();
@@ -760,7 +762,7 @@ describe('replay preserves snapshot age', () => {
     };
     const writes: Record<string, unknown>[] = [];
     const store = {
-      get: () => Promise.resolve(null),
+      get: () => Promise.resolve(snap),
       set: (_key: string, value: unknown) => {
         writes.push(value as Record<string, unknown>);
         return Promise.resolve();
@@ -798,6 +800,127 @@ describe('replay preserves snapshot age', () => {
     expect(tokens?.['accessToken']).toBe('rotated-token');
     // Restamped from the fresh grant, not carried from the old token.
     expect(tokens?.['expiresAt']).toBeGreaterThanOrEqual(before + 3_600_000);
+  });
+
+  /**
+   * The rotation write must not roll a newer store entry back to the caller's
+   * older input snapshot.
+   *
+   * A direct `rehydrateMCPTools` may load its snapshot from a file while a
+   * concurrent `refresh()` has since written a newer entry (more tools, newer
+   * `cachedAt`) to the same key. The maintenance write reads the store back and
+   * grafts ONLY the token block onto the stored entry — tool set and `cachedAt`
+   * stay the store's.
+   */
+  it('does not roll back a newer store entry when rotating tokens on a direct rehydrate', async () => {
+    const older = snapshotWithHeaders();
+    older.cachedAt = Date.now() - 60_000;
+    older.auth = {
+      tokens: {
+        accessToken: 'old-token',
+        expiresAt: Date.now() + 120_000,
+      },
+    };
+    // The store's entry is newer: an extra tool, a fresher cachedAt.
+    const newer: SerializedMCPServer = {
+      ...older,
+      cachedAt: Date.now() - 1_000,
+      tools: [
+        ...older.tools,
+        {
+          name: 'gamma',
+          inputSchema: {
+            type: 'object',
+            properties: {},
+          },
+        },
+      ],
+    };
+    const writes: Record<string, unknown>[] = [];
+    const store = {
+      get: () => Promise.resolve(newer),
+      set: (_key: string, value: unknown) => {
+        writes.push(value as Record<string, unknown>);
+        return Promise.resolve();
+      },
+      delete: () => Promise.resolve(),
+    };
+
+    await rehydrateMCPTools({
+      snapshot: older,
+      cacheCredentials: true,
+      cache: {
+        store,
+        key: 'warm',
+      },
+      auth: {
+        kind: 'oauth',
+        provider: {
+          tokens: () =>
+            Promise.resolve({
+              access_token: 'rotated-token',
+              token_type: 'bearer',
+              expires_in: 3600,
+            }),
+        } as never,
+      },
+    });
+
+    expect(writes).toHaveLength(1);
+    const written = writes[0] as unknown as SerializedMCPServer;
+    // The store's newer tool set and cachedAt survive; only tokens moved.
+    expect(written.tools.map((t) => t.name)).toEqual(newer.tools.map((t) => t.name));
+    expect(written.cachedAt).toBe(newer.cachedAt);
+    expect(written.auth?.tokens?.accessToken).toBe('rotated-token');
+  });
+
+  /**
+   * The rotation write cannot introduce credentials into a store whose entry
+   * never held tokens — and an empty store gets no write at all. Same
+   * no-introduce guarantee the scrub has always had, now shared via the
+   * read-back.
+   */
+  it('does not introduce tokens into a store entry that never held them', async () => {
+    const snap = snapshotWithHeaders();
+    snap.auth = {
+      tokens: {
+        accessToken: 'from-a-file',
+        expiresAt: Date.now() + 120_000,
+      },
+    };
+    // The store's own entry is credential-free (headers only, no tokens).
+    const storedWithoutTokens = snapshotWithHeaders();
+    const writes: unknown[] = [];
+    const store = {
+      get: () => Promise.resolve(storedWithoutTokens),
+      set: (_key: string, value: unknown) => {
+        writes.push(value);
+        return Promise.resolve();
+      },
+      delete: () => Promise.resolve(),
+    };
+
+    await rehydrateMCPTools({
+      snapshot: snap,
+      cacheCredentials: true,
+      cache: {
+        store,
+        key: 'warm',
+      },
+      auth: {
+        kind: 'oauth',
+        provider: {
+          tokens: () =>
+            Promise.resolve({
+              access_token: 'fresh-token',
+              token_type: 'bearer',
+              expires_in: 3600,
+            }),
+        } as never,
+      },
+    });
+
+    expect(writes).toHaveLength(0);
   });
 
   /**

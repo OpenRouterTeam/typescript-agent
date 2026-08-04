@@ -158,6 +158,59 @@ describe('createMCPTools setup teardown', () => {
   });
 
   /**
+   * A failure while BUILDING the snapshot must not wear the cache-write tag.
+   *
+   * `snapshot()` awaits the caller's own OAuth `provider.tokens()`, so a
+   * provider rejection is a credential problem, not a store outage. Wrapping
+   * the build inside the same `try` as `store.set` relabelled it
+   * `MCPCacheWriteError` — the one class every path is documented to treat as
+   * harmless — so callers following that pattern silently swallowed genuine
+   * credential failures. `refresh()` must surface it under its own identity.
+   */
+  it('does not relabel a snapshot-build failure as MCPCacheWriteError', async () => {
+    const { MCPCacheWriteError } = await import('../../src/errors.js');
+    const providerFailure = new Error('provider token refresh failed');
+    const sets: unknown[] = [];
+    const store = {
+      get: () => Promise.resolve(null),
+      set: (_key: string, value: unknown) => {
+        sets.push(value);
+        return Promise.resolve();
+      },
+      delete: () => Promise.resolve(),
+    };
+
+    const handle = await createMCPTools({
+      url: 'https://mcp.example.com/mcp',
+      cacheCredentials: true,
+      cache: {
+        store,
+        key: 'k',
+      },
+      auth: {
+        kind: 'oauth',
+        provider: {
+          // Fails on the refresh() below. The construction write is
+          // best-effort, so the first failure is swallowed by design; the
+          // explicit refresh must then report the provider's own error.
+          tokens: () => Promise.reject(providerFailure),
+        } as never,
+      },
+    });
+
+    let caught: unknown;
+    try {
+      await handle.refresh();
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBe(providerFailure);
+    expect(caught).not.toBeInstanceOf(MCPCacheWriteError);
+    // And nothing was written with a half-built payload.
+    expect(sets).toHaveLength(0);
+  });
+
+  /**
    * A store outage on the READ is a miss, not a failure.
    *
    * The write side became best-effort everywhere in this PR; leaving the read

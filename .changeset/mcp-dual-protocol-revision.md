@@ -60,12 +60,14 @@ write-back: the snapshot it would write is the one just read, so it was a store 
 per rehydrate buying nothing. Two maintenance writes survive, both best-effort: an OAuth
 provider under `cacheCredentials: true` re-persists its current tokens (so the stored entry
 tracks rotation instead of expiring into a forced fresh connect), and an entry carrying a
-legacy `sessionId` from an earlier version is rewritten once without it. The rotation write
-carries the snapshot's original `expiresAt` when the token has not actually changed —
-`expires_in` is relative to issuance, so restamping it per replay would push the recorded
-expiry forward forever. The scrub reads the
-store first and rewrites only bytes it already holds, so it can never introduce credentials
-into a store that lacked them. If your store implementation extends entry TTLs on write
+legacy `sessionId` from an earlier version is rewritten once without it. Both writes read the
+store first and only ever rewrite an entry it already holds: the rotation write grafts the
+tokens onto the stored entry (never the caller's possibly-older input snapshot, which could
+roll back a newer entry written by a concurrent `refresh()`), skips entirely when the stored
+entry never held tokens, and carries the stored `expiresAt` verbatim when the token has not
+actually changed — `expires_in` is relative to issuance, so restamping it per replay would
+push the recorded expiry forward forever. Neither write can introduce credentials into a
+store that lacked them. If your store implementation extends entry TTLs on write
 (Redis `SETEX`-style), note that warm hits no longer touch the store, so such entries now
 expire on their own schedule rather than being kept alive by access; size the TTL to the
 staleness window you actually want.
