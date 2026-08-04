@@ -1992,7 +1992,7 @@ describe('callModel E2E Tests', () => {
           },
         ]),
         toolChoice: 'required',
-        stopWhen: stepCountIs(1),
+        stopWhen: stepCountIs(0),
         allowFinalResponse:
           'Stop calling tools. Reply with exactly the word "FINAL" and nothing else.',
         tools: [
