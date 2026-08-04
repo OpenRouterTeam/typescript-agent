@@ -29,6 +29,19 @@ if (typeof version !== 'string' || version.length === 0) {
   process.exit(1);
 }
 
+// Charset allow-list (semver plus pre-release/build punctuation) so the value
+// provably cannot break out of the string literal below — no quotes,
+// backslashes, newlines, or backticks can pass. Interpolating into committed,
+// import-executed TS without this would let a malformed `version` inject code;
+// developer-controlled, so defense-in-depth, but one regex is cheap. The
+// single-quoted literal below is safe ONLY because of this guard (a
+// JSON.stringify'd literal would fight biome's single-quote formatting of
+// src/, and CI checks the generated file for drift).
+if (!/^[0-9A-Za-z.+-]+$/.test(version)) {
+  console.error(`gen-version: "version" contains characters outside [0-9A-Za-z.+-]: ${version}`);
+  process.exit(1);
+}
+
 const contents = `// DO NOT EDIT — generated from package.json by scripts/gen-version.mjs.
 // Run \`pnpm --filter @openrouter/mcp gen:version\` after bumping the version.
 

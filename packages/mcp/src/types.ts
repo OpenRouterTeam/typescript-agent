@@ -66,7 +66,11 @@ export interface CreateMCPToolsOptions {
   auth?: MCPAuth;
   /** Custom fetch implementation for all network requests. */
   fetch?: typeof fetch;
-  /** Client identity sent during `initialize`. */
+  /**
+   * Client identity self-reported to the server while connecting — via the
+   * `initialize` handshake on revision 2025-11-25, or the per-request `_meta`
+   * envelope on 2026-07-28 (which has no `initialize`). Honoured on both.
+   */
   clientInfo?: {
     name: string;
     version: string;
