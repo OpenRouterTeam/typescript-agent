@@ -16,6 +16,7 @@ import {
   persistedTaskCheckResult,
   resolveCheckConfig,
   Semaphore,
+  TASK_RESULT_BOUNDARY,
   TASK_TOOL_NAME,
   TaskToolInputSchema,
   ToolTask,
@@ -2787,7 +2788,11 @@ export class ModelResult<
       }
     }
 
-    await this.injectAppendPromptMessage(envelopes.join('\n'));
+    // Instruction boundary: the injected message rides the user role (the
+    // only channel that can deliver a late result without a duplicate
+    // function_call_output), but its content is tool output — mark it so
+    // attacker-influenced result text does not read as user instructions.
+    await this.injectAppendPromptMessage(`${TASK_RESULT_BOUNDARY}\n${envelopes.join('\n')}`);
 
     // Delivery is observable forward progress — clear the text streak so
     // legitimate "waiting" phrasing between deliveries can't accumulate
@@ -2941,13 +2946,22 @@ export class ModelResult<
     // multi-gate acquisition deadlock-free). Gate WAITING happens before the
     // timeout race below, so queue wait counts against the deadline only
     // for background tasks (which carry their own timeout in the registry).
+    //
+    // Background lifecycles skip the per-tool gate HERE: their body only
+    // runs later via runBackgroundWork, which acquires that gate for the
+    // body's true duration. Acquiring it on the round path too would let
+    // detached bodies holding all maxConcurrency slots block a later
+    // round's dispatch (thunk creation, no body work) for the full task
+    // duration — while it holds a round-gate slot, head-of-line-blocking
+    // every other call in the round.
     const { controller, signal, timeoutMs } = this.composeToolSignal(
       String(toolCall.name),
       toolCall.id,
     );
+    const isBackgroundLifecycle = isUnifiedTool(tool) && tool.function.lifecycle === 'background';
     const releaseGates = await acquireAll([
       this.roundGate ?? undefined,
-      this.perToolGate(String(toolCall.name)),
+      isBackgroundLifecycle ? undefined : this.perToolGate(String(toolCall.name)),
     ]);
 
     try {
@@ -4094,6 +4108,10 @@ export class ModelResult<
       // Accumulate the current final output BEFORE injecting so the
       // envelope lands after the assistant's last message in the request.
       this.accumulateResponseIntoInput(response);
+      // Queued steering (queueUserMessage / sendToTask) flushes here too —
+      // a drain turn is a model dispatch, and guidance queued while the
+      // last tool round was already finishing would otherwise be dropped.
+      await this.flushDoomLoopSteer();
       const delivered = await this.flushAsyncToolDeliveries();
       if (!delivered) {
         // Drain timed out with nothing new settled — stop waiting.
@@ -6279,6 +6297,12 @@ export class ModelResult<
    * guidance uses — never between a dangling `function_call` and its
    * output). The primary consumer is `tool.agent()`, which forwards
    * steering messages into child conversations through this.
+   *
+   * Delivery requires a next dispatch: boundaries are post-tool-round
+   * follow-ups, pause-persists, and end-of-run drain turns. A message
+   * queued while the run is composing its FINAL text response (no further
+   * dispatch of any kind) has no boundary left and is not delivered —
+   * steer while the run still has work in flight.
    */
   queueUserMessage(text: string): void {
     this.queueDoomLoopSteer(text);

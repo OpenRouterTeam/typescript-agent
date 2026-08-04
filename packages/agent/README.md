@@ -373,8 +373,12 @@ A function-form `loopKey` may return `null` to exempt an individual call.
 Returning `undefined`, throwing, or returning unhashable material (bigint,
 circular, >64 levels deep) falls back to the full-arguments identity with a
 warning — detection never fails a run. Without any `loopKey`, the full
-validated arguments object is the identity. MCP-wrapped tools accept a
-`loopKey` via `markMcp(tool, { loopKey })`.
+validated arguments object is the identity. A field-name array
+(`loopKey: ['command', 'cwd']`) is also accepted — data rather than code,
+so it can be serialized into MCP tool caches and advertised over the wire
+via `_meta['openrouter/loopKey']`. MCP-wrapped tools accept a `loopKey`
+via `markMcp(tool, { loopKey })` or the `loopKeys` map on
+`createMCPTools`.
 
 **Fingerprints are a cross-port contract**: key material is canonicalized
 per RFC 8785 (JCS) and hashed with SHA-256 over the UTF-8 bytes, so the

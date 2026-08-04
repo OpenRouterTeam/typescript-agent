@@ -126,10 +126,11 @@ type BaseCallModelInput<
    * consecutive repetitions). `true` enables recommended defaults; an
    * object tunes thresholds and text detection. Off by default.
    *
-   * Tools declare precise call identity via a computed `loopKey` function
+   * Tools declare precise call identity via `loopKey`: a computed function
    * (return the search query, `({ command, cwd }) => ({ command, cwd })`,
-   * ...); without one the full arguments object is the identity.
-   * `loopKey: false` exempts a tool (legitimate polling). Detection is
+   * ...), a field-name array (`['command', 'cwd']` — serializable, used by
+   * MCP tool caches), or `false` to exempt a tool (legitimate polling);
+   * without one the full arguments object is the identity. Detection is
    * deterministic: the same transcript always produces the same verdicts.
    */
   doomLoop?: DoomLoopOption;

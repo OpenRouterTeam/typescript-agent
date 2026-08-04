@@ -5,6 +5,7 @@ import type { CallModelInput } from '../lib/async-params.js';
 import { appendToMessages, updateState } from '../lib/conversation-state.js';
 import type { ModelResult } from '../lib/model-result.js';
 import { validateToolOutput } from '../lib/tool-executor.js';
+import { TASK_RESULT_BOUNDARY } from '../lib/tool-task.js';
 import type { PendingAsyncTool, StateAccessor, Tool, ToolTaskStatus } from '../lib/tool-types.js';
 import { isClientTool, isUnifiedTool } from '../lib/tool-types.js';
 import { callModel } from './call-model.js';
@@ -84,7 +85,7 @@ export interface ToolTaskResultEnvelope {
 export function buildTaskResultMessage(envelope: ToolTaskResultEnvelope): models.BaseInputsUnion {
   return {
     role: 'user',
-    content: JSON.stringify(envelope),
+    content: `${TASK_RESULT_BOUNDARY}\n${JSON.stringify(envelope)}`,
   } as models.BaseInputsUnion;
 }
 
@@ -194,6 +195,13 @@ export async function resumeToolResults<TTools extends readonly Tool[]>(
     ifSettled?: 'throw' | 'ignore';
     /** Continue the conversation immediately with this run configuration. */
     run?: ResumeRunConfig<TTools>;
+    /**
+     * Ownership guard: every resolved task must belong to this tool (by
+     * name) or the call throws BEFORE anything is persisted. Set by the
+     * typed `.resolve()`/`.fail()`/`.cancel()` methods — a taskId from a
+     * webhook cannot settle a different tool's task through them.
+     */
+    expectToolName?: string;
   },
   options?: RequestOptions,
 ): Promise<ModelResult<TTools> | null> {
@@ -218,6 +226,17 @@ export async function resumeToolResults<TTools extends readonly Tool[]>(
     });
     if (!task) {
       continue; // already settled and the caller asked to ignore it
+    }
+
+    // Ownership guard: a taskId is an external identifier handed to
+    // third-party systems — a lower-trust webhook must not be able to
+    // settle a DIFFERENT tool's task through a tool-bound completion
+    // method (confused deputy; it would also skip that tool's
+    // outputSchema validation).
+    if (request.expectToolName !== undefined && task.name !== request.expectToolName) {
+      throw new Error(
+        `resumeToolResults: task "${task.taskId}" belongs to tool "${task.name}", not "${request.expectToolName}" — use the owning tool's completion methods (or the untyped resumeToolResults entry point).`,
+      );
     }
 
     const envelope = buildResumeEnvelope(entry, task, request.tools);
@@ -314,6 +333,14 @@ function buildResumeEnvelope(
 ): ToolTaskResultEnvelope {
   if ('output' in entry && entry.error === undefined) {
     const tool = tools?.find((t) => isClientTool(t) && t.function.name === task.name);
+    // Fail closed: when a tools list was supplied but the owning tool is
+    // not in it, the caller expected validation — appending the output
+    // unvalidated would silently void that expectation.
+    if (tools !== undefined && tool === undefined) {
+      throw new Error(
+        `resumeToolResults: task "${task.taskId}" belongs to tool "${task.name}", which is not in the supplied tools list — its output cannot be validated. Include the tool, or omit \`tools\` to skip validation explicitly.`,
+      );
+    }
     let output = entry.output;
     if (tool && isUnifiedTool(tool) && tool.function.outputSchema !== undefined) {
       output = validateToolOutput(tool.function.outputSchema, output);

@@ -28,4 +28,4 @@ export {
 export type { Semaphore as ToolSemaphore } from './tool-concurrency.js';
 export { acquireAll, Semaphore } from './tool-concurrency.js';
 export type { ToolTaskMode } from './tool-task.js';
-export { ToolTask } from './tool-task.js';
+export { TASK_RESULT_BOUNDARY, ToolTask } from './tool-task.js';

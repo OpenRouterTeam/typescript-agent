@@ -859,6 +859,11 @@ function bindDeferredCompletion(
         tools: [
           toolValue,
         ],
+        // Ownership guard: a taskId handed to an external system must not
+        // settle a DIFFERENT tool's task through this tool's methods.
+        ...(isClientTool(toolValue) && {
+          expectToolName: toolValue.function.name,
+        }),
         results: [
           {
             taskId: request.taskId,

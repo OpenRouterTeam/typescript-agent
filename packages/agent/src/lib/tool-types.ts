@@ -440,7 +440,8 @@ export interface BaseToolFunction<
   requireApproval?: boolean | ToolApprovalCheck<zodInfer<TInput>>;
   /**
    * Doom-loop identity for this tool's calls — see {@link ToolLoopKey}.
-   * A computed function over the call's arguments, or `false` (exempt).
+   * A computed function over the call's arguments, a field-name array
+   * (serializable — used by MCP tool caches), or `false` (exempt).
    * Absent: the full validated arguments object is the identity.
    */
   loopKey?: ToolLoopKey<zodInfer<TInput>>;

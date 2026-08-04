@@ -510,6 +510,72 @@ describe('tool.deferred — cross-process resume', () => {
     expect(result).toBeNull();
   });
 
+  it('.resolve() rejects a taskId that belongs to a DIFFERENT tool (ownership guard)', async () => {
+    const { accessor, get } = await pauseConversation();
+
+    // A second pending deferred task owned by another tool.
+    const paused = get();
+    if (!paused) {
+      throw new Error('expected state');
+    }
+    await accessor.save({
+      ...paused,
+      pendingAsyncTools: [
+        ...(paused.pendingAsyncTools ?? []),
+        {
+          callId: 'call_other',
+          taskId: 'ticket_other_tool',
+          name: 'payment_authorization',
+          mode: 'defer' as const,
+          status: 'working' as const,
+          startedAt: Date.now(),
+        },
+      ],
+    });
+
+    // legalReview.resolve() must not settle payment_authorization's task —
+    // it would also skip that tool's outputSchema validation entirely.
+    await expect(
+      legalReview.resolve(client, {
+        state: accessor,
+        taskId: 'ticket_other_tool',
+        output: {
+          approved: true,
+        },
+      }),
+    ).rejects.toThrow('belongs to tool "payment_authorization"');
+
+    // Nothing was persisted for the foreign task.
+    expect(get()?.settledAsyncCallIds ?? []).not.toContain('call_other');
+  });
+
+  it('resumeToolResults fails closed when tools is supplied but misses the owning tool', async () => {
+    const { accessor } = await pauseConversation();
+
+    const otherTool = tool({
+      name: 'unrelated',
+      inputSchema: z.object({}),
+      execute: async () => ({}),
+    });
+
+    await expect(
+      resumeToolResults(client, {
+        state: accessor,
+        tools: [
+          otherTool,
+        ] as const,
+        results: [
+          {
+            taskId: 'ticket_c-9',
+            output: {
+              approved: 'not-even-validated',
+            },
+          },
+        ],
+      }),
+    ).rejects.toThrow('not in the supplied tools list');
+  });
+
   it('.resolve() preserves a coexisting non-async pause status (awaiting_approval)', async () => {
     const { accessor, get } = await pauseConversation();
 

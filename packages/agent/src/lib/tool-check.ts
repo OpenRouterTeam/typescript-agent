@@ -62,20 +62,25 @@ export const TaskToolInputSchema = z4.object({
 
 export type TaskToolInput = z4.infer<typeof TaskToolInputSchema>;
 
+/** Memoized Zod→JSON-Schema conversion — the input schema is static. */
+let taskToolParameters: Record<string, unknown> | undefined;
+
 /**
  * The wire definition for the universal task tool. Static — identical
- * regardless of how many long-running tools are registered.
+ * regardless of how many long-running tools are registered, so the schema
+ * conversion runs once per process (memoized on first call).
  */
 export function buildTaskToolApiDefinition(
   convertZod: (schema: $ZodType) => Record<string, unknown>,
 ): APITool {
+  taskToolParameters ??= convertZod(TaskToolInputSchema);
   return {
     type: 'function',
     name: TASK_TOOL_NAME,
     description:
       'Interact with a long-running task started by another tool: check progress (status, recent logs, or the full transcript), steer it with a message, fetch its result, or cancel it. Task ids come from pending tool outputs.',
     strict: null,
-    parameters: convertZod(TaskToolInputSchema),
+    parameters: taskToolParameters,
   };
 }
 

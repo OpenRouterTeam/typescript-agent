@@ -23,7 +23,9 @@
  *   the conformance contract.
  * - **Tool-declared identity.** A tool opts into precise loop identity via
  *   `loopKey` on its definition: a function computing key material
- *   (e.g. `({ command, cwd }) => ({ command, cwd })`), or `false` to exempt
+ *   (e.g. `({ command, cwd }) => ({ command, cwd })`), a field-name array
+ *   (`['command', 'cwd']` — data, not code, so it can ride MCP tool caches
+ *   and the `_meta['openrouter/loopKey']` wire field), or `false` to exempt
  *   the tool. Tools declare *what identifies a call*; this module owns
  *   canonicalization and hashing so fingerprints are uniform across tools
  *   and ports.
