@@ -181,6 +181,9 @@ export async function freshConnect(
     ...(options.probeTimeoutMs !== undefined && {
       probeTimeoutMs: options.probeTimeoutMs,
     }),
+    ...(options.signal !== undefined && {
+      signal: options.signal,
+    }),
   });
 
   // Tear the connection down if discovery or the initial cache write throws —
@@ -288,12 +291,21 @@ export async function makeHandle(args: MakeHandleArgs): Promise<MCPToolsHandle> 
     });
   }
 
-  // Best-effort: the handle is fully usable without its cache entry, so a store
-  // outage should not stop a connection that already succeeded. Failing here
-  // would also break the documented recovery for a stale snapshot, which
-  // rehydrates through the same store and would hit the same outage. `refresh()`
-  // reports write failures as `MCPCacheWriteError` for callers that do care.
-  await writeCache().catch(() => {});
+  // Skipped entirely on a replay: with `replayedCachedAt` carried forward the
+  // snapshot we would write is the one just read — same tool defs, same
+  // `cachedAt` — so the write is an external store round-trip per rehydrate
+  // buying nothing. (It also cannot *refresh* anything: preserving the age is
+  // the point.) A cold connect writes; `refresh()` clears `replayedCachedAt`
+  // and writes. Skipping here additionally narrows DEV-766's surface — one
+  // fewer path that can rewrite a credentialed entry under different options.
+  //
+  // Best-effort when it does run: the handle is fully usable without its cache
+  // entry, so a store outage should not stop a connection that already
+  // succeeded. `refresh()` reports write failures as `MCPCacheWriteError` for
+  // callers that do care.
+  if (args.replayedCachedAt === undefined) {
+    await writeCache().catch(() => {});
+  }
 
   return {
     get tools() {

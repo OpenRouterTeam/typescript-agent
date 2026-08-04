@@ -45,6 +45,13 @@ one. Rejected credentials are not something a different protocol revision fixes,
 the attempt would drive an OAuth provider's authorization flow a second time and overwrite the
 stored PKCE verifier.
 
+`connect`-level calls accept a `signal` that aborts the whole ladder — every transport
+attempt, the probe, and the implicit legacy retry — so a caller with its own deadline can
+bound the worst case (~3 minutes against a black-holing gateway on the default path). An
+aborted connect is never retried. Snapshot replays also no longer perform the construction
+write-back: the snapshot it would write is the one just read, so it was a store round-trip
+per rehydrate buying nothing.
+
 `MCPConnectionError` now carries every underlying failure in `errors` (matching
 `AggregateError`), flat and in attempt order across both negotiation passes, so a caller sees
 all of them rather than only the last — which is all `cause` holds.

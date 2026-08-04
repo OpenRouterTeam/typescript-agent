@@ -43,6 +43,8 @@ interface SdkState {
   probeTimeouts: unknown[];
   /** `clientInfo` seen by each constructed Client, in order. */
   clientInfos: unknown[];
+  /** `signal` passed to each `client.connect`, in order (undefined when none). */
+  connectSignals: (AbortSignal | undefined)[];
   /**
    * Transport kinds whose Client had `close()` called on it. Guards the
    * release of a client whose `connect()` rejected — the SDK does not close a
@@ -65,6 +67,7 @@ const state: SdkState = {
   negotiationModes: [],
   probeTimeouts: [],
   clientInfos: [],
+  connectSignals: [],
   closedClients: [],
 };
 
@@ -145,7 +148,13 @@ vi.mock('@modelcontextprotocol/client', () => ({
     mode: unknown;
     /** Set by `connect()` so `close()` can report which transport it released. */
     attached: 'streamableHttp' | 'sse' | undefined;
-    connect(transport: Marked): Promise<void> {
+    connect(
+      transport: Marked,
+      requestOptions?: {
+        signal?: AbortSignal;
+      },
+    ): Promise<void> {
+      state.connectSignals.push(requestOptions?.signal);
       const kind = transport[KIND];
       this.attached = kind;
       const attempt: Attempt = {
@@ -220,6 +229,7 @@ beforeEach(() => {
   state.negotiationModes = [];
   state.probeTimeouts = [];
   state.clientInfos = [];
+  state.connectSignals = [];
   state.closedClients = [];
 });
 
@@ -1116,6 +1126,46 @@ describe('legacy degradation under an implicit auto default', () => {
    * `redirectToAuthorization`, a second saved PKCE verifier overwriting the
    * first. Replaying a failure that had side effects is worse than not retrying.
    */
+  /**
+   * `signal` reaches every SDK connect, and an aborted caller is not retried.
+   *
+   * Without threading, a caller with its own deadline had no way to bound the
+   * ladder — whose worst case on the default path is ~3 minutes across four
+   * attempts. And retrying after the caller aborted would immediately re-abort
+   * or outlive the deadline the signal expressed.
+   */
+  it('threads the abort signal into the SDK connect', async () => {
+    const controller = new AbortController();
+
+    const conn = await connect({
+      url: URL_UNDER_TEST,
+      signal: controller.signal,
+    });
+
+    expect(state.connectSignals).toEqual([
+      controller.signal,
+    ]);
+    await conn.close();
+  });
+
+  it('does not run the legacy retry when the caller aborted', async () => {
+    const controller = new AbortController();
+    state.failing.add('streamableHttp');
+    state.failing.add('sse');
+    // Simulate the abort arriving during the first pass.
+    controller.abort();
+
+    await expect(
+      connect({
+        url: URL_UNDER_TEST,
+        signal: controller.signal,
+      }),
+    ).rejects.toThrow();
+
+    // Only the 'auto' pass ran; no 'legacy' behind an aborted caller.
+    expect(state.negotiationModes).not.toContain('legacy');
+  });
+
   it('does not retry an auth failure', async () => {
     state.authFailure = true;
 

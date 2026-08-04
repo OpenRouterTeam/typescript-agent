@@ -237,6 +237,9 @@ function toReplayConnectOptions(args: {
     ...(options.probeTimeoutMs !== undefined && {
       probeTimeoutMs: options.probeTimeoutMs,
     }),
+    ...(options.signal !== undefined && {
+      signal: options.signal,
+    }),
   };
 }
 

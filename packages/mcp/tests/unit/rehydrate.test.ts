@@ -515,6 +515,40 @@ describe('replay preserves snapshot age', () => {
   });
 
   /**
+   * A replay does not write at all. With `replayedCachedAt` carried forward the
+   * snapshot it would write is byte-equivalent to the one just read, so the
+   * write was one external store round-trip per rehydrate buying nothing —
+   * and one more path that could rewrite a credentialed entry under different
+   * options (DEV-766). `refresh()` still writes: it re-lists, so it has
+   * something new to persist.
+   */
+  it('skips the write-back entirely on a replay, but writes after refresh', async () => {
+    const sets: string[] = [];
+    const countingStore = {
+      get: () => Promise.resolve(null),
+      set: (key: string) => {
+        sets.push(key);
+        return Promise.resolve();
+      },
+      delete: () => Promise.resolve(),
+    };
+
+    const handle = await rehydrateMCPTools({
+      snapshot: snapshotWithHeaders(),
+      cache: {
+        store: countingStore,
+        key: 'warm',
+      },
+    });
+    expect(sets).toHaveLength(0);
+
+    await handle.refresh();
+    expect(sets).toEqual([
+      'warm',
+    ]);
+  });
+
+  /**
    * The mirror of the case above. `refresh()` clears `replayedCachedAt`, so a
    * genuine re-list stamps the write with the current time. Without that clear
    * a replayed handle would keep writing the original snapshot timestamp

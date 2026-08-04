@@ -35,10 +35,16 @@ import { PACKAGE_VERSION } from './version.js';
  * Serverless cold starts routinely exceed a few seconds, which makes an
  * aggressive value a correctness bug rather than a latency tradeoff.
  *
- * 30s splits the difference: comfortably past a cold start, while capping the
- * unreachable-gateway case at roughly half the SDK default rather than four
- * times it. Raise it with `probeTimeoutMs` for a server known to be slower;
- * lower it when you control the server and want to fail fast.
+ * 30s splits the difference: comfortably past a cold start, while keeping the
+ * probe from consuming the SDK's full 60s request budget per attempt. Note the
+ * ceiling bounds only the `'auto'` probes — the implicit legacy retry's
+ * `initialize` attempts still run under the SDK's own timeout, so the
+ * black-holed-gateway worst case on the default path is roughly
+ * 30s + 30s + 60s + 60s ≈ 3 minutes across the four attempts (vs ~2 minutes
+ * for the two attempts before this package probed at all). A caller with a
+ * harder deadline bounds the whole ladder with `signal`. Raise this with
+ * `probeTimeoutMs` for a server known to be slower; lower it when you control
+ * the server and want to fail fast.
  */
 const DEFAULT_PROBE_TIMEOUT_MS = 30_000;
 
@@ -67,6 +73,13 @@ export interface ConnectOptions {
   sessionId?: string;
   onElicitation?: ElicitationHandler;
   protocolNegotiation?: MCPProtocolNegotiation;
+  /**
+   * Aborts the connect — every transport attempt, the negotiation probe, and
+   * the implicit legacy retry. Without this a caller with its own deadline has
+   * no way to bound the ladder, whose worst case is minutes (see
+   * {@link DEFAULT_PROBE_TIMEOUT_MS}).
+   */
+  signal?: AbortSignal;
   /**
    * Ceiling on the `server/discover` probe, in ms. Defaults to
    * `DEFAULT_PROBE_TIMEOUT_MS` (30000).
@@ -127,6 +140,19 @@ function buildSse(options: ConnectOptions): SSEClientTransport {
       fetch: options.fetch,
     }),
   });
+}
+
+/** Per-call request options threaded into the SDK's `connect()`. */
+function connectRequestOptions(options: ConnectOptions):
+  | {
+      signal: AbortSignal;
+    }
+  | undefined {
+  return options.signal !== undefined
+    ? {
+        signal: options.signal,
+      }
+    : undefined;
 }
 
 interface MutableListChanged {
@@ -213,7 +239,7 @@ async function connectWithNegotiation(options: ConnectOptions): Promise<MCPConne
   if (preferred === 'sse') {
     const client = makeClient(options, listChanged);
     try {
-      await client.connect(buildSse(options));
+      await client.connect(buildSse(options), connectRequestOptions(options));
     } catch (sseErr) {
       // Same transport-release reason as the Streamable HTTP path below.
       await closeQuietly(client);
@@ -236,7 +262,7 @@ async function connectWithNegotiation(options: ConnectOptions): Promise<MCPConne
   const client = makeClient(options, listChanged);
   try {
     const http = buildStreamableHttp(options);
-    await client.connect(http);
+    await client.connect(http, connectRequestOptions(options));
     return wrap({
       client,
       transport: 'streamableHttp',
@@ -272,7 +298,7 @@ async function connectWithNegotiation(options: ConnectOptions): Promise<MCPConne
     // caller did not pin a negotiation mode.
     const sseClient = makeClient(options, listChanged);
     try {
-      await sseClient.connect(buildSse(options));
+      await sseClient.connect(buildSse(options), connectRequestOptions(options));
       return wrap({
         client: sseClient,
         transport: 'sse',
@@ -471,6 +497,12 @@ export async function connect(options: ConnectOptions): Promise<MCPConnection> {
   try {
     return await connectWithNegotiation(options);
   } catch (autoErr) {
+    // A caller-initiated abort is not a server problem: retrying under
+    // `'legacy'` would immediately re-abort (or worse, outlive the caller's
+    // deadline). Surface the abort as-is.
+    if (options.signal?.aborted === true) {
+      throw autoErr;
+    }
     if (isAuthFailure(autoErr, options.auth)) {
       throw autoErr;
     }
