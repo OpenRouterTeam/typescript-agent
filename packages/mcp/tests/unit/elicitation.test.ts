@@ -1,4 +1,4 @@
-import type { ElicitRequest } from '@modelcontextprotocol/sdk/types.js';
+import type { ElicitRequest } from '@modelcontextprotocol/client';
 import { describe, expect, it } from 'vitest';
 import { makeElicitationRequestHandler } from '../../src/elicitation.js';
 

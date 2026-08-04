@@ -10,7 +10,7 @@
  * - the declaration round-trips through the cache snapshot
  *   (serialize → rehydrate's snapshotToToolDefs)
  */
-import type { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import type { Client } from '@modelcontextprotocol/client';
 import { describe, expect, it } from 'vitest';
 import { buildTools } from '../../src/build-tools.js';
 import { isSerializedMCPServer } from '../../src/cache/cache-types.js';

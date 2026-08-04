@@ -5,8 +5,13 @@
   "tasks": {
     "build": {
       "dependsOn": ["^build"],
-      "inputs": ["$TURBO_DEFAULT$", "src/**", "tsconfig.json"],
+      "inputs": ["$TURBO_DEFAULT$", "src/**", "scripts/**", "tsconfig.json"],
       "outputs": ["esm/**"]
+    },
+    "gen:version": {
+      "cache": false,
+      "inputs": ["package.json"],
+      "outputs": ["src/version.ts"]
     },
     "typecheck": {
       "dependsOn": ["^build"],

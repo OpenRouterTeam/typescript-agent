@@ -2,9 +2,13 @@ import type { Tool, ToolLoopKey } from '@openrouter/agent/tool-types';
 import type { MCPAuth } from './auth/auth-types.js';
 import type { MCPCacheStore } from './cache/cache-store.js';
 import type { UnconvertibleSchemaMode } from './schema/json-schema-to-zod.js';
-import type { MCPTransportKind } from './transport-types.js';
+import type {
+  MCPProtocolNegotiation,
+  MCPProtocolRevision,
+  MCPTransportKind,
+} from './transport-types.js';
 
-export type { MCPTransportKind };
+export type { MCPProtocolNegotiation, MCPProtocolRevision, MCPTransportKind };
 
 /**
  * Response to a server-initiated elicitation request. `accept` must carry
@@ -44,11 +48,29 @@ export interface CreateMCPToolsOptions {
   url: string | URL;
   /** Transport to use; defaults to `streamableHttp` with SSE fallback. */
   transport?: MCPTransportKind;
+  /**
+   * Protocol-revision negotiation policy. Defaults to `'auto'`, which probes
+   * the server and speaks either 2025-11-25 or 2026-07-28 as appropriate.
+   */
+  protocolNegotiation?: MCPProtocolNegotiation;
+  /**
+   * Ceiling on the `server/discover` probe, in ms. Defaults to 30000 —
+   * `DEFAULT_PROBE_TIMEOUT_MS` in `mcp-connection.ts` is the source of truth.
+   *
+   * Raise it for a server slow to answer its first request. The SDK's own default
+   * is the full request timeout, which makes a hanging gateway far slower to fail
+   * than it needs to be.
+   */
+  probeTimeoutMs?: number;
   /** Authentication, supplied once and reused for discovery + every call. */
   auth?: MCPAuth;
   /** Custom fetch implementation for all network requests. */
   fetch?: typeof fetch;
-  /** Client identity sent during `initialize`. */
+  /**
+   * Client identity self-reported to the server while connecting — via the
+   * `initialize` handshake on revision 2025-11-25, or the per-request `_meta`
+   * envelope on 2026-07-28 (which has no `initialize`). Honoured on both.
+   */
   clientInfo?: {
     name: string;
     version: string;
@@ -74,7 +96,12 @@ export interface CreateMCPToolsOptions {
     store: MCPCacheStore;
     key?: string;
   };
-  /** Persist resolved tokens/session into the snapshot. Off by default. */
+  /**
+   * Persist resolved credentials (bearer/header values, or the OAuth provider's
+   * current tokens) into the snapshot. Off by default. Session ids are never
+   * serialized — protocol sessions are removed in revision 2026-07-28
+   * (SEP-2567), and a rehydrate always performs a fresh handshake.
+   */
   cacheCredentials?: boolean;
   /** Re-list tools when a cached snapshot is older than this. */
   staleness?: {
@@ -97,9 +124,24 @@ export interface CreateMCPToolsOptions {
   loopKeys?: Readonly<Record<string, ToolLoopKey<Record<string, unknown>>>>;
   /** Auto-refresh tools on `tools/list_changed`. Default true when connected. */
   autoRefreshOnListChanged?: boolean;
-  /** Handler for server-initiated elicitation; auto-declines when omitted. */
+  /**
+   * Handler for elicitation requests; auto-declines when omitted.
+   *
+   * Works against both protocol revisions. On 2025-11-25 the server sends
+   * `elicitation/create` directly. On 2026-07-28 that request no longer
+   * exists — the server answers with an `input_required` result instead
+   * (SEP-2322) — but the SDK's multi-round-trip driver dispatches it through
+   * this same handler and then retries the original call, so callers see
+   * identical behavior either way.
+   */
   onElicitation?: ElicitationHandler;
-  /** Abort signal threaded into every underlying `callTool`. */
+  /**
+   * Abort signal threaded into every underlying `callTool` — and, new in this
+   * release, into the connection itself: connecting, the negotiation probe, the
+   * implicit legacy retry, and any reconnect all abort with it. An early
+   * cancellation can therefore surface as a connection failure, not only as a
+   * cancelled tool call.
+   */
   signal?: AbortSignal;
 }
 
