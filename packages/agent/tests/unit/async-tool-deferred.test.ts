@@ -688,4 +688,46 @@ describe('tool.deferred — cross-process resume', () => {
     );
     expect(envelope).toBeDefined();
   });
+
+  /*
+   * A webhook holding one tool's `resolve` must not be able to settle another
+   * tool's task. `resolvePendingTask` matches on taskId/callId alone, so the
+   * guard is in `buildResumeEnvelope`: when a `tools` list was supplied but the
+   * OWNING tool is absent from it, appending the payload would silently void the
+   * validation the caller asked for, so it throws instead of failing open.
+   */
+  it('refuses to settle a task owned by a tool outside the supplied list', async () => {
+    const { accessor, get } = await pauseConversation();
+    const pendingBefore = get()?.pendingAsyncTools?.[0];
+    const otherTool = tool({
+      name: 'unrelated_tool',
+      inputSchema: z.object({}),
+      outputSchema: z.object({
+        ok: z.boolean(),
+      }),
+      execute: () => ({
+        ok: true,
+      }),
+    });
+
+    await expect(
+      resumeToolResults(client, {
+        state: accessor,
+        tools: [
+          otherTool,
+        ] as const,
+        results: [
+          {
+            taskId: pendingBefore?.taskId ?? 'missing',
+            output: {
+              anything: 'unvalidated',
+            },
+          },
+        ],
+      } as never),
+    ).rejects.toThrow('cannot be validated');
+
+    /* Nothing was persisted: the task is still working, no envelope appended. */
+    expect(get()?.pendingAsyncTools?.[0]?.status).toBe('working');
+  });
 });
