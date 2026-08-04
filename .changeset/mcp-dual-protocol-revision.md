@@ -42,10 +42,13 @@ two. The retry deliberately does *not* pin one transport — a legacy server rea
 over SSE, behind probe-hostile infrastructure, needs SSE offered again under `'legacy'` or it
 stops connecting entirely, which is the regression this mechanism exists to prevent.
 
-The retry is skipped on an auth failure — whether it arrives as the SDK's `UnauthorizedError`
-or as a 401/403 status (the negotiation probe reports those as an `SdkHttpError` instead of
-routing them through the OAuth flow), and whether it came from the last attempt or an earlier
-one. Rejected credentials are not something a different protocol revision fixes, and re-running
+The retry is skipped on an auth failure — the SDK's `UnauthorizedError`, or (when an OAuth
+provider is configured) a **401** status from the probe, which the SDK reports as an
+`SdkHttpError` instead of routing through the OAuth flow. A **403** always degrades, even
+under OAuth: the SDK's PKCE side effects live exclusively behind its 401 branch, so a 403
+retry re-drives nothing — while gateways commonly answer unknown methods with 403, which is
+the very scenario the retry exists to rescue. Auth failures are recognised whether they came
+from the last attempt or an earlier one. Rejected credentials are not something a different protocol revision fixes, and re-running
 the attempt would drive an OAuth provider's authorization flow a second time and overwrite the
 stored PKCE verifier.
 

@@ -292,6 +292,15 @@ async function connectWithNegotiation(options: ConnectOptions): Promise<MCPConne
         cause: httpErr,
       });
     }
+    // An aborted caller gets no fallback: the same signal rides into the SSE
+    // attempt, but whether it interrupts `transport.start()` promptly is the
+    // SDK's business — checking here makes "abort means stop dialling"
+    // deterministic instead of dependent on where the SDK polls the signal.
+    if (options.signal?.aborted === true) {
+      throw new MCPConnectionError('Failed to connect over Streamable HTTP', {
+        cause: httpErr,
+      });
+    }
     // Fall back to SSE on a fresh client (the failed one may be half-initialized).
     // Under `'auto'` this re-probes, so a probe-hostile server fails here too —
     // which is why `connect()` retries the whole thing under `'legacy'` when the
@@ -355,15 +364,21 @@ function flattenAttempts(err: unknown): readonly unknown[] {
  * Does this error carry an HTTP status that means "your credentials were the
  * problem"?
  *
- * `UnauthorizedError` alone is not enough when an OAuth provider is in play. The
- * version-negotiation probe does not route 401/403 through the OAuth flow —
- * `classifyHttpError` turns them into an `SdkHttpError` with
- * `ClientHttpAuthentication` / `ClientHttpForbidden` — so a probe rejected for
- * auth reasons arrives as a different type entirely. Read via a duck-typed
- * `status` rather than `instanceof SdkHttpError` plus an `SdkErrorCode`
- * comparison: the numeric status is the stable part of that contract, and
- * matching on it also catches a gateway that surfaces 401/403 as some other
- * error shape.
+ * 401 only, deliberately. The suppression this feeds exists to avoid re-driving
+ * OAuth side effects, and in SDK v2 those side effects (`saveCodeVerifier`,
+ * `redirectToAuthorization`) live exclusively behind the transport's
+ * `status === 401 && this._authProvider` branch — a 403 never enters the OAuth
+ * flow at all. Meanwhile proxies and WAFs commonly answer an unknown method
+ * like `server/discover` with 403 without consulting credentials, so treating
+ * 403 as a credential rejection made exactly the deployments the legacy retry
+ * exists to rescue permanently unreachable, for OAuth users only. A 403 retry
+ * re-drives nothing; a 401 retry re-drives the flow. Match the side effect,
+ * not the status class.
+ *
+ * Read via a duck-typed `status` rather than `instanceof SdkHttpError` plus an
+ * `SdkErrorCode` comparison: the numeric status is the stable half of that
+ * contract, and it also catches a gateway surfacing 401 in some other error
+ * shape.
  *
  * Only consulted when the caller configured OAuth — see {@link isAuthFailure}.
  */
@@ -379,7 +394,7 @@ function isAuthStatus(err: unknown): boolean {
   const { status } = err as unknown as {
     status: unknown;
   };
-  return status === 401 || status === 403;
+  return status === 401;
 }
 
 /**

@@ -997,8 +997,8 @@ describe('legacy degradation under an implicit auto default', () => {
    * auth reasons is a different type entirely, and a guard keyed only on
    * `UnauthorizedError` would retry it and re-drive the flow.
    */
-  it('suppresses the retry for an auth-shaped HTTP status under OAuth', async () => {
-    state.httpErrorStatus = 403;
+  it('suppresses the retry for a 401 status under OAuth', async () => {
+    state.httpErrorStatus = 401;
 
     await expect(
       connect({
@@ -1008,6 +1008,27 @@ describe('legacy degradation under an implicit auto default', () => {
     ).rejects.toThrow();
 
     expect(state.negotiationModes).not.toContain('legacy');
+  });
+
+  /**
+   * A 403 degrades even under OAuth. The SDK's PKCE side effects
+   * (`saveCodeVerifier`, `redirectToAuthorization`) live exclusively behind its
+   * `status === 401 && authProvider` branch — a 403 never enters the OAuth flow,
+   * so a retry after one re-drives nothing. Suppressing on 403 made OAuth
+   * deployments behind WAFs that 403 unknown methods permanently unreachable —
+   * the exact scenario the legacy retry exists to rescue.
+   */
+  it('still degrades on a 403 under OAuth', async () => {
+    state.httpErrorStatus = 403;
+
+    await expect(
+      connect({
+        url: URL_UNDER_TEST,
+        auth: OAUTH_AUTH,
+      }),
+    ).rejects.toThrow();
+
+    expect(state.negotiationModes).toContain('legacy');
   });
 
   /**
@@ -1146,6 +1167,33 @@ describe('legacy degradation under an implicit auto default', () => {
       controller.signal,
     ]);
     await conn.close();
+  });
+
+  /**
+   * An abort arriving mid-attempt stops the ladder inside the pass, too — not
+   * only the legacy retry. The same signal rides into the SSE attempt, but
+   * whether the SDK interrupts `transport.start()` promptly is its business;
+   * the explicit check makes "abort means stop dialling" deterministic.
+   */
+  it('does not fall back to SSE when the caller aborted mid-attempt', async () => {
+    const controller = new AbortController();
+    // The HTTP attempt fails *because* the abort landed during it.
+    state.failing.add('streamableHttp');
+    controller.abort();
+
+    await expect(
+      connect({
+        url: URL_UNDER_TEST,
+        signal: controller.signal,
+        // Pinned negotiation isolates the in-pass ladder from the outer retry.
+        protocolNegotiation: 'auto',
+      }),
+    ).rejects.toThrow(MCPConnectionError);
+
+    // One dial: no SSE attempt behind an aborted caller.
+    expect(state.attempts.map((a) => a.kind)).toEqual([
+      'streamableHttp',
+    ]);
   });
 
   it('does not run the legacy retry when the caller aborted', async () => {
