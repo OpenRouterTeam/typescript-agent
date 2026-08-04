@@ -13,7 +13,7 @@
  * - D5     loopKey undefined → fallback (not a colliding constant)
  * - H1     DOCUMENTED MISS: nonce-varying args evade the fingerprint
  * - H2     server-tool repetition detected at the step checkpoint
- * - API1   declarative loopKey forms (field list, false)
+ * - API1   loopKey forms (computed function, false)
  * - config ON→OFF / OFF→ON lifecycle across resumes
  */
 import type { OpenRouterCore } from '@openrouter/sdk/core';
@@ -814,7 +814,7 @@ describe('D4: steer', () => {
 // ---------------------------------------------------------------------------
 
 describe('API1: declarative loopKey forms', () => {
-  it('field-array loopKey: same command in a different cwd is NOT a loop', async () => {
+  it('subset loopKey function: same command in a different cwd is NOT a loop', async () => {
     const runs: string[] = [];
     const bashTool = tool({
       name: 'bash',
@@ -826,11 +826,11 @@ describe('API1: declarative loopKey forms', () => {
       outputSchema: z.object({
         stdout: z.string(),
       }),
-      // Declarative: data, not code. verbose is deliberately excluded.
-      loopKey: [
-        'command',
-        'cwd',
-      ],
+      // Computed identity: verbose is deliberately excluded.
+      loopKey: ({ command, cwd }) => ({
+        command,
+        cwd,
+      }),
       execute: async ({ command, cwd }) => {
         runs.push(`${cwd}:${command}`);
         return {
@@ -871,7 +871,7 @@ describe('API1: declarative loopKey forms', () => {
     ]);
   });
 
-  it('field-array loopKey collapses excluded-field variation (verbose flag is not identity)', async () => {
+  it('function loopKey collapses excluded-field variation (verbose flag is not identity)', async () => {
     const executeSpy = vi.fn(async () => ({
       stdout: 'ok',
     }));
@@ -885,10 +885,10 @@ describe('API1: declarative loopKey forms', () => {
       outputSchema: z.object({
         stdout: z.string(),
       }),
-      loopKey: [
-        'command',
-        'cwd',
-      ],
+      loopKey: ({ command, cwd }) => ({
+        command,
+        cwd,
+      }),
       execute: executeSpy,
     });
 
@@ -1083,7 +1083,7 @@ describe('H1 (DOCUMENTED MISS): varying-args loops evade the default fingerprint
     expect(detections).toEqual([]);
   });
 
-  it('the same loop IS caught when the tool declares a field-list loopKey', async () => {
+  it('the same loop IS caught when the tool declares a loopKey function over the meaningful fields', async () => {
     const nonceTool = tool({
       name: 'lookup',
       inputSchema: z.object({
@@ -1093,9 +1093,9 @@ describe('H1 (DOCUMENTED MISS): varying-args loops evade the default fingerprint
       outputSchema: z.object({
         value: z.string(),
       }),
-      loopKey: [
-        'key',
-      ],
+      loopKey: ({ key }) => ({
+        key,
+      }),
       execute: async () => ({
         value: 'same',
       }),
