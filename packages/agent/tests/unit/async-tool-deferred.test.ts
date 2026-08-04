@@ -363,6 +363,7 @@ describe('tool.deferred — cross-process resume', () => {
       },
       run: {
         model: 'test-model',
+        toolChoice: 'required',
       },
     });
 
@@ -370,6 +371,7 @@ describe('tool.deferred — cross-process resume', () => {
     const text = await result?.getText();
     expect(text).toBe('The contract was approved.');
     expect(mockBetaResponsesSend).toHaveBeenCalledTimes(1);
+    expect(mockBetaResponsesSend.mock.calls[0]?.[1]?.responsesRequest?.toolChoice).toBe('auto');
 
     // The dispatched request input carries the envelope after the placeholder.
     const input = mockBetaResponsesSend.mock.calls[0]?.[1]?.responsesRequest?.input as Array<{

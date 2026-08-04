@@ -296,6 +296,11 @@ export async function resumeToolResults<TTools extends readonly Tool[]>(
     state.status === undefined;
   const updated = updateState(state, {
     messages: appendToMessages(state.messages, envelopes),
+    // This delivery continues a logical run whose forced tool choice was
+    // already satisfied by the tool call that created the pending task.
+    // Persist the fact rather than a copied effective value so the resumed
+    // request can re-resolve dynamic toolChoice parameters safely.
+    forcedToolChoiceSatisfied: true,
     settledAsyncCallIds: [
       ...(state.settledAsyncCallIds ?? []),
       ...settledNow.keys(),

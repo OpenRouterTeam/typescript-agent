@@ -1620,6 +1620,16 @@ export interface ConversationState<TTools extends readonly Tool[] = readonly Too
   messages: models.InputsUnion;
   /** Previous response ID for chaining (OpenRouter server-side optimization) */
   previousResponseId?: string;
+  /**
+   * Whether a tool round has already satisfied the caller's forced
+   * `toolChoice` for the active logical run. Persisted across approval,
+   * HITL, client-tool, and async-tool pauses so a resumed follow-up can
+   * synthesize text instead of being forced into another tool call.
+   *
+   * Cleared when the run completes. Absence means `false` for compatibility
+   * with state written by older SDK versions.
+   */
+  forcedToolChoiceSatisfied?: true;
   /** Tool calls awaiting human approval */
   pendingToolCalls?: Array<ParsedToolCall<TTools[number]>>;
   /** Tool results executed but not yet sent to the model */

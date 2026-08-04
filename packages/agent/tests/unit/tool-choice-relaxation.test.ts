@@ -11,6 +11,7 @@ vi.mock('@openrouter/sdk/funcs/betaResponsesSend', () => ({
 
 import { callModel } from '../../src/inner-loop/call-model.js';
 import { stepCountIs } from '../../src/lib/stop-conditions.js';
+import type { ConversationState, StateAccessor } from '../../src/lib/tool-types.js';
 import { ToolType } from '../../src/lib/tool-types.js';
 
 function toolCallResponse(id: string, callId: string): models.OpenResponsesResult {
@@ -105,6 +106,22 @@ function requestOfCall(index: number): models.ResponsesRequest {
   const request = mockBetaResponsesSend.mock.calls[index]?.[1]?.responsesRequest;
   expect(request).toBeDefined();
   return request as models.ResponsesRequest;
+}
+
+function createMemoryAccessor(): {
+  accessor: StateAccessor;
+  get: () => ConversationState | null;
+} {
+  let stored: ConversationState | null = null;
+  return {
+    accessor: {
+      load: async () => stored,
+      save: async (state) => {
+        stored = state;
+      },
+    },
+    get: () => stored,
+  };
 }
 
 /**
@@ -282,5 +299,130 @@ describe('forced tool choice relaxation on follow-up turns', () => {
     expect(mockBetaResponsesSend).toHaveBeenCalledTimes(3);
     expect(requestOfCall(1).toolChoice).toBe('auto');
     expect(requestOfCall(2).toolChoice).toBe('none');
+  });
+
+  it('persists satisfaction across approval resume and resets it after completion', async () => {
+    const approvalWeatherTool = {
+      ...weatherTool,
+      function: {
+        ...weatherTool.function,
+        requireApproval: true,
+      },
+    } as const;
+    const { accessor, get } = createMemoryAccessor();
+
+    mockBetaResponsesSend.mockResolvedValueOnce({
+      ok: true,
+      value: toolCallResponse('resp_1', 'call_1'),
+    });
+
+    await callModel(client, {
+      model: 'test-model',
+      input: 'What is the weather in Tokyo?',
+      tools: [
+        approvalWeatherTool,
+      ] as const,
+      toolChoice: 'required',
+      state: accessor,
+    }).getResponse();
+
+    expect(requestOfCall(0).toolChoice).toBe('required');
+    expect(get()?.status).toBe('awaiting_approval');
+    expect(get()?.forcedToolChoiceSatisfied).toBe(true);
+
+    mockBetaResponsesSend.mockResolvedValueOnce({
+      ok: true,
+      value: textResponse('It is 22 degrees.'),
+    });
+
+    const resumedText = await callModel(client, {
+      model: 'test-model',
+      input: [],
+      tools: [
+        approvalWeatherTool,
+      ] as const,
+      toolChoice: 'required',
+      state: accessor,
+      approveToolCalls: [
+        'call_1',
+      ],
+    }).getText();
+
+    expect(resumedText).toBe('It is 22 degrees.');
+    expect(requestOfCall(1).toolChoice).toBe('auto');
+    expect(get()?.status).toBe('complete');
+    expect(get()?.forcedToolChoiceSatisfied).toBeUndefined();
+
+    mockBetaResponsesSend.mockResolvedValueOnce({
+      ok: true,
+      value: toolCallResponse('resp_2', 'call_2'),
+    });
+
+    await callModel(client, {
+      model: 'test-model',
+      input: 'Start a new weather request.',
+      tools: [
+        approvalWeatherTool,
+      ] as const,
+      toolChoice: 'required',
+      state: accessor,
+    }).getResponse();
+
+    expect(requestOfCall(2).toolChoice).toBe('required');
+  });
+
+  it('relaxes the first model request after a manual client-tool resume', async () => {
+    const manualWeatherTool = {
+      ...weatherTool,
+      function: {
+        ...weatherTool.function,
+        execute: false,
+      },
+    } as const;
+    const { accessor, get } = createMemoryAccessor();
+
+    mockBetaResponsesSend
+      .mockResolvedValueOnce({
+        ok: true,
+        value: toolCallResponse('resp_1', 'call_1'),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        value: textResponse('It is 22 degrees.'),
+      });
+
+    await callModel(client, {
+      model: 'test-model',
+      input: 'What is the weather in Tokyo?',
+      tools: [
+        manualWeatherTool,
+      ] as const,
+      toolChoice: 'required',
+      state: accessor,
+    }).getResponse();
+
+    expect(get()?.status).toBe('awaiting_client_tools');
+    expect(get()?.forcedToolChoiceSatisfied).toBe(true);
+
+    const resumedText = await callModel(client, {
+      model: 'test-model',
+      input: [
+        {
+          type: 'function_call_output',
+          callId: 'call_1',
+          output: JSON.stringify({
+            temperature: 22,
+          }),
+        },
+      ],
+      tools: [
+        manualWeatherTool,
+      ] as const,
+      toolChoice: 'required',
+      state: accessor,
+    }).getText();
+
+    expect(resumedText).toBe('It is 22 degrees.');
+    expect(requestOfCall(1).toolChoice).toBe('auto');
   });
 });

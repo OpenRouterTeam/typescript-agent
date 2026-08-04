@@ -551,6 +551,11 @@ export class ModelResult<
   }> = [];
   // Track resolved request after async function resolution
   private resolvedRequest: models.ResponsesRequest | null = null;
+  // A forced caller-configured tool choice is a one-shot requirement for the
+  // active logical run. This bit survives state-backed pauses; the effective
+  // value is derived per turn so async parameters and allowed-tool sets stay
+  // current.
+  private forcedToolChoiceSatisfied = false;
   // Fresh user items to persist atomically with the assistant response
   private pendingFreshItems: models.BaseInputsUnion[] | undefined;
   private resumingFromClientTools = false;
@@ -1092,6 +1097,9 @@ export class ModelResult<
    * Sets the conversation status to 'complete' indicating no further tool execution is needed.
    */
   private async markStateComplete(): Promise<void> {
+    // A later conversational turn is a new logical run and may force its
+    // first tool call again.
+    this.forcedToolChoiceSatisfied = false;
     await this.saveStateSafely({
       status: 'complete',
     });
@@ -4060,7 +4068,7 @@ export class ModelResult<
    */
   private async resolveAsyncFunctionsForTurn(turnContext: TurnContext): Promise<void> {
     if (hasAsyncFunctions(this.options.request)) {
-      const resolved = await resolveAsyncFunctions(this.options.request, turnContext);
+      const resolved = await this.resolveRequestForContext(turnContext);
       // Preserve accumulated input from previous turns
       const preservedInput = this.resolvedRequest?.input;
       const preservedStream = this.resolvedRequest?.stream;
@@ -4137,11 +4145,10 @@ export class ModelResult<
     // would forbid the model from ever answering in text, looping it through
     // tool calls until the step budget runs out (DEV-785). Relax it to `auto`
     // so the model can either call another tool or synthesize its answer.
-    this.resolvedRequest = {
+    this.resolvedRequest = this.applyForcedToolChoicePolicy({
       ...this.resolvedRequest,
       input: newInput,
-      toolChoice: relaxForcedToolChoice(this.resolvedRequest.toolChoice),
-    };
+    });
 
     // Escalation recovery: one-turn overrides (model swap / forced advisor
     // consult) applied to THIS dispatch only — `resolvedRequest` above keeps
@@ -4589,7 +4596,8 @@ export class ModelResult<
    */
   private async resolveRequestForContext(context: TurnContext): Promise<ResolvedCallModelInput> {
     if (hasAsyncFunctions(this.options.request)) {
-      return resolveAsyncFunctions(this.options.request, context);
+      const resolved = await resolveAsyncFunctions(this.options.request, context);
+      return this.applyForcedToolChoicePolicy(resolved);
     }
     // Already resolved, extract non-function fields.
     // Strip ALL client-only fields — keep this list in sync with
@@ -4615,7 +4623,29 @@ export class ModelResult<
       asyncTools: _at,
       ...rest
     } = this.options.request;
-    return rest as ResolvedCallModelInput;
+    return this.applyForcedToolChoicePolicy(rest as ResolvedCallModelInput);
+  }
+
+  /**
+   * Derive the caller-configured tool choice for the active logical run.
+   * Engine-owned one-turn overrides (`none` for finalization, or a pinned
+   * doom-loop advisor) are applied after this helper and therefore still win.
+   */
+  private applyForcedToolChoicePolicy<
+    TRequest extends {
+      toolChoice?: models.ResponsesRequest['toolChoice'];
+    },
+  >(request: TRequest): TRequest {
+    if (!this.forcedToolChoiceSatisfied) {
+      return request;
+    }
+    const toolChoice = relaxForcedToolChoice(request.toolChoice);
+    return toolChoice === request.toolChoice
+      ? request
+      : {
+          ...request,
+          toolChoice,
+        };
   }
 
   /**
@@ -4716,6 +4746,21 @@ export class ModelResult<
 
     if (updates) {
       this.currentState = updateState(this.currentState, updates);
+    }
+
+    // Persist only the policy state, not a copied effective toolChoice. The
+    // configured value may be dynamic and is re-resolved on every turn.
+    if (this.forcedToolChoiceSatisfied) {
+      this.currentState = {
+        ...this.currentState,
+        forcedToolChoiceSatisfied: true,
+      };
+    } else if (this.currentState.forcedToolChoiceSatisfied !== undefined) {
+      const nextState = {
+        ...this.currentState,
+      };
+      delete nextState.forcedToolChoiceSatisfied;
+      this.currentState = nextState;
     }
 
     // Piggyback the doom-loop detector snapshot on every persist so loop
@@ -4823,6 +4868,14 @@ export class ModelResult<
         const loadedState = await this.stateAccessor.load();
         if (loadedState) {
           this.currentState = loadedState;
+          // Paused states written before this field existed also imply that
+          // the model already produced a tool call for the active run.
+          this.forcedToolChoiceSatisfied =
+            loadedState.forcedToolChoiceSatisfied === true ||
+            loadedState.status === 'awaiting_approval' ||
+            loadedState.status === 'awaiting_hitl' ||
+            loadedState.status === 'awaiting_client_tools' ||
+            loadedState.status === 'awaiting_async_tools';
 
           // Rehydrate doom-loop state so a resumed run continues where it
           // left off: streak counters always; the queued steer guidance;
@@ -5412,6 +5465,16 @@ export class ModelResult<
         // Get initial response
         let currentResponse = await this.getInitialResponse();
 
+        // toolChoice constrains model output, so the requirement is satisfied
+        // as soon as this turn emits a tool call. Record it before any
+        // approval/HITL/client/async pause can persist the run.
+        const hasToolCalls = currentResponse.output.some(
+          (item) => hasTypeProperty(item) && item.type === 'function_call',
+        );
+        if (hasToolCalls) {
+          this.forcedToolChoiceSatisfied = true;
+        }
+
         // Save initial response to state
         await this.saveResponseToState(currentResponse);
 
@@ -5420,10 +5483,6 @@ export class ModelResult<
         await this.checkDoomLoopForResponse(currentResponse);
 
         // Check if tools should be executed
-        const hasToolCalls = currentResponse.output.some(
-          (item) => hasTypeProperty(item) && item.type === 'function_call',
-        );
-
         if (!this.options.tools?.length || !hasToolCalls) {
           // A text verdict on the initial response may have armed a stop —
           // report the run as doom-stopped, not as a normal completion.
