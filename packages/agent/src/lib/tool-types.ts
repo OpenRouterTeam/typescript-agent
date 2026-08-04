@@ -695,7 +695,17 @@ export interface UnifiedToolFunction<
     | zodInfer<TOutput>
     | DeferredHandle<zodInfer<TOutput>>
     | AsyncGenerator<zodInfer<TEvent>, zodInfer<TOutput> | DeferredHandle<zodInfer<TOutput>>>;
-  /** Convert tool execution output to model-facing output */
+  /**
+   * Convert tool execution output to model-facing output.
+   *
+   * ROUND-SYNCHRONOUS RESULTS ONLY: applies to `lifecycle: 'sync'` results
+   * and background work that settles inside its grace window — the paths
+   * that produce a `function_call_output`. Late-delivered results
+   * (background past the grace window, deferred completions) arrive as a
+   * `tool_task_result` JSON envelope in a user-role message, which cannot
+   * carry this mapper's content-item arrays; they deliver the validated
+   * output verbatim.
+   */
   toModelOutput?: ToModelOutputFunction<zodInfer<TInput>, zodInfer<TOutput>>;
   /** Absent on unified tools — keeps them disjoint from legacy kinds. */
   readonly execute?: undefined;

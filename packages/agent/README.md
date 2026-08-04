@@ -503,7 +503,7 @@ const renderVideo = tool({
 });
 ```
 
-Without a custom `check`, the SDK default answers the three views (`status` / `logs` / `transcript`, truncated to `asyncTools.maxTranscriptChars`, default 20k). Task-tool calls are doom-loop-exempt, bypass per-tool concurrency/timeout gates, and never fire Pre/PostToolUse hooks. Disable entirely with `asyncTools: { checkins: false }` (placeholders then revert to "do not call this tool again"). A user tool named `task` suppresses the built-in with a warning.
+Without a custom `check`, the SDK default answers the three views (`status` / `logs` / `transcript`, truncated to `asyncTools.maxTranscriptChars`, default 20k). Task-tool calls are doom-loop-exempt, bypass per-tool concurrency/timeout gates, and never fire Pre/PostToolUse hooks. Disable entirely with `asyncTools: { checkins: false }` (placeholders then revert to "do not call this tool again"). The name `task` is reserved: `tool()` and `tool.agent()` reject it at definition time; a dynamically-built tool list that bypasses `tool()` and claims the name suppresses the built-in with a warning (and the engine routes `task` calls to that user tool instead of intercepting them).
 
 After a process restart, deferred tasks answer `status` from persisted state (including a bounded `lastLog`); full logs and transcripts are in-memory only and report an explanatory note instead.
 

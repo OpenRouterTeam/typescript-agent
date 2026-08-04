@@ -15,6 +15,10 @@ export interface SettledToolTask {
   result?: unknown;
   /** Present otherwise. */
   error?: string;
+  /** The call's arguments, when tracked — feeds PostToolUse at settle. */
+  input?: Record<string, unknown>;
+  /** Wall-clock ms from task start to settlement — feeds PostToolUse. */
+  durationMs: number;
 }
 
 /**
@@ -197,6 +201,10 @@ export class AsyncToolRegistry {
       callId,
       taskId: task.taskId,
       name: task.toolName,
+      durationMs: (task.settledAt ?? Date.now()) - task.startedAt,
+      ...(task.input !== undefined && {
+        input: task.input,
+      }),
       ...outcome,
     });
     const waiters = this.settleWaiters;

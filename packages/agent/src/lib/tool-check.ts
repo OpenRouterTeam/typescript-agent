@@ -175,9 +175,32 @@ export function defaultCheckResult(
 
   if (view === 'logs') {
     const tail = input.tail ?? 20;
+    // Same character budget as the transcript view: entries can be up to
+    // maxEntryBytes each (4k default, tool-raisable), so 200 uncapped
+    // entries could dump hundreds of KB into the model's context. Newest
+    // entries win — drop from the OLDEST end when over budget.
+    const entries = task.tailLogs(tail);
+    let budget = options.maxTranscriptChars;
+    let firstKept = entries.length;
+    for (let i = entries.length - 1; i >= 0; i--) {
+      const entry = entries[i];
+      const size =
+        typeof entry?.data === 'string'
+          ? entry.data.length
+          : (JSON.stringify(entry?.data)?.length ?? 0);
+      if (size > budget) {
+        break;
+      }
+      budget -= size;
+      firstKept = i;
+    }
+    const kept = entries.slice(firstKept);
     return {
       ...statusView,
-      logs: task.tailLogs(tail),
+      logs: kept,
+      ...(kept.length < entries.length && {
+        note: `Truncated to the ${kept.length} most recent entries (character budget); use view: 'transcript' or a smaller tail for more.`,
+      }),
     };
   }
   if (view === 'transcript') {

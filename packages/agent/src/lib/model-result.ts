@@ -1449,7 +1449,10 @@ export class ModelResult<
     // yet, so neither PostToolUse nor PostToolUseFailure fires; they will fire
     // if/when the tool is resumed and actually executes.
     // Async invocations (background/deferred) haven't produced their final
-    // output either — Post hooks fire when the task settles, not here.
+    // output either — Post hooks fire at settlement via
+    // emitAsyncSettledHooks (in-process delivery). Results delivered by
+    // resumeToolResults in ANOTHER process have no hooksManager there;
+    // that path stays uncovered and is documented on resumeToolResults.
     // Emit PostToolUse or PostToolUseFailure.
     if (this.hooksManager && result !== null && !isAsyncToolInvocation(result)) {
       if (result.error) {
@@ -1973,6 +1976,47 @@ export class ModelResult<
       }),
       sessionId: this.currentState?.id ?? '',
     };
+  }
+
+  /**
+   * Emit PostToolUse / PostToolUseFailure for an async task at settlement —
+   * the point its final output actually exists. Round-synchronous tools
+   * emit these in runToolWithHooks; async invocations skip that emission
+   * (no output yet) and land here instead. `durationMs` is the task's
+   * start-to-settle wall clock (includes background-pool queue wait, which
+   * counts against the task's own timeout budget). Observation-only — a
+   * throwing hook must not break delivery.
+   */
+  private async emitAsyncSettledHooks(task: SettledToolTask): Promise<void> {
+    if (!this.hooksManager) {
+      return;
+    }
+    try {
+      if (task.status === 'completed') {
+        await this.hooksManager.emit(
+          'PostToolUse',
+          {
+            toolName: task.name,
+            toolInput: task.input ?? {},
+            toolOutput: task.result,
+            durationMs: task.durationMs,
+          },
+          this.hookEmitContext(task.name),
+        );
+      } else {
+        await this.hooksManager.emit(
+          'PostToolUseFailure',
+          {
+            toolName: task.name,
+            toolInput: task.input ?? {},
+            error: new Error(task.error ?? `Task ${task.taskId} ${task.status}`),
+          },
+          this.hookEmitContext(task.name),
+        );
+      }
+    } catch (error) {
+      console.warn('[AsyncTools] PostToolUse hook threw during async settlement:', error);
+    }
   }
 
   /**
@@ -2747,6 +2791,11 @@ export class ModelResult<
           task.result as InferToolOutputsUnion<TTools>,
         );
       }
+      // PostToolUse/PostToolUseFailure fire at SETTLEMENT for async tools —
+      // the observation-only audit surface (secret scanning, output review)
+      // must cover long-running results, which are exactly the ones that
+      // arrive from external processes.
+      await this.emitAsyncSettledHooks(task);
       envelopes.push(
         JSON.stringify({
           type: 'tool_task_result',
@@ -3394,6 +3443,9 @@ export class ModelResult<
       ...(logLimits !== undefined && {
         limits: logLimits,
       }),
+      // Carried so PostToolUse/PostToolUseFailure can fire at settlement
+      // with the same payload shape as round-synchronous executions.
+      input: (toolCall.arguments ?? {}) as Record<string, unknown>,
     });
     runBinding.bind(liveTask);
     // Visible to steering / cancel / snapshots from the start — a large
@@ -3557,26 +3609,33 @@ export class ModelResult<
   }
 
   /**
-   * Run a background tool's work under the background pool AND the tool's
-   * own concurrency gate. The round released its per-tool slot when the
-   * call escaped (the thunk had not run yet), so the gate is re-acquired
-   * here for the body's lifetime — `maxConcurrency` bounds executions of
-   * the BODY, wherever they run. Acquisition order (pool, then gate)
-   * keeps the gate last, matching the round path (round gate, then
-   * per-tool gate), so multi-gate acquisition stays deadlock-free. Queue
-   * wait counts against the task's own timeout (tracked by the registry);
-   * an abort observed before the slots free up short-circuits without
-   * running the body.
+   * Run a background tool's work under the tool's own concurrency gate AND
+   * the background pool. The round path does not touch the per-tool gate
+   * for background lifecycles (the thunk had not run yet), so the gate is
+   * acquired here for the body's lifetime — `maxConcurrency` bounds
+   * executions of the BODY, wherever they run.
+   *
+   * Acquisition order: per-tool gate FIRST, then the pool. The narrow gate
+   * is where a saturated tool's excess calls queue — queuing them on the
+   * shared pool instead would let 16 waiters on one maxConcurrency:2 tool
+   * hold every global slot while only two bodies run, starving every other
+   * background tool. Order is deadlock-safe: only background bodies take
+   * the per-tool gate (the round path skips it for them), and every body
+   * acquires in this same fixed order.
+   *
+   * Queue wait counts against the task's own timeout (tracked by the
+   * registry); an abort observed before the slots free up short-circuits
+   * without running the body.
    */
   private async runBackgroundWork(
     toolName: string,
     run: () => Promise<unknown>,
     controller: AbortController,
   ): Promise<unknown> {
-    const pool = this.backgroundPool;
-    const releasePool = pool ? await pool.acquire() : undefined;
     const gate = this.perToolGate(toolName);
     const releaseGate = gate ? await gate.acquire() : undefined;
+    const pool = this.backgroundPool;
+    const releasePool = pool ? await pool.acquire() : undefined;
     try {
       if (controller.signal.aborted) {
         throw controller.signal.reason instanceof Error
@@ -3585,8 +3644,8 @@ export class ModelResult<
       }
       return await run();
     } finally {
-      releaseGate?.();
       releasePool?.();
+      releaseGate?.();
     }
   }
 
@@ -3875,7 +3934,10 @@ export class ModelResult<
 
     // Cross-process / post-restart: only persisted status survives. A
     // custom check.execute still runs, with a state-backed context (no
-    // live task handle).
+    // live task handle — `turnContext.task` is absent here). Handlers
+    // written against `task.statusView()` with optional chaining return
+    // undefined in this situation; fall back to the persisted status view
+    // rather than answering the model with nothing.
     const checkTurnContext: TurnContext = {
       numberOfTurns: this.allToolExecutionRounds.length + 1,
       toolCallStatus: persisted.status,
@@ -3885,14 +3947,18 @@ export class ModelResult<
           ]
         : [],
     };
-    return execute
+    const customResult = execute
       ? await Promise.resolve(execute(customParams, checkTurnContext))
-      : persistedTaskCheckResult(
-          {
-            view: input.view,
-          },
-          persisted,
-        );
+      : undefined;
+    return (
+      customResult ??
+      persistedTaskCheckResult(
+        {
+          view: input.view,
+        },
+        persisted,
+      )
+    );
   }
 
   /** Build the narrow ToolTaskHandle façade for check.execute handlers. */

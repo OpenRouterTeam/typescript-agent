@@ -142,6 +142,8 @@ export class ToolTask {
   orphaned?: boolean;
   result?: unknown;
   error?: string;
+  /** The call's arguments — carried so PostToolUse hooks can fire at settle. */
+  input?: Record<string, unknown>;
   /** Background/agent only: aborts ctx.signal. Dropped on settle (leak guard). */
   controller?: AbortController | undefined;
   /** Agent tools attach a live child-conversation transcript source. */
@@ -166,6 +168,7 @@ export class ToolTask {
     pollAfterMs?: number;
     controller?: AbortController;
     limits?: Partial<TaskLogLimits>;
+    input?: Record<string, unknown>;
   }) {
     this.taskId = entry.taskId;
     this.callId = entry.callId;
@@ -181,6 +184,9 @@ export class ToolTask {
     }
     if (entry.controller !== undefined) {
       this.controller = entry.controller;
+    }
+    if (entry.input !== undefined) {
+      this.input = entry.input;
     }
     this.limits = {
       ...DEFAULT_TASK_LOG_LIMITS,

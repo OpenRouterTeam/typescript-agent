@@ -183,6 +183,13 @@ function resolvePendingTask({
  * — a per-conversation lock or queue in your StateAccessor, or batch
  * concurrent completions into one call via `results: [...]` (which settles
  * any number of tasks atomically).
+ *
+ * HOOKS: PostToolUse / PostToolUseFailure do NOT fire here — hooks are
+ * run-scoped (a HooksManager passed to `callModel`), and this entry point
+ * runs outside any run, typically in another process. Deployments that
+ * audit tool outputs via hooks should scan webhook payloads in the webhook
+ * handler itself. In-process settlements (background tasks) DO fire these
+ * hooks at delivery.
  */
 export async function resumeToolResults<TTools extends readonly Tool[]>(
   client: OpenRouterCore,
