@@ -1113,6 +1113,75 @@ describe('same-tool fan-out streaks', () => {
     ]);
   });
 
+  it('bounds a mixed-evidence round to one message per distinct fact', async () => {
+    /*
+     * One round can carry TWO pieces of evidence: `[a]`, `[a,b]`, `[a,b]` —
+     * by round 3, `a` is a 3-peat call (per-call branch) while `{a,b}` is a
+     * 2-peat set (round branch), so the round legitimately renders two
+     * DIFFERENT messages stating two different facts. What must hold is the
+     * bound: same evidence -> byte-identical text, so the steer queue carries
+     * at most one message per distinct fact per tool per round — never one
+     * per call. The wide-round test below pins the N-collapses-to-1 case;
+     * this pins the two-facts case at exactly 2, with the members of each
+     * fact sharing text.
+     */
+    const detector = new DoomLoopMonitor(
+      resolveDoomLoopOption({
+        ladder: {
+          steer: 2,
+        },
+      }),
+    );
+    const rounds = [
+      [
+        'a',
+      ],
+      [
+        'a',
+        'b',
+      ],
+      [
+        'a',
+        'b',
+      ],
+    ];
+    const lastRound = rounds.length - 1;
+    const messages: string[] = [];
+    for (const [round, paths] of rounds.entries()) {
+      await detector.declareRound(
+        round,
+        paths.map((path) => ({
+          toolName: 'read',
+          keyMaterial: {
+            path,
+          },
+        })),
+      );
+      for (const path of paths) {
+        const record = await detector.recordToolCall(
+          'read',
+          {
+            path,
+          },
+          round,
+        );
+        if (round === lastRound && record.verdict) {
+          messages.push(record.verdict.message);
+        }
+      }
+    }
+
+    /*
+     * Final round: `a` is a 3-peat call (per-call branch, count 3) while
+     * `{a,b}` is a 2-peat set (`b` ties the round streak, round-set branch).
+     * Two verdicts, two distinct messages — one per fact, not one per call.
+     */
+    expect(messages).toHaveLength(2);
+    expect(new Set(messages).size).toBe(2);
+    expect(messages[0]).toContain('3 consecutive rounds');
+    expect(messages[1]).toContain('same set of 2 parallel calls');
+  });
+
   it('collapses per-call steer messages across a wide repeating round', async () => {
     /*
      * When per-call counts decide for MANY members at once (a wide fan-out

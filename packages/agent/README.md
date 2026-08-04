@@ -307,11 +307,15 @@ Two kinds of evidence accumulate side by side, and the stronger one decides:
   double-fires.
 
 When a repeating fan-out crosses a rung, every call in the round gets the
-verdict (so `block` stops the whole fan-out, not just one member) and they
-share one message, so the `steer` rung injects a single correction. When the
-per-call count alone crosses a rung, only that call is refused — its verdict
-quotes its own identity, and genuinely new round-mates run free. The streak
-crosses a graduated ladder — strongest crossed rung wins:
+verdict (so `block` stops the whole fan-out, not just one member), and calls
+carrying the SAME evidence share byte-identical text — the `steer` rung
+dedupes on exact text, so one piece of evidence injects one correction. A
+round can carry two pieces of evidence at once (`[a]`, `[a,b]`, `[a,b]`: by
+round 3, `a` is a 3-peat call while `{a,b}` is a 2-peat set), in which case
+each renders its own message — at most two per tool per round, each stating
+a distinct fact. When the per-call count alone crosses a rung, only that
+call is refused and genuinely new round-mates run free. The streak crosses
+a graduated ladder — strongest crossed rung wins:
 
 | Action | Effect |
 |---|---|
