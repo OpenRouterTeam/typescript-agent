@@ -33,7 +33,7 @@ import {
 } from './next-turn-params.js';
 import { ReusableReadableStream } from './reusable-stream.js';
 import { isStopConditionMet } from './stop-conditions.js';
-import type { ItemInProgress, StreamableOutputItem } from './stream-transformers.js';
+import type { ItemInProgress, StreamableOutputItem, UiStreamEvent } from './stream-transformers.js';
 import {
   buildItemsStream,
   buildResponsesMessageStream,
@@ -47,6 +47,7 @@ import {
   extractToolDeltas,
   itemsStreamHandlers,
   streamTerminationEvents,
+  translateUiEvent,
 } from './stream-transformers.js';
 import {
   hasTypeProperty,
@@ -78,6 +79,7 @@ import type {
   ToolContextMapWithShared,
   ToolResultItem,
   ToolStreamEvent,
+  ToolUiFragmentEvent,
   TurnContext,
   TurnEndEvent,
   TurnStartEvent,
@@ -2580,6 +2582,10 @@ export class ModelResult<
     const settledResults = await Promise.allSettled(toolCallPromises);
     const toolResults: models.FunctionCallOutputItem[] = [];
     const pausedCalls: ParsedToolCall<Tool>[] = [];
+    // Render-only work (toUiOutput) collected during aggregation and awaited
+    // as one batch below, so user-supplied fragment builders don't serially
+    // delay the follow-up model turn.
+    const uiFragmentPromises: Promise<void>[] = [];
 
     for (let i = 0; i < settledResults.length; i++) {
       const settled = settledResults[i];
@@ -2670,12 +2676,72 @@ export class ModelResult<
         output: executedOutput,
         timestamp: Date.now(),
       } satisfies ToolCallOutputEvent);
+
+      uiFragmentPromises.push(this.broadcastUiFragment(value));
     }
+
+    // broadcastUiFragment never rejects (errors degrade to a console.warn),
+    // so a plain all() is safe here.
+    await Promise.all(uiFragmentPromises);
 
     return {
       toolResults,
       pausedCalls,
     };
+  }
+
+  /**
+   * Compute and broadcast a tool-authored OpenUI fragment for a successful
+   * execution. Render-only: the fragment never reaches the model, so a
+   * throwing `toUiOutput` degrades to "no fragment" instead of failing the
+   * round — the model-facing output has already been pushed.
+   */
+  private async broadcastUiFragment(value: {
+    toolCall: ParsedToolCall<Tool>;
+    tool: Tool;
+    result: {
+      result: unknown;
+      error?: Error;
+    };
+  }): Promise<void> {
+    if (
+      value.result.error ||
+      !isAutoResolvableTool(value.tool) ||
+      !value.tool.function.toUiOutput
+    ) {
+      return;
+    }
+    const rawArgs: unknown = value.toolCall.arguments;
+    if (!isRecord(rawArgs)) {
+      return;
+    }
+    try {
+      const fragment = await value.tool.function.toUiOutput({
+        output: value.result.result,
+        input: rawArgs,
+      });
+      if (!fragment) {
+        return;
+      }
+      this.turnBroadcaster?.push({
+        type: 'tool.ui_fragment' as const,
+        toolCallId: value.toolCall.id,
+        toolName: value.toolCall.name,
+        fragment: {
+          dialect: fragment.dialect,
+          source: fragment.source,
+        },
+        timestamp: Date.now(),
+      } satisfies ToolUiFragmentEvent);
+    } catch (error) {
+      // Fragment construction failed — drop it; rendering is best-effort. But
+      // surface the cause, or a throwing toUiOutput is undebuggable ("no
+      // fragment ever arrives", with nothing in the console).
+      console.warn(
+        `toUiOutput for tool "${value.toolCall.name}" (call ${value.toolCall.id}) threw; dropping UI fragment:`,
+        error,
+      );
+    }
   }
 
   /**
@@ -4585,6 +4651,53 @@ export class ModelResult<
       for await (const event of consumer) {
         if (isReasoningDeltaEvent(event as models.StreamEvents)) {
           yield (event as models.ReasoningDeltaEvent).delta;
+        }
+      }
+
+      await executionPromise;
+    }.call(this);
+  }
+
+  /**
+   * Stream OpenUI events from all turns: completed OpenUI Lang statements
+   * authored by the model (`response.openui.*` wire events from the `openui`
+   * plugin) and tool-authored fragments (`tool.ui_fragment` events produced
+   * by tools declaring `toUiOutput`).
+   *
+   * Wire events not yet in the SDK's stream-event union arrive through its
+   * forward-compat catch-all; translation reads the raw payload, so this
+   * stream works both before and after the SDK regen picks them up.
+   */
+  getUiStream(): AsyncIterableIterator<UiStreamEvent> {
+    return async function* (this: ModelResult<TTools, TShared>) {
+      await this.initStreamGuarded();
+
+      if (!this.options.tools?.length) {
+        let streamFailed = false;
+        try {
+          if (this.reusableStream) {
+            for await (const event of this.reusableStream.createConsumer()) {
+              const uiEvent = translateUiEvent(event);
+              if (uiEvent) {
+                yield uiEvent;
+              }
+            }
+          }
+        } catch (error) {
+          streamFailed = true;
+          throw error;
+        } finally {
+          await this.finishHooksSessionForStream(streamFailed ? 'error' : 'complete');
+        }
+        return;
+      }
+
+      const { consumer, executionPromise } = this.startTurnBroadcasterExecution();
+
+      for await (const event of consumer) {
+        const uiEvent = translateUiEvent(event);
+        if (uiEvent) {
+          yield uiEvent;
         }
       }
 

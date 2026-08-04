@@ -2,6 +2,7 @@ import type * as models from '@openrouter/sdk/models';
 import type { StreamEvents } from '@openrouter/sdk/models';
 import type { $ZodObject, $ZodShape, $ZodType, infer as zodInfer } from 'zod/v4/core';
 import type { DoomLoopSerializedState } from './doom-loop.js';
+import type { UiFragment } from './openui/document.js';
 
 /**
  * Tool type enum for enhanced tools
@@ -266,6 +267,22 @@ export type ToModelOutputFunction<TInput, TOutput> = {
 }['bivarianceHack'];
 
 /**
+ * Function to convert tool execution output to a renderable UI fragment
+ * (OpenUI). Runs after a successful execution alongside `toModelOutput`; the
+ * fragment is broadcast as a `tool.ui_fragment` stream event and never sent
+ * to the model. Returning `null`/`undefined` emits nothing for this call.
+ * @template TInput - The tool's input type
+ * @template TOutput - The tool's output type
+ */
+// Object-with-method form for bivariant param checking — see ToModelOutputFunction.
+export type ToUiOutputFunction<TInput, TOutput> = {
+  bivarianceHack(params: {
+    output: TOutput;
+    input: TInput;
+  }): UiFragment | null | undefined | Promise<UiFragment | null | undefined>;
+}['bivarianceHack'];
+
+/**
  * Base tool function interface with inputSchema
  * @template TInput - Zod schema for tool input
  * @template TCtx - Zod schema for tool context (optional; default = erased wide type)
@@ -319,6 +336,8 @@ export interface ToolFunctionWithExecute<
   ): Promise<zodInfer<TOutput>> | zodInfer<TOutput>;
   /** Convert tool execution output to model-facing output */
   toModelOutput?: ToModelOutputFunction<zodInfer<TInput>, zodInfer<TOutput>>;
+  /** Convert tool execution output to a renderable OpenUI fragment */
+  toUiOutput?: ToUiOutputFunction<zodInfer<TInput>, zodInfer<TOutput>>;
 }
 
 /**
@@ -360,6 +379,8 @@ export interface ToolFunctionWithGenerator<
   ): AsyncGenerator<zodInfer<TEvent> | zodInfer<TOutput>, zodInfer<TOutput> | undefined>;
   /** Convert tool execution output to model-facing output */
   toModelOutput?: ToModelOutputFunction<zodInfer<TInput>, zodInfer<TOutput>>;
+  /** Convert tool execution output to a renderable OpenUI fragment */
+  toUiOutput?: ToUiOutputFunction<zodInfer<TInput>, zodInfer<TOutput>>;
 }
 
 /**
@@ -409,6 +430,8 @@ export interface HITLToolFunction<
     context?: ToolExecuteContext<TName, TContext>,
   ): Promise<zodInfer<TOutput>> | zodInfer<TOutput>;
   toModelOutput?: ToModelOutputFunction<zodInfer<TInput>, zodInfer<TOutput>>;
+  /** Convert tool execution output to a renderable OpenUI fragment */
+  toUiOutput?: ToUiOutputFunction<zodInfer<TInput>, zodInfer<TOutput>>;
 }
 
 /**
@@ -965,6 +988,19 @@ export type ToolCallOutputEvent = {
 };
 
 /**
+ * Tool UI fragment event carrying a tool-authored OpenUI fragment.
+ * Broadcast by executeToolRound after a successful execution when the tool
+ * declares `toUiOutput`. Client-render only — never sent to the model.
+ */
+export type ToolUiFragmentEvent = {
+  type: 'tool.ui_fragment';
+  toolCallId: string;
+  toolName: string;
+  fragment: UiFragment;
+  timestamp: number;
+};
+
+/**
  * Turn start event emitted at the beginning of each API turn
  * Turn 0 is the initial request, subsequent turns follow tool execution
  */
@@ -995,6 +1031,7 @@ export type ResponseStreamEvent<TEvent = unknown, TResult = unknown> =
   | ToolPreliminaryResultEvent<TEvent>
   | ToolResultEvent<TResult, TEvent>
   | ToolCallOutputEvent
+  | ToolUiFragmentEvent
   | TurnStartEvent
   | TurnEndEvent;
 
@@ -1021,6 +1058,13 @@ export function isToolResultEvent<TResult = unknown, TPreliminaryResults = unkno
  */
 export function isToolCallOutputEvent(event: ResponseStreamEvent): event is ToolCallOutputEvent {
   return event.type === 'tool.call_output';
+}
+
+/**
+ * Type guard to check if an event is a tool UI fragment event
+ */
+export function isToolUiFragmentEvent(event: ResponseStreamEvent): event is ToolUiFragmentEvent {
+  return event.type === 'tool.ui_fragment';
 }
 
 /**

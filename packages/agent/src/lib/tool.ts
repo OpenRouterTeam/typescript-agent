@@ -15,6 +15,7 @@ import type {
   ToolLoopKey,
   ToolWithExecute,
   ToolWithGenerator,
+  ToUiOutputFunction,
 } from './tool-types.js';
 import { isClientTool, SHARED_CONTEXT_KEY, ToolType } from './tool-types.js';
 
@@ -48,6 +49,8 @@ type RegularToolConfigWithOutput<
   ) => Promise<zodInfer<TOutput>> | zodInfer<TOutput>;
   /** Convert tool execution output to model-facing output */
   toModelOutput?: ToModelOutputFunction<zodInfer<TInput>, zodInfer<TOutput>>;
+  /** Convert tool execution output to a renderable OpenUI fragment */
+  toUiOutput?: ToUiOutputFunction<zodInfer<TInput>, zodInfer<TOutput>>;
 };
 
 /**
@@ -76,6 +79,8 @@ type RegularToolConfigWithoutOutput<
   ) => Promise<TReturn> | TReturn;
   /** Convert tool execution output to model-facing output */
   toModelOutput?: ToModelOutputFunction<zodInfer<TInput>, TReturn>;
+  /** Convert tool execution output to a renderable OpenUI fragment */
+  toUiOutput?: ToUiOutputFunction<zodInfer<TInput>, TReturn>;
 };
 
 /**
@@ -105,6 +110,8 @@ type GeneratorToolConfig<
   ) => AsyncGenerator<zodInfer<TEvent> | zodInfer<TOutput>>;
   /** Convert tool execution output to model-facing output */
   toModelOutput?: ToModelOutputFunction<zodInfer<TInput>, zodInfer<TOutput>>;
+  /** Convert tool execution output to a renderable OpenUI fragment */
+  toUiOutput?: ToUiOutputFunction<zodInfer<TInput>, zodInfer<TOutput>>;
 };
 
 /**
@@ -171,6 +178,8 @@ type HITLToolConfig<
   ) => Promise<zodInfer<TOutput>> | zodInfer<TOutput>;
   /** Convert tool execution output to model-facing output */
   toModelOutput?: ToModelOutputFunction<zodInfer<TInput>, zodInfer<TOutput>>;
+  /** Convert tool execution output to a renderable OpenUI fragment */
+  toUiOutput?: ToUiOutputFunction<zodInfer<TInput>, zodInfer<TOutput>>;
 };
 
 /**
@@ -203,6 +212,8 @@ type ToolConfigWithSharedContext<
     | false;
   /** Convert tool execution output to model-facing output */
   toModelOutput?: ToModelOutputFunction<Record<string, unknown>, unknown>;
+  /** Convert tool execution output to a renderable OpenUI fragment */
+  toUiOutput?: ToUiOutputFunction<Record<string, unknown>, unknown>;
 };
 
 //#endregion
@@ -379,6 +390,10 @@ export function tool(
       fn.toModelOutput = config.toModelOutput;
     }
 
+    if (config.toUiOutput !== undefined) {
+      fn.toUiOutput = config.toUiOutput;
+    }
+
     return {
       type: ToolType.Function,
       function: fn,
@@ -464,6 +479,10 @@ export function tool(
       fn.toModelOutput = config.toModelOutput;
     }
 
+    if ('toUiOutput' in config && config.toUiOutput !== undefined) {
+      fn.toUiOutput = config.toUiOutput;
+    }
+
     return {
       type: ToolType.Function,
       function: fn,
@@ -496,6 +515,10 @@ export function tool(
     ...('toModelOutput' in config &&
       config.toModelOutput !== undefined && {
         toModelOutput: config.toModelOutput,
+      }),
+    ...('toUiOutput' in config &&
+      config.toUiOutput !== undefined && {
+        toUiOutput: config.toUiOutput,
       }),
   };
 
