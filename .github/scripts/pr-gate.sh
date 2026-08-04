@@ -23,12 +23,13 @@
 #                     allowlist). The merge is refused if the PR head no longer
 #                     matches, closing the TOCTOU window between the caller's
 #                     check and the merge. Exit 1 (needs a re-run to re-vet).
-#   SCOPE_ALLOWLIST   optional, with EXPECTED_HEAD — extended regex of allowed
-#                     file paths. When the head moved, the gate re-vets the
-#                     PR's files against this before refusing: a moved head
-#                     whose full diff still matches (e.g. changesets/action
-#                     refreshed the Version PR mid-gate) adopts the new head
-#                     and keeps polling instead of failing the run.
+#   SCOPE_SCRIPT      optional, with EXPECTED_HEAD — path to a script (run
+#                     with PR/REPO in env) that exits 0 iff the PR's current
+#                     diff is safe to merge unattended. When the head moved,
+#                     the gate re-vets by re-running it: a moved head that
+#                     still passes (e.g. changesets/action refreshed the
+#                     Version PR mid-gate) adopts the new head and keeps
+#                     polling instead of failing the run.
 #   SLACK_BOT_TOKEN   optional — Slack bot token for chat.postMessage
 #   SLACK_CHANNEL_ID  optional — Slack channel for alerts
 #   RUN_URL           optional — link back to this workflow run
@@ -68,16 +69,40 @@ PR_URL="${GITHUB_SERVER_URL:-https://github.com}/${REPO}/pull/${PR}"
 
 # True when BLOCK_LABEL is set and currently on the PR. Queried live each time
 # so a hold applied while we're polling takes effect before any merge.
+# 0 = held, 1 = not held, 2 = labels unreadable after retries. Callers must
+# treat 2 as "do not merge" (fail closed) but report it as a read failure and
+# exit non-zero — a green run claiming a deliberate pause that nobody applied
+# would hide the skipped release from the people meant to investigate.
 held() {
   [ -n "${BLOCK_LABEL:-}" ] || return 1
-  # Fail closed: this is the final safety control before an unattended merge,
-  # so "couldn't read the labels" must not be read as "no hold".
-  local labels
-  if ! labels="$(gh pr view "$PR" -R "$REPO" --json labels --jq '.labels[].name')"; then
-    echo "::warning::could not read labels for PR #${PR}; treating as held (fail closed)"
-    return 0
-  fi
-  printf '%s\n' "$labels" | grep -qxF "$BLOCK_LABEL"
+  local labels attempt
+  for attempt in 1 2 3; do
+    if labels="$(gh pr view "$PR" -R "$REPO" --json labels --jq '.labels[].name')"; then
+      printf '%s\n' "$labels" | grep -qxF "$BLOCK_LABEL" && return 0 || return 1
+    fi
+    sleep $((attempt * 5))
+  done
+  echo "::warning::could not read labels for PR #${PR} after 3 attempts"
+  return 2
+}
+
+# held, exit as appropriate; no-op when not held. $1 names the checkpoint for
+# the Slack message ("during the gate" / "just before merge").
+check_hold() {
+  local when="$1" rc=0
+  held || rc=$?
+  case "$rc" in
+    0)
+      slack ":double_vertical_bar: ${GATE_LABEL} <${PR_URL}|PR #${PR}> has \`${BLOCK_LABEL}\` — gate paused ${when}. Remove the label to resume on the next run. <${RUN_URL:-$PR_URL}|run>"
+      echo "PR #${PR} carries ${BLOCK_LABEL}; exiting without merging."
+      exit 0
+      ;;
+    2)
+      slack ":warning: ${GATE_LABEL} <${PR_URL}|PR #${PR}>: could not read PR labels ${when} — refusing to merge (cannot rule out a \`${BLOCK_LABEL}\` hold). This is an API failure, not a deliberate pause. <${RUN_URL:-$PR_URL}|run>"
+      echo "::error::labels unreadable for PR #${PR}; failing closed without merging."
+      exit 1
+      ;;
+  esac
 }
 
 # Returns one of: PASS PENDING FAIL_CI FAIL_REVIEWER, plus a reason line on
@@ -142,11 +167,7 @@ LAST_REASON=""
 while :; do
   NOW=$(date +%s); ELAPSED=$((NOW - START))
 
-  if held; then
-    slack ":double_vertical_bar: ${GATE_LABEL} <${PR_URL}|PR #${PR}> has \`${BLOCK_LABEL}\` — gate paused, not merging. Remove the label to resume on the next run. <${RUN_URL:-$PR_URL}|run>"
-    echo "PR #${PR} carries ${BLOCK_LABEL}; exiting without merging."
-    exit 0
-  fi
+  check_hold "during the gate"
 
   REASON="$(verdict 2>/tmp/gate.state)" || true
   STATE="$(cat /tmp/gate.state)"
@@ -171,37 +192,28 @@ while :; do
       fi
       # Last-instant hold check: the settle sleep is a window in which a
       # human may have applied the hold label after the loop-top check.
-      if held; then
-        slack ":double_vertical_bar: ${GATE_LABEL} <${PR_URL}|PR #${PR}> has \`${BLOCK_LABEL}\` — gate paused just before merge. Remove the label to resume on the next run. <${RUN_URL:-$PR_URL}|run>"
-        echo "PR #${PR} carries ${BLOCK_LABEL}; exiting without merging."
-        exit 0
-      fi
+      check_hold "just before merge"
       # Head pin: never merge a head nobody vetted. Checked at the last
       # instant so commits pushed at any point during the poll are caught,
       # not just ones present at loop start. A moved head is not necessarily
       # hostile — changesets/action force-pushes the Version PR whenever
-      # another PR lands on main — so when SCOPE_ALLOWLIST is provided,
-      # re-vet the new head's full file list first and only refuse if it no
-      # longer fits the allowlist; otherwise adopt the new head and resume
-      # polling (its checks just restarted).
+      # another PR lands on main — so when SCOPE_SCRIPT is provided, re-vet
+      # the new head by re-running it and only refuse if it fails; otherwise
+      # adopt the new head and resume polling (its checks just restarted).
       if [ -n "${EXPECTED_HEAD:-}" ]; then
         CURRENT_HEAD="$(gh pr view "$PR" -R "$REPO" --json headRefOid --jq '.headRefOid')"
         if [ "$CURRENT_HEAD" != "$EXPECTED_HEAD" ]; then
           REVETTED=false
-          if [ -n "${SCOPE_ALLOWLIST:-}" ]; then
-            if FILES="$(gh pr view "$PR" -R "$REPO" --json files --jq '.files[].path')" \
-               && [ -n "$FILES" ] \
-               && ! printf '%s\n' "$FILES" | grep -qvE "$SCOPE_ALLOWLIST"; then
-              REVETTED=true
-            fi
+          if [ -n "${SCOPE_SCRIPT:-}" ] && PR="$PR" REPO="$REPO" "$SCOPE_SCRIPT" >/dev/null; then
+            REVETTED=true
           fi
           if [ "$REVETTED" = "true" ]; then
-            echo "PR #${PR} head moved ${EXPECTED_HEAD:0:7} → ${CURRENT_HEAD:0:7}; diff still within scope allowlist — adopting new head and re-polling."
+            echo "PR #${PR} head moved ${EXPECTED_HEAD:0:7} → ${CURRENT_HEAD:0:7}; new diff passes the scope check — adopting new head and re-polling."
             EXPECTED_HEAD="$CURRENT_HEAD"
             LAST_REASON=""
             continue
           fi
-          slack ":no_entry: ${GATE_LABEL} <${PR_URL}|PR #${PR}> head moved during the gate (${EXPECTED_HEAD:0:7} → ${CURRENT_HEAD:0:7}) and the new diff fails the scope allowlist (or could not be read) — refusing to merge unvetted commits. Re-run the workflow to re-vet. <${RUN_URL:-$PR_URL}|run>"
+          slack ":no_entry: ${GATE_LABEL} <${PR_URL}|PR #${PR}> head moved during the gate (${EXPECTED_HEAD:0:7} → ${CURRENT_HEAD:0:7}) and the new diff fails the scope check (or could not be read) — refusing to merge unvetted commits. Re-run the workflow to re-vet. <${RUN_URL:-$PR_URL}|run>"
           echo "::error::PR #${PR} head changed ${EXPECTED_HEAD} → ${CURRENT_HEAD}; not merging."
           exit 1
         fi
