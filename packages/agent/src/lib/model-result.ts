@@ -140,6 +140,36 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 /**
+ * Relax a tool choice that *forces* a tool call, for follow-up turns after a
+ * tool round has executed (DEV-785).
+ *
+ * - `'required'` → `'auto'`
+ * - a specific-tool object (`{ type: 'function', name }`, `{ type: 'shell' }`,
+ *   …) → `'auto'`
+ * - `allowed_tools` with `mode: 'required'` → same set with `mode: 'auto'`
+ *   (the constraint on *which* tools may be used still applies; only the
+ *   force-a-call part is spent)
+ * - `'auto'`, `'none'`, `allowed_tools` with `mode: 'auto'`, and `undefined`
+ *   pass through unchanged.
+ */
+function relaxForcedToolChoice(
+  toolChoice: models.ResponsesRequest['toolChoice'],
+): models.ResponsesRequest['toolChoice'] {
+  if (toolChoice === undefined || typeof toolChoice === 'string') {
+    return toolChoice === 'required' ? 'auto' : toolChoice;
+  }
+  if (toolChoice.type === 'allowed_tools') {
+    return toolChoice.mode === 'required'
+      ? {
+          ...toolChoice,
+          mode: 'auto',
+        }
+      : toolChoice;
+  }
+  return 'auto';
+}
+
+/**
  * Mutable binding between a tool call's run context and its ToolTask (which
  * is created only once the call escapes the round). See createRunBinding.
  */
@@ -4101,10 +4131,16 @@ export class ModelResult<
       throw new Error('Request not initialized');
     }
 
-    // Update resolvedRequest.input with accumulated conversation for next turn
+    // Update resolvedRequest.input with accumulated conversation for next turn.
+    // A forced tool choice (`required` or a specific tool) has served its
+    // purpose once a tool round has executed; keeping it on follow-up turns
+    // would forbid the model from ever answering in text, looping it through
+    // tool calls until the step budget runs out (DEV-785). Relax it to `auto`
+    // so the model can either call another tool or synthesize its answer.
     this.resolvedRequest = {
       ...this.resolvedRequest,
       input: newInput,
+      toolChoice: relaxForcedToolChoice(this.resolvedRequest.toolChoice),
     };
 
     // Escalation recovery: one-turn overrides (model swap / forced advisor
