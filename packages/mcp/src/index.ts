@@ -1,7 +1,7 @@
 // Main factory + rehydration
 
 // Auth
-export type { MCPAuth } from './auth/auth-types.js';
+export type { MCPAuth, MCPOAuthClientProvider } from './auth/auth-types.js';
 export type { MCPCacheStore } from './cache/cache-store.js';
 // Cache
 export { defaultCacheKey, InMemoryMCPCacheStore } from './cache/cache-store.js';
@@ -15,8 +15,10 @@ export { createMCPTools } from './create-mcp-tools.js';
 // Errors
 export {
   MCPCacheError,
+  MCPCacheWriteError,
   MCPConnectionError,
   MCPError,
+  MCPStaleSnapshotError,
   MCPToolCallError,
 } from './errors.js';
 export type { RehydrateMCPToolsOptions } from './rehydrate.js';
@@ -29,6 +31,8 @@ export type {
   CreateMCPToolsOptions,
   ElicitationHandler,
   ElicitationResponse,
+  MCPProtocolNegotiation,
+  MCPProtocolRevision,
   MCPToolsHandle,
   MCPTransportKind,
   ResourcesOption,

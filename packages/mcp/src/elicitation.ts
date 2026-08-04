@@ -1,4 +1,4 @@
-import type { ElicitRequest, ElicitResult } from '@modelcontextprotocol/sdk/types.js';
+import type { ElicitRequest, ElicitResult } from '@modelcontextprotocol/client';
 import { isJsonSchemaObject } from './schema/json-schema-guards.js';
 import type { ElicitationHandler } from './types.js';
 

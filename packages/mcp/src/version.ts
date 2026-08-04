@@ -1,0 +1,5 @@
+// DO NOT EDIT — generated from package.json by scripts/gen-version.mjs.
+// Run `pnpm --filter @openrouter/mcp gen:version` after bumping the version.
+
+/** This package's version, self-reported to MCP servers as `clientInfo`. */
+export const PACKAGE_VERSION = '0.0.1';
