@@ -66,8 +66,10 @@ legacy `sessionId` from an earlier version is rewritten once without it. Every m
 store first and only ever rewrites an entry it already holds: the rotation writes graft the
 credential block onto the stored entry (never the caller's possibly-older input snapshot, which could
 roll back a newer entry written by a concurrent `refresh()`), skip entirely when the stored
-entry never held that credential block, and carry the stored `expiresAt` verbatim when the
-OAuth token has not actually changed — `expires_in` is relative to issuance, so restamping it per replay would
+entry never held that credential block, and write nothing at all when the credential is
+unchanged — an unrotated OAuth token in particular is never re-persisted, which would ratchet
+its recorded expiry forward (`expires_in` is relative to issuance) and could drop stored
+fields the provider no longer reports — `expires_in` is relative to issuance, so restamping it per replay would
 push the recorded expiry forward forever. No maintenance write can introduce credentials into a
 store that lacked them. If your store implementation extends entry TTLs on write
 (Redis `SETEX`-style), note that warm hits no longer touch the store, so such entries now

@@ -729,33 +729,33 @@ describe('replay preserves snapshot age', () => {
   });
 
   /**
-   * The rotation write must not ratchet `expiresAt` forward on an UNROTATED
-   * token.
+   * An UNROTATED token grafts nothing: no write at all.
    *
-   * `serializeServer` stamps `expiresAt` from `Date.now() + expires_in * 1000`,
-   * but `expires_in` is relative to token issuance, not to the serialize call.
-   * Re-persisting the same token on every replay would push the recorded expiry
-   * forward each time, so `tokensExpired()` never trips for a token that is
-   * actually expired. When the provider still holds the snapshot's own access
-   * token, the maintenance write carries the snapshot's `expiresAt` verbatim.
+   * Three hazards die together. The per-replay write (warm-path economy, and
+   * TTL-extending stores like Redis SETEX would be re-touched on every hit);
+   * the expiry ratchet (`serializeServer` stamps `expiresAt` from `Date.now()
+   * + expires_in * 1000`, but `expires_in` is relative to issuance, so
+   * re-persisting the same token pushes the recorded expiry forward every
+   * replay and `tokensExpired()` never trips); and field loss (a wholesale
+   * replace would drop stored fields the provider's `tokens()` no longer
+   * reports — a refreshToken held elsewhere — with no actual rotation).
    */
-  it('preserves the snapshot expiresAt when re-persisting an unrotated OAuth token', async () => {
+  it('does not write at all when the OAuth token is unrotated', async () => {
     const snap = snapshotWithHeaders();
     // Unexpired (well past the 30s skew) so the replay path runs.
-    const originalExpiresAt = Date.now() + 120_000;
     snap.auth = {
       tokens: {
         accessToken: 'same-token',
-        expiresAt: originalExpiresAt,
+        refreshToken: 'held-outside-the-provider',
+        expiresAt: Date.now() + 120_000,
       },
     };
-    const writes: Record<string, unknown>[] = [];
+    const writes: unknown[] = [];
     const store = {
-      // Warm path: the store holds the entry being replayed. The maintenance
-      // write reads back first and grafts tokens onto THIS.
+      // Warm path: the store holds the entry being replayed.
       get: () => Promise.resolve(snap),
       set: (_key: string, value: unknown) => {
-        writes.push(value as Record<string, unknown>);
+        writes.push(value);
         return Promise.resolve();
       },
       delete: () => Promise.resolve(),
@@ -772,7 +772,8 @@ describe('replay preserves snapshot age', () => {
         kind: 'oauth',
         provider: {
           // Same token as the snapshot, with a fresh-looking hour of lifetime —
-          // the raw restamp would move expiry to ~now + 1h.
+          // a raw re-persist would ratchet expiry to ~now + 1h and drop the
+          // stored refreshToken.
           tokens: () =>
             Promise.resolve({
               access_token: 'same-token',
@@ -783,13 +784,7 @@ describe('replay preserves snapshot age', () => {
       },
     });
 
-    expect(writes).toHaveLength(1);
-    const tokens = (
-      writes[0]?.['auth'] as {
-        tokens?: Record<string, unknown>;
-      }
-    ).tokens;
-    expect(tokens?.['expiresAt']).toBe(originalExpiresAt);
+    expect(writes).toHaveLength(0);
   });
 
   /**

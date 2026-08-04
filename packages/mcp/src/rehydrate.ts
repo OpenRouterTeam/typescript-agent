@@ -347,14 +347,17 @@ async function refreshStaleReplay(handle: MCPToolsHandle): Promise<void> {
  * tokens (grafting would introduce credentials into an entry that never held
  * them) or the fresh serialize produced none.
  *
- * The expiry is not blindly restamped either. `serializeServer` computes
- * `expiresAt` as `Date.now() + expires_in * 1000`, which is only accurate when
- * the token was just obtained: `expires_in` is relative to *issuance* (RFC 6749
- * §5.1), so re-persisting an UNROTATED token on every replay would push the
- * recorded expiry forward each time and `tokensExpired()` would never trip.
- * When the access token matches the stored entry's, the stored `expiresAt` is
- * carried verbatim (including its absence) — it chains back to a stamp made
- * when the token actually arrived. A rotated token keeps its fresh restamp.
+ * An UNROTATED token — same access token as stored — grafts nothing at all,
+ * for three reasons that all point the same way. No per-replay write (the
+ * documented warm-path economy, and no re-touching TTL-extending stores). No
+ * expiry ratchet: `serializeServer` stamps `expiresAt` as `Date.now() +
+ * expires_in * 1000`, but `expires_in` is relative to *issuance* (RFC 6749
+ * §5.1), so re-persisting the same token would push the recorded expiry
+ * forward each replay and `tokensExpired()` would never trip. And no field
+ * loss: a wholesale replace would drop stored fields the provider's `tokens()`
+ * no longer reports (a `refreshToken` held elsewhere, say) without any actual
+ * rotation. A rotated token replaces the block, fresh restamp included — the
+ * SDK just obtained it, so its relative `expires_in` genuinely is from ~now.
  */
 function graftRotatedTokens(
   stored: SerializedMCPServer,
@@ -365,21 +368,16 @@ function graftRotatedTokens(
   if (prev === undefined || next === undefined) {
     return undefined;
   }
-  const tokens = {
-    ...next,
-  };
   if (next.accessToken === prev.accessToken) {
-    if (prev.expiresAt !== undefined) {
-      tokens.expiresAt = prev.expiresAt;
-    } else {
-      delete tokens.expiresAt;
-    }
+    return undefined;
   }
   return {
     ...stored,
     auth: {
       ...stored.auth,
-      tokens,
+      tokens: {
+        ...next,
+      },
     },
   };
 }
