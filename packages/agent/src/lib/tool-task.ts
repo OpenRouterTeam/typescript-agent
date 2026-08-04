@@ -308,10 +308,23 @@ export class ToolTask {
       return `[+${offset}s] ${body}`;
     });
     const full = lines.join('\n');
-    if (full.length <= maxChars) {
-      return full;
-    }
-    const tail = full.slice(-maxChars);
-    return `…[truncated ${full.length - maxChars} chars]\n${tail}`;
+    return truncateTranscriptTail(full, maxChars);
   }
+}
+
+/**
+ * Truncate a rendered transcript to `maxChars` TOTAL, keeping the tail —
+ * the truncation notice counts against the budget (prepending it on top of
+ * a maxChars slice would overshoot the caller's cap).
+ */
+export function truncateTranscriptTail(full: string, maxChars: number): string {
+  if (full.length <= maxChars) {
+    return full;
+  }
+  // Compute the notice with a generous dropped-count estimate so its
+  // length is stable, then size the tail to the remaining budget.
+  const prefix = `…[truncated ${full.length} chars]\n`;
+  const tailBudget = Math.max(0, maxChars - prefix.length);
+  const tail = tailBudget > 0 ? full.slice(-tailBudget) : '';
+  return `…[truncated ${full.length - tail.length} chars]\n${tail}`.slice(0, maxChars);
 }

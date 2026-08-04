@@ -3392,6 +3392,10 @@ export class ModelResult<
     const logLimits = isUnifiedTool(tool) ? tool.function.logLimits : undefined;
 
     if (invocation.asyncMode === 'defer') {
+      const collision = this.rejectDuplicateTaskId(toolCall, invocation.taskId, source);
+      if (collision) {
+        return collision;
+      }
       const liveTask = registry.trackDeferred({
         callId: toolCall.id,
         taskId: invocation.taskId,
@@ -3554,6 +3558,44 @@ export class ModelResult<
     this.broadcastAsyncStarted(toolCall, liveTask.mode, taskId, invocation.ack);
     return {
       output: this.buildPendingPlaceholder(toolCall, taskId, invocation.ack),
+    };
+  }
+
+  /**
+   * Reject a `ctx.defer()` taskId already claimed by ANOTHER pending task.
+   * Task ids are the resolution key (resumeToolResults matches on them), so
+   * a duplicate would make one of the two calls unresolvable — the
+   * conversation would wait forever. Caller-supplied ids
+   * (`ctx.defer(ticket.id)`) carry no uniqueness guarantee; reject the
+   * collision at start time, when the tool can still see it.
+   * @returns the error output for the colliding call, or null when unique.
+   */
+  private rejectDuplicateTaskId(
+    toolCall: ParsedToolCall<Tool>,
+    taskId: string,
+    source: 'mcp' | 'client',
+  ): {
+    output: models.FunctionCallOutputItem;
+  } | null {
+    const duplicate =
+      this.asyncToolRegistry?.getTask(taskId) ??
+      this.currentState?.pendingAsyncTools?.find((t) => t.taskId === taskId);
+    if (!duplicate || duplicate.callId === toolCall.id) {
+      return null;
+    }
+    const message = `Tool "${toolCall.name}": ctx.defer() taskId "${taskId}" is already in use by another pending task in this conversation (call ${duplicate.callId}). Task ids must be unique per conversation — include a per-call component (e.g. the ticket id plus your callId).`;
+    this.broadcastToolResult(toolCall.id, source, {
+      error: message,
+    } as InferToolOutputsUnion<TTools>);
+    return {
+      output: {
+        type: 'function_call_output' as const,
+        id: `output_${toolCall.id}`,
+        callId: toolCall.id,
+        output: JSON.stringify({
+          error: message,
+        }),
+      },
     };
   }
 

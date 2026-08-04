@@ -5,6 +5,7 @@ import { extractTextFromResponse } from './conversation-state.js';
 import type { ModelResult } from './model-result.js';
 import { TASK_TOOL_NAME } from './tool-check.js';
 import type { TaskTranscriptSource } from './tool-task.js';
+import { truncateTranscriptTail } from './tool-task.js';
 import type {
   AsyncToolAck,
   ContextFromSchema,
@@ -122,11 +123,7 @@ export class AgentTranscriptSource implements TaskTranscriptSource {
       }
     }
     const full = lines.join('\n');
-    if (full.length <= maxChars) {
-      return full;
-    }
-    const tail = full.slice(-maxChars);
-    return `…[truncated ${full.length - maxChars} chars]\n${tail}`;
+    return truncateTranscriptTail(full, maxChars);
   }
 }
 
