@@ -288,7 +288,13 @@ jobs:
           # an unresolvable ref would make the ports fail on checkout rather than
           # degrade, so fall back to this run's commit SHA — which points at the
           # same published tree.
-          if git ls-remote --exit-code --tags origin "refs/tags/${TAG}" >/dev/null 2>&1; then
+          #
+          # gh api rather than `git ls-remote origin`: the credential scrub above
+          # leaves origin tokenless, so a git-side lookup would silently fail if
+          # this repo ever goes private and the fallback would fire every time.
+          # gh authenticates from GH_TOKEN in env, independent of .git/config.
+          ENCODED_TAG="$(jq -rn --arg t "$TAG" '$t|@uri')"
+          if gh api "repos/${{ github.repository }}/git/ref/tags/${ENCODED_TAG}" >/dev/null 2>&1; then
             REF="$TAG"
           else
             REF="${{ github.sha }}"

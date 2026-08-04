@@ -45,6 +45,13 @@ env:
   REPO: OpenRouterTeam/typescript-agent
   VERSION_PR_BRANCH: changeset-release/main # changesets/action's fixed head branch
   HOLD_LABEL: release:hold
+  # Exactly what `changeset version` produces in this repo (cf. Version PR
+  # #57): consumed changesets + per-package version/changelog bumps. No root
+  # package.json (private, unversioned) and no lockfile (workspace:* deps
+  # don't touch it) — both would widen the unattended-merge surface (root
+  # package.json can carry lifecycle scripts). Used by the scope step below
+  # AND by pr-gate.sh to re-vet a head that moves mid-gate.
+  SCOPE_ALLOWLIST: '^(\.changeset/[^/]+\.md|packages/[^/]+/(package\.json|CHANGELOG\.md))$'
 
 jobs:
   train:
@@ -159,13 +166,9 @@ jobs:
             echo "::error::Could not read file list for PR #${PR} — refusing to merge"
             exit 1
           fi
-          # Exactly what `changeset version` produces in this repo (cf. PR #57):
-          # consumed changesets + per-package version/changelog bumps. No root
-          # package.json (private, unversioned) and no lockfile (workspace:*
-          # deps don't touch it) — both would widen the unattended-merge
-          # surface (root package.json can carry lifecycle scripts).
-          UNEXPECTED="$(printf '%s\n' "$FILES" | grep -vE \
-            '^(\.changeset/[^/]+\.md|packages/[^/]+/(package\.json|CHANGELOG\.md))$' || true)"
+          # SCOPE_ALLOWLIST is defined once at workflow level (see env block)
+          # and shared with pr-gate.sh's mid-gate re-vet.
+          UNEXPECTED="$(printf '%s\n' "$FILES" | grep -vE "$SCOPE_ALLOWLIST" || true)"
           if [ -z "$UNEXPECTED" ]; then
             echo "Diff scope OK — only version-bump paths."
             exit 0
@@ -195,8 +198,11 @@ jobs:
           # merge, so a hold applied mid-gate still stops the train.
           BLOCK_LABEL: ${{ env.HOLD_LABEL }}
           # The head the diff-scope step vetted; pr-gate.sh refuses to merge
-          # any other head (TOCTOU guard for the scope allowlist).
+          # any other head (TOCTOU guard for the scope allowlist) — unless
+          # the moved head's diff still fits SCOPE_ALLOWLIST, the routine
+          # changesets/action refresh case, which re-vets and re-polls.
           EXPECTED_HEAD: ${{ steps.scope.outputs.head_sha }}
+          SCOPE_ALLOWLIST: ${{ env.SCOPE_ALLOWLIST }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           SLACK_BOT_TOKEN: ${{ secrets.CI_RELEASE_ALERT_SLACK_BOT_TOKEN }}
           SLACK_CHANNEL_ID: ${{ secrets.CI_RELEASE_ALERT_SLACK_CHANNEL_ID }}
