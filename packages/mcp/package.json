@@ -1,6 +1,9 @@
 {
   "name": "@openrouter/mcp",
   "version": "0.0.1",
+  "engines": {
+    "node": ">=20"
+  },
   "author": "OpenRouter",
   "description": "Expose remote MCP server tools (Streamable HTTP / SSE) as tools for @openrouter/agent's callModel, with serializable caching and pluggable auth.",
   "keywords": [

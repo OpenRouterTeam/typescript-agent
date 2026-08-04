@@ -405,7 +405,7 @@ describe('staleness on the direct rehydrate path', () => {
     const snapshot = snapshotWithHeaders();
     snapshot.cachedAt = Date.now() - 120_000;
     const writeOnlyFailure = {
-      get: () => Promise.resolve(undefined),
+      get: () => Promise.resolve(null),
       set: () => Promise.reject(new Error('store unavailable')),
       delete: () => Promise.resolve(),
     };

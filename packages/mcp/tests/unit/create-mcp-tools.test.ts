@@ -130,7 +130,7 @@ describe('createMCPTools setup teardown', () => {
     };
 
     const failingStore = {
-      get: () => Promise.resolve(undefined),
+      get: () => Promise.resolve(null),
       set: () => Promise.reject(new Error('store unavailable')),
       delete: () => Promise.resolve(),
     };

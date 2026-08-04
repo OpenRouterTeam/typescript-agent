@@ -37,7 +37,16 @@ export interface RehydrateMCPToolsOptions {
   staleness?: {
     maxAgeMs?: number;
   };
-  /** Cache to refresh on reconnect/fallback. */
+  /**
+   * Cache to refresh on reconnect/fallback.
+   *
+   * A successful replay does **not** write here — the snapshot it would write is
+   * the one you passed in, so the write is skipped as a no-op. The store is
+   * written when something genuinely new exists: a `refresh()`, a
+   * `tools/list_changed` auto-refresh, or the fresh-connect fallback. To seed a
+   * store from a snapshot obtained elsewhere, write it yourself
+   * (`store.set(key, snapshot)`) or call `handle.refresh()` after rehydrating.
+   */
   cache?: {
     store: MCPCacheStore;
     key?: string;

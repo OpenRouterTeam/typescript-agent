@@ -11,6 +11,10 @@ and adds `protocolNegotiation?: 'legacy' | 'auto' | { pin: string }`, defaulting
 revision the server offers — the per-request `_meta` envelope for `2026-07-28`, or the
 classic `initialize` handshake for `2025-11-25` and earlier.
 
+**Breaking:** Node 20+ is required — `@modelcontextprotocol/client@2.0.0` declares
+`engines.node: >=20`, and this package now declares the same so Node 18/19 consumers get an
+install-time warning instead of a runtime failure.
+
 **Breaking:** if you pass `auth: { kind: 'oauth', provider }`, your provider must satisfy
 `@modelcontextprotocol/client@2.0.0`'s `OAuthClientProvider` — change the import specifier,
 and note `tokens()` now returns `StoredOAuthTokens` (same fields, so most providers compile

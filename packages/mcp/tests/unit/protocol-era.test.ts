@@ -603,6 +603,35 @@ describe('listToolDefs bypasses the SDK response cache', () => {
  * ?? DEFAULT_REQUEST_TIMEOUT_MSEC` (60s). So a gateway that black-holes
  * `server/discover` rejects rather than hanging forever. This pins that.
  */
+/**
+ * The probe block is passed unconditionally — including under `'legacy'`, where
+ * no `server/discover` is sent and the field should be inert. This pins that the
+ * real SDK constructor tolerates the combination rather than validating it away:
+ * both the implicit legacy retry and an explicit `protocolNegotiation: 'legacy'`
+ * construct exactly this shape.
+ */
+describe('probe options under legacy mode', () => {
+  it('connects with a probe block alongside mode legacy', async () => {
+    const { makeClientForTest } = await import('../../src/mcp-connection.js');
+    const [clientSide, serverSide] = InMemoryTransport.createLinkedPair();
+    startFakeServer(serverSide, {
+      modern: false,
+      seen: [],
+    });
+
+    const client = makeClientForTest(
+      {
+        url: new URL('https://example.invalid/mcp'),
+        protocolNegotiation: 'legacy',
+      },
+      () => {},
+    );
+    await expect(client.connect(clientSide)).resolves.toBeUndefined();
+    expect(client.getProtocolEra()).toBe('legacy');
+    await client.close();
+  });
+});
+
 describe('probe timeout default', () => {
   it('bounds the probe on a client built the way production builds it', async () => {
     const { makeClientForTest } = await import('../../src/mcp-connection.js');

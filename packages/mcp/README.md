@@ -112,7 +112,9 @@ try {
 ```
 
 It subclasses `MCPCacheError`, so existing `catch (e instanceof MCPCacheError)` sites keep
-working. Writing a snapshot back to your store is best-effort: a store outage leaves you with a
+working. Note that a successful replay does not write to the store — the snapshot it would
+write is the one just read. Seeding a store from a snapshot obtained elsewhere means writing
+it yourself or calling `handle.refresh()` after rehydrating. Writing a snapshot back to your store is best-effort: a store outage leaves you with a
 working handle and a stale cache entry rather than a failed call. Catch `MCPCacheWriteError`
 from `handle.refresh()` if you would rather treat that as fatal. `handle.refresh()` also always reaches the server: SDK v2 caches `tools/list` per
 client up to the server's `ttlMs`, and every internal list read bypasses that so a refresh
@@ -156,7 +158,7 @@ const result = callModel(client, {
 | `emitProgress` | Stream MCP progress as generator-tool events (default on). |
 | `autoRefreshOnListChanged` | Re-list on `tools/list_changed` (default on). |
 | `onElicitation` | Handle elicitation requests (both revisions); auto-declines when omitted. |
-| `signal` | Abort signal threaded into every tool call. |
+| `signal` | Aborts every tool call and the connection itself (connect, probe, legacy retry, reconnects). |
 
 ## Client identity
 

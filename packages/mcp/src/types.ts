@@ -126,7 +126,13 @@ export interface CreateMCPToolsOptions {
    * identical behavior either way.
    */
   onElicitation?: ElicitationHandler;
-  /** Abort signal threaded into every underlying `callTool`. */
+  /**
+   * Abort signal threaded into every underlying `callTool` — and, new in this
+   * release, into the connection itself: connecting, the negotiation probe, the
+   * implicit legacy retry, and any reconnect all abort with it. An early
+   * cancellation can therefore surface as a connection failure, not only as a
+   * cancelled tool call.
+   */
   signal?: AbortSignal;
 }
 
