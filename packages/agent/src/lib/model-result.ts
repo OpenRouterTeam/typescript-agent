@@ -4208,13 +4208,21 @@ export class ModelResult<
     // Drain turns use the retry path (toolChoice forced to 'none' when tools
     // are present) so a drain turn cannot open a fresh tool round — it
     // exists purely to fold the delivered results into the final answer.
+    // ONE deadline spans the whole drain phase: drainTimeoutMs bounds total
+    // WAITING (documented contract), not per-turn waiting — maxDrainTurns
+    // bounds the extra model turns, not the wait.
     const drainTimeoutMs = config?.drainTimeoutMs ?? 30_000;
     const maxDrainTurns = config?.maxDrainTurns ?? 2;
+    const drainDeadline = Date.now() + drainTimeoutMs;
     let response = currentResponse;
 
     for (let drainTurn = 0; drainTurn < maxDrainTurns; drainTurn++) {
       if (!registry.hasUnharvestedSettled() && registry.hasInFlight()) {
-        await registry.drain(drainTimeoutMs);
+        const remaining = drainDeadline - Date.now();
+        if (remaining <= 0) {
+          break;
+        }
+        await registry.drain(remaining);
       }
       // Accumulate the current final output BEFORE injecting so the
       // envelope lands after the assistant's last message in the request.

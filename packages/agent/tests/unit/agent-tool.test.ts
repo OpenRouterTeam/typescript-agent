@@ -146,6 +146,86 @@ describe('tool.agent — child conversation as a background task', () => {
     mockBetaResponsesSend.mockReset();
   });
 
+  it('a child that pauses (manual tool) fails the task loudly, never a partial answer', async () => {
+    // Devin review: pause detection reads childState.status after
+    // getResponse() resolves — pin that a pausing child (manual tool, no
+    // execute) is caught by CHILD_PAUSE_STATUSES and settles the task as
+    // failed, instead of slipping through to the result mapper.
+    const manualChildTool = tool({
+      name: 'child_manual',
+      inputSchema: z.object({}),
+      execute: false,
+    });
+    const pausingAgent = tool.agent({
+      name: 'pausing_agent',
+      inputSchema: z.object({}),
+      outputSchema: z.object({
+        text: z.string(),
+      }),
+      graceMs: 0,
+      agent: () => ({
+        model: 'child-model',
+        input: 'do the thing',
+        tools: [
+          manualChildTool,
+        ] as const,
+      }),
+    });
+
+    routeByModel({
+      parent: () => {
+        const parentCall = mockBetaResponsesSend.mock.calls.filter(
+          (c) => c[1]?.responsesRequest?.model === 'parent-model',
+        ).length;
+        if (parentCall === 1) {
+          return {
+            ok: true,
+            value: makeResponse('p1', [
+              functionCallItem('call_p', 'pausing_agent', '{}'),
+            ]),
+          };
+        }
+        return {
+          ok: true,
+          value: makeResponse(`p${parentCall}`, [
+            messageItem(`pm${parentCall}`, 'done'),
+          ]),
+        };
+      },
+      child: () => ({
+        ok: true,
+        value: makeResponse('c1', [
+          functionCallItem('cc1', 'child_manual', '{}'),
+        ]),
+      }),
+    });
+
+    const result = callModel(client, {
+      model: 'parent-model',
+      input: 'go',
+      tools: [
+        pausingAgent,
+      ] as const,
+      asyncTools: {
+        drainTimeoutMs: 10_000,
+      },
+    });
+    await result.getText();
+
+    // The failure envelope names the pause — no partial answer delivered.
+    const lastParentInput = mockBetaResponsesSend.mock.calls
+      .filter((c) => c[1]?.responsesRequest?.model === 'parent-model')
+      .at(-1)?.[1]?.responsesRequest?.input as Array<{
+      role?: string;
+      content?: string;
+    }>;
+    const envelope = lastParentInput.find(
+      (m) => m.role === 'user' && m.content?.includes('tool_task_result'),
+    );
+    expect(envelope?.content).toContain('"status":"failed"');
+    expect(envelope?.content).toContain('paused');
+  });
+
   it("rejects the reserved names 'shared' and 'task' at definition time", () => {
     const base = {
       inputSchema: z.object({}),
