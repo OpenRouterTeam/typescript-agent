@@ -57,16 +57,18 @@ attempt, the probe, and the implicit legacy retry — so a caller with its own d
 bound the worst case (~3 minutes against a black-holing gateway on the default path). An
 aborted connect is never retried. Snapshot replays also no longer perform the construction
 write-back: the snapshot it would write is the one just read, so it was a store round-trip
-per rehydrate buying nothing. Two maintenance writes survive, both best-effort: an OAuth
+per rehydrate buying nothing. Three maintenance writes survive, all best-effort: an OAuth
 provider under `cacheCredentials: true` re-persists its current tokens (so the stored entry
-tracks rotation instead of expiring into a forced fresh connect), and an entry carrying a
-legacy `sessionId` from an earlier version is rewritten once without it. Both writes read the
-store first and only ever rewrite an entry it already holds: the rotation write grafts the
-tokens onto the stored entry (never the caller's possibly-older input snapshot, which could
-roll back a newer entry written by a concurrent `refresh()`), skips entirely when the stored
-entry never held tokens, and carries the stored `expiresAt` verbatim when the token has not
-actually changed — `expires_in` is relative to issuance, so restamping it per replay would
-push the recorded expiry forward forever. Neither write can introduce credentials into a
+tracks rotation instead of expiring into a forced fresh connect), a rotated static credential
+(`bearer`/`headers` auth passed by the caller under `cacheCredentials: true`) updates the
+stored header block the same way, and an entry carrying a
+legacy `sessionId` from an earlier version is rewritten once without it. Every maintenance write reads the
+store first and only ever rewrites an entry it already holds: the rotation writes graft the
+credential block onto the stored entry (never the caller's possibly-older input snapshot, which could
+roll back a newer entry written by a concurrent `refresh()`), skip entirely when the stored
+entry never held that credential block, and carry the stored `expiresAt` verbatim when the
+OAuth token has not actually changed — `expires_in` is relative to issuance, so restamping it per replay would
+push the recorded expiry forward forever. No maintenance write can introduce credentials into a
 store that lacked them. If your store implementation extends entry TTLs on write
 (Redis `SETEX`-style), note that warm hits no longer touch the store, so such entries now
 expire on their own schedule rather than being kept alive by access; size the TTL to the

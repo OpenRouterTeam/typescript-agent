@@ -1,3 +1,4 @@
+import { resolveAuth } from './auth/auth-resolver.js';
 import type { MCPAuth } from './auth/auth-types.js';
 import { isOAuthAuth } from './auth/auth-types.js';
 import type { MCPCacheStore } from './cache/cache-store.js';
@@ -299,33 +300,40 @@ async function refreshStaleReplay(handle: MCPToolsHandle): Promise<void> {
 }
 
 /**
- * The two cases where a successful replay still writes to the cache store.
+ * The cases where a successful replay still writes to the cache store.
  *
  * The replay write-back is normally skipped as a no-op — the snapshot it would
- * persist is the one just read. Two exceptions where the write genuinely does
- * something, both best-effort:
+ * persist is the one just read. Three exceptions where the write genuinely does
+ * something, all best-effort:
  *
  * 1. **OAuth token rotation.** With `cacheCredentials: true` and an OAuth
  *    provider, the old per-hit write re-serialized the provider's *current*
  *    tokens; without it the stored entry keeps cold-connect-time tokens, and
  *    once those pass `expiresAt` every rehydrate takes the fresh-connect
  *    detour even though the provider holds a valid refreshed token.
- * 2. **Legacy `sessionId` scrub.** Entries written by earlier versions can
+ * 2. **Static credential rotation.** Same story for `bearer`/`headers` auth:
+ *    the old per-hit write kept the stored `auth.headers` in sync with the
+ *    caller's live `auth`, so a rotated API key propagated on the next warm
+ *    hit. When the caller passes static auth under `cacheCredentials: true`
+ *    and the resolved headers differ from the stored ones, the stored entry's
+ *    header block is updated — otherwise a later credential-bearing rehydrate
+ *    (`authFromSnapshot`) would dial with the superseded secret.
+ * 3. **Legacy `sessionId` scrub.** Entries written by earlier versions can
  *    carry a bearer-equivalent `Mcp-Session-Id` under `cacheCredentials`; with
  *    the warm path never rewriting, that credential-grade value would sit in
  *    the external store indefinitely. One write — the entry copied without the
  *    field — removes it.
  *
- * Both writes share one invariant: they only ever REWRITE an entry the store
- * already holds, read back first. The rotation write grafts the provider's
- * current tokens onto the stored entry rather than re-serializing this call's
- * live state — a direct `rehydrateMCPTools` may have loaded its snapshot from
- * a file or another key, and writing that snapshot's (older) tool set and
- * `cachedAt` over the store's entry would roll back a newer entry written by a
- * concurrent `refresh()`. Copying the stored entry also cannot strip or
- * introduce credentials the way a re-serialize under this call's options could
- * (the DEV-766 hazard): tokens are only updated where the stored entry already
- * carries tokens.
+ * All three share one invariant: they only ever REWRITE an entry the store
+ * already holds, read back first. The credential grafts move only their block
+ * onto the stored entry rather than re-serializing this call's live state — a
+ * direct `rehydrateMCPTools` may have loaded its snapshot from a file or
+ * another key, and writing that snapshot's (older) tool set and `cachedAt`
+ * over the store's entry would roll back a newer entry written by a concurrent
+ * `refresh()`. Copying the stored entry also cannot strip or introduce
+ * credentials the way a re-serialize under this call's options could (the
+ * DEV-766 hazard): each block is only updated where the stored entry already
+ * carries that block.
  */
 
 /**
@@ -375,6 +383,68 @@ function graftRotatedTokens(
     },
   };
 }
+
+function headersEqual(
+  a: Readonly<Record<string, string>>,
+  b: Readonly<Record<string, string>>,
+): boolean {
+  const aKeys = Object.keys(a);
+  return aKeys.length === Object.keys(b).length && aKeys.every((k) => a[k] === b[k]);
+}
+
+/**
+ * Graft the caller's current static headers onto the STORED entry — the
+ * `bearer`/`headers` counterpart of {@link graftRotatedTokens}, under the same
+ * invariants: only the header block moves, and only where the stored entry
+ * already carries headers (never introducing credentials into an entry that
+ * had none). Returns undefined — no write — when there is nothing to update.
+ */
+function graftStaticHeaders(
+  stored: SerializedMCPServer,
+  headers: Readonly<Record<string, string>>,
+): SerializedMCPServer | undefined {
+  const prev = stored.auth?.headers;
+  if (prev === undefined || Object.keys(prev).length === 0 || Object.keys(headers).length === 0) {
+    return undefined;
+  }
+  if (headersEqual(prev, headers)) {
+    return undefined;
+  }
+  return {
+    ...stored,
+    auth: {
+      ...stored.auth,
+      headers,
+    },
+  };
+}
+
+/**
+ * Compute the maintenance rewrite for a stored entry, if any: an OAuth token
+ * graft, a static-header graft, or nothing. Split from
+ * {@link maintainReplayedEntry} to keep each piece readable.
+ */
+async function graftForReplay(args: {
+  options: RehydrateMCPToolsOptions;
+  handle: MCPToolsHandle;
+  stored: SerializedMCPServer;
+  effectiveAuth: MCPAuth | undefined;
+}): Promise<SerializedMCPServer | undefined> {
+  const { options, handle, stored, effectiveAuth } = args;
+  if (options.cacheCredentials !== true) {
+    return undefined;
+  }
+  if (isOAuthAuth(effectiveAuth)) {
+    return graftRotatedTokens(stored, await handle.serialize());
+  }
+  // Static graft keys on the CALLER's auth, not `effectiveAuth`: auth derived
+  // from the input snapshot is by definition not a rotation.
+  if (options.auth !== undefined) {
+    return graftStaticHeaders(stored, resolveAuth(options.auth).headers);
+  }
+  return undefined;
+}
+
 async function maintainReplayedEntry(args: {
   options: RehydrateMCPToolsOptions;
   snapshot: SerializedMCPServer;
@@ -388,61 +458,46 @@ async function maintainReplayedEntry(args: {
     return;
   }
   try {
-    if (isOAuthAuth(effectiveAuth) && options.cacheCredentials === true) {
-      // Read back before writing, same as the scrub below: the write must be
-      // a token-graft onto whatever THIS store currently holds. Writing a
-      // serialize of this call's state would clobber a newer entry (a direct
-      // rehydrate's input snapshot may be older than the store's — say a
-      // concurrent refresh() wrote since) and could introduce credentials the
-      // store never held. One read per OAuth replay is the price; the write
-      // was already per-replay.
-      const stored = await store.get(cacheKey);
-      if (stored === null || stored === undefined || !isSerializedMCPServer(stored)) {
-        return;
-      }
-      const grafted = graftRotatedTokens(stored, await handle.serialize());
-      // No tokens to graft — but a legacy sessionId in the stored entry still
-      // gets scrubbed, composing the two maintenance jobs into one write.
-      if (grafted === undefined && stored.sessionId === undefined) {
-        return;
-      }
-      const next = {
-        ...(grafted ?? stored),
-      };
-      delete next.sessionId;
-      await store.set(cacheKey, next);
+    // Cheap gates first, so a warm hit with nothing to maintain performs ZERO
+    // store operations. Credential grafts can only apply under
+    // `cacheCredentials: true`; the scrub can only be needed when the *input*
+    // snapshot carries a legacy `sessionId` (on the warm `createMCPTools` path
+    // the input IS the store's entry, so a sessionId-free input — every entry
+    // this version writes — means a sessionId-free store).
+    const mayGraft =
+      options.cacheCredentials === true &&
+      (isOAuthAuth(effectiveAuth) || options.auth !== undefined);
+    if (!mayGraft && args.snapshot.sessionId === undefined) {
       return;
     }
-    // Cheap gate first: the scrub can only be needed when the *input* snapshot
-    // carries a legacy `sessionId`. On the warm `createMCPTools` path the input
-    // is the store's own entry, so a `sessionId`-free input (every entry this
-    // version writes — the overwhelming majority) means a `sessionId`-free
-    // store, and we return without touching the store at all. This keeps the
-    // warm hit at zero extra round trips; only legacy entries pay the read.
-    if (args.snapshot.sessionId === undefined) {
-      return;
-    }
-    // Scrub only what the store itself holds. Reading back before writing does
-    // two jobs at once: it confirms the credential-bearing entry actually lives
-    // in THIS store (a direct rehydrate may have loaded the snapshot from a
-    // file or another key, and writing its auth block into a store that never
-    // held it would introduce credentials without the `cacheCredentials`
-    // opt-in), and it makes the write a rewrite of existing bytes minus one
-    // field rather than new material.
+    // Read back before writing: every maintenance write is a rewrite of what
+    // THIS store currently holds, never a serialize of this call's state — a
+    // direct rehydrate's input snapshot may be older than the store's entry (a
+    // concurrent refresh() having written since), and its auth may belong to a
+    // store that never held credentials. One read per maintained replay is the
+    // price.
     const stored = await store.get(cacheKey);
-    if (
-      stored === null ||
-      stored === undefined ||
-      !isSerializedMCPServer(stored) ||
-      stored.sessionId === undefined
-    ) {
+    if (stored === null || stored === undefined || !isSerializedMCPServer(stored)) {
       return;
     }
-    const scrubbed = {
-      ...stored,
+    const grafted = mayGraft
+      ? await graftForReplay({
+          options,
+          handle,
+          stored,
+          effectiveAuth,
+        })
+      : undefined;
+    // Nothing to graft and nothing to scrub — no write. A legacy sessionId in
+    // the stored entry composes with either graft into one write.
+    if (grafted === undefined && stored.sessionId === undefined) {
+      return;
+    }
+    const next = {
+      ...(grafted ?? stored),
     };
-    delete scrubbed.sessionId;
-    await store.set(cacheKey, scrubbed);
+    delete next.sessionId;
+    await store.set(cacheKey, next);
   } catch {
     // Best-effort, like every other store write: a cache outage never fails a
     // working replay.

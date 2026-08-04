@@ -969,6 +969,122 @@ describe('replay preserves snapshot age', () => {
   });
 
   /**
+   * Static credentials rotate too. The old per-hit write kept stored
+   * `auth.headers` in sync with the caller's live `auth`; skipping the replay
+   * write-back would leave a rotated bearer/API key stale in the store, and
+   * `authFromSnapshot` would later reconnect with the superseded secret. Same
+   * graft rules as OAuth: read back, move only the header block, tools and
+   * cachedAt stay the store's.
+   */
+  it('updates stored headers when a static credential rotated', async () => {
+    const snap = snapshotWithHeaders(); // stored auth: X-Api-Key: secret
+    const writes: Record<string, unknown>[] = [];
+    const store = {
+      get: () => Promise.resolve(snap),
+      set: (_key: string, value: unknown) => {
+        writes.push(value as Record<string, unknown>);
+        return Promise.resolve();
+      },
+      delete: () => Promise.resolve(),
+    };
+
+    await rehydrateMCPTools({
+      snapshot: snap,
+      cacheCredentials: true,
+      cache: {
+        store,
+        key: 'warm',
+      },
+      auth: {
+        kind: 'headers',
+        headers: {
+          'X-Api-Key': 'rotated-secret',
+        },
+      },
+    });
+
+    expect(writes).toHaveLength(1);
+    const written = writes[0] as unknown as SerializedMCPServer;
+    expect(written.auth?.headers).toEqual({
+      'X-Api-Key': 'rotated-secret',
+    });
+    expect(written.cachedAt).toBe(snap.cachedAt);
+    expect(written.tools.map((t) => t.name)).toEqual(snap.tools.map((t) => t.name));
+  });
+
+  /**
+   * Unchanged static credentials produce no write — the graft is for rotation,
+   * not a per-replay rewrite. (The read-back itself is the price of having
+   * cacheCredentials + caller auth on a replay.)
+   */
+  it('does not write when the static credential is unchanged', async () => {
+    const snap = snapshotWithHeaders();
+    const writes: unknown[] = [];
+    const store = {
+      get: () => Promise.resolve(snap),
+      set: (_key: string, value: unknown) => {
+        writes.push(value);
+        return Promise.resolve();
+      },
+      delete: () => Promise.resolve(),
+    };
+
+    await rehydrateMCPTools({
+      snapshot: snap,
+      cacheCredentials: true,
+      cache: {
+        store,
+        key: 'warm',
+      },
+      auth: {
+        kind: 'headers',
+        headers: {
+          'X-Api-Key': 'secret',
+        },
+      },
+    });
+
+    expect(writes).toHaveLength(0);
+  });
+
+  /**
+   * The static graft never introduces headers into a stored entry that has
+   * none — same no-introduce rule as the token graft.
+   */
+  it('does not introduce headers into a store entry that never held them', async () => {
+    const storedWithoutCreds: SerializedMCPServer = {
+      ...snapshotWithHeaders(),
+    };
+    storedWithoutCreds.auth = undefined;
+    const writes: unknown[] = [];
+    const store = {
+      get: () => Promise.resolve(storedWithoutCreds),
+      set: (_key: string, value: unknown) => {
+        writes.push(value);
+        return Promise.resolve();
+      },
+      delete: () => Promise.resolve(),
+    };
+
+    await rehydrateMCPTools({
+      snapshot: snapshotWithHeaders(),
+      cacheCredentials: true,
+      cache: {
+        store,
+        key: 'warm',
+      },
+      auth: {
+        kind: 'headers',
+        headers: {
+          'X-Api-Key': 'rotated-secret',
+        },
+      },
+    });
+
+    expect(writes).toHaveLength(0);
+  });
+
+  /**
    * A warm hit with a modern (sessionId-free) snapshot performs ZERO store
    * operations — no write (the no-op skip) and no read (the scrub gate keys on
    * the input snapshot, which on the warm path IS the store's entry). Only
