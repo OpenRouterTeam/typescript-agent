@@ -176,6 +176,16 @@ jobs:
         continue-on-error: true
         run: git push origin --tags
 
+      # Nothing below pushes via git (the HOP dispatches use `gh api` with
+      # GH_TOKEN from env), so drop the PAT from .git/config the moment the
+      # last push consumer is done. `always()`: scrub even when a publish
+      # step failed, since later/rerun steps still see the workspace.
+      - name: Scrub git push credentials
+        if: always()
+        run: |
+          git remote set-url origin \
+            "https://github.com/${{ github.repository }}.git"
+
       # `changeset publish` has no native --dry-run. Fall back to pnpm's
       # recursive dry-run, which simulates publishing every workspace package
       # rather than only the ones changesets would pick. Output set may be

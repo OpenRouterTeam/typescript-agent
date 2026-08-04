@@ -144,8 +144,28 @@ jobs:
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           set -euo pipefail
-          UNEXPECTED="$(gh pr view "$PR" -R "$REPO" --json files --jq '.files[].path' | grep -vE \
-            '^(\.changeset/.*\.md|(packages/[^/]+/)?(package\.json|CHANGELOG\.md)|pnpm-lock\.yaml)$' || true)"
+          # Pin the head this check ran against; pr-gate.sh refuses to merge a
+          # different head (EXPECTED_HEAD below), so commits pushed during the
+          # up-to-30-min gate wait can't slip past this allowlist (TOCTOU).
+          HEAD_SHA="$(gh pr view "$PR" -R "$REPO" --json headRefOid --jq '.headRefOid')"
+          echo "head_sha=$HEAD_SHA" >> "$GITHUB_OUTPUT"
+
+          # Fail closed: fetch the file list as its own command so an API error
+          # fails the step, and treat an empty list as an error too — a Version
+          # PR always contains files, and "couldn't read the diff" must never
+          # be interpreted as "diff is clean".
+          FILES="$(gh pr view "$PR" -R "$REPO" --json files --jq '.files[].path')"
+          if [ -z "$FILES" ]; then
+            echo "::error::Could not read file list for PR #${PR} — refusing to merge"
+            exit 1
+          fi
+          # Exactly what `changeset version` produces in this repo (cf. PR #57):
+          # consumed changesets + per-package version/changelog bumps. No root
+          # package.json (private, unversioned) and no lockfile (workspace:*
+          # deps don't touch it) — both would widen the unattended-merge
+          # surface (root package.json can carry lifecycle scripts).
+          UNEXPECTED="$(printf '%s\n' "$FILES" | grep -vE \
+            '^(\.changeset/[^/]+\.md|packages/[^/]+/(package\.json|CHANGELOG\.md))$' || true)"
           if [ -z "$UNEXPECTED" ]; then
             echo "Diff scope OK — only version-bump paths."
             exit 0
@@ -174,6 +194,9 @@ jobs:
           # Re-checked live inside pr-gate.sh on every poll and just before
           # merge, so a hold applied mid-gate still stops the train.
           BLOCK_LABEL: ${{ env.HOLD_LABEL }}
+          # The head the diff-scope step vetted; pr-gate.sh refuses to merge
+          # any other head (TOCTOU guard for the scope allowlist).
+          EXPECTED_HEAD: ${{ steps.scope.outputs.head_sha }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           SLACK_BOT_TOKEN: ${{ secrets.CI_RELEASE_ALERT_SLACK_BOT_TOKEN }}
           SLACK_CHANNEL_ID: ${{ secrets.CI_RELEASE_ALERT_SLACK_CHANNEL_ID }}

@@ -19,6 +19,10 @@
 #                     every poll and immediately before merging, so a hold
 #                     added mid-poll still stops the merge. Exit 0 (deliberate
 #                     pause, not a failure).
+#   EXPECTED_HEAD     optional — head SHA the caller vetted (e.g. a diff-scope
+#                     allowlist). The merge is refused if the PR head no longer
+#                     matches, closing the TOCTOU window between the caller's
+#                     check and the merge. Exit 1 (needs a re-run to re-vet).
 #   SLACK_BOT_TOKEN   optional — Slack bot token for chat.postMessage
 #   SLACK_CHANNEL_ID  optional — Slack channel for alerts
 #   RUN_URL           optional — link back to this workflow run
@@ -159,6 +163,17 @@ while :; do
         slack ":double_vertical_bar: ${GATE_LABEL} <${PR_URL}|PR #${PR}> has \`${BLOCK_LABEL}\` — gate paused just before merge. Remove the label to resume on the next run. <${RUN_URL:-$PR_URL}|run>"
         echo "PR #${PR} carries ${BLOCK_LABEL}; exiting without merging."
         exit 0
+      fi
+      # Head pin: refuse to merge a head the caller never vetted. Checked at
+      # the last instant so commits pushed at any point during the poll are
+      # caught, not just ones present at loop start.
+      if [ -n "${EXPECTED_HEAD:-}" ]; then
+        CURRENT_HEAD="$(gh pr view "$PR" -R "$REPO" --json headRefOid --jq '.headRefOid')"
+        if [ "$CURRENT_HEAD" != "$EXPECTED_HEAD" ]; then
+          slack ":no_entry: ${GATE_LABEL} <${PR_URL}|PR #${PR}> head moved during the gate (${EXPECTED_HEAD:0:7} → ${CURRENT_HEAD:0:7}) — refusing to merge unvetted commits. Re-run the workflow to re-vet. <${RUN_URL:-$PR_URL}|run>"
+          echo "::error::PR #${PR} head changed ${EXPECTED_HEAD} → ${CURRENT_HEAD}; not merging."
+          exit 1
+        fi
       fi
       if [ "${AUTO_MERGE:-false}" = "true" ]; then
         echo "PASS — squash-merging PR #${PR}"
