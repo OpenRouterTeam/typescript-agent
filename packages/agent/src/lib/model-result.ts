@@ -158,6 +158,16 @@ function extractServerToolIdentity(item: ServerToolResultItem): Record<string, u
 const MAX_FORCE_RESUME_OVERRIDES = 3;
 
 /**
+ * Sentinel marking a tool-call id that appeared MORE THAN ONCE in one batch.
+ * Ids are model-emitted and nothing upstream enforces uniqueness; a colliding
+ * id must poison the loop-key cache entry rather than let the last write win,
+ * or one call's doom-loop identity aliases onto another's and its repetition
+ * becomes invisible to the per-call detector. Colliding calls fall through to
+ * per-call resolution at the checkpoint.
+ */
+const DUPLICATE_CALL_ID = Symbol('duplicate-call-id');
+
+/**
  * Human-readable label for a value that failed the `isRecord` check. Used
  * exclusively to make `toModelOutput` misuse errors specific.
  */
@@ -538,8 +548,12 @@ export class ModelResult<
   // tool-call id. A `loopKey` function is user code that may count, log, or
   // return something different each time, so it must run at most once per
   // call: the per-call checkpoint reuses what the declaration resolved instead
-  // of resolving again. Cleared with the round.
-  private readonly doomLoopRoundKeyMaterial = new Map<string, LoopKeyResolution>();
+  // of resolving again. Cleared with the round. An id seen twice in one batch
+  // maps to DUPLICATE_CALL_ID — see the write site.
+  private readonly doomLoopRoundKeyMaterial = new Map<
+    string,
+    LoopKeyResolution | typeof DUPLICATE_CALL_ID
+  >();
   // Serialization chain for doom evaluations: parallel tool executions
   // append their evaluation here in call order (the .map() over a round's
   // calls runs synchronously to the first await), so streak recording
@@ -1403,9 +1417,25 @@ export class ModelResult<
         );
         continue;
       }
-      // Cache so the per-call checkpoint does not invoke `loopKey` a second
-      // time; keyed by call id (required on ParsedToolCall, unique per round).
-      this.doomLoopRoundKeyMaterial.set(toolCall.id, resolution);
+      /*
+       * Cache so the per-call checkpoint does not invoke `loopKey` a second
+       * time; keyed by call id. Ids are MODEL-emitted strings and nothing
+       * upstream enforces uniqueness, so a duplicate id must not alias one
+       * call's identity onto another: overwriting here meant the first call's
+       * checkpoint read the second call's key material, its true fingerprint
+       * was never recorded, and a model emitting `(id=X, read a), (id=X,
+       * read b_i)` each round evaded the per-call detector for `a` entirely
+       * (measured: zero detections across four such rounds). On a duplicate
+       * id the cache poisons that id instead: both calls fall through to
+       * per-call resolution at the checkpoint, costing at most a duplicate
+       * `loopKey` invocation for the colliding calls — correctness over the
+       * single-invocation economy, for protocol-malformed input only.
+       */
+      if (this.doomLoopRoundKeyMaterial.has(toolCall.id)) {
+        this.doomLoopRoundKeyMaterial.set(toolCall.id, DUPLICATE_CALL_ID);
+      } else {
+        this.doomLoopRoundKeyMaterial.set(toolCall.id, resolution);
+      }
       if (resolution.kind === 'exempt') {
         continue;
       }
@@ -1587,7 +1617,7 @@ export class ModelResult<
      */
     const cached = this.doomLoopRoundKeyMaterial.get(toolCall.id);
     let resolution: LoopKeyResolution;
-    if (cached !== undefined) {
+    if (cached !== undefined && cached !== DUPLICATE_CALL_ID) {
       resolution = cached;
     } else {
       /*

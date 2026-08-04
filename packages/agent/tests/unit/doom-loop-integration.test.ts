@@ -373,6 +373,80 @@ describe('simulated LLM repeating a distinct-argument fan-out', () => {
   });
 });
 
+describe('simulated LLM emitting duplicate call ids', () => {
+  it('a repeat sharing its id with a varying sibling is still detected', async () => {
+    /*
+     * Call ids are model-emitted; nothing upstream enforces uniqueness. The
+     * loop-key cache is keyed by id, and last-write-wins aliasing meant the
+     * first call's checkpoint read the SECOND call's key material — its true
+     * fingerprint was never recorded, so `(id=X, read a), (id=X, read b_i)`
+     * each round evaded the per-call detector for `a` entirely (measured:
+     * zero detections in four rounds). A colliding id now poisons its cache
+     * entry and both calls fall through to per-call resolution.
+     */
+    const readTool = tool({
+      name: 'read',
+      inputSchema: z.object({
+        path: z.string(),
+      }),
+      outputSchema: z.object({
+        content: z.string(),
+      }),
+      execute: async ({ path }) => ({
+        content: path,
+      }),
+    });
+    const detections: DoomLoopDetectedPayload[] = [];
+    const hooks = new HooksManager();
+    hooks.on('DoomLoopDetected', {
+      handler: (payload) => {
+        detections.push(payload);
+      },
+    });
+
+    /* Every round: repeated `a` and a fresh `b<i>`, BOTH with callId X. */
+    const dupIdTurn = (round: number): models.OpenResponsesResult =>
+      baseResponse(
+        [
+          {
+            path: 'a',
+          },
+          {
+            path: `b${round}`,
+          },
+        ].map((args, index) => {
+          callCounter++;
+          return {
+            type: 'function_call',
+            id: `fc_${callCounter}_${index}`,
+            callId: 'call_X',
+            name: 'read',
+            arguments: JSON.stringify(args),
+            status: 'completed',
+          };
+        }),
+      );
+    scriptModelTurns(dupIdTurn(0), dupIdTurn(1), dupIdTurn(2), dupIdTurn(3), textTurn('done'));
+
+    await callModel(client, {
+      model: 'test-model',
+      input: 'go',
+      tools: [
+        readTool,
+      ] as const,
+      doomLoop: true,
+      hooks,
+    })
+      .getText()
+      .catch(() => undefined);
+
+    /* The repeated `a` accumulates despite the id collision. */
+    const actions = detections.map((detection) => detection.action);
+    expect(actions).toContain('observe');
+    expect(actions).toContain('block');
+  });
+});
+
 describe('simulated LLM repeating the same tool call', () => {
   it('observes at 2, blocks at 3 with an explanatory tool error, and lets the model recover', async () => {
     const executeSpy = vi.fn(async ({ query }: { query: string }) => ({
