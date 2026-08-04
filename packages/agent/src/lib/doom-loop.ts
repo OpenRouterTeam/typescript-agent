@@ -889,15 +889,27 @@ function restoreStreakEntry(entry: DoomLoopStreak): StreakEntry {
       }
     }
   }
+  /*
+   * The round streak gets the same range validation as the per-call counts —
+   * the blob is caller-writable JSON, and `isValidStreak` only checks "finite
+   * number". A negative count would hold the guardrail below every rung for
+   * that tool (thresholds compare with `>=`); a fractional or absurd one
+   * would feed the ladder garbage. Clamped to a sane count rather than
+   * rejected: a corrupt streak must degrade the entry, not drop the tool's
+   * evidence entirely (fail-open, like every other restore path). The cap is
+   * generous — real streaks stop the run at single digits — and exists only
+   * to bound arithmetic, not to change semantics.
+   */
+  const streak = Math.min(Math.max(Math.floor(entry.streak), 1), 1_000_000);
   return {
     fingerprint: entry.fingerprint,
-    streak: entry.streak,
+    streak,
     roundFingerprints: persistedSet,
     callStreaks:
       Object.keys(persistedCallStreaks).length > 0
         ? persistedCallStreaks
         : {
-            [entry.fingerprint]: entry.streak,
+            [entry.fingerprint]: streak,
           },
   };
 }
@@ -1006,11 +1018,15 @@ export class DoomLoopMonitor {
    * was also emission-order dependent: `[c,a,b]` never formed the matching
    * prefix and scored nothing. Declaring the whole set removes both.
    *
-   * Idempotent per round, and safe to skip: an undeclared round is scored
-   * per call against the previous round (the pre-fan-out semantics), so a
-   * fan-out simply goes undetected there rather than mis-scored — server-tool
-   * records take that path. Unhashable key material is skipped here; the
-   * caller's own fallback chain handles it at record time. Never serialized.
+   * Idempotent per round, and safe to skip: PER-CALL detection needs no
+   * declaration — every repeated `(tool, arguments)` identity accumulates its
+   * own consecutive-round count regardless, so an undeclared repeating
+   * fan-out still flags each repeated member (server-tool records take that
+   * path). What the declaration adds is round-set evidence: the fan-out
+   * scored as one unit, with a shared verdict and one steer message, instead
+   * of member-by-member. Unhashable key material is skipped here with a
+   * warning; the caller's own fallback chain handles it at record time.
+   * Never serialized.
    */
   async declareRound(
     round: number,
@@ -1024,9 +1040,17 @@ export class DoomLoopMonitor {
       let fingerprint: string;
       try {
         fingerprint = await fingerprintToolCall(call.toolName, call.keyMaterial);
-      } catch {
-        // Unhashable: leave it out of the declared set. recordToolCall's
-        // fallback chain decides this call's identity on its own.
+      } catch (error) {
+        // Unhashable: leave it out of the declared set — recordToolCall's
+        // fallback chain decides this call's identity on its own — but say
+        // so, like every other fail-open path: a direct consumer debugging
+        // an unexpectedly incomplete declaration needs the tool name and
+        // cause. (The engine warns separately on its own declaration path.)
+        console.warn(
+          `[DoomLoop] could not fingerprint a "${call.toolName}" call while declaring round ` +
+            `${round}; excluding it from the round set:`,
+          error,
+        );
         continue;
       }
       fingerprints.set(
@@ -1526,12 +1550,16 @@ function buildToolVerdictMessage(input: {
      * the steer dedupe collapses them to one correction. Reached when the
      * per-call streak decides, and when the round's true membership is unknown
      * (undeclared path) — in both cases quoting one call's hash would either
-     * be inaccurate for the round or diverge between its members.
+     * be inaccurate for the round or diverge between its members. The text
+     * asserts only what the per-call evidence actually shows — this one call
+     * repeated — because on the undeclared path the round's other calls (if
+     * any) are unknown, and a plain single-call repeat has no "other calls"
+     * at all.
      */
     return (
       `Doom loop suspected: this exact "${toolName}" call was repeated in ${Math.max(roundStreak, callStreak)} ` +
-      'consecutive rounds, even as its other calls changed. Repeating it will not change ' +
-      'the result. Take a different approach, or explain why repetition is required.'
+      'consecutive rounds. Repeating it will not change the result. ' +
+      'Take a different approach, or explain why repetition is required.'
     );
   }
   if (callSet.length > 1) {
