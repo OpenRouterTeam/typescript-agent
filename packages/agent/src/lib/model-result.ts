@@ -1545,6 +1545,15 @@ export class ModelResult<
    * declaration and the checkpoint — a pre-execution gate, a batch filter —
    * it MUST be reflected here, or fan-out detection degrades silently for
    * that tool rather than failing loudly.
+   *
+   * KNOWN RESIDUAL (documented, not mirrored): a per-request timeout or
+   * abort can cancel a call AFTER declaration but BEFORE its checkpoint,
+   * leaving a declared phantom for that round. Bounded and fail-safe: the
+   * round-set streak for that tool resets when the phantom stops recurring,
+   * while per-call streaks are unaffected — detection degrades to per-call
+   * for the affected tool rather than being lost. Un-declaring mid-round
+   * would mutate the round's identity while it is being scored, which is the
+   * incremental-set order-dependence this design exists to prevent.
    */
   private async beginDoomLoopRound(batch: readonly ParsedToolCall<Tool>[] = []): Promise<void> {
     const monitor = this.doomLoopMonitor;
