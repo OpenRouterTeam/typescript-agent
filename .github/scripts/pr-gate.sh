@@ -23,6 +23,11 @@
 #                     allowlist). The merge is refused if the PR head no longer
 #                     matches, closing the TOCTOU window between the caller's
 #                     check and the merge. Exit 1 (needs a re-run to re-vet).
+#   REQUIRE_HEAD      optional — "true" to make an empty/unset EXPECTED_HEAD
+#                     a hard error instead of "no pin configured". Set this
+#                     wherever the pin is a security control, so a broken
+#                     output wiring fails closed rather than silently
+#                     disabling the guard.
 #   SCOPE_SCRIPT      optional, with EXPECTED_HEAD — path to a script (run
 #                     with PR/REPO in env) that exits 0 iff the PR's current
 #                     diff is safe to merge unattended. When the head moved,
@@ -41,6 +46,14 @@ set -euo pipefail
 
 : "${PR:?PR is required}"
 : "${REPO:?REPO is required}"
+
+# Fail closed on missing pin where the pin is a security control: an empty
+# EXPECTED_HEAD (e.g. broken step-output wiring in the calling workflow) must
+# not silently downgrade to "no head verification".
+if [ "${REQUIRE_HEAD:-}" = "true" ] && [ -z "${EXPECTED_HEAD:-}" ]; then
+  echo "::error::REQUIRE_HEAD=true but EXPECTED_HEAD is empty — refusing to gate without a vetted head."
+  exit 1
+fi
 
 GATE_LABEL="${GATE_LABEL:-@openrouter/sdk bump}"
 
@@ -162,10 +175,15 @@ PY
 
 echo "Gating PR #${PR} on ${REPO} (timeout ${TIMEOUT}s, interval ${INTERVAL}s)"
 START=$(date +%s)
+# perry/review's "never appeared" clock. Reset whenever a new head is adopted
+# mid-gate: the fresh head's checks (perry included) start from scratch, so
+# measuring them against the run's original start time would misreport a
+# routine changesets/action refresh late in the poll as a token misconfig.
+PERRY_START=$START
 LAST_REASON=""
 
 while :; do
-  NOW=$(date +%s); ELAPSED=$((NOW - START))
+  NOW=$(date +%s); ELAPSED=$((NOW - START)); PERRY_ELAPSED=$((NOW - PERRY_START))
 
   check_hold "during the gate"
 
@@ -210,6 +228,7 @@ while :; do
           if [ "$REVETTED" = "true" ]; then
             echo "PR #${PR} head moved ${EXPECTED_HEAD:0:7} → ${CURRENT_HEAD:0:7}; new diff passes the scope check — adopting new head and re-polling."
             EXPECTED_HEAD="$CURRENT_HEAD"
+            PERRY_START=$(date +%s) # fresh head, fresh checks — restart perry's clock
             LAST_REASON=""
             continue
           fi
@@ -240,7 +259,7 @@ while :; do
     PENDING)
       # If perry/review never even shows up, the PR was likely opened with a
       # token that doesn't trigger it — surface that rather than hang forever.
-      if [ "$REASON" = "waiting for perry/review" ] && [ "$ELAPSED" -ge "$PERRY_TIMEOUT" ]; then
+      if [ "$REASON" = "waiting for perry/review" ] && [ "$PERRY_ELAPSED" -ge "$PERRY_TIMEOUT" ]; then
         slack ":warning: ${GATE_LABEL} <${PR_URL}|PR #${PR}>: perry/review never appeared after ${PERRY_TIMEOUT}s (token/app misconfig?). Not merging. <${RUN_URL:-$PR_URL}|run>"
         echo "::error::perry/review did not appear within ${PERRY_TIMEOUT}s"
         exit 1

@@ -131,7 +131,10 @@ jobs:
         if: >
           github.event_name == 'push' ||
           (github.event_name == 'workflow_dispatch' && inputs.mode == 'version')
-        uses: changesets/action@v1
+        # SHA-pinned (= v1.9.0): this step receives the cross-repo PAT and
+        # runs with it in .git/config, so a floating tag would let a
+        # compromised action release exfiltrate it. Bump deliberately.
+        uses: changesets/action@a45c4d594aa4e2c509dc14a9f2b3b67ba3780d0d
         with:
           title: 'chore: version packages'
           commit: 'chore: version packages'

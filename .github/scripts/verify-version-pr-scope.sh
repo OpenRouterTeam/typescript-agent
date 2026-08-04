@@ -41,6 +41,17 @@ if [ -z "$FILES_NDJSON" ]; then
   exit 1
 fi
 
+# The files endpoint silently caps at 3000 entries even with --paginate, so a
+# PR padded with allowlisted files could hide an out-of-scope path past the
+# cap. Cross-check against the PR's own changed-files count and refuse on any
+# mismatch. (A legitimate Version PR is nowhere near 3000 files.)
+ENUMERATED="$(printf '%s\n' "$FILES_NDJSON" | grep -c .)"
+DECLARED="$(gh api "repos/${REPO}/pulls/${PR}" --jq '.changed_files')"
+if [ "$ENUMERATED" != "$DECLARED" ]; then
+  echo "::error::File list truncated for PR #${PR}: enumerated ${ENUMERATED} of ${DECLARED} — refusing" >&2
+  exit 1
+fi
+
 printf '%s\n' "$FILES_NDJSON" | python3 -c '
 import json, re, sys
 

@@ -58,12 +58,23 @@ jobs:
           GH_TOKEN: ${{ secrets.GH_TOKEN }}
         run: |
           set -euo pipefail
-          PR_JSON="$(gh pr list -R "$REPO" \
+          # `--head` matches by branch *name*, which a fork can also use — an
+          # outsider's fork PR named changeset-release/main must never be
+          # what the train merges. Keep only same-repo PRs, and refuse to
+          # guess if more than one somehow matches.
+          MATCHES="$(gh pr list -R "$REPO" \
             --head "$VERSION_PR_BRANCH" \
             --state open \
-            --json number,labels \
-            --jq '.[0] // empty')"
+            --json number,labels,isCrossRepository \
+            --jq '[.[] | select(.isCrossRepository | not)]')"
 
+          COUNT="$(echo "$MATCHES" | python3 -c 'import sys,json; print(len(json.load(sys.stdin)))')"
+          if [ "$COUNT" -gt 1 ]; then
+            echo "::error::${COUNT} same-repo PRs from ${VERSION_PR_BRANCH} — refusing to pick one."
+            exit 1
+          fi
+
+          PR_JSON="$(echo "$MATCHES" | python3 -c 'import sys,json; m=json.load(sys.stdin); print(json.dumps(m[0]) if m else "")')"
           if [ -z "$PR_JSON" ]; then
             echo "pr_number=" >> "$GITHUB_OUTPUT"
             echo "held=false" >> "$GITHUB_OUTPUT"
@@ -181,6 +192,9 @@ jobs:
           # moved head passes a fresh SCOPE_SCRIPT run, the routine
           # changesets/action refresh case, which re-vets and re-polls.
           EXPECTED_HEAD: ${{ steps.scope.outputs.head_sha }}
+          # The pin is a security control here — an empty EXPECTED_HEAD
+          # (broken output wiring) must abort the gate, not skip the pin.
+          REQUIRE_HEAD: 'true'
           SCOPE_SCRIPT: .github/scripts/verify-version-pr-scope.sh
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           SLACK_BOT_TOKEN: ${{ secrets.CI_RELEASE_ALERT_SLACK_BOT_TOKEN }}
