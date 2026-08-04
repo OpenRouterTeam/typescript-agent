@@ -4192,7 +4192,7 @@ export class ModelResult<
 
     if (mode === 'cancel') {
       registry.abortAll('Run ended (onRunEnd: cancel)');
-      this.dropSettledTasks();
+      await this.dropSettledTasks();
       return currentResponse;
     }
 
@@ -4238,20 +4238,47 @@ export class ModelResult<
     // Drain budget exhausted with work still in flight: cut it loose.
     if (registry.hasInFlight()) {
       registry.abortAll('Async tool drain budget exhausted at run end');
-      this.dropSettledTasks();
+      await this.dropSettledTasks();
     }
 
     return response;
   }
 
-  /** Broadcast every unharvested settlement as dropped (no delivery). */
-  private dropSettledTasks(): void {
+  /**
+   * Broadcast every unharvested settlement as dropped (no delivery) and
+   * mirror the terminal status onto persisted `pendingAsyncTools`. Without
+   * the mirror, an entry persisted as `working` for a task that only ever
+   * settles in-memory (abortAll at drain exhaustion / run cancel) would
+   * pin a later cross-process resume to `awaiting_async_tools` forever —
+   * no other process can settle an in-memory background task.
+   */
+  private async dropSettledTasks(): Promise<void> {
     const registry = this.asyncToolRegistry;
     if (!registry) {
       return;
     }
-    for (const settled of registry.takeSettled()) {
-      this.broadcastAsyncSettled(settled, 'dropped');
+    const settled = registry.takeSettled();
+    for (const task of settled) {
+      this.broadcastAsyncSettled(task, 'dropped');
+    }
+    if (settled.length > 0 && this.stateAccessor && this.currentState?.pendingAsyncTools?.length) {
+      const terminalByCallId = new Map(
+        settled.map((t) => [
+          t.callId,
+          t.status === 'completed' || t.status === 'cancelled' ? t.status : ('failed' as const),
+        ]),
+      );
+      await this.saveStateSafely({
+        pendingAsyncTools: this.currentState.pendingAsyncTools.map((entry) => {
+          const terminal = terminalByCallId.get(entry.callId);
+          return terminal !== undefined
+            ? {
+                ...entry,
+                status: terminal,
+              }
+            : entry;
+        }),
+      });
     }
   }
 
@@ -4266,7 +4293,7 @@ export class ModelResult<
       return;
     }
     const orphaned = registry.markWorkingAsOrphaned();
-    this.dropSettledTasks();
+    await this.dropSettledTasks();
     if (orphaned.length > 0 && this.stateAccessor && this.currentState) {
       const existing = (this.currentState.pendingAsyncTools ?? []).filter(
         (t) => !orphaned.some((o) => o.callId === t.callId),
