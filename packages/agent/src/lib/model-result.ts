@@ -169,6 +169,14 @@ function relaxForcedToolChoice(
   return 'auto';
 }
 
+/** Whether a caller-configured tool choice requires this turn to call a tool. */
+function isForcedToolChoice(toolChoice: models.ResponsesRequest['toolChoice']): boolean {
+  if (toolChoice === undefined || typeof toolChoice === 'string') {
+    return toolChoice === 'required';
+  }
+  return toolChoice.type !== 'allowed_tools' || toolChoice.mode === 'required';
+}
+
 /**
  * Mutable binding between a tool call's run context and its ToolTask (which
  * is created only once the call escapes the round). See createRunBinding.
@@ -4649,6 +4657,22 @@ export class ModelResult<
   }
 
   /**
+   * Record that this logical run has spent its caller-configured forced
+   * choice. An automatic tool call must not consume a `required` choice that
+   * a dynamic parameter or explicit resume configuration introduces later.
+   */
+  private markForcedToolChoiceSatisfied(hasToolCalls: boolean): void {
+    if (
+      this.forcedToolChoiceSatisfied ||
+      !isForcedToolChoice(this.resolvedRequest?.toolChoice) ||
+      !hasToolCalls
+    ) {
+      return;
+    }
+    this.forcedToolChoiceSatisfied = true;
+  }
+
+  /**
    * Apply `onResponseReceived` hooks to the freshly-supplied input items
    * only, without re-hooking historical items that live in
    * `currentState.messages`. Historical `function_call` items are passed to
@@ -4868,14 +4892,7 @@ export class ModelResult<
         const loadedState = await this.stateAccessor.load();
         if (loadedState) {
           this.currentState = loadedState;
-          // Paused states written before this field existed also imply that
-          // the model already produced a tool call for the active run.
-          this.forcedToolChoiceSatisfied =
-            loadedState.forcedToolChoiceSatisfied === true ||
-            loadedState.status === 'awaiting_approval' ||
-            loadedState.status === 'awaiting_hitl' ||
-            loadedState.status === 'awaiting_client_tools' ||
-            loadedState.status === 'awaiting_async_tools';
+          this.forcedToolChoiceSatisfied = loadedState.forcedToolChoiceSatisfied === true;
 
           // Rehydrate doom-loop state so a resumed run continues where it
           // left off: streak counters always; the queued steer guidance;
@@ -5465,15 +5482,13 @@ export class ModelResult<
         // Get initial response
         let currentResponse = await this.getInitialResponse();
 
-        // toolChoice constrains model output, so the requirement is satisfied
-        // as soon as this turn emits a tool call. Record it before any
-        // approval/HITL/client/async pause can persist the run.
+        // toolChoice constrains model output, so a forced requirement is
+        // satisfied as soon as this turn emits a tool call. Record it before
+        // any approval/HITL/client/async pause can persist the run.
         const hasToolCalls = currentResponse.output.some(
           (item) => hasTypeProperty(item) && item.type === 'function_call',
         );
-        if (hasToolCalls) {
-          this.forcedToolChoiceSatisfied = true;
-        }
+        this.markForcedToolChoiceSatisfied(hasToolCalls);
 
         // Save initial response to state
         await this.saveResponseToState(currentResponse);
@@ -5723,6 +5738,11 @@ export class ModelResult<
             currentResponse,
             toolResults,
             turnNumber,
+          );
+          this.markForcedToolChoiceSatisfied(
+            currentResponse.output.some(
+              (item) => hasTypeProperty(item) && item.type === 'function_call',
+            ),
           );
           // A fresh response replaces the prior one -- that's new progress,
           // so reset consecutive forceResume counting.

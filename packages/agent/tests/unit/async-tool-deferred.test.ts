@@ -385,7 +385,27 @@ describe('tool.deferred — cross-process resume', () => {
   });
 
   it('.resolve() with run config relaxes a previously satisfied required toolChoice', async () => {
-    const { accessor } = await pauseConversation();
+    mockBetaResponsesSend.mockResolvedValueOnce({
+      ok: true,
+      value: makeResponse('resp_1', [
+        functionCallItem('call_d1', 'request_legal_review', '{"contractId":"c-9"}'),
+      ]),
+    });
+    const { accessor, get } = createMemoryAccessor();
+
+    await callModel(client, {
+      model: 'test-model',
+      input: 'review contract c-9',
+      tools: [
+        legalReview,
+      ] as const,
+      toolChoice: 'required',
+      state: accessor,
+    }).getState();
+
+    expect(mockBetaResponsesSend.mock.calls[0]?.[1]?.responsesRequest?.toolChoice).toBe('required');
+    expect(get()?.forcedToolChoiceSatisfied).toBe(true);
+    mockBetaResponsesSend.mockReset();
 
     mockBetaResponsesSend.mockResolvedValueOnce({
       ok: true,
