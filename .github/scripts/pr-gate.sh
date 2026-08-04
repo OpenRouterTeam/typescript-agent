@@ -221,13 +221,17 @@ while :; do
       if [ -n "${EXPECTED_HEAD:-}" ]; then
         CURRENT_HEAD="$(gh pr view "$PR" -R "$REPO" --json headRefOid --jq '.headRefOid')"
         if [ "$CURRENT_HEAD" != "$EXPECTED_HEAD" ]; then
-          REVETTED=false
-          if [ -n "${SCOPE_SCRIPT:-}" ] && PR="$PR" REPO="$REPO" "$SCOPE_SCRIPT" >/dev/null; then
-            REVETTED=true
+          # Adopt the SHA the scope script itself reports as vetted (it fails
+          # internally if the head moves while it reads the diff) — never the
+          # head we observed before the vet ran, which a flip-flop push during
+          # the vet could otherwise swap for unvetted content.
+          NEW_VETTED=""
+          if [ -n "${SCOPE_SCRIPT:-}" ]; then
+            NEW_VETTED="$(PR="$PR" REPO="$REPO" "$SCOPE_SCRIPT" | sed -n 's/^head_sha=//p')" || NEW_VETTED=""
           fi
-          if [ "$REVETTED" = "true" ]; then
-            echo "PR #${PR} head moved ${EXPECTED_HEAD:0:7} → ${CURRENT_HEAD:0:7}; new diff passes the scope check — adopting new head and re-polling."
-            EXPECTED_HEAD="$CURRENT_HEAD"
+          if [ -n "$NEW_VETTED" ]; then
+            echo "PR #${PR} head moved ${EXPECTED_HEAD:0:7} → ${NEW_VETTED:0:7}; new diff passes the scope check — adopting vetted head and re-polling."
+            EXPECTED_HEAD="$NEW_VETTED"
             PERRY_START=$(date +%s) # fresh head, fresh checks — restart perry's clock
             LAST_REASON=""
             continue
@@ -239,11 +243,16 @@ while :; do
       fi
       if [ "${AUTO_MERGE:-false}" = "true" ]; then
         echo "PASS — squash-merging PR #${PR}"
+        # --match-head-commit makes the pin atomic: GitHub itself rejects the
+        # merge if the head is no longer the vetted SHA, closing the residual
+        # window between our pin check above and the merge API call.
+        MATCH_ARGS=()
+        [ -n "${EXPECTED_HEAD:-}" ] && MATCH_ARGS=(--match-head-commit "$EXPECTED_HEAD")
         # Alert on merge failure too: under `set -e` a bare failing merge
         # would exit before any notification — fatal for the scheduled train,
         # where nobody is watching the run and the PR would sit unmerged
         # until the next scheduled attempt.
-        if gh pr merge "$PR" -R "$REPO" --squash --delete-branch; then
+        if gh pr merge "$PR" -R "$REPO" --squash --delete-branch "${MATCH_ARGS[@]}"; then
           slack ":white_check_mark: ${GATE_LABEL} <${PR_URL}|PR #${PR}> passed Perry + CI and was auto-merged."
         else
           slack ":x: ${GATE_LABEL} <${PR_URL}|PR #${PR}>: checks passed but the merge itself failed (branch protection? conflict?). Left open for a human. <${RUN_URL:-$PR_URL}|run>"

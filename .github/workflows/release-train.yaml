@@ -56,20 +56,42 @@ jobs:
         id: find
         env:
           GH_TOKEN: ${{ secrets.GH_TOKEN }}
+          SLACK_BOT_TOKEN: ${{ secrets.CI_RELEASE_ALERT_SLACK_BOT_TOKEN }}
+          SLACK_CHANNEL_ID: ${{ secrets.CI_RELEASE_ALERT_SLACK_CHANNEL_ID }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           set -euo pipefail
+          slack() {
+            if [ -n "${SLACK_BOT_TOKEN:-}" ] && [ -n "${SLACK_CHANNEL_ID:-}" ]; then
+              curl -fsS -X POST https://slack.com/api/chat.postMessage \
+                -H "Authorization: Bearer ${SLACK_BOT_TOKEN}" \
+                -H "Content-type: application/json; charset=utf-8" \
+                --data "$(python3 -c "import json,sys; print(json.dumps({'channel':sys.argv[1],'unfurl_links':False,'text':sys.argv[2]}))" "$SLACK_CHANNEL_ID" "$1")" \
+                >/dev/null || echo "::warning::Slack post failed"
+            else
+              echo "(slack not configured; would have posted) $1"
+            fi
+          }
+          # This is a cron-driven workflow nobody watches: any abort in this
+          # step must page, not just annotate the run. ERR fires on unexpected
+          # gh/python failures under set -e; deliberate exits alert inline.
+          trap 'slack ":warning: Release train: the find step failed unexpectedly — releases may be stalled. <${RUN_URL}|run>"' ERR
+
           # `--head` matches by branch *name*, which a fork can also use — an
           # outsider's fork PR named changeset-release/main must never be
-          # what the train merges. Keep only same-repo PRs, and refuse to
-          # guess if more than one somehow matches.
+          # what the train merges. Pin the base to main too (the branch can be
+          # PR'd anywhere), keep only same-repo PRs, and refuse to guess if
+          # more than one somehow matches.
           MATCHES="$(gh pr list -R "$REPO" \
             --head "$VERSION_PR_BRANCH" \
+            --base main \
             --state open \
             --json number,labels,isCrossRepository \
             --jq '[.[] | select(.isCrossRepository | not)]')"
 
           COUNT="$(echo "$MATCHES" | python3 -c 'import sys,json; print(len(json.load(sys.stdin)))')"
           if [ "$COUNT" -gt 1 ]; then
+            slack ":warning: Release train: ${COUNT} same-repo PRs open from ${VERSION_PR_BRANCH} — refusing to pick one. Close the extras. <${RUN_URL}|run>"
             echo "::error::${COUNT} same-repo PRs from ${VERSION_PR_BRANCH} — refusing to pick one."
             exit 1
           fi
@@ -100,6 +122,8 @@ jobs:
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           set -euo pipefail
+          # Cron-driven and unwatched: an unexpected abort must page too.
+          trap 'if [ -n "${SLACK_BOT_TOKEN:-}" ] && [ -n "${SLACK_CHANNEL_ID:-}" ]; then curl -fsS -X POST https://slack.com/api/chat.postMessage -H "Authorization: Bearer ${SLACK_BOT_TOKEN}" -H "Content-type: application/json; charset=utf-8" --data "$(python3 -c "import json,sys; print(json.dumps({\"channel\":sys.argv[1],\"unfurl_links\":False,\"text\":sys.argv[2]}))" "$SLACK_CHANNEL_ID" ":warning: Release train: stranded-changesets check failed unexpectedly. <${RUN_URL}|run>")" >/dev/null || true; fi' ERR
           PENDING="$(find .changeset -maxdepth 1 -name '*.md' ! -name 'README.md' | wc -l | tr -d ' ')"
           if [ "$PENDING" = "0" ]; then
             echo "No pending changesets and no Version PR — nothing to release."

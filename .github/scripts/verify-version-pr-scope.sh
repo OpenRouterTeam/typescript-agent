@@ -30,11 +30,20 @@ set -euo pipefail
 : "${REPO:?REPO is required}"
 
 HEAD_SHA="$(gh pr view "$PR" -R "$REPO" --json headRefOid --jq '.headRefOid')"
-echo "head_sha=${HEAD_SHA}"
 
 # NDJSON, one {filename, patch} per line; --paginate walks every page.
 FILES_NDJSON="$(gh api "repos/${REPO}/pulls/${PR}/files" --paginate \
   --jq '.[] | {filename, patch}')"
+
+# The head must not have moved while we were reading the diff — otherwise the
+# head_sha we report and the files we vetted could belong to different
+# revisions, and a caller adopting head_sha would be pinning an unvetted head.
+HEAD_AFTER="$(gh pr view "$PR" -R "$REPO" --json headRefOid --jq '.headRefOid')"
+if [ "$HEAD_AFTER" != "$HEAD_SHA" ]; then
+  echo "::error::PR #${PR} head moved during the scope check (${HEAD_SHA:0:7} → ${HEAD_AFTER:0:7}) — refusing" >&2
+  exit 1
+fi
+echo "head_sha=${HEAD_SHA}"
 
 if [ -z "$FILES_NDJSON" ]; then
   echo "::error::Could not read file list for PR #${PR} (empty) — refusing" >&2
