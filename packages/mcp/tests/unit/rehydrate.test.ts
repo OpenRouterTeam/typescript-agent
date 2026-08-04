@@ -650,6 +650,39 @@ describe('replay preserves snapshot age', () => {
     expect(writes).toHaveLength(0);
   });
 
+  /**
+   * A warm hit with a modern (sessionId-free) snapshot performs ZERO store
+   * operations — no write (the no-op skip) and no read (the scrub gate keys on
+   * the input snapshot, which on the warm path IS the store's entry). Only
+   * legacy entries pay the read-back.
+   */
+  it('touches the store zero times on a modern warm replay', async () => {
+    let gets = 0;
+    let sets = 0;
+    const store = {
+      get: () => {
+        gets += 1;
+        return Promise.resolve(null);
+      },
+      set: () => {
+        sets += 1;
+        return Promise.resolve();
+      },
+      delete: () => Promise.resolve(),
+    };
+
+    await rehydrateMCPTools({
+      snapshot: snapshotWithHeaders(),
+      cache: {
+        store,
+        key: 'warm',
+      },
+    });
+
+    expect(gets).toBe(0);
+    expect(sets).toBe(0);
+  });
+
   it('skips the write-back entirely on a replay, but writes after refresh', async () => {
     const sets: string[] = [];
     const countingStore = {

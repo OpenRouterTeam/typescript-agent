@@ -316,6 +316,7 @@ async function refreshStaleReplay(handle: MCPToolsHandle): Promise<void> {
  */
 async function maintainReplayedEntry(args: {
   options: RehydrateMCPToolsOptions;
+  snapshot: SerializedMCPServer;
   handle: MCPToolsHandle;
   cacheKey: string;
   effectiveAuth: MCPAuth | undefined;
@@ -330,15 +331,22 @@ async function maintainReplayedEntry(args: {
       await store.set(cacheKey, await handle.serialize());
       return;
     }
+    // Cheap gate first: the scrub can only be needed when the *input* snapshot
+    // carries a legacy `sessionId`. On the warm `createMCPTools` path the input
+    // is the store's own entry, so a `sessionId`-free input (every entry this
+    // version writes — the overwhelming majority) means a `sessionId`-free
+    // store, and we return without touching the store at all. This keeps the
+    // warm hit at zero extra round trips; only legacy entries pay the read.
+    if (args.snapshot.sessionId === undefined) {
+      return;
+    }
     // Scrub only what the store itself holds. Reading back before writing does
     // two jobs at once: it confirms the credential-bearing entry actually lives
     // in THIS store (a direct rehydrate may have loaded the snapshot from a
     // file or another key, and writing its auth block into a store that never
     // held it would introduce credentials without the `cacheCredentials`
     // opt-in), and it makes the write a rewrite of existing bytes minus one
-    // field rather than new material. Entries without a `sessionId` — including
-    // any entry a stale refresh just rewrote, since serialize no longer emits
-    // the field — produce no write at all.
+    // field rather than new material.
     const stored = await store.get(cacheKey);
     if (
       stored === null ||
@@ -440,6 +448,7 @@ export async function rehydrateMCPTools(
     } else {
       await maintainReplayedEntry({
         options,
+        snapshot,
         handle,
         cacheKey,
         effectiveAuth,
