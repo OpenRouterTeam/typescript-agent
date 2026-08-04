@@ -122,8 +122,14 @@ check_hold() {
 # stderr. Reads checks + PR meta in two gh calls.
 verdict() {
   local checks meta
-  checks="$(gh pr checks "$PR" -R "$REPO" --json name,state 2>/dev/null || echo '[]')"
-  meta="$(gh pr view "$PR" -R "$REPO" --json mergeable,reviewDecision 2>/dev/null || echo '{}')"
+  # NOT `$(cmd || echo '[]')`: gh pr checks exits non-zero when checks are
+  # pending (8) or failing (1) while still printing the JSON, and that form
+  # would append the fallback AFTER the real payload, corrupting the parse.
+  # Capture whatever was printed, substitute the fallback only when empty.
+  checks="$(gh pr checks "$PR" -R "$REPO" --json name,state 2>/dev/null)" || true
+  [ -n "$checks" ] || checks='[]'
+  meta="$(gh pr view "$PR" -R "$REPO" --json mergeable,reviewDecision 2>/dev/null)" || true
+  [ -n "$meta" ] || meta='{}'
   AI_REVIEWERS="$AI_REVIEWERS" python3 - "$checks" "$meta" <<'PY'
 import sys, json, os, re
 checks = json.loads(sys.argv[1])
@@ -219,7 +225,17 @@ while :; do
       # the new head by re-running it and only refuse if it fails; otherwise
       # adopt the new head and resume polling (its checks just restarted).
       if [ -n "${EXPECTED_HEAD:-}" ]; then
-        CURRENT_HEAD="$(gh pr view "$PR" -R "$REPO" --json headRefOid --jq '.headRefOid')"
+        # Guarded like the label read: a transient API failure here must
+        # alert and go red, not silently kill the run under set -e. An empty
+        # result is treated the same — we cannot verify the pin, so we don't
+        # merge. (--match-head-commit below would also catch a stale pin, but
+        # only with a live head to compare.)
+        if ! CURRENT_HEAD="$(gh pr view "$PR" -R "$REPO" --json headRefOid --jq '.headRefOid')" \
+           || [ -z "$CURRENT_HEAD" ]; then
+          slack ":warning: ${GATE_LABEL} <${PR_URL}|PR #${PR}>: could not read the PR head just before merge — refusing to merge (cannot verify the vetted-head pin). API failure, not a code problem. <${RUN_URL:-$PR_URL}|run>"
+          echo "::error::could not read headRefOid for PR #${PR}; failing closed."
+          exit 1
+        fi
         if [ "$CURRENT_HEAD" != "$EXPECTED_HEAD" ]; then
           # Adopt the SHA the scope script itself reports as vetted (it fails
           # internally if the head moves while it reads the diff) — never the

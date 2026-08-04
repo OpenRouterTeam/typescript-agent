@@ -29,35 +29,35 @@ set -euo pipefail
 : "${PR:?PR is required}"
 : "${REPO:?REPO is required}"
 
-HEAD_SHA="$(gh pr view "$PR" -R "$REPO" --json headRefOid --jq '.headRefOid')"
+PR_INFO="$(gh pr view "$PR" -R "$REPO" --json headRefOid,baseRefName,changedFiles)"
+HEAD_SHA="$(echo "$PR_INFO" | python3 -c 'import sys,json; print(json.load(sys.stdin)["headRefOid"])')"
+BASE_REF="$(echo "$PR_INFO" | python3 -c 'import sys,json; print(json.load(sys.stdin)["baseRefName"])')"
+DECLARED="$(echo "$PR_INFO" | python3 -c 'import sys,json; print(json.load(sys.stdin)["changedFiles"])')"
 
-# NDJSON, one {filename, patch} per line; --paginate walks every page.
-FILES_NDJSON="$(gh api "repos/${REPO}/pulls/${PR}/files" --paginate \
-  --jq '.[] | {filename, patch}')"
+# Vet the diff of the immutable SHA itself (compare API), not "the PR's
+# current files": with the mutable pulls/N/files endpoint, an A→B→A flip-flop
+# timed inside this script could get files from revision B vetted while
+# head_sha reports A. compare/<base>...<sha> is cryptographically bound to
+# HEAD_SHA, so what we vet is exactly what the caller pins and merges
+# (pr-gate.sh passes it to --match-head-commit).
+FILES_NDJSON="$(gh api "repos/${REPO}/compare/${BASE_REF}...${HEAD_SHA}" \
+  --jq '.files[] | {filename, patch}')"
 
-# The head must not have moved while we were reading the diff — otherwise the
-# head_sha we report and the files we vetted could belong to different
-# revisions, and a caller adopting head_sha would be pinning an unvetted head.
-HEAD_AFTER="$(gh pr view "$PR" -R "$REPO" --json headRefOid --jq '.headRefOid')"
-if [ "$HEAD_AFTER" != "$HEAD_SHA" ]; then
-  echo "::error::PR #${PR} head moved during the scope check (${HEAD_SHA:0:7} → ${HEAD_AFTER:0:7}) — refusing" >&2
-  exit 1
-fi
 echo "head_sha=${HEAD_SHA}"
 
 if [ -z "$FILES_NDJSON" ]; then
-  echo "::error::Could not read file list for PR #${PR} (empty) — refusing" >&2
+  echo "::error::Could not read diff for ${HEAD_SHA:0:7} (empty) — refusing" >&2
   exit 1
 fi
 
-# The files endpoint silently caps at 3000 entries even with --paginate, so a
-# PR padded with allowlisted files could hide an out-of-scope path past the
-# cap. Cross-check against the PR's own changed-files count and refuse on any
-# mismatch. (A legitimate Version PR is nowhere near 3000 files.)
+# The compare endpoint caps the files array (~300), so a padded PR could hide
+# an out-of-scope path past the cap. Cross-check against the PR's own
+# changed-files count and refuse on any mismatch — covers truncation AND a
+# base that moved enough to skew the diff. (A real Version PR is small; a
+# false refusal here just goes red and re-vets on re-run.)
 ENUMERATED="$(printf '%s\n' "$FILES_NDJSON" | grep -c .)"
-DECLARED="$(gh api "repos/${REPO}/pulls/${PR}" --jq '.changed_files')"
 if [ "$ENUMERATED" != "$DECLARED" ]; then
-  echo "::error::File list truncated for PR #${PR}: enumerated ${ENUMERATED} of ${DECLARED} — refusing" >&2
+  echo "::error::Diff for ${HEAD_SHA:0:7} enumerated ${ENUMERATED} files but PR declares ${DECLARED} — refusing" >&2
   exit 1
 fi
 
