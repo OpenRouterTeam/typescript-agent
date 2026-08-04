@@ -426,13 +426,14 @@ export function isAuthFailure(err: unknown, auth: MCPAuth | undefined, depth = 0
   if (err instanceof UnauthorizedError) {
     return true;
   }
-  // A bare 401/403 status counts only when the caller configured OAuth. That is
-  // the one auth kind where a retry has side effects (a second
-  // `redirectToAuthorization`, an overwritten PKCE verifier). With bearer,
-  // headers, or no auth, retrying merely re-sends a request — and suppressing it
-  // would be a regression, because proxies and WAFs commonly answer an unknown
-  // method like `server/discover` with 403: exactly the probe-hostile
-  // infrastructure the retry exists to rescue.
+  // A bare 401 status counts only when the caller configured OAuth — the one
+  // auth kind where a 401 retry has side effects (a second
+  // `redirectToAuthorization`, an overwritten PKCE verifier). 403 never
+  // suppresses, even under OAuth: the SDK's PKCE writes live exclusively behind
+  // its 401 branch, so a 403 retry re-drives nothing — while proxies and WAFs
+  // commonly answer an unknown method like `server/discover` with 403, exactly
+  // the probe-hostile infrastructure the retry exists to rescue. With bearer,
+  // headers, or no auth, no status suppresses.
   if (isOAuthAuth(auth) && isAuthStatus(err)) {
     return true;
   }

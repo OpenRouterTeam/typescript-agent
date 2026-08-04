@@ -58,10 +58,12 @@ export interface RehydrateMCPToolsOptions {
    * back to a full fresh connect. Default true.
    *
    * The fallback is skipped when the replay's connect ended in a credential
-   * rejection (the SDK's `UnauthorizedError`, or a 401/403 when an OAuth
+   * rejection (the SDK's `UnauthorizedError`, or a 401 status when an OAuth
    * provider is configured): the fallback reuses the same auth, so retrying
    * cannot succeed and would re-drive an OAuth authorization flow. Those
-   * failures reject with `MCPCacheError` instead.
+   * failures reject with `MCPCacheError` instead. A 403 does not skip it — the
+   * SDK's OAuth side effects only occur on 401, and gateways commonly answer
+   * unknown methods with 403.
    */
   reconnectOnExpiry?: boolean;
   // Tool-shaping + caching options threaded through from `createMCPTools` so a

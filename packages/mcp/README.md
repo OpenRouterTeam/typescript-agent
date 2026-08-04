@@ -229,11 +229,14 @@ re-walks the same transport ladder under `'legacy'`, so an unreachable server is
 four times before erroring — the price of guaranteeing that a legacy server reachable only
 over SSE still connects when its probe is refused.
 
-An auth failure skips the retry, whether it surfaced as the SDK's `UnauthorizedError` or as a
-401/403 status (the negotiation probe reports those as an `SdkHttpError` rather than routing
-them through the OAuth flow), and whether it came from the final attempt or an earlier one.
-Rejected credentials are not something a different protocol revision fixes, and retrying would
-drive an OAuth authorization flow twice and overwrite the saved PKCE verifier.
+An auth failure skips the retry: the SDK's `UnauthorizedError`, or — when an OAuth provider is
+configured — a **401** status from the probe (which the SDK reports as an `SdkHttpError`
+rather than routing through the OAuth flow), from any attempt, not only the last. A **403**
+never skips it, even under OAuth: the SDK's PKCE side effects occur only on 401, so a 403
+retry re-drives nothing, while gateways commonly answer unknown methods with 403 — the exact
+case the retry exists to rescue. Rejected credentials are not something a different protocol
+revision fixes, and retrying a 401 would drive an OAuth authorization flow twice and overwrite
+the saved PKCE verifier.
 
 `MCPConnectionError` exposes every underlying failure on `errors` (like `AggregateError`), flat
 and in attempt order across both negotiation passes, so nothing is hidden behind `cause` —
