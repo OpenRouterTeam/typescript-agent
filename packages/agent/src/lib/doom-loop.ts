@@ -1035,33 +1035,88 @@ export class DoomLoopMonitor {
       keyMaterial: unknown;
     }[],
   ): Promise<void> {
-    const fingerprints = new Map<string, readonly string[]>();
-    for (const call of calls) {
-      let fingerprint: string;
-      try {
-        fingerprint = await fingerprintToolCall(call.toolName, call.keyMaterial);
-      } catch (error) {
-        // Unhashable: leave it out of the declared set — recordToolCall's
-        // fallback chain decides this call's identity on its own — but say
-        // so, like every other fail-open path: a direct consumer debugging
-        // an unexpectedly incomplete declaration needs the tool name and
-        // cause. (The engine warns separately on its own declaration path.)
-        console.warn(
-          `[DoomLoop] could not fingerprint a "${call.toolName}" call while declaring round ` +
-            `${round}; excluding it from the round set:`,
-          error,
-        );
+    /*
+     * Independent digests run concurrently — declaration gates dispatch of
+     * the whole batch, so serial awaits would add one hash latency per call
+     * to every round. Failures are per-call and fail open, as before.
+     */
+    const hashed = await Promise.all(
+      calls.map(async (call) => {
+        try {
+          return {
+            call,
+            fingerprint: await this.fingerprintOnce(call.toolName, call.keyMaterial),
+          };
+        } catch (error) {
+          // Unhashable: leave it out of the declared set — recordToolCall's
+          // fallback chain decides this call's identity on its own — but say
+          // so, like every other fail-open path: a direct consumer debugging
+          // an unexpectedly incomplete declaration needs the tool name and
+          // cause. (The engine warns separately on its own declaration path.)
+          console.warn(
+            `[DoomLoop] could not fingerprint a "${call.toolName}" call while declaring round ` +
+              `${round}; excluding it from the round set:`,
+            error,
+          );
+          return null;
+        }
+      }),
+    );
+
+    /* Accumulate per tool, dedupe and sort ONCE per set — not per member. */
+    const collected = new Map<string, Set<string>>();
+    for (const entry of hashed) {
+      if (entry === null) {
         continue;
       }
+      const set = collected.get(entry.call.toolName) ?? new Set<string>();
+      set.add(entry.fingerprint);
+      collected.set(entry.call.toolName, set);
+    }
+    const fingerprints = new Map<string, readonly string[]>();
+    for (const [toolName, set] of collected) {
       fingerprints.set(
-        call.toolName,
-        mergeFingerprint(fingerprints.get(call.toolName) ?? [], fingerprint),
+        toolName,
+        [
+          ...set,
+        ].sort(),
       );
     }
     this.declaredRound = {
       round,
       fingerprints,
     };
+  }
+
+  /**
+   * Fingerprint with a per-object memo. The engine hands the SAME key-material
+   * object to `declareRound` and then to `recordToolCall` (the resolved
+   * `loopKey` output is cached per call id), so without this every checked
+   * call is canonicalized and SHA-256'd twice per round. WeakMap keeps the
+   * memo from retaining arguments beyond their natural lifetime; primitive
+   * key material (raw-string malformed args) skips the memo — it cannot key a
+   * WeakMap, and such calls are rare and small. Callers that mutate key
+   * material between declare and record get the declare-time identity, which
+   * is the identity the round was declared with — the consistent choice.
+   */
+  private readonly fingerprintMemo = new WeakMap<object, Map<string, string>>();
+  private async fingerprintOnce(toolName: string, keyMaterial: unknown): Promise<string> {
+    const memoizable = typeof keyMaterial === 'object' && keyMaterial !== null;
+    if (memoizable) {
+      // Keyed by object AND tool name: the tool name participates in the
+      // hash, so one arguments object used by two tools must not collide.
+      const hit = this.fingerprintMemo.get(keyMaterial as object)?.get(toolName);
+      if (hit !== undefined) {
+        return hit;
+      }
+    }
+    const fingerprint = await fingerprintToolCall(toolName, keyMaterial);
+    if (memoizable) {
+      const perTool = this.fingerprintMemo.get(keyMaterial as object) ?? new Map<string, string>();
+      perTool.set(toolName, fingerprint);
+      this.fingerprintMemo.set(keyMaterial as object, perTool);
+    }
+    return fingerprint;
   }
 
   /**
@@ -1237,7 +1292,7 @@ export class DoomLoopMonitor {
       detector?: Extract<DoomLoopDetectorKind, 'tool-fingerprint' | 'server-tool-fingerprint'>;
     },
   ): Promise<DoomLoopCallRecord> {
-    const fingerprint = await fingerprintToolCall(toolName, keyMaterial);
+    const fingerprint = await this.fingerprintOnce(toolName, keyMaterial);
     const previous = this.tools.get(toolName);
     const isSameRound = previous?.round !== undefined && previous.round === round;
 
