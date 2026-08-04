@@ -113,9 +113,14 @@ export function hasTaskToolNameCollision(tools: readonly Tool[]): boolean {
  */
 export function needsTaskTool(tools: readonly Tool[]): boolean {
   if (hasTaskToolNameCollision(tools)) {
-    console.warn(
-      `[AsyncTools] a user tool is named "${TASK_TOOL_NAME}" — the built-in task tool is disabled; models cannot check on long-running tasks.`,
-    );
+    // Only worth a warning when something was actually disabled: with no
+    // long-running tool in the list, the built-in would not have been
+    // registered anyway, and warning on every callModel() is pure noise.
+    if (tools.some((t) => isLongRunningTool(t))) {
+      console.warn(
+        `[AsyncTools] a user tool is named "${TASK_TOOL_NAME}" — the built-in task tool is disabled; models cannot check on long-running tasks.`,
+      );
+    }
     return false;
   }
   return tools.some((t) => isLongRunningTool(t));

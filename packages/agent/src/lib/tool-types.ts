@@ -626,6 +626,14 @@ export type ToolLifecycle = 'sync' | 'background' | 'deferred';
 export type ToolCheckConfig<TCheckParams = Record<string, unknown>> =
   | true
   | {
+      /**
+       * Validation schema for the model-supplied `params` on check calls.
+       * SECURITY: `params` is MODEL INPUT (and models can be steered by
+       * injected tool/web content). Without a schema the handler receives
+       * the raw record — declare one whenever `execute` forwards params
+       * into steering/cancel or any other side effect, exactly as you
+       * would validate a tool's inputSchema.
+       */
       schema?: $ZodObject<$ZodShape>;
       // Method syntax for bivariant param checking — see ToolFunctionWithExecute.
       execute?: {
