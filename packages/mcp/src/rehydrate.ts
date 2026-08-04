@@ -316,6 +316,49 @@ async function refreshStaleReplay(handle: MCPToolsHandle): Promise<void> {
  * would strip a credential-bearing entry when `cacheCredentials` was not
  * repeated — the DEV-766 hazard this path just stopped being exposed to.
  */
+
+/**
+ * Keep the rotation write from ratcheting `expiresAt` forward.
+ *
+ * `serializeServer` stamps `expiresAt` as `Date.now() + expires_in * 1000`,
+ * which is only accurate when the token was just obtained: `expires_in` is
+ * relative to *issuance* (RFC 6749 §5.1) and the SDK's `StoredOAuthTokens`
+ * carries no issued-at, so serialize can't know how much lifetime is already
+ * spent. Re-persisting an UNROTATED token on every replay would therefore push
+ * the recorded expiry forward each time, and `tokensExpired()` would never
+ * trip for a token that is genuinely expired.
+ *
+ * When the access token matches the input snapshot's, carry the snapshot's
+ * `expiresAt` verbatim (including its absence) — that value chains back to a
+ * stamp made when the token actually arrived. A rotated token was just saved
+ * by the SDK's own flow, so its freshly-relative `expires_in` is accurate and
+ * the recomputed expiry stands.
+ */
+function withPreservedExpiry(
+  serialized: SerializedMCPServer,
+  snapshot: SerializedMCPServer,
+): SerializedMCPServer {
+  const next = serialized.auth?.tokens;
+  const prev = snapshot.auth?.tokens;
+  if (next === undefined || prev === undefined || next.accessToken !== prev.accessToken) {
+    return serialized;
+  }
+  const tokens = {
+    ...next,
+  };
+  if (prev.expiresAt !== undefined) {
+    tokens.expiresAt = prev.expiresAt;
+  } else {
+    delete tokens.expiresAt;
+  }
+  return {
+    ...serialized,
+    auth: {
+      ...serialized.auth,
+      tokens,
+    },
+  };
+}
 async function maintainReplayedEntry(args: {
   options: RehydrateMCPToolsOptions;
   snapshot: SerializedMCPServer;
@@ -330,7 +373,7 @@ async function maintainReplayedEntry(args: {
   }
   try {
     if (isOAuthAuth(effectiveAuth) && options.cacheCredentials === true) {
-      await store.set(cacheKey, await handle.serialize());
+      await store.set(cacheKey, withPreservedExpiry(await handle.serialize(), args.snapshot));
       return;
     }
     // Cheap gate first: the scrub can only be needed when the *input* snapshot

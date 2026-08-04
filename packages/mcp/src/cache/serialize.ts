@@ -21,15 +21,21 @@ export interface SerializeInput {
 }
 
 /**
- * Compile-time guard that the SDK still expresses token lifetime as a relative
- * `expires_in` (seconds).
+ * Compile-time guard that the SDK still has a numeric `expires_in` field.
  *
  * `tokensFromProvider` narrows `expires_in` with a runtime `typeof` check, which
- * degrades silently: if a future SDK replaced it with an absolute field, the
- * check would simply never match, snapshots would carry no `expiresAt`, and
+ * degrades silently: if a future SDK renamed the field or retyped it, the check
+ * would simply never match, snapshots would carry no `expiresAt`, and
  * `tokensExpired()` would treat expired credentials as usable forever — a
  * security-relevant failure with no error anywhere. This assignment fails
  * `tsc` instead, at the version bump that causes it.
+ *
+ * What it cannot catch: a semantics change that keeps the name and the numeric
+ * type — say `expires_in` becoming an absolute epoch. No static assert can see
+ * that; the backstop is that `expires_in` is RFC 6749 §5.1 wire vocabulary
+ * ("lifetime in seconds"), which an OAuth type is very unlikely to repurpose
+ * without also renaming. Treat a major SDK bump as a prompt to re-read its
+ * token type either way.
  */
 type _AssertExpiresInIsSeconds = StoredOAuthTokens['expires_in'] extends number | undefined
   ? true

@@ -684,6 +684,123 @@ describe('replay preserves snapshot age', () => {
   });
 
   /**
+   * The rotation write must not ratchet `expiresAt` forward on an UNROTATED
+   * token.
+   *
+   * `serializeServer` stamps `expiresAt` from `Date.now() + expires_in * 1000`,
+   * but `expires_in` is relative to token issuance, not to the serialize call.
+   * Re-persisting the same token on every replay would push the recorded expiry
+   * forward each time, so `tokensExpired()` never trips for a token that is
+   * actually expired. When the provider still holds the snapshot's own access
+   * token, the maintenance write carries the snapshot's `expiresAt` verbatim.
+   */
+  it('preserves the snapshot expiresAt when re-persisting an unrotated OAuth token', async () => {
+    const snap = snapshotWithHeaders();
+    // Unexpired (well past the 30s skew) so the replay path runs.
+    const originalExpiresAt = Date.now() + 120_000;
+    snap.auth = {
+      tokens: {
+        accessToken: 'same-token',
+        expiresAt: originalExpiresAt,
+      },
+    };
+    const writes: Record<string, unknown>[] = [];
+    const store = {
+      get: () => Promise.resolve(null),
+      set: (_key: string, value: unknown) => {
+        writes.push(value as Record<string, unknown>);
+        return Promise.resolve();
+      },
+      delete: () => Promise.resolve(),
+    };
+
+    await rehydrateMCPTools({
+      snapshot: snap,
+      cacheCredentials: true,
+      cache: {
+        store,
+        key: 'warm',
+      },
+      auth: {
+        kind: 'oauth',
+        provider: {
+          // Same token as the snapshot, with a fresh-looking hour of lifetime —
+          // the raw restamp would move expiry to ~now + 1h.
+          tokens: () =>
+            Promise.resolve({
+              access_token: 'same-token',
+              token_type: 'bearer',
+              expires_in: 3600,
+            }),
+        } as never,
+      },
+    });
+
+    expect(writes).toHaveLength(1);
+    const tokens = (
+      writes[0]?.['auth'] as {
+        tokens?: Record<string, unknown>;
+      }
+    ).tokens;
+    expect(tokens?.['expiresAt']).toBe(originalExpiresAt);
+  });
+
+  /**
+   * A ROTATED token's recomputed expiry stands: the SDK just obtained it, so its
+   * relative `expires_in` genuinely is measured from about now.
+   */
+  it('restamps expiresAt when the provider rotated to a new OAuth token', async () => {
+    const snap = snapshotWithHeaders();
+    const originalExpiresAt = Date.now() + 120_000;
+    snap.auth = {
+      tokens: {
+        accessToken: 'old-token',
+        expiresAt: originalExpiresAt,
+      },
+    };
+    const writes: Record<string, unknown>[] = [];
+    const store = {
+      get: () => Promise.resolve(null),
+      set: (_key: string, value: unknown) => {
+        writes.push(value as Record<string, unknown>);
+        return Promise.resolve();
+      },
+      delete: () => Promise.resolve(),
+    };
+
+    const before = Date.now();
+    await rehydrateMCPTools({
+      snapshot: snap,
+      cacheCredentials: true,
+      cache: {
+        store,
+        key: 'warm',
+      },
+      auth: {
+        kind: 'oauth',
+        provider: {
+          tokens: () =>
+            Promise.resolve({
+              access_token: 'rotated-token',
+              token_type: 'bearer',
+              expires_in: 3600,
+            }),
+        } as never,
+      },
+    });
+
+    expect(writes).toHaveLength(1);
+    const tokens = (
+      writes[0]?.['auth'] as {
+        tokens?: Record<string, unknown>;
+      }
+    ).tokens;
+    expect(tokens?.['accessToken']).toBe('rotated-token');
+    // Restamped from the fresh grant, not carried from the old token.
+    expect(tokens?.['expiresAt']).toBeGreaterThanOrEqual(before + 3_600_000);
+  });
+
+  /**
    * A warm hit with a modern (sessionId-free) snapshot performs ZERO store
    * operations — no write (the no-op skip) and no read (the scrub gate keys on
    * the input snapshot, which on the warm path IS the store's entry). Only
