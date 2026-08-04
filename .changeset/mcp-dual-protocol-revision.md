@@ -234,7 +234,9 @@ Also in this release:
   the same store. Reads are a miss: a failing `store.get` falls through to a fresh connect,
   exactly as an empty cache would. `handle.refresh()` reports a write failure as the new
   `MCPCacheWriteError` (a subclass of `MCPCacheError`) for callers who do want to treat it
-  as fatal, and `onToolsChanged` subscribers are still notified after a failed write — the
+  as fatal, and `onToolsChanged` subscribers are still notified whenever the re-list itself
+  succeeded, whatever failed afterwards (a store write, or the OAuth provider rejecting
+  while the snapshot was being built) — the
   tools were re-read successfully, and skipping the announcement would leave subscribers
   permanently out of sync with `handle.tools`.
 - An auth failure no longer falls through the transport ladder. A 401 on Streamable HTTP used

@@ -211,6 +211,81 @@ describe('createMCPTools setup teardown', () => {
   });
 
   /**
+   * Announcement is keyed on ADOPTION, not on error class.
+   *
+   * `refresh()` can fail after swapping `tools` for reasons other than the
+   * store op — `snapshot()` awaits the caller's OAuth `provider.tokens()`,
+   * which propagates untagged (deliberately: it is a credential failure, not a
+   * store outage). Subscribers must still hear about the adopted set, or they
+   * are permanently out of sync with `handle.tools`.
+   */
+  it('notifies subscribers when a post-re-list snapshot build fails untagged', async () => {
+    let calls = 0;
+    state.listTools = () => {
+      calls += 1;
+      return Promise.resolve({
+        tools:
+          calls === 1
+            ? []
+            : [
+                {
+                  name: 'brand_new',
+                  inputSchema: {
+                    type: 'object',
+                    properties: {},
+                  },
+                },
+              ],
+      });
+    };
+
+    let tokenCalls = 0;
+    const handle = await createMCPTools({
+      url: 'https://mcp.example.com/mcp',
+      cacheCredentials: true,
+      cache: {
+        store: {
+          get: () => Promise.resolve(null),
+          set: () => Promise.resolve(),
+          delete: () => Promise.resolve(),
+        },
+        key: 'k',
+      },
+      auth: {
+        kind: 'oauth',
+        provider: {
+          // Succeeds for the construction write, fails during the
+          // list_changed-triggered refresh — after the new tools were adopted.
+          tokens: () => {
+            tokenCalls += 1;
+            return tokenCalls === 1
+              ? Promise.resolve({
+                  access_token: 't1',
+                  token_type: 'bearer',
+                })
+              : Promise.reject(new Error('provider outage'));
+          },
+        } as never,
+      },
+    });
+
+    const seen: number[] = [];
+    handle.onToolsChanged((next) => {
+      seen.push(next.length);
+    });
+
+    state.listChangedHandler?.();
+    await new Promise((resolve) => setTimeout(resolve, 10));
+
+    // The snapshot build failed untagged, but the re-list succeeded and the
+    // handle adopted the new set — subscribers hear about it.
+    expect(seen).toEqual([
+      1,
+    ]);
+    expect(handle.tools).toHaveLength(1);
+  });
+
+  /**
    * A store outage on the READ is a miss, not a failure.
    *
    * The write side became best-effort everywhere in this PR; leaving the read

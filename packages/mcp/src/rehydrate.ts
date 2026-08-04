@@ -267,21 +267,27 @@ function toReplayConnectOptions(args: {
  * new age rather than carrying the snapshot's forward.
  */
 async function refreshStaleReplay(handle: MCPToolsHandle): Promise<void> {
+  // `refresh()` swaps `handle.tools` to a fresh array exactly when the re-list
+  // succeeded, before it persists — so the reference tells re-list failure
+  // apart from persistence failure. Keying on that rather than on
+  // `MCPCacheWriteError` matters because persistence can fail OUTSIDE the
+  // store op too (the caller's OAuth provider rejecting inside `snapshot()`),
+  // and that failure must not masquerade as "re-listing tools failed".
+  const before = handle.tools;
   try {
     await handle.refresh();
   } catch (refreshErr) {
-    // A failed *write* is survivable and must not fail the call. `refresh()`
-    // re-lists and then writes back, so a transient outage in the caller's own
-    // store used to discard a connection whose tools had just been read
-    // successfully — and report it as a re-list failure, sending a reader to the
-    // wrong layer. The tools are current either way; only the cache entry is
-    // stale, and the next rehydrate re-reads it.
-    if (refreshErr instanceof MCPCacheWriteError) {
+    // Tools adopted: the re-list succeeded and only the persistence after it
+    // broke. Survivable, and must not fail the call — the tools ARE current;
+    // only the cache entry is stale, and the next rehydrate re-reads it.
+    // (A transient store outage here used to discard a connection whose tools
+    // had just been read successfully.)
+    if (handle.tools !== before || refreshErr instanceof MCPCacheWriteError) {
       return;
     }
-    // A failed read is not. The connection is live and the snapshot's tools would
-    // work, but they are older than the caller's own `maxAgeMs` — serving them
-    // anyway is exactly the unbounded-age bug that check exists to prevent.
+    // A failed re-list is not. The connection is live and the snapshot's tools
+    // would work, but they are older than the caller's own `maxAgeMs` — serving
+    // them anyway is exactly the unbounded-age bug that check exists to prevent.
     await closeQuietly(handle);
     throw new MCPStaleSnapshotError(
       'Snapshot is older than staleness.maxAgeMs and re-listing tools failed',

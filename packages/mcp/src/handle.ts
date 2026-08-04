@@ -261,6 +261,14 @@ export async function makeHandle(args: MakeHandleArgs): Promise<MCPToolsHandle> 
     }
   };
 
+  // INVARIANT internal callers rely on: `refresh()` swaps `tools` to a fresh
+  // array (rebuild() always allocates) exactly when the re-list succeeded, and
+  // it does so BEFORE attempting to persist. A caller that captured the old
+  // reference can therefore tell "the re-list failed" (reference unchanged)
+  // from "only something after the re-list failed" (reference changed) without
+  // inspecting the error — which no error-class check can do reliably, since
+  // persistence can fail outside the store op too (the caller's own OAuth
+  // provider rejecting inside `snapshot()`).
   const refresh = async (): Promise<readonly Tool[]> => {
     toolDefs = await listToolDefs(connection, options.signal);
     // Re-listed, so the snapshot is genuinely current from here on.
@@ -273,25 +281,22 @@ export async function makeHandle(args: MakeHandleArgs): Promise<MCPToolsHandle> 
   if (options.autoRefreshOnListChanged ?? true) {
     connection.setToolListChangedHandler(() => {
       // Fire-and-forget, but never let a failed refresh escape as an unhandled
-      // rejection. On a failed *re-list*, `tools` was never swapped, so
-      // subscribers correctly keep the last good set. A failed cache *write* is
-      // different: `refresh()` has already adopted the new tools by then, and
-      // skipping notification would leave subscribers permanently out of sync
-      // with `handle.tools` — the write is best-effort everywhere else, so it
-      // must not gate the announcement here either.
+      // rejection. Whether to announce is keyed on ADOPTION (the reference
+      // swap above), not on error class: once `refresh()` has swapped `tools`,
+      // skipping the announcement would leave subscribers permanently out of
+      // sync with `handle.tools`, no matter what broke afterwards — a store
+      // outage and an OAuth provider failing during serialize gate it equally
+      // little. On a failed re-list the reference is untouched and subscribers
+      // correctly keep the last good set.
+      const before = tools;
       void refresh()
-        .catch((err: unknown) => {
-          if (err instanceof MCPCacheWriteError) {
-            return tools;
-          }
-          return undefined;
-        })
-        .then((next) => {
-          if (next === undefined) {
+        .catch(() => undefined)
+        .then(() => {
+          if (tools === before) {
             return;
           }
           for (const listener of listeners) {
-            listener(next);
+            listener(tools);
           }
         })
         .catch(() => {});

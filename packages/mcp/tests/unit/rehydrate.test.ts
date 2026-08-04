@@ -437,6 +437,51 @@ describe('staleness on the direct rehydrate path', () => {
   });
 
   /**
+   * The stale path keys survival on ADOPTION, not on error class.
+   *
+   * `refresh()` can fail after adopting the re-listed tools for a reason that
+   * is not a tagged store write — the caller's own OAuth `provider.tokens()`
+   * rejecting inside `snapshot()` propagates untagged (deliberately: it is a
+   * credential failure, not a store outage). The re-list succeeded, so the
+   * tools are current; closing the connection and blaming the re-list would be
+   * wrong on both counts.
+   */
+  it('survives an untagged post-re-list failure on the stale path', async () => {
+    const snapshot = snapshotWithHeaders();
+    snapshot.cachedAt = Date.now() - 120_000;
+    const store = {
+      get: () => Promise.resolve(null),
+      set: () => Promise.resolve(),
+      delete: () => Promise.resolve(),
+    };
+
+    const handle = await rehydrateMCPTools({
+      snapshot,
+      cacheCredentials: true,
+      cache: {
+        store,
+        key: 'warm',
+      },
+      staleness: {
+        maxAgeMs: 60_000,
+      },
+      reconnectOnExpiry: false,
+      auth: {
+        kind: 'oauth',
+        provider: {
+          // Fails during the stale refresh's snapshot build — after the
+          // re-list already adopted the fresh (empty) tool set.
+          tokens: () => Promise.reject(new Error('provider outage')),
+        } as never,
+      },
+    });
+
+    // The re-list adopted the fresh set; only persisting it failed.
+    expect(handle.tools).toHaveLength(0);
+    expect(closeCount).toBe(0);
+  });
+
+  /**
    * A credential rejection must not trigger the freshConnect fallback.
    *
    * The fallback is a third reconnect layer reusing the same auth. connect()'s
