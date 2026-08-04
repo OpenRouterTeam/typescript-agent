@@ -66,15 +66,14 @@ jobs:
       (github.event_name == 'workflow_dispatch' &&
       inputs.mode == 'publish' && inputs.dry-run)
     steps:
-      # PAT for the same reason as the changesets step below: changesets/action
-      # pushes the changeset-release/main branch with plain `git push`, which
-      # uses the credentials checkout persisted. Under the default Actions
-      # GITHUB_TOKEN those pushes never trigger workflows, so updates to an
-      # already-open Version Packages PR would run no CI / perry/review and the
-      # release train could merge on stale checks.
+      # No credentials persisted: install/build/test below execute dependency
+      # lifecycle scripts and test code, which must not be able to read a
+      # long-lived cross-repo PAT out of .git/config. Git push credentials are
+      # injected by the "Configure git push credentials" step *after* those,
+      # immediately before the only steps that push.
       - uses: actions/checkout@v6
         with:
-          token: ${{ secrets.GH_TOKEN }}
+          persist-credentials: false
 
       - uses: pnpm/action-setup@v6
 
@@ -113,6 +112,19 @@ jobs:
       - run: pnpm run build
 
       - run: pnpm run test
+
+      # Deliberately after install/build/test (see the checkout comment).
+      # changesets/action pushes changeset-release/main (and release tags on
+      # the publish leg) with plain `git push`, which uses the remote's
+      # embedded credentials. It must be the PAT, not the Actions
+      # GITHUB_TOKEN: GITHUB_TOKEN-attributed pushes never trigger workflows,
+      # so Version PR updates would get no CI / perry/review and the release
+      # train (release-train.yaml) could merge on checks from the first
+      # revision.
+      - name: Configure git push credentials (PAT)
+        run: |
+          git remote set-url origin \
+            "https://x-access-token:${{ secrets.GH_TOKEN }}@github.com/${{ github.repository }}.git"
 
       - name: Version PR or Publish (changesets)
         id: changesets

@@ -15,6 +15,10 @@
 #   AUTO_MERGE        "true" to merge on PASS; anything else = report-only
 #   GATE_LABEL        optional — human label for Slack messages
 #                     (default "@openrouter/sdk bump")
+#   BLOCK_LABEL       optional — PR label that pauses the gate. Re-checked on
+#                     every poll and immediately before merging, so a hold
+#                     added mid-poll still stops the merge. Exit 0 (deliberate
+#                     pause, not a failure).
 #   SLACK_BOT_TOKEN   optional — Slack bot token for chat.postMessage
 #   SLACK_CHANNEL_ID  optional — Slack channel for alerts
 #   RUN_URL           optional — link back to this workflow run
@@ -51,6 +55,14 @@ slack() {
 }
 
 PR_URL="${GITHUB_SERVER_URL:-https://github.com}/${REPO}/pull/${PR}"
+
+# True when BLOCK_LABEL is set and currently on the PR. Queried live each time
+# so a hold applied while we're polling takes effect before any merge.
+held() {
+  [ -n "${BLOCK_LABEL:-}" ] || return 1
+  gh pr view "$PR" -R "$REPO" --json labels --jq '.labels[].name' 2>/dev/null \
+    | grep -qxF "$BLOCK_LABEL"
+}
 
 # Returns one of: PASS PENDING FAIL_CI FAIL_REVIEWER, plus a reason line on
 # stderr. Reads checks + PR meta in two gh calls.
@@ -114,6 +126,12 @@ LAST_REASON=""
 while :; do
   NOW=$(date +%s); ELAPSED=$((NOW - START))
 
+  if held; then
+    slack ":double_vertical_bar: ${GATE_LABEL} <${PR_URL}|PR #${PR}> has \`${BLOCK_LABEL}\` — gate paused, not merging. Remove the label to resume on the next run. <${RUN_URL:-$PR_URL}|run>"
+    echo "PR #${PR} carries ${BLOCK_LABEL}; exiting without merging."
+    exit 0
+  fi
+
   REASON="$(verdict 2>/tmp/gate.state)" || true
   STATE="$(cat /tmp/gate.state)"
   [ "$REASON" != "$LAST_REASON" ] && { echo "[$ELAPSED s] $STATE — $REASON"; LAST_REASON="$REASON"; }
@@ -134,6 +152,13 @@ while :; do
         echo "Settle re-check changed verdict to ${CONFIRM_STATE} (${CONFIRM_REASON}); continuing to poll"
         LAST_REASON=""
         continue
+      fi
+      # Last-instant hold check: the settle sleep is a window in which a
+      # human may have applied the hold label after the loop-top check.
+      if held; then
+        slack ":double_vertical_bar: ${GATE_LABEL} <${PR_URL}|PR #${PR}> has \`${BLOCK_LABEL}\` — gate paused just before merge. Remove the label to resume on the next run. <${RUN_URL:-$PR_URL}|run>"
+        echo "PR #${PR} carries ${BLOCK_LABEL}; exiting without merging."
+        exit 0
       fi
       if [ "${AUTO_MERGE:-false}" = "true" ]; then
         echo "PASS — squash-merging PR #${PR}"

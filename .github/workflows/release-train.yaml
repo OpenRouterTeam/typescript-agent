@@ -126,6 +126,42 @@ jobs:
               >/dev/null || echo "::warning::Slack post failed"
           fi
 
+      # An unattended merge into a publish pipeline must only ever carry
+      # mechanical `changeset version` output. changeset-release/main is an
+      # ordinary branch — anything else on it (pushed by anyone with write
+      # access) would ride the auto-merge straight into an npm publish, and
+      # CI + AI review are not a reliable control against a deliberate
+      # smuggle. Allowlist the file shapes changesets produces and refuse
+      # everything else.
+      - name: Verify Version PR diff scope
+        id: scope
+        if: steps.find.outputs.pr_number != '' && steps.find.outputs.held != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+          PR: ${{ steps.find.outputs.pr_number }}
+          SLACK_BOT_TOKEN: ${{ secrets.CI_RELEASE_ALERT_SLACK_BOT_TOKEN }}
+          SLACK_CHANNEL_ID: ${{ secrets.CI_RELEASE_ALERT_SLACK_CHANNEL_ID }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          UNEXPECTED="$(gh pr view "$PR" -R "$REPO" --json files --jq '.files[].path' | grep -vE \
+            '^(\.changeset/.*\.md|(packages/[^/]+/)?(package\.json|CHANGELOG\.md)|pnpm-lock\.yaml)$' || true)"
+          if [ -z "$UNEXPECTED" ]; then
+            echo "Diff scope OK — only version-bump paths."
+            exit 0
+          fi
+
+          TEXT=":no_entry: Release train: Version Packages PR #${PR} touches files outside the version-bump allowlist — NOT merging. Unexpected: $(echo "$UNEXPECTED" | head -5 | tr '\n' ' ')<${RUN_URL}|run>"
+          echo "::error::Unexpected files in Version PR:"; echo "$UNEXPECTED"
+          if [ -n "${SLACK_BOT_TOKEN:-}" ] && [ -n "${SLACK_CHANNEL_ID:-}" ]; then
+            curl -fsS -X POST https://slack.com/api/chat.postMessage \
+              -H "Authorization: Bearer ${SLACK_BOT_TOKEN}" \
+              -H "Content-type: application/json; charset=utf-8" \
+              --data "$(python3 -c "import json,sys; print(json.dumps({'channel':sys.argv[1],'unfurl_links':False,'text':sys.argv[2]}))" "$SLACK_CHANNEL_ID" "$TEXT")" \
+              >/dev/null || echo "::warning::Slack post failed"
+          fi
+          exit 1
+
       - name: Gate and merge Version Packages PR
         if: steps.find.outputs.pr_number != '' && steps.find.outputs.held != 'true'
         env:
@@ -135,6 +171,9 @@ jobs:
           # On schedule runs `inputs` is empty, so dry_run != true → AUTO_MERGE=true.
           AUTO_MERGE: ${{ inputs.dry_run != true }}
           GATE_LABEL: 'Release train (Version Packages)'
+          # Re-checked live inside pr-gate.sh on every poll and just before
+          # merge, so a hold applied mid-gate still stops the train.
+          BLOCK_LABEL: ${{ env.HOLD_LABEL }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           SLACK_BOT_TOKEN: ${{ secrets.CI_RELEASE_ALERT_SLACK_BOT_TOKEN }}
           SLACK_CHANNEL_ID: ${{ secrets.CI_RELEASE_ALERT_SLACK_CHANNEL_ID }}
