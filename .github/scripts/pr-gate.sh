@@ -248,7 +248,14 @@ while :; do
           if [ -n "$NEW_VETTED" ]; then
             echo "PR #${PR} head moved ${EXPECTED_HEAD:0:7} → ${NEW_VETTED:0:7}; new diff passes the scope check — adopting vetted head and re-polling."
             EXPECTED_HEAD="$NEW_VETTED"
-            PERRY_START=$(date +%s) # fresh head, fresh checks — restart perry's clock
+            # Fresh head, fresh checks — restart both clocks. Leaving the
+            # overall deadline on the run's original start would misreport a
+            # refresh late in the window as "did not settle" when the new
+            # head's CI never had a chance to finish. Adoption requires
+            # passing the scope re-vet, so this cannot extend a run
+            # unboundedly on hostile pushes — those exit 1 above instead.
+            PERRY_START=$(date +%s)
+            START=$PERRY_START
             LAST_REASON=""
             continue
           fi
