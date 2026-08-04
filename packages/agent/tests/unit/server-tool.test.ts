@@ -96,6 +96,42 @@ describe('convertToolsToAPIFormat', () => {
     });
   });
 
+  it('serializes strict: true from the tool definition', () => {
+    const strictTool = tool({
+      name: 'echo',
+      inputSchema: z.object({
+        msg: z.string(),
+      }),
+      strict: true,
+      execute: ({ msg }) => msg,
+    });
+    const api = convertToolsToAPIFormat([
+      strictTool,
+    ]);
+    expect(api[0]).toMatchObject({
+      type: 'function',
+      name: 'echo',
+      strict: true,
+    });
+  });
+
+  it('defaults strict to null when not declared', () => {
+    const plainTool = tool({
+      name: 'echo',
+      inputSchema: z.object({
+        msg: z.string(),
+      }),
+      execute: ({ msg }) => msg,
+    });
+    const api = convertToolsToAPIFormat([
+      plainTool,
+    ]);
+    expect(api[0]).toMatchObject({
+      type: 'function',
+      strict: null,
+    });
+  });
+
   it('mixes client + server tools in one array', () => {
     const clientTool = tool({
       name: 'echo',

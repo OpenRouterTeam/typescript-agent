@@ -50,6 +50,8 @@ type RegularToolConfigWithOutput<
   inputSchema: TInput;
   outputSchema: TOutput;
   eventSchema?: undefined;
+  /** Strict schema adherence for tool-call generation — see {@link BaseToolFunction.strict} */
+  strict?: boolean | null;
   /** Zod schema declaring the context data this tool needs */
   contextSchema?: TCtx;
   nextTurnParams?: NextTurnParamsFunctions<zodInfer<TInput>>;
@@ -82,6 +84,8 @@ type RegularToolConfigWithoutOutput<
   inputSchema: TInput;
   outputSchema?: undefined;
   eventSchema?: undefined;
+  /** Strict schema adherence for tool-call generation — see {@link BaseToolFunction.strict} */
+  strict?: boolean | null;
   /** Zod schema declaring the context data this tool needs */
   contextSchema?: TCtx;
   nextTurnParams?: NextTurnParamsFunctions<zodInfer<TInput>>;
@@ -115,6 +119,8 @@ type GeneratorToolConfig<
   inputSchema: TInput;
   eventSchema: TEvent;
   outputSchema: TOutput;
+  /** Strict schema adherence for tool-call generation — see {@link BaseToolFunction.strict} */
+  strict?: boolean | null;
   /** Zod schema declaring the context data this tool needs */
   contextSchema?: TCtx;
   nextTurnParams?: NextTurnParamsFunctions<zodInfer<TInput>>;
@@ -143,6 +149,8 @@ type ManualToolConfig<
   name: string; // Manual tools don't use TName since they have no execute
   description?: string;
   inputSchema: TInput;
+  /** Strict schema adherence for tool-call generation — see {@link BaseToolFunction.strict} */
+  strict?: boolean | null;
   /** Zod schema declaring the context data this tool needs */
   contextSchema?: TCtx;
   nextTurnParams?: NextTurnParamsFunctions<zodInfer<TInput>>;
@@ -185,6 +193,8 @@ type HITLToolConfig<
   outputSchema: TOutput;
   eventSchema?: undefined;
   execute?: undefined;
+  /** Strict schema adherence for tool-call generation — see {@link BaseToolFunction.strict} */
+  strict?: boolean | null;
   /** Zod schema declaring the context data this tool needs */
   contextSchema?: TCtx;
   nextTurnParams?: NextTurnParamsFunctions<zodInfer<TInput>>;
@@ -220,6 +230,8 @@ type ToolConfigWithSharedContext<
   inputSchema: $ZodObject<$ZodShape>;
   outputSchema?: $ZodType;
   eventSchema?: $ZodType;
+  /** Strict schema adherence for tool-call generation — see {@link BaseToolFunction.strict} */
+  strict?: boolean | null;
   contextSchema?: TCtx;
   nextTurnParams?: NextTurnParamsFunctions<Record<string, unknown>>;
   requireApproval?: boolean | ToolApprovalCheck<Record<string, unknown>>;
@@ -257,6 +269,8 @@ type RunToolConfigBase<
   /** Never present on run configs — keeps them disjoint from legacy overloads. */
   execute?: undefined;
   onToolCalled?: undefined;
+  /** Strict schema adherence for tool-call generation — see {@link BaseToolFunction.strict} */
+  strict?: boolean | null;
   /** Zod schema declaring the context data this tool needs */
   contextSchema?: TCtx;
   nextTurnParams?: NextTurnParamsFunctions<zodInfer<TInput>>;
@@ -569,6 +583,10 @@ export function tool(
       fn.maxConcurrency = config.maxConcurrency;
     }
 
+    if (config.strict !== undefined) {
+      fn.strict = config.strict;
+    }
+
     if (config.onResponseReceived !== undefined) {
       fn.onResponseReceived = config.onResponseReceived;
     }
@@ -622,6 +640,10 @@ export function tool(
 
     if (config.maxConcurrency !== undefined) {
       fn.maxConcurrency = config.maxConcurrency;
+    }
+
+    if (config.strict !== undefined) {
+      fn.strict = config.strict;
     }
 
     return {
@@ -678,6 +700,10 @@ export function tool(
       fn.toModelOutput = config.toModelOutput;
     }
 
+    if (config.strict !== undefined) {
+      fn.strict = config.strict;
+    }
+
     return {
       type: ToolType.Function,
       function: fn,
@@ -712,6 +738,9 @@ export function tool(
     }),
     ...(config.maxConcurrency !== undefined && {
       maxConcurrency: config.maxConcurrency,
+    }),
+    ...(config.strict !== undefined && {
+      strict: config.strict,
     }),
     ...('toModelOutput' in config &&
       config.toModelOutput !== undefined && {
@@ -814,6 +843,7 @@ function assignCommonToolFields(
 ): void {
   const fields = [
     'description',
+    'strict',
     'contextSchema',
     'nextTurnParams',
     'requireApproval',

@@ -427,6 +427,12 @@ export interface BaseToolFunction<
   description?: string;
   inputSchema: TInput;
   /**
+   * Whether providers should enforce strict schema adherence when generating
+   * this tool's call arguments (OpenAI structured-outputs style). Serialized
+   * onto the wire tool definition; `null`/absent leaves provider default.
+   */
+  strict?: boolean | null;
+  /**
    * Zod schema declaring the context data this tool needs.
    * `readonly` keeps TCtx covariant so tools carrying a concrete schema stay
    * assignable to the wide `Tool` union.
