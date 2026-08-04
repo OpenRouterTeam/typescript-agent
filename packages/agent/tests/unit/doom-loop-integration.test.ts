@@ -108,6 +108,23 @@ function textTurn(text: string): models.OpenResponsesResult {
   ]);
 }
 
+/** A turn fanning one tool out over several argument sets in parallel. */
+function fanOutTurn(name: string, argsList: readonly unknown[]): models.OpenResponsesResult {
+  return baseResponse(
+    argsList.map((args) => {
+      callCounter++;
+      return {
+        type: 'function_call',
+        id: `fc_${callCounter}`,
+        callId: `call_${callCounter}`,
+        name,
+        arguments: JSON.stringify(args),
+        status: 'completed',
+      };
+    }),
+  );
+}
+
 /** A turn with two parallel tool calls, for mixed-batch scenarios. */
 function twoToolCallTurn(
   first: [
@@ -216,6 +233,145 @@ beforeEach(() => {
 // ---------------------------------------------------------------------------
 // Scenario 1: identical tool calls, turn after turn
 // ---------------------------------------------------------------------------
+
+describe('simulated LLM repeating a distinct-argument fan-out', () => {
+  it('escalates observe -> block through callModel and stops the whole fan-out', async () => {
+    /*
+     * End to end through the engine, not the monitor: exercises the
+     * `beginDoomLoopRound` declaration filter chain that must mirror every
+     * record-skip path (see the INVARIANT comment there). A regression in
+     * that mirroring degrades fan-out detection silently; only a scripted
+     * multi-round fan-out through `callModel` catches it loudly.
+     */
+    const executed: string[] = [];
+    const readTool = tool({
+      name: 'read',
+      inputSchema: z.object({
+        path: z.string(),
+      }),
+      outputSchema: z.object({
+        content: z.string(),
+      }),
+      execute: async ({ path }) => {
+        executed.push(path);
+        return {
+          content: `contents of ${path}`,
+        };
+      },
+    });
+
+    const detections: DoomLoopDetectedPayload[] = [];
+    const hooks = new HooksManager();
+    hooks.on('DoomLoopDetected', {
+      handler: (payload) => {
+        detections.push(payload);
+      },
+    });
+
+    /* The same 3-call fan-out, four rounds running, then recovery. */
+    const paths = [
+      {
+        path: 'a',
+      },
+      {
+        path: 'b',
+      },
+      {
+        path: 'c',
+      },
+    ];
+    scriptModelTurns(
+      fanOutTurn('read', paths),
+      fanOutTurn('read', paths),
+      fanOutTurn('read', paths),
+      fanOutTurn('read', paths),
+      textTurn('recovered'),
+    );
+
+    const text = await callModel(client, {
+      model: 'test-model',
+      input: 'Summarize these files.',
+      tools: [
+        readTool,
+      ] as const,
+      doomLoop: true,
+      hooks,
+    }).getText();
+
+    /* The run recovers once the model changes course. */
+    expect(text).toBe('recovered');
+
+    /*
+     * Round 2 observes all three calls; rounds 3-4 block all three. The
+     * block rung stops the WHOLE fan-out spending: only rounds 1-2 execute.
+     */
+    expect(
+      detections.map((d) => [
+        d.action,
+        d.streak,
+      ]),
+    ).toEqual([
+      [
+        'observe',
+        2,
+      ],
+      [
+        'observe',
+        2,
+      ],
+      [
+        'observe',
+        2,
+      ],
+      [
+        'block',
+        3,
+      ],
+      [
+        'block',
+        3,
+      ],
+      [
+        'block',
+        3,
+      ],
+      [
+        'block',
+        4,
+      ],
+      [
+        'block',
+        4,
+      ],
+      [
+        'block',
+        4,
+      ],
+    ]);
+    expect(executed).toEqual([
+      'a',
+      'b',
+      'c',
+      'a',
+      'b',
+      'c',
+    ]);
+
+    /*
+     * The verdicts must come from the ROUND detector, not merely per-call
+     * counts. For an exactly-repeating fan-out both detectors produce the
+     * same actions and streaks, so a corrupted declaration (a phantom member,
+     * or a member wrongly filtered out) is invisible to the assertions above
+     * — the per-call counts mask it. The message form is the discriminator:
+     * round verdicts name the set ("same set of 3 parallel calls"), per-call
+     * verdicts name a single repeated call. Asserting the round form pins the
+     * `beginDoomLoopRound` declaration end to end.
+     */
+    for (const detection of detections) {
+      expect(detection.message).toContain('same set of 3 parallel calls');
+    }
+  });
+});
 
 describe('simulated LLM repeating the same tool call', () => {
   it('observes at 2, blocks at 3 with an explanatory tool error, and lets the model recover', async () => {
