@@ -563,7 +563,7 @@ export class ModelResult<
   // active logical run. This bit survives state-backed pauses; the effective
   // value is derived per turn so async parameters and allowed-tool sets stay
   // current.
-  private forcedToolChoiceSatisfied = false;
+  private shouldRelaxForcedToolChoice = false;
   // Fresh user items to persist atomically with the assistant response
   private pendingFreshItems: models.BaseInputsUnion[] | undefined;
   private resumingFromClientTools = false;
@@ -1107,7 +1107,7 @@ export class ModelResult<
   private async markStateComplete(): Promise<void> {
     // A later conversational turn is a new logical run and may force its
     // first tool call again.
-    this.forcedToolChoiceSatisfied = false;
+    this.shouldRelaxForcedToolChoice = false;
     await this.saveStateSafely({
       status: 'complete',
     });
@@ -4646,7 +4646,7 @@ export class ModelResult<
       toolChoice?: models.ResponsesRequest['toolChoice'];
     },
   >(request: TRequest): TRequest {
-    if (!this.forcedToolChoiceSatisfied) {
+    if (!this.shouldRelaxForcedToolChoice) {
       return request;
     }
     const toolChoice = relaxForcedToolChoice(request.toolChoice);
@@ -4665,13 +4665,13 @@ export class ModelResult<
    */
   private markForcedToolChoiceSatisfied(hasToolCalls: boolean): void {
     if (
-      this.forcedToolChoiceSatisfied ||
+      this.shouldRelaxForcedToolChoice ||
       !isForcedToolChoice(this.resolvedRequest?.toolChoice) ||
       !hasToolCalls
     ) {
       return;
     }
-    this.forcedToolChoiceSatisfied = true;
+    this.shouldRelaxForcedToolChoice = true;
   }
 
   /**
@@ -4776,7 +4776,7 @@ export class ModelResult<
 
     // Persist only the policy state, not a copied effective toolChoice. The
     // configured value may be dynamic and is re-resolved on every turn.
-    if (this.forcedToolChoiceSatisfied) {
+    if (this.shouldRelaxForcedToolChoice) {
       this.currentState = {
         ...this.currentState,
         forcedToolChoiceSatisfied: true,
@@ -4894,7 +4894,7 @@ export class ModelResult<
         const loadedState = await this.stateAccessor.load();
         if (loadedState) {
           this.currentState = loadedState;
-          this.forcedToolChoiceSatisfied = loadedState.forcedToolChoiceSatisfied === true;
+          this.shouldRelaxForcedToolChoice = loadedState.forcedToolChoiceSatisfied === true;
 
           // Rehydrate doom-loop state so a resumed run continues where it
           // left off: streak counters always; the queued steer guidance;
