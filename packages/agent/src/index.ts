@@ -81,6 +81,19 @@ export type {
 
 // High-level model calling
 export { callModel } from './inner-loop/call-model.js';
+// Async tool result delivery (cross-process resume for tool.deferred tasks)
+export type {
+  ResumeRunConfig,
+  ResumeToolResultEntry,
+  ToolTaskResultEnvelope,
+} from './inner-loop/resume-tool-results.js';
+export {
+  resumeToolResults,
+  ToolTaskAlreadySettledError,
+} from './inner-loop/resume-tool-results.js';
+// Agent tools (tool.agent)
+export type { AgentRunSpec, AgentToolConfig } from './lib/agent-tool.js';
+export { AgentTranscriptSource } from './lib/agent-tool.js';
 export { fromClaudeMessages, toClaudeMessage } from './lib/anthropic-compat.js';
 export type {
   CallModelInput,
@@ -88,6 +101,9 @@ export type {
   ResolvedCallModelInput,
 } from './lib/async-params.js';
 export { hasAsyncFunctions, resolveAsyncFunctions } from './lib/async-params.js';
+// Async tool task registry types
+export type { SettledToolTask } from './lib/async-tool-registry.js';
+export { AsyncToolRegistry } from './lib/async-tool-registry.js';
 export { fromChatMessages, toChatMessage } from './lib/chat-compat.js';
 // Claude constants and type guards
 export { ClaudeContentBlockType, NonClaudeMessageRole } from './lib/claude-constants.js';
@@ -197,18 +213,37 @@ export {
   getUnsupportedContentSummary,
   hasUnsupportedContent,
 } from './lib/stream-transformers.js';
-// Tool creation helpers
+export type { BuiltDeferredTool, DeferredToolMethods } from './lib/tool.js';
+// Tool creation helpers (tool also carries tool.background / tool.deferred)
 export { markMcp, serverTool, tool } from './lib/tool.js';
-export type { ContextInput } from './lib/tool-context.js';
+// Universal task-tool helpers
+export type { TaskToolInput } from './lib/tool-check.js';
+export { TASK_TOOL_NAME, TaskToolInputSchema } from './lib/tool-check.js';
+// Tool concurrency primitives
+export type { SemaphoreRelease } from './lib/tool-concurrency.js';
+export { acquireAll, Semaphore } from './lib/tool-concurrency.js';
+export type { ContextInput, ToolExecutionExtras } from './lib/tool-context.js';
 // Tool context helpers
 export { buildToolExecuteContext, ToolContextStore } from './lib/tool-context.js';
 // Real-time tool event broadcasting
 export { ToolEventBroadcaster } from './lib/tool-event-broadcaster.js';
+// Tool task runtime (logs, transcripts, steering inbox)
 export type {
+  TaskLogEntry,
+  TaskLogLimits,
+  TaskTranscriptSource,
+  ToolTaskMode,
+  ToolTaskStatusView,
+} from './lib/tool-task.js';
+export { DEFAULT_TASK_LOG_LIMITS, ToolTask } from './lib/tool-task.js';
+export type {
+  AsyncToolAck,
   ChatStreamEvent,
   ClientTool,
   ConversationState,
   ConversationStatus,
+  DeferOptions,
+  DeferredHandle,
   HasApprovalTools,
   HITLTool,
   HITLToolFunction,
@@ -223,6 +258,7 @@ export type {
   NextTurnParamsFunctions,
   ParsedToolCall,
   PartialResponse,
+  PendingAsyncTool,
   ResponseStreamEvent,
   ResponseStreamEvent as EnhancedResponseStreamEvent,
   ServerTool,
@@ -237,17 +273,24 @@ export type {
   ToModelOutputResult,
   Tool,
   ToolApprovalCheck,
+  ToolAsyncSettledEvent,
+  ToolAsyncStartedEvent,
   ToolCallOutputEvent,
+  ToolCheckConfig,
   ToolExecutionResult,
   ToolExecutionResultUnion,
   ToolHasApproval,
+  ToolLifecycle,
   ToolLoopKey,
   ToolLoopKeyFn,
   ToolOutputContentItem,
   ToolPreliminaryResultEvent,
   ToolResultEvent,
   ToolResultItem,
+  ToolRunContext,
   ToolStreamEvent,
+  ToolTaskHandle,
+  ToolTaskStatus,
   ToolWithExecute,
   ToolWithGenerator,
   TurnContext,
@@ -255,25 +298,33 @@ export type {
   TurnStartEvent,
   TypedToolCall,
   TypedToolCallUnion,
+  UnifiedTool,
+  UnifiedToolFunction,
   UnsentToolResult,
   Warning,
 } from './lib/tool-types.js';
 export {
   hasApprovalRequiredTools,
   hasExecuteFunction,
+  isAgentTool,
   isAutoResolvableTool,
   isClientTool,
+  isDeferredHandle,
   isGeneratorTool,
   isHITLTool,
+  isLongRunningTool,
   isManualTool,
   isMcpTool,
   isRegularExecuteTool,
   isServerTool,
+  isToolAsyncSettledEvent,
+  isToolAsyncStartedEvent,
   isToolCallOutputEvent,
   isToolPreliminaryResultEvent,
   isToolResultEvent,
   isTurnEndEvent,
   isTurnStartEvent,
+  isUnifiedTool,
   ToolType,
   toolHasApprovalConfigured,
 } from './lib/tool-types.js';

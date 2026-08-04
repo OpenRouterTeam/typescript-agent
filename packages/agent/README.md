@@ -114,7 +114,7 @@ What each stream emits:
 
 ### Tool Types
 
-The `tool()` factory creates type-safe tools with full Zod schema inference. Three tool types are supported:
+The `tool()` factory creates type-safe tools with full Zod schema inference. In addition to the legacy kinds below, the unified `run` interface with `lifecycle: 'sync' | 'background' | 'deferred'` covers [async tools](#async-tools) whose results arrive after the tool round, and `tool.agent()` creates [subagent tools](#agent-tools-subagents).
 
 **Regular tools** — automatically executed by the agent loop:
 
@@ -339,10 +339,11 @@ rungs (a weaker threshold at or past an enabled stronger one) warn, and so
 does an `escalate` rung without an `escalation` config (or vice versa).
 
 **Tools declare what identifies a call** via `loopKey` on the tool
-definition — a **function or a variable**:
+definition — a computed function over the call's validated arguments, like
+every other tool hook, or `false` to exempt:
 
 ```typescript
-// Function: compute the identity — a web-search tool normalizes its query.
+// Compute the identity — a web-search tool normalizes its query.
 tool({
   name: 'web_search',
   inputSchema: z.object({ query: z.string() }),
@@ -350,17 +351,16 @@ tool({
   execute: async ({ query }) => search(query),
 });
 
-// Variable (field list): declarative subset — data, not code, so it
-// survives serializable tool caches. A bash call is identified by the
-// command AND where it runs; other fields (e.g. verbose) don't count.
+// Return the subset of fields that matter. A bash call is identified by
+// the command AND where it runs; other fields (e.g. verbose) don't count.
 tool({
   name: 'bash',
   inputSchema: z.object({ command: z.string(), cwd: z.string(), verbose: z.boolean() }),
-  loopKey: ['command', 'cwd'],
+  loopKey: ({ command, cwd }) => ({ command, cwd }),
   execute: async ({ command, cwd }) => run(command, cwd),
 });
 
-// Variable (false): statically exempt — repetition is this tool's job.
+// false: statically exempt — repetition is this tool's job.
 tool({
   name: 'check_status',
   inputSchema: z.object({ jobId: z.string() }),
@@ -373,8 +373,12 @@ A function-form `loopKey` may return `null` to exempt an individual call.
 Returning `undefined`, throwing, or returning unhashable material (bigint,
 circular, >64 levels deep) falls back to the full-arguments identity with a
 warning — detection never fails a run. Without any `loopKey`, the full
-validated arguments object is the identity. MCP-wrapped tools accept a
-`loopKey` via `markMcp(tool, { loopKey })` (prefer the field-list form).
+validated arguments object is the identity. A field-name array
+(`loopKey: ['command', 'cwd']`) is also accepted — data rather than code,
+so it can be serialized into MCP tool caches and advertised over the wire
+via `_meta['openrouter/loopKey']`. MCP-wrapped tools accept a `loopKey`
+via `markMcp(tool, { loopKey })` or the `loopKeys` map on
+`createMCPTools`.
 
 **Fingerprints are a cross-port contract**: key material is canonicalized
 per RFC 8785 (JCS) and hashed with SHA-256 over the UTF-8 bytes, so the
@@ -398,7 +402,7 @@ block to observe for a known-chatty tool, or escalate straight to stop.
 
 - **Varying-input loops.** The fingerprint is identity-based: a model that
   invents a fresh nonce/timestamp field each call evades the default
-  whole-arguments identity entirely. A `loopKey` that names the meaningful
+  whole-arguments identity entirely. A `loopKey` that returns the meaningful
   fields closes this per tool; the structural fix (outcome hashing — the
   progress-ledger detector from the design doc) is planned, not shipped.
 - **Paraphrased repetition.** Text detectors require exact repeated token
@@ -411,6 +415,144 @@ block to observe for a known-chatty tool, or escalate straight to stop.
 - **Manual/client-executed calls** pause the loop for the caller and are
   not recorded (only executed, blocked, and parse-error calls are
   evidence).
+
+### Async Tools
+
+One `tool()` shape covers every execution lifecycle. Write an ordinary `run` — an async function or an async generator — and say what kind it is with `lifecycle`:
+
+- **`'sync'`** (default): awaited in the round, exactly like `execute`.
+- **`'background'`**: the loop keeps going. Work settling within the grace window (`graceMs`, default 250ms) behaves like a plain sync call; otherwise the model immediately receives a pending placeholder and the return value is injected as a `tool_task_result` message when it settles.
+- **`'deferred'`**: `run` returns `ctx.defer(taskId)` to park the call on durable external work — the run pauses (`status: 'awaiting_async_tools'`) until the task is completed from any process. Returning a plain value resolves immediately.
+
+Generator `run` yields become the task's **log** (feeding check-ins, `tool.preliminary_result` events, and transcripts); the generator's **return** is the result, validated against `outputSchema`. Non-generator bodies log with `ctx.log()`.
+
+```typescript
+const renderVideo = tool({
+  name: 'render_video',
+  lifecycle: 'background',
+  inputSchema: z.object({ script: z.string() }),
+  outputSchema: z.object({ url: z.string() }),
+  ack: 'Rendering started.',
+  timeoutMs: 300_000,
+  run: async function* ({ script }, ctx) {
+    const job = await renderer.start(script, { signal: ctx?.signal });
+    ctx?.onMessage((msg) => job.reprioritize(msg));       // steering opt-in
+    for await (const p of job.progress()) yield { pct: p };
+    return job.result();
+  },
+});
+
+const legalReview = tool({
+  name: 'request_legal_review',
+  lifecycle: 'deferred',
+  inputSchema: z.object({ contractId: z.string() }),
+  outputSchema: z.object({ approved: z.boolean() }),
+  run: async ({ contractId }, ctx) => {
+    const ticket = await legal.open(contractId, { conversationId: ctx?.conversationId });
+    return ctx!.defer(ticket.id);
+  },
+});
+```
+
+Deferred completion is typed and lives on the tool — callable from any process holding the `StateAccessor`:
+
+```typescript
+// webhook handler — hours later, different process
+await legalReview.resolve(client, {
+  state: makeAccessor(conversationId),
+  taskId: ticketId,
+  output: { approved: true },        // ← typechecked against outputSchema
+  run: { model: 'openai/gpt-4o' },   // continue immediately (omit to record-only)
+});
+```
+
+`legalReview.fail(...)` / `legalReview.cancel(...)` complete the surface; double resolution throws `ToolTaskAlreadySettledError`. The low-level `resumeToolResults()` handles batches. When a run would end with background work in flight, `asyncTools.onRunEnd` decides: `'drain'` (default), `'detach'`, or `'cancel'`.
+
+> **Security:** `.resolve()` injects a value the model treats as a tool result. Authenticate the webhook before calling it — the SDK cannot do that for you. Outputs are validated against `outputSchema` at runtime as well as compile time.
+
+### Checking On Long-Running Tasks
+
+When any long-running tool is registered, the SDK appends **one universal `task` tool** to the request — a single static wire definition regardless of how many async tools exist (per-tool schemas are never augmented, so context cost stays constant). The pending placeholder tells the model to use it:
+
+```typescript
+task({ taskId: "task_7f3" })                          // status: state, elapsed, last log
+task({ taskId, view: "logs", tail: 5 })               // recent progress entries
+task({ taskId, view: "transcript" })                  // full detail (agents: child conversation)
+task({ taskId, action: "steer", message: "..." })     // send guidance to the running task
+task({ taskId, action: "result" })                    // final result if settled, else status
+task({ taskId, action: "cancel", reason: "..." })     // stop the task
+```
+
+Calls are engine-intercepted and dispatched to the **owning tool's** `check` config — the wire surface is universal, the handling stays tool-specific:
+
+```typescript
+const renderVideo = tool({
+  name: 'render_video',
+  lifecycle: 'background',
+  // ... as above ...
+  check: {                                     // optional — SDK default when absent
+    schema: z.object({ focus: z.string().optional() }),   // validates task({ params })
+    execute: async (params, turnContext) => {
+      // turnContext.toolCallStatus           → 'working' | 'completed' | ...
+      // turnContext.accumulatedYieldedEvents → every run yield so far
+      // turnContext.task                     → { statusView, tailLogs, transcript, send, cancel }
+      if (params.focus) turnContext.task?.send(params.focus);
+      return turnContext.task?.statusView();
+    },
+  },
+});
+```
+
+Without a custom `check`, the SDK default answers the three views (`status` / `logs` / `transcript`, truncated to `asyncTools.maxTranscriptChars`, default 20k). Task-tool calls are doom-loop-exempt, bypass per-tool concurrency/timeout gates, and never fire Pre/PostToolUse hooks — but a `PermissionRequest` hook denial recorded for the call IS honored, so a policy layer can veto `cancel`/`steer`. Disable entirely with `asyncTools: { checkins: false }` (placeholders then revert to "do not call this tool again"). The name `task` is reserved: `tool()` and `tool.agent()` reject it at definition time; a dynamically-built tool list that bypasses `tool()` and claims the name suppresses the built-in with a warning (and the engine routes `task` calls to that user tool instead of intercepting them).
+
+After a process restart, deferred tasks answer `status` from persisted state (including a bounded `lastLog`); full logs and transcripts are in-memory only and report an explanatory note instead.
+
+### Steering Running Tasks
+
+- **From code:** `result.sendToTask(taskId, message)` delivers into the run body's `ctx.onMessage` handler (queued until one registers). Deferred tasks throw — their work runs in an external system.
+- **From the model:** `task({ taskId, action: 'steer', message })` delivers directly, or expose custom `params` handled by `check.execute` with `turnContext.task.send(...)`.
+- **Agent tools** forward steering messages into the child conversation automatically (as user messages at the child's next turn boundary).
+
+### Agent Tools (Subagents)
+
+`tool.agent()` creates a tool whose work IS a child `callModel` conversation, running as a background task:
+
+```typescript
+const researcher = tool.agent({
+  name: 'research_topic',
+  description: 'Deep-research a topic in the background.',
+  inputSchema: z.object({ topic: z.string() }),
+  outputSchema: z.object({ text: z.string() }),
+  agent: ({ topic }) => ({
+    model: 'openai/gpt-4o',
+    input: `Research: ${topic}`,
+    tools: [searchTool, fetchTool] as const,
+    stopWhen: stepCountIs(15),
+  }),
+  // default result mapper — Dennis-style last_message outcome:
+  result: async (child) => ({ text: await child.getText() }),
+});
+```
+
+The parent keeps working while children run (several can run concurrently under the background pool). The child's conversation is the check-in **transcript**; each child turn is a **log** entry; `status` reports `turnsCompleted` and `currentActivity`. `cancelTask(taskId)` (or parent abort / `timeoutMs`) cancels the child; `sendToTask` steers it mid-run. Children run **in-memory** (no `StateAccessor`) and do not inherit the parent's hooks — pass child hooks explicitly in the `agent` spec if needed. A child that pauses (HITL/manual/approval/deferred tools inside it) fails the task with a clear error.
+
+### Per-Tool Timeouts & Concurrency
+
+Every tool kind accepts `timeoutMs` (per-execution deadline; the run-level `toolTimeoutMs` sets a default) and `maxConcurrency` (max simultaneous executions of that tool). On timeout the round stops waiting — the model receives `{ error, code: 'tool_timeout' }` and the tool's `ctx.signal` aborts; the timeout bounds the round's *wait*, not the tool body, so signal-ignoring bodies can't hang the run. `ctx.signal` also fires on run abort (`signal` option) and `ModelResult.cancel()`.
+
+Round-level parallelism (unbounded by default, matching previous behavior) is capped with `toolConcurrency`:
+
+```typescript
+const result = callModel(client, {
+  model: 'openai/gpt-4o',
+  input: 'fan out',
+  tools: [searchTool] as const,
+  toolTimeoutMs: 30_000,
+  toolConcurrency: { round: 4, background: 8 },  // or a bare number for { round: n }
+});
+```
+
+Execution order may change under a cap; output order never does (results stay in call order for prompt-cache stability).
 
 ### Tool Approval
 
@@ -768,6 +910,12 @@ import { toChatMessage } from '@openrouter/agent/chat-compat';
 import { ToolContextStore } from '@openrouter/agent/tool-context';
 import { ToolEventBroadcaster } from '@openrouter/agent/tool-event-broadcaster';
 import { createInitialState } from '@openrouter/agent/conversation-state';
+import { resumeToolResults } from '@openrouter/agent/resume-tool-results';
+import { Semaphore } from '@openrouter/agent/tool-concurrency';
+import { AsyncToolRegistry } from '@openrouter/agent/async-tool-registry';
+import { ToolTask } from '@openrouter/agent/tool-task';
+import { TaskToolInputSchema } from '@openrouter/agent/tool-check';
+import { AgentTranscriptSource } from '@openrouter/agent/agent-tool';
 ```
 
 ## Development

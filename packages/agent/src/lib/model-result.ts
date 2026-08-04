@@ -6,12 +6,28 @@ import type * as models from '@openrouter/sdk/models';
 import type { $ZodObject, $ZodShape } from 'zod/v4/core';
 import type { CallModelInput, ResolvedCallModelInput } from './async-params.js';
 import { hasAsyncFunctions, resolveAsyncFunctions } from './async-params.js';
+import type { SettledToolTask, TaskToolInput, ToolSemaphore, ToolTaskMode } from './async-tools.js';
+import {
+  AsyncToolRegistry,
+  acquireAll,
+  buildTaskToolStub,
+  defaultCheckResult,
+  hasTaskToolNameCollision,
+  persistedTaskCheckResult,
+  resolveCheckConfig,
+  Semaphore,
+  TASK_RESULT_BOUNDARY,
+  TASK_TOOL_NAME,
+  TaskToolInputSchema,
+  ToolTask,
+} from './async-tools.js';
 import {
   appendToMessages,
   createInitialState,
   createRejectedResult,
   createUnsentResult,
   extractTextFromResponse as extractTextFromResponseState,
+  normalizeInputToArray,
   partitionToolCalls,
   unsentResultsToAPIFormat,
   updateState,
@@ -59,21 +75,30 @@ import {
   isResponseIncompleteEvent,
   isServerToolResultItem,
 } from './stream-type-guards.js';
-import type { ContextInput } from './tool-context.js';
+import type { ContextInput, ToolExecutionExtras } from './tool-context.js';
 import { resolveContext, ToolContextStore } from './tool-context.js';
 import { ToolEventBroadcaster } from './tool-event-broadcaster.js';
-import { applyOnResponseReceivedHooks, executeTool } from './tool-executor.js';
+import type { AsyncToolInvocation } from './tool-executor.js';
+import {
+  applyOnResponseReceivedHooks,
+  executeTool,
+  isAsyncToolInvocation,
+  validateToolInput,
+} from './tool-executor.js';
 import type {
   ConversationState,
   ConversationStatus,
   InferToolEventsUnion,
   InferToolOutputsUnion,
   ParsedToolCall,
+  PendingAsyncTool,
   ResponseStreamEvent,
   ServerToolResultItem,
   StateAccessor,
   StopWhen,
   Tool,
+  ToolAsyncSettledEvent,
+  ToolAsyncStartedEvent,
   ToolCallOutputEvent,
   ToolContextMapWithShared,
   ToolResultItem,
@@ -84,13 +109,15 @@ import type {
   UnsentToolResult,
 } from './tool-types.js';
 import {
+  isAgentTool,
   isAutoResolvableTool,
   isClientTool,
+  isLongRunningTool,
   isMcpTool,
   isServerTool,
   isToolCallOutputEvent,
+  isUnifiedTool,
 } from './tool-types.js';
-import { normalizeInputToArray } from './turn-context.js';
 
 /**
  * Default directive appended as a final user message on the forced final
@@ -113,6 +140,18 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 /**
+ * Mutable binding between a tool call's run context and its ToolTask (which
+ * is created only once the call escapes the round). See createRunBinding.
+ */
+interface RunBinding {
+  log: (entry: unknown) => void;
+  onMessage: (handler: (message: unknown) => void) => void;
+  setTranscriptSource: (source: NonNullable<ToolTask['transcriptSource']>) => void;
+  bind: (task: ToolTask) => void;
+  task: () => ToolTask | null;
+}
+
+/**
  * Extract the call identity echoed on a server-tool output item, for
  * doom-loop fingerprinting. Server tools never pass through the client
  * execution funnel; their output items echo what was asked (a web-search
@@ -127,8 +166,8 @@ function extractServerToolIdentity(item: ServerToolResultItem): Record<string, u
   const record = item as unknown as Record<string, unknown>;
   // Object.create(null), not `{}`: keys come from a JSON-parsed API response, so
   // a `__proto__` key would hit the prototype setter instead of creating an own
-  // property and drop out of the fingerprint. Same reasoning as the field-list
-  // subset in resolveLoopKeyMaterial and the Map-backed streak store.
+  // property and drop out of the fingerprint. Same reasoning as the
+  // Map-backed streak store.
   const identity: Record<string, unknown> = Object.create(null) as Record<string, unknown>;
   for (const [key, value] of Object.entries(record)) {
     if (
@@ -375,6 +414,52 @@ export interface GetResponseOptions<
    * the in-flight API request/stream. See `CallModelInput.signal`.
    */
   signal?: AbortSignal;
+  /**
+   * Default per-tool execution deadline in milliseconds. A tool-level
+   * `timeoutMs` overrides it. See `BaseToolFunction.timeoutMs` for the
+   * semantics (bounds the round's wait, not the tool body).
+   */
+  toolTimeoutMs?: number;
+  /**
+   * Concurrency limits for tool execution. A bare number is shorthand for
+   * `{ round: n }`. `round` bounds simultaneous executions within a tool
+   * round (unbounded by default — matching existing behavior); `background`
+   * bounds detached background-tool work (default 16).
+   */
+  toolConcurrency?:
+    | number
+    | {
+        round?: number;
+        background?: number;
+      };
+  /**
+   * Behavior for async tools (`tool.background` / `tool.deferred`).
+   */
+  asyncTools?: {
+    /**
+     * What to do when the run would end with background tasks in flight:
+     * - `'drain'` (default): wait (bounded by `drainTimeoutMs`) and give the
+     *   model up to `maxDrainTurns` extra turns so the final answer
+     *   incorporates late results;
+     * - `'detach'`: return immediately; tasks keep running and their results
+     *   are dropped (persisted as `orphaned` when a StateAccessor exists);
+     * - `'cancel'`: abort in-flight tasks and finish.
+     */
+    onRunEnd?: 'drain' | 'detach' | 'cancel';
+    /** Bound on each end-of-run drain wait. Default 30_000. */
+    drainTimeoutMs?: number;
+    /** Max extra model turns granted to deliver drained results. Default 2. */
+    maxDrainTurns?: number;
+    /**
+     * Model-side check-ins: whether calling a long-running tool with a
+     * `taskId` answers status/logs/transcript instead of starting new work.
+     * Default true. When false, placeholders revert to "do not call this
+     * tool again" and the check schema is not advertised.
+     */
+    checkins?: boolean;
+    /** Max characters for the `transcript` check view. Default 20_000. */
+    maxTranscriptChars?: number;
+  };
 }
 
 /**
@@ -439,6 +524,7 @@ export class ModelResult<
   // Fresh user items to persist atomically with the assistant response
   private pendingFreshItems: models.BaseInputsUnion[] | undefined;
   private resumingFromClientTools = false;
+  private resumingFromAsyncTools = false;
 
   // State management for multi-turn conversations
   private stateAccessor: StateAccessor<TTools> | null = null;
@@ -548,6 +634,20 @@ export class ModelResult<
   // monitor's config so the engine can build the overrides.
   private readonly doomLoopEscalation: ResolvedEscalationConfig | null;
 
+  // Async tool support (tool.background / tool.deferred). The registry
+  // tracks task identity and settled outcomes; created lazily on the first
+  // async tool call so runs without async tools carry zero overhead.
+  private asyncToolRegistry: AsyncToolRegistry | null = null;
+  // Concurrency gates: the round gate bounds simultaneous executions within
+  // a tool round; per-tool gates bound one tool across the run; the
+  // background pool bounds detached background work.
+  private roundGate: ToolSemaphore | null = null;
+  private backgroundPool: ToolSemaphore | null = null;
+  private readonly perToolGates = new Map<string, ToolSemaphore>();
+  // Per-call abort controllers for in-flight tool executions, keyed by call
+  // id. Aborted on run abort / cancel() so cooperative tool bodies stop.
+  private readonly inflightToolControllers = new Map<string, AbortController>();
+
   constructor(options: GetResponseOptions<TTools, TShared>) {
     this.options = options;
     this.hooksManager = options.hooks;
@@ -572,6 +672,90 @@ export class ModelResult<
     this.requireApprovalFn = options.requireApproval ?? null;
     this.approvedToolCalls = options.approveToolCalls ?? [];
     this.rejectedToolCalls = options.rejectToolCalls ?? [];
+
+    // Concurrency gates. Round default stays unbounded (existing behavior);
+    // the background pool always has a cap (default 16 — detached work has
+    // no round to bound it).
+    const concurrency = options.toolConcurrency;
+    const roundLimit = typeof concurrency === 'number' ? concurrency : concurrency?.round;
+    if (roundLimit !== undefined) {
+      this.roundGate = new Semaphore(roundLimit);
+    }
+    const backgroundLimit = typeof concurrency === 'object' ? (concurrency.background ?? 16) : 16;
+    this.backgroundPool = new Semaphore(backgroundLimit);
+  }
+
+  /** Lazily create the async tool registry. */
+  private ensureAsyncToolRegistry(): AsyncToolRegistry {
+    if (!this.asyncToolRegistry) {
+      this.asyncToolRegistry = new AsyncToolRegistry();
+    }
+    return this.asyncToolRegistry;
+  }
+
+  /** Per-tool concurrency gate, created on first use. */
+  private perToolGate(toolName: string): ToolSemaphore | undefined {
+    const tool = this.options.tools?.find((t) => isClientTool(t) && t.function.name === toolName);
+    if (!tool || isServerTool(tool)) {
+      return undefined;
+    }
+    const limit = tool.function.maxConcurrency;
+    if (limit === undefined) {
+      return undefined;
+    }
+    let gate = this.perToolGates.get(toolName);
+    if (!gate) {
+      gate = new Semaphore(limit);
+      this.perToolGates.set(toolName, gate);
+    }
+    return gate;
+  }
+
+  /**
+   * Compose the per-call abort signal for one tool execution: the run
+   * signal plus a per-call controller the engine can abort independently
+   * (timeout race, cancelTask, cancel()). The tool deadline deliberately
+   * does NOT ride the signal here — the race in `executeSingleToolCall`
+   * owns exactly one timer (which aborts the controller), so the round's
+   * timeout resolution and the body's abort observation cannot disagree.
+   */
+  private composeToolSignal(
+    toolName: string,
+    callId: string,
+  ): {
+    controller: AbortController;
+    signal: AbortSignal;
+    timeoutMs: number | undefined;
+  } {
+    const tool = this.options.tools?.find((t) => isClientTool(t) && t.function.name === toolName);
+    const timeoutMs =
+      tool && !isServerTool(tool)
+        ? (tool.function.timeoutMs ?? this.options.toolTimeoutMs)
+        : this.options.toolTimeoutMs;
+
+    const controller = new AbortController();
+    this.inflightToolControllers.set(callId, controller);
+    const signal = this.options.signal
+      ? AbortSignal.any([
+          controller.signal,
+          this.options.signal,
+        ])
+      : controller.signal;
+    return {
+      controller,
+      signal,
+      timeoutMs,
+    };
+  }
+
+  /** Abort every in-flight tool execution and background task. */
+  private abortAllToolWork(reason?: string): void {
+    const error = new Error(reason ?? 'Run aborted');
+    for (const controller of this.inflightToolControllers.values()) {
+      controller.abort(error);
+    }
+    this.inflightToolControllers.clear();
+    this.asyncToolRegistry?.abortAll(reason);
   }
 
   /**
@@ -862,6 +1046,13 @@ export class ModelResult<
       this.resumingFromClientTools = false;
       stateUpdates.status = 'in_progress';
     }
+    if (this.resumingFromAsyncTools) {
+      // The resumed request succeeded — the conversation is moving again.
+      // Pending tasks that are still unresolved stay on pendingAsyncTools
+      // (resumeToolResults maintains that list); only the status advances.
+      this.resumingFromAsyncTools = false;
+      stateUpdates.status = 'in_progress';
+    }
 
     await this.saveStateSafely(stateUpdates);
   }
@@ -1055,6 +1246,10 @@ export class ModelResult<
    */
   private hasExecutableToolCalls(toolCalls: ParsedToolCall<Tool>[]): boolean {
     return toolCalls.some((toolCall) => {
+      // The universal task tool is engine-intercepted — always executable.
+      if (toolCall.name === TASK_TOOL_NAME && this.taskToolActive()) {
+        return true;
+      }
       const tool = this.options.tools?.find(
         (t) => isClientTool(t) && t.function.name === toolCall.name,
       );
@@ -1097,6 +1292,7 @@ export class ModelResult<
     toolCall: ParsedToolCall<Tool>,
     turnContext: TurnContext,
     onPreliminaryResult?: (toolCallId: string, result: unknown) => void,
+    extras?: ToolExecutionExtras,
   ): Promise<
     | {
         type: 'parse_error';
@@ -1245,14 +1441,20 @@ export class ModelResult<
       onPreliminaryResult,
       this.contextStore ?? undefined,
       this.options.sharedContextSchema,
+      extras,
     );
     const durationMs = performance.now() - startTime;
 
     // HITL tools may pause (executeTool returns null). No output was produced
     // yet, so neither PostToolUse nor PostToolUseFailure fires; they will fire
     // if/when the tool is resumed and actually executes.
+    // Async invocations (background/deferred) haven't produced their final
+    // output either — Post hooks fire at settlement via
+    // emitAsyncSettledHooks (in-process delivery). Results delivered by
+    // resumeToolResults in ANOTHER process have no hooksManager there;
+    // that path stays uncovered and is documented on resumeToolResults.
     // Emit PostToolUse or PostToolUseFailure.
-    if (this.hooksManager && result !== null) {
+    if (this.hooksManager && result !== null && !isAsyncToolInvocation(result)) {
       if (result.error) {
         await this.hooksManager.emit(
           'PostToolUseFailure',
@@ -1425,7 +1627,7 @@ export class ModelResult<
   /**
    * Doom-loop checkpoint for one tool call, run before PreToolUse/execution.
    *
-   * Resolves the tool's `loopKey` declaration (function | field list |
+   * Resolves the tool's `loopKey` declaration (function |
    * false | absent — see {@link resolveLoopKeyMaterial}) and evaluates the
    * call against the monitor. Ladder actions:
    *
@@ -1777,6 +1979,47 @@ export class ModelResult<
   }
 
   /**
+   * Emit PostToolUse / PostToolUseFailure for an async task at settlement —
+   * the point its final output actually exists. Round-synchronous tools
+   * emit these in runToolWithHooks; async invocations skip that emission
+   * (no output yet) and land here instead. `durationMs` is the task's
+   * start-to-settle wall clock (includes background-pool queue wait, which
+   * counts against the task's own timeout budget). Observation-only — a
+   * throwing hook must not break delivery.
+   */
+  private async emitAsyncSettledHooks(task: SettledToolTask): Promise<void> {
+    if (!this.hooksManager) {
+      return;
+    }
+    try {
+      if (task.status === 'completed') {
+        await this.hooksManager.emit(
+          'PostToolUse',
+          {
+            toolName: task.name,
+            toolInput: task.input ?? {},
+            toolOutput: task.result,
+            durationMs: task.durationMs,
+          },
+          this.hookEmitContext(task.name),
+        );
+      } else {
+        await this.hooksManager.emit(
+          'PostToolUseFailure',
+          {
+            toolName: task.name,
+            toolInput: task.input ?? {},
+            error: new Error(task.error ?? `Task ${task.taskId} ${task.status}`),
+          },
+          this.hookEmitContext(task.name),
+        );
+      }
+    } catch (error) {
+      console.warn('[AsyncTools] PostToolUse hook threw during async settlement:', error);
+    }
+  }
+
+  /**
    * Emit SessionEnd exactly once, and only when a matching SessionStart
    * actually succeeded. Safe to call from multiple teardown paths.
    */
@@ -2120,6 +2363,82 @@ export class ModelResult<
   }
 
   /**
+   * Settle an async invocation on the approval/resume path, where results
+   * are accumulated as `UnsentToolResult`s rather than round outputs.
+   *
+   * - background: degrade to synchronous execution — the approval flow is
+   *   already a discrete resume step, so there is no round to unblock; the
+   *   work is awaited and its (validated) value becomes the unsent result.
+   * - defer: the external task HAS been started by `start()`; record the
+   *   pending placeholder as the unsent result and track the task on
+   *   `pendingAsyncTools` so `resumeToolResults` can deliver the real
+   *   result later as an envelope.
+   */
+  private async settleAsyncInvocationAsUnsent(
+    tc: ParsedToolCall<TTools[number]>,
+    invocation: AsyncToolInvocation,
+  ): Promise<UnsentToolResult<TTools>> {
+    if (invocation.asyncMode === 'background') {
+      try {
+        const result = await invocation.run();
+        return createUnsentResult(tc.id, String(tc.name), result);
+      } catch (error) {
+        return createRejectedResult(
+          tc.id,
+          String(tc.name),
+          error instanceof Error ? error.message : String(error),
+        );
+      }
+    }
+
+    const registry = this.ensureAsyncToolRegistry();
+    const liveTask = registry.trackDeferred({
+      callId: tc.id,
+      taskId: invocation.taskId,
+      name: String(tc.name),
+      ...(invocation.pollAfterMs !== undefined && {
+        pollAfterMs: invocation.pollAfterMs,
+      }),
+      ...(invocation.expiresAt !== undefined && {
+        expiresAt: invocation.expiresAt,
+      }),
+    });
+    const task: PendingAsyncTool = {
+      callId: tc.id,
+      taskId: invocation.taskId,
+      name: String(tc.name),
+      mode: 'defer',
+      status: 'working',
+      startedAt: liveTask.startedAt,
+      ...(invocation.pollAfterMs !== undefined && {
+        pollAfterMs: invocation.pollAfterMs,
+      }),
+      ...(invocation.expiresAt !== undefined && {
+        expiresAt: invocation.expiresAt,
+      }),
+    };
+    if (this.currentState) {
+      this.currentState = updateState(this.currentState, {
+        pendingAsyncTools: [
+          ...(this.currentState.pendingAsyncTools ?? []).filter((t) => t.callId !== tc.id),
+          task,
+        ],
+      });
+    }
+    const placeholder = this.buildPendingPlaceholder(
+      tc as ParsedToolCall<Tool>,
+      invocation.taskId,
+      invocation.ack,
+      invocation.pollAfterMs,
+    );
+    return createUnsentResult(
+      tc.id,
+      String(tc.name),
+      typeof placeholder.output === 'string' ? JSON.parse(placeholder.output) : placeholder.output,
+    );
+  }
+
+  /**
    * Execute tools that can auto-execute (don't require approval) in parallel.
    *
    * @param toolCalls - The tool calls to execute
@@ -2164,6 +2483,10 @@ export class ModelResult<
       if (result === null) {
         // HITL tool paused — no unsent result for this call in this round
         return null;
+      }
+
+      if (isAsyncToolInvocation(result)) {
+        return this.settleAsyncInvocationAsUnsent(tc, result);
       }
 
       if (result.error) {
@@ -2402,6 +2725,132 @@ export class ModelResult<
   }
 
   /**
+   * Persist state when one or more deferred tools (`tool.deferred`) started
+   * durable external tasks this round. The placeholder outputs are already
+   * persisted (the round is fully paired), so — unlike HITL/manual pauses —
+   * nothing dangles; the pause exists purely because the model's next turn
+   * should wait for the real results.
+   *
+   * Mirrors `persistHitlPause` in shape. Status `awaiting_async_tools` is
+   * distinct from `awaiting_client_tools`: the tool DID execute; only its
+   * result is pending. Resumption happens via the deferred tool's
+   * `.resolve()` / `.fail()` / `.cancel()` or `resumeToolResults()`.
+   */
+  private async persistAsyncToolPause(
+    currentResponse: models.OpenResponsesResult,
+    deferredTasks: PendingAsyncTool[],
+  ): Promise<void> {
+    this.finalResponse = currentResponse;
+
+    if (!this.stateAccessor) {
+      return;
+    }
+
+    const existing = (this.currentState?.pendingAsyncTools ?? []).filter(
+      (t) => !deferredTasks.some((d) => d.callId === t.callId),
+    );
+    await this.saveStateSafely({
+      pendingAsyncTools: [
+        ...existing,
+        ...deferredTasks,
+      ],
+      status: 'awaiting_async_tools',
+    });
+  }
+
+  /**
+   * Harvest background tasks that settled since the last flush and inject
+   * their outcomes into the conversation as `tool_task_result` envelope
+   * messages (user role). Runs at the same safe point as
+   * `flushDoomLoopSteer()` — after a fully-paired round, before the next
+   * request — because injecting between a dangling `function_call` and its
+   * future output would be invalid history.
+   *
+   * A delivery is forward progress: the text-repetition streak is reset so a
+   * model saying "still waiting…" between deliveries is not condemned.
+   */
+  private async flushAsyncToolDeliveries(): Promise<boolean> {
+    const registry = this.asyncToolRegistry;
+    if (!registry) {
+      return false;
+    }
+    const settled = registry.takeSettled();
+    if (settled.length === 0) {
+      return false;
+    }
+
+    const envelopes: string[] = [];
+    for (const task of settled) {
+      this.broadcastAsyncSettled(task, 'injected');
+      // Emit the canonical tool.result event with the FINAL value so
+      // consumers watching only tool.result see real results exactly once.
+      if (task.status === 'completed') {
+        this.broadcastToolResult(
+          task.callId,
+          this.toolSourceByName(task.name),
+          task.result as InferToolOutputsUnion<TTools>,
+        );
+      }
+      // PostToolUse/PostToolUseFailure fire at SETTLEMENT for async tools —
+      // the observation-only audit surface (secret scanning, output review)
+      // must cover long-running results, which are exactly the ones that
+      // arrive from external processes.
+      await this.emitAsyncSettledHooks(task);
+      envelopes.push(
+        JSON.stringify({
+          type: 'tool_task_result',
+          tool: task.name,
+          taskId: task.taskId,
+          callId: task.callId,
+          status: task.status,
+          ...(task.result !== undefined && {
+            result: task.result,
+          }),
+          ...(task.error !== undefined && {
+            error: task.error,
+          }),
+        }),
+      );
+      // Record settlement for the at-most-once guard. The pending entry is
+      // KEPT with its terminal status (not removed) — same policy as
+      // resumeToolResults — so a late external resolution by taskId OR
+      // callId resolves to ToolTaskAlreadySettledError, never "not found".
+      if (this.currentState) {
+        const terminalStatus =
+          task.status === 'completed' || task.status === 'cancelled' ? task.status : 'failed';
+        this.currentState = updateState(this.currentState, {
+          settledAsyncCallIds: [
+            ...(this.currentState.settledAsyncCallIds ?? []),
+            task.callId,
+          ],
+          ...(this.currentState.pendingAsyncTools !== undefined && {
+            pendingAsyncTools: this.currentState.pendingAsyncTools.map((t) =>
+              t.callId === task.callId
+                ? {
+                    ...t,
+                    status: terminalStatus,
+                  }
+                : t,
+            ),
+          }),
+        });
+      }
+    }
+
+    // Instruction boundary: the injected message rides the user role (the
+    // only channel that can deliver a late result without a duplicate
+    // function_call_output), but its content is tool output — mark it so
+    // attacker-influenced result text does not read as user instructions.
+    await this.injectAppendPromptMessage(`${TASK_RESULT_BOUNDARY}\n${envelopes.join('\n')}`);
+
+    // Delivery is observable forward progress — clear the text streak so
+    // legitimate "waiting" phrasing between deliveries can't accumulate
+    // into a doom-loop stop.
+    this.doomLoopMonitor?.resetTextStreak();
+    return true;
+  }
+
+  /**
    * Compute the `output` payload sent to the model for a successfully
    * settled tool execution. Routes through `toModelOutput` when the tool
    * defines one (which may itself throw to surface an error), falls back to
@@ -2483,6 +2932,16 @@ export class ModelResult<
         toolCall: ParsedToolCall<Tool>;
       }
     | {
+        type: 'async';
+        toolCall: ParsedToolCall<Tool>;
+        tool: Tool;
+        invocation: AsyncToolInvocation;
+        controller: AbortController;
+        timeoutMs: number | undefined;
+        runBinding: RunBinding;
+        preliminaryResultsForCall: InferToolEventsUnion<TTools>[];
+      }
+    | {
         type: 'execution';
         toolCall: ParsedToolCall<Tool>;
         tool: Tool;
@@ -2493,6 +2952,20 @@ export class ModelResult<
         preliminaryResultsForCall: InferToolEventsUnion<TTools>[];
       }
   > {
+    // Universal task-tool dispatch: ONE static tool ("task") handles every
+    // check/steer/result/cancel interaction with running tasks, addressed
+    // by taskId — the wire surface stays constant regardless of how many
+    // async tools are registered, while the handling stays tool-resident
+    // (the owning tool's `check` config). Engine-intercepted: bypasses
+    // gates, deadlines, and Pre/PostToolUse hooks (engine bookkeeping, not
+    // user work) and never reaches the doom-loop checkpoint. A
+    // PermissionRequest denial recorded for the call IS honored — cancel
+    // is destructive and steer reshapes a running task, so a policy layer
+    // that vetoed the call wins over the interception.
+    if (toolCall.name === TASK_TOOL_NAME && this.taskToolActive()) {
+      return this.consumeHookDenial(toolCall.id) ?? this.answerTaskToolCall(toolCall);
+    }
+
     const tool = this.options.tools?.find(
       (t) => isClientTool(t) && t.function.name === toolCall.name,
     );
@@ -2503,20 +2976,9 @@ export class ModelResult<
     // PermissionRequest hook denied this call without pausing: synthesize a
     // rejection instead of executing. Consume the entry so a later round
     // with a reused id is not affected.
-    const denialReason = this.hookDeniedCalls.get(toolCall.id);
-    if (denialReason !== undefined) {
-      this.hookDeniedCalls.delete(toolCall.id);
-      return {
-        type: 'hook_blocked' as const,
-        output: {
-          type: 'function_call_output' as const,
-          id: `output_${toolCall.id}`,
-          callId: toolCall.id,
-          output: JSON.stringify({
-            error: denialReason,
-          }),
-        },
-      };
+    const hookDenied = this.consumeHookDenial(toolCall.id);
+    if (hookDenied !== null) {
+      return hookDenied;
     }
 
     const preliminaryResultsForCall: InferToolEventsUnion<TTools>[] = [];
@@ -2530,37 +2992,224 @@ export class ModelResult<
         }
       : undefined;
 
-    // Run the tool through the full Pre/Post lifecycle hooks. The helper
-    // fails closed on a JSON-parse failure in toolCall.arguments so hooks
-    // never see a malformed payload; the caller handles that case via the
-    // shared `parse_error` / `hook_blocked` branch.
-    const executed = await this.runToolWithHooks(tool, toolCall, turnContext, onPreliminaryResult);
-    if (executed.type === 'parse_error') {
-      this.broadcastToolResult(toolCall.id, isMcpTool(tool) ? 'mcp' : 'client', {
-        error: executed.errorMessage,
-      } as InferToolOutputsUnion<TTools>);
-      return executed;
-    }
-    if (executed.type === 'hook_blocked') {
-      return executed;
-    }
+    // Compose the per-call abort signal (run signal + tool/run timeout +
+    // per-call controller) and acquire the concurrency gates in fixed order
+    // (round gate first, then per-tool gate — fixed ordering is what makes
+    // multi-gate acquisition deadlock-free). Gate WAITING happens before the
+    // timeout race below, so queue wait counts against the deadline only
+    // for background tasks (which carry their own timeout in the registry).
+    //
+    // Background lifecycles skip the per-tool gate HERE: their body only
+    // runs later via runBackgroundWork, which acquires that gate for the
+    // body's true duration. Acquiring it on the round path too would let
+    // detached bodies holding all maxConcurrency slots block a later
+    // round's dispatch (thunk creation, no body work) for the full task
+    // duration — while it holds a round-gate slot, head-of-line-blocking
+    // every other call in the round.
+    const { controller, signal, timeoutMs } = this.composeToolSignal(
+      String(toolCall.name),
+      toolCall.id,
+    );
+    const isBackgroundLifecycle = isUnifiedTool(tool) && tool.function.lifecycle === 'background';
+    const releaseGates = await acquireAll([
+      this.roundGate ?? undefined,
+      isBackgroundLifecycle ? undefined : this.perToolGate(String(toolCall.name)),
+    ]);
 
-    const result = executed.result;
-    if (result === null) {
-      // HITL tool paused — surface as manual (no output this round)
-      return {
-        type: 'paused' as const,
+    try {
+      // Run the tool through the full Pre/Post lifecycle hooks. The helper
+      // fails closed on a JSON-parse failure in toolCall.arguments so hooks
+      // never see a malformed payload; the caller handles that case via the
+      // shared `parse_error` / `hook_blocked` branch.
+      //
+      // The whole hooked execution is raced against the tool deadline: on
+      // timeout the round stops waiting (the model gets a `tool_timeout`
+      // error output) and the body's signal is aborted. The abandoned body
+      // keeps running detached; awaiting it would reintroduce the hang
+      // run-cancellation (DEV-658) fixed.
+      // Unified-run affordances. The ToolTask is created later (when the
+      // call escapes the round in handleAsyncInvocation), so the log sink
+      // and inbox registration go through a mutable slot the task binds to
+      // on creation; entries logged before that are buffered.
+      const runBinding = this.createRunBinding(toolCall.id);
+
+      const executionPromise = this.runToolWithHooks(
+        tool,
         toolCall,
-      };
-    }
+        turnContext,
+        onPreliminaryResult,
+        {
+          signal,
+          callId: toolCall.id,
+          ...(this.currentState?.id !== undefined && {
+            conversationId: this.currentState.id,
+          }),
+          client: this.options.client,
+          runExtras: buildRunExtras(tool, runBinding),
+        },
+      );
 
+      const executed = await this.raceToolDeadline(
+        executionPromise,
+        String(toolCall.name),
+        timeoutMs,
+        controller,
+      );
+
+      if (executed === 'timeout') {
+        return this.buildToolTimeoutOutcome(toolCall, tool, timeoutMs, preliminaryResultsForCall);
+      }
+
+      if (executed.type === 'parse_error') {
+        this.broadcastToolResult(toolCall.id, isMcpTool(tool) ? 'mcp' : 'client', {
+          error: executed.errorMessage,
+        } as InferToolOutputsUnion<TTools>);
+        return executed;
+      }
+      if (executed.type === 'hook_blocked') {
+        return executed;
+      }
+
+      const result = executed.result;
+      if (result === null) {
+        // HITL tool paused — surface as manual (no output this round)
+        return {
+          type: 'paused' as const,
+          toolCall,
+        };
+      }
+
+      if (isAsyncToolInvocation(result)) {
+        // Background/deferred: the round's aggregation loop turns this into
+        // a placeholder output (and, for background, tracks the work in the
+        // registry). The per-call controller stays alive with the task.
+        return {
+          type: 'async' as const,
+          toolCall: executed.effectiveToolCall,
+          tool,
+          invocation: result,
+          controller,
+          timeoutMs,
+          runBinding,
+          preliminaryResultsForCall,
+        };
+      }
+
+      return {
+        type: 'execution' as const,
+        toolCall: executed.effectiveToolCall,
+        tool,
+        result,
+        preliminaryResultsForCall,
+      };
+    } finally {
+      releaseGates();
+      // The inflight map only tracks round-synchronous executions; async
+      // background tasks hand their controller to the registry, which owns
+      // teardown from here (cancelTask / abortAll).
+      this.inflightToolControllers.delete(toolCall.id);
+    }
+  }
+
+  /**
+   * The `tool_timeout` execution outcome for a call whose deadline fired:
+   * the model receives an error output immediately (the abandoned body
+   * keeps running detached).
+   */
+  private buildToolTimeoutOutcome(
+    toolCall: ParsedToolCall<Tool>,
+    tool: Tool,
+    timeoutMs: number | undefined,
+    preliminaryResultsForCall: InferToolEventsUnion<TTools>[],
+  ): {
+    type: 'execution';
+    toolCall: ParsedToolCall<Tool>;
+    tool: Tool;
+    result: {
+      result: unknown;
+      error?: Error;
+    };
+    preliminaryResultsForCall: InferToolEventsUnion<TTools>[];
+  } {
+    const message = `Tool "${toolCall.name}" timed out after ${timeoutMs}ms`;
+    this.broadcastToolResult(toolCall.id, isMcpTool(tool) ? 'mcp' : 'client', {
+      error: message,
+    } as InferToolOutputsUnion<TTools>);
     return {
       type: 'execution' as const,
-      toolCall: executed.effectiveToolCall,
+      toolCall,
       tool,
-      result,
+      result: {
+        result: null,
+        error: Object.assign(new Error(message), {
+          code: 'tool_timeout',
+        }),
+      },
       preliminaryResultsForCall,
     };
+  }
+
+  /**
+   * PermissionRequest-hook denial for a call, as a `hook_blocked` outcome —
+   * or null when the call was not denied. Consumes the entry so a later
+   * round with a reused id is not affected.
+   */
+  private consumeHookDenial(callId: string): {
+    type: 'hook_blocked';
+    output: models.FunctionCallOutputItem;
+  } | null {
+    const denialReason = this.hookDeniedCalls.get(callId);
+    if (denialReason === undefined) {
+      return null;
+    }
+    this.hookDeniedCalls.delete(callId);
+    return {
+      type: 'hook_blocked' as const,
+      output: {
+        type: 'function_call_output' as const,
+        id: `output_${callId}`,
+        callId,
+        output: JSON.stringify({
+          error: denialReason,
+        }),
+      },
+    };
+  }
+
+  /**
+   * Race a tool execution against its deadline. Returns `'timeout'` when the
+   * deadline fires first — the caller synthesizes the `tool_timeout` output —
+   * and aborts the body's controller so cooperative tools stop working. The
+   * timer is cleared on settle either way.
+   */
+  private raceToolDeadline<T>(
+    execution: Promise<T>,
+    toolName: string,
+    timeoutMs: number | undefined,
+    controller: AbortController,
+  ): Promise<T | 'timeout'> {
+    if (timeoutMs === undefined || timeoutMs <= 0) {
+      return execution;
+    }
+    return new Promise<T | 'timeout'>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        controller.abort(new Error(`Tool "${toolName}" timed out after ${timeoutMs}ms`));
+        resolve('timeout');
+      }, timeoutMs);
+      if (typeof timer === 'object' && 'unref' in timer && typeof timer.unref === 'function') {
+        timer.unref();
+      }
+      execution.then(
+        (value) => {
+          clearTimeout(timer);
+          resolve(value);
+        },
+        (error: unknown) => {
+          clearTimeout(timer);
+          reject(error instanceof Error ? error : new Error(String(error)));
+        },
+      );
+    });
   }
 
   private async executeToolRound(
@@ -2569,6 +3218,7 @@ export class ModelResult<
   ): Promise<{
     toolResults: models.FunctionCallOutputItem[];
     pausedCalls: ParsedToolCall<Tool>[];
+    deferredTasks: PendingAsyncTool[];
   }> {
     // One executed batch = one doom-loop round: identical parallel calls in
     // this batch count as ONE piece of loop evidence and share a decision.
@@ -2580,6 +3230,27 @@ export class ModelResult<
     const settledResults = await Promise.allSettled(toolCallPromises);
     const toolResults: models.FunctionCallOutputItem[] = [];
     const pausedCalls: ParsedToolCall<Tool>[] = [];
+    const deferredTasks: PendingAsyncTool[] = [];
+
+    // Start ALL async invocations before consuming any outcome: the work
+    // (and its grace window) begins in handleAsyncInvocation, so awaiting
+    // it inside the ordered loop below would serialize N background calls
+    // into (N-1)×graceMs of stagger. Kicked off here in parallel; the
+    // ordered loop awaits the per-call promise, so OUTPUT order stays call
+    // order (prompt-cache stability).
+    const asyncOutcomes = new Map<
+      number,
+      Promise<{
+        output: models.FunctionCallOutputItem;
+        deferredTask?: PendingAsyncTool;
+      }>
+    >();
+    for (let i = 0; i < settledResults.length; i++) {
+      const settled = settledResults[i];
+      if (settled?.status === 'fulfilled' && settled.value?.type === 'async') {
+        asyncOutcomes.set(i, this.handleAsyncInvocation(settled.value));
+      }
+    }
 
     for (let i = 0; i < settledResults.length; i++) {
       const settled = settledResults[i];
@@ -2642,6 +3313,24 @@ export class ModelResult<
         continue;
       }
 
+      if (value.type === 'async') {
+        // Background / deferred: the call escapes the round. Its handling
+        // (grace-window race, registry tracking, placeholder synthesis)
+        // was started above in parallel with the round's other async
+        // calls; awaiting here keeps outputs in call order.
+        const asyncOutcome = await (asyncOutcomes.get(i) ?? this.handleAsyncInvocation(value));
+        toolResults.push(asyncOutcome.output);
+        this.turnBroadcaster?.push({
+          type: 'tool.call_output' as const,
+          output: asyncOutcome.output,
+          timestamp: Date.now(),
+        } satisfies ToolCallOutputEvent);
+        if (asyncOutcome.deferredTask) {
+          deferredTasks.push(asyncOutcome.deferredTask);
+        }
+        continue;
+      }
+
       const toolResult = (
         value.result.error
           ? {
@@ -2675,6 +3364,661 @@ export class ModelResult<
     return {
       toolResults,
       pausedCalls,
+      deferredTasks,
+    };
+  }
+
+  /**
+   * Handle one async invocation from a round.
+   *
+   * Background: start the work under the background pool, race it against
+   * the grace window — settle in time and the call yields a plain
+   * synchronous output (no async machinery visible); otherwise emit the
+   * pending placeholder and let the registry track the task.
+   *
+   * Deferred: emit the placeholder and report the task for the pause path.
+   */
+  private async handleAsyncInvocation(value: {
+    toolCall: ParsedToolCall<Tool>;
+    tool: Tool;
+    invocation: AsyncToolInvocation;
+    controller: AbortController;
+    timeoutMs: number | undefined;
+    runBinding: RunBinding;
+  }): Promise<{
+    output: models.FunctionCallOutputItem;
+    deferredTask?: PendingAsyncTool;
+  }> {
+    const { toolCall, tool, invocation, controller, runBinding } = value;
+    const registry = this.ensureAsyncToolRegistry();
+    const source = isMcpTool(tool) ? 'mcp' : 'client';
+    const logLimits = isUnifiedTool(tool) ? tool.function.logLimits : undefined;
+
+    if (invocation.asyncMode === 'defer') {
+      const collision = this.rejectDuplicateTaskId(toolCall, invocation.taskId, source);
+      if (collision) {
+        return collision;
+      }
+      const liveTask = registry.trackDeferred({
+        callId: toolCall.id,
+        taskId: invocation.taskId,
+        name: String(toolCall.name),
+        ...(invocation.expiresAt !== undefined && {
+          expiresAt: invocation.expiresAt,
+        }),
+        ...(invocation.pollAfterMs !== undefined && {
+          pollAfterMs: invocation.pollAfterMs,
+        }),
+      });
+      runBinding.bind(liveTask);
+      const task: PendingAsyncTool = {
+        callId: toolCall.id,
+        taskId: invocation.taskId,
+        name: String(toolCall.name),
+        mode: 'defer',
+        status: 'working',
+        startedAt: liveTask.startedAt,
+        ...(invocation.pollAfterMs !== undefined && {
+          pollAfterMs: invocation.pollAfterMs,
+        }),
+        ...(invocation.expiresAt !== undefined && {
+          expiresAt: invocation.expiresAt,
+        }),
+      };
+      this.broadcastAsyncStarted(toolCall, 'defer', invocation.taskId, invocation.ack);
+      return {
+        output: this.buildPendingPlaceholder(
+          toolCall,
+          invocation.taskId,
+          invocation.ack,
+          invocation.pollAfterMs,
+        ),
+        deferredTask: task,
+      };
+    }
+
+    // Background: start the work under the background pool. The pool slot is
+    // held for the duration of the work (queue wait counts against the
+    // task's own timeout tracked by the registry).
+    const taskId = registry.generateTaskId();
+    const liveTask = new ToolTask({
+      taskId,
+      callId: toolCall.id,
+      toolName: String(toolCall.name),
+      mode: isAgentTool(tool) ? 'agent' : 'background',
+      controller,
+      ...(logLimits !== undefined && {
+        limits: logLimits,
+      }),
+      // Carried so PostToolUse/PostToolUseFailure can fire at settlement
+      // with the same payload shape as round-synchronous executions.
+      input: (toolCall.arguments ?? {}) as Record<string, unknown>,
+    });
+    runBinding.bind(liveTask);
+    // Visible to steering / cancel / snapshots from the start — a large
+    // graceMs must not create a window where the running task cannot be
+    // reached (sendToTask queues into the inbox; cancelTask aborts the
+    // controller, which the grace race observes as an error settlement).
+    registry.register(liveTask);
+    const work = this.runBackgroundWork(String(toolCall.name), invocation.run, controller);
+    // Surface unhandled rejections nowhere — the registry's .then() below
+    // (or the grace race) is the sole consumer.
+    work.catch(() => undefined);
+
+    // Grace window: work settling in time yields a plain synchronous output.
+    const graceMs = invocation.graceMs;
+    if (graceMs > 0) {
+      // The timer is cleared when the work settles first (same discipline
+      // as raceToolDeadline) — it's unref'd, but a leaked timer is still a
+      // leaked timer.
+      let graceTimer: ReturnType<typeof setTimeout> | undefined;
+      const settled = await Promise.race([
+        work.then(
+          (result) => ({
+            outcome: 'ok' as const,
+            result,
+          }),
+          (error: unknown) => ({
+            outcome: 'error' as const,
+            error,
+          }),
+        ),
+        new Promise<'pending'>((resolve) => {
+          graceTimer = setTimeout(() => resolve('pending'), graceMs);
+          if (
+            typeof graceTimer === 'object' &&
+            'unref' in graceTimer &&
+            typeof graceTimer.unref === 'function'
+          ) {
+            graceTimer.unref();
+          }
+        }),
+      ]);
+      if (graceTimer !== undefined) {
+        clearTimeout(graceTimer);
+      }
+
+      if (settled !== 'pending') {
+        // Settled in-window: behave exactly like a regular tool. The call
+        // yields a synchronous output, so the task leaves the registry —
+        // including any settlement a racing cancelTask queued for it (the
+        // sync output already reports the outcome; an envelope on top
+        // would be a double delivery).
+        registry.untrack(toolCall.id);
+        if (settled.outcome === 'ok') {
+          this.broadcastToolResult(
+            toolCall.id,
+            source,
+            settled.result as InferToolOutputsUnion<TTools>,
+          );
+          const outputForModel = await this.computeToolOutputForModel({
+            toolCall,
+            tool,
+            result: {
+              result: settled.result,
+            },
+          });
+          return {
+            output: {
+              type: 'function_call_output' as const,
+              id: `output_${toolCall.id}`,
+              callId: toolCall.id,
+              output: outputForModel,
+            },
+          };
+        }
+        const message =
+          settled.error instanceof Error ? settled.error.message : String(settled.error);
+        this.broadcastToolResult(toolCall.id, source, {
+          error: message,
+        } as InferToolOutputsUnion<TTools>);
+        return {
+          output: {
+            type: 'function_call_output' as const,
+            id: `output_${toolCall.id}`,
+            callId: toolCall.id,
+            output: JSON.stringify({
+              error: message,
+            }),
+          },
+        };
+      }
+    }
+
+    // Outlived the grace window: placeholder now, deliver later. The
+    // registry owns the timeout from here (the per-call deadline raced in
+    // executeSingleToolCall only bounds the ROUND's wait; a background task
+    // gets its full budget).
+    registry.trackBackground(
+      liveTask,
+      work,
+      value.timeoutMs !== undefined
+        ? {
+            timeoutMs: value.timeoutMs,
+          }
+        : undefined,
+    );
+    this.broadcastAsyncStarted(toolCall, liveTask.mode, taskId, invocation.ack);
+    return {
+      output: this.buildPendingPlaceholder(toolCall, taskId, invocation.ack),
+    };
+  }
+
+  /**
+   * Reject a `ctx.defer()` taskId already claimed by ANOTHER pending task.
+   * Task ids are the resolution key (resumeToolResults matches on them), so
+   * a duplicate would make one of the two calls unresolvable — the
+   * conversation would wait forever. Caller-supplied ids
+   * (`ctx.defer(ticket.id)`) carry no uniqueness guarantee; reject the
+   * collision at start time, when the tool can still see it.
+   * @returns the error output for the colliding call, or null when unique.
+   */
+  private rejectDuplicateTaskId(
+    toolCall: ParsedToolCall<Tool>,
+    taskId: string,
+    source: 'mcp' | 'client',
+  ): {
+    output: models.FunctionCallOutputItem;
+  } | null {
+    const duplicate =
+      this.asyncToolRegistry?.getTask(taskId) ??
+      this.currentState?.pendingAsyncTools?.find((t) => t.taskId === taskId);
+    if (!duplicate || duplicate.callId === toolCall.id) {
+      return null;
+    }
+    const message = `Tool "${toolCall.name}": ctx.defer() taskId "${taskId}" is already in use by another pending task in this conversation (call ${duplicate.callId}). Task ids must be unique per conversation — include a per-call component (e.g. the ticket id plus your callId).`;
+    this.broadcastToolResult(toolCall.id, source, {
+      error: message,
+    } as InferToolOutputsUnion<TTools>);
+    return {
+      output: {
+        type: 'function_call_output' as const,
+        id: `output_${toolCall.id}`,
+        callId: toolCall.id,
+        output: JSON.stringify({
+          error: message,
+        }),
+      },
+    };
+  }
+
+  /**
+   * A mutable binding between a tool call's run context and its (created
+   * later) ToolTask. `ctx.log()` entries before the task exists are
+   * buffered; `ctx.onMessage()` registrations are forwarded on bind.
+   */
+  private createRunBinding(_callId: string): RunBinding {
+    let task: ToolTask | null = null;
+    const bufferedLogs: unknown[] = [];
+    let pendingHandler: ((message: unknown) => void) | null = null;
+    let pendingTranscriptSource: ToolTask['transcriptSource'] | null = null;
+    return {
+      log: (entry: unknown) => {
+        if (task) {
+          task.appendLog(entry, typeof entry === 'string' ? 'text' : 'event');
+        } else {
+          bufferedLogs.push(entry);
+        }
+      },
+      onMessage: (handler: (message: unknown) => void) => {
+        if (task) {
+          task.onMessage(handler);
+        } else {
+          pendingHandler = handler;
+        }
+      },
+      setTranscriptSource: (source: NonNullable<ToolTask['transcriptSource']>) => {
+        if (task) {
+          task.transcriptSource = source;
+        } else {
+          pendingTranscriptSource = source;
+        }
+      },
+      bind: (bound: ToolTask) => {
+        task = bound;
+        for (const entry of bufferedLogs) {
+          bound.appendLog(entry, typeof entry === 'string' ? 'text' : 'event');
+        }
+        bufferedLogs.length = 0;
+        if (pendingHandler) {
+          bound.onMessage(pendingHandler);
+          pendingHandler = null;
+        }
+        if (pendingTranscriptSource) {
+          bound.transcriptSource = pendingTranscriptSource;
+          pendingTranscriptSource = null;
+        }
+      },
+      task: () => task,
+    };
+  }
+
+  /**
+   * Run a background tool's work under the tool's own concurrency gate AND
+   * the background pool. The round path does not touch the per-tool gate
+   * for background lifecycles (the thunk had not run yet), so the gate is
+   * acquired here for the body's lifetime — `maxConcurrency` bounds
+   * executions of the BODY, wherever they run.
+   *
+   * Acquisition order: per-tool gate FIRST, then the pool. The narrow gate
+   * is where a saturated tool's excess calls queue — queuing them on the
+   * shared pool instead would let 16 waiters on one maxConcurrency:2 tool
+   * hold every global slot while only two bodies run, starving every other
+   * background tool. Order is deadlock-safe: only background bodies take
+   * the per-tool gate (the round path skips it for them), and every body
+   * acquires in this same fixed order.
+   *
+   * Queue wait counts against the task's own timeout (tracked by the
+   * registry); an abort observed before the slots free up short-circuits
+   * without running the body.
+   */
+  private async runBackgroundWork(
+    toolName: string,
+    run: () => Promise<unknown>,
+    controller: AbortController,
+  ): Promise<unknown> {
+    const gate = this.perToolGate(toolName);
+    const releaseGate = gate ? await gate.acquire() : undefined;
+    const pool = this.backgroundPool;
+    const releasePool = pool ? await pool.acquire() : undefined;
+    try {
+      if (controller.signal.aborted) {
+        throw controller.signal.reason instanceof Error
+          ? controller.signal.reason
+          : new Error(String(controller.signal.reason ?? 'aborted'));
+      }
+      return await run();
+    } finally {
+      releasePool?.();
+      releaseGate?.();
+    }
+  }
+
+  /** Broadcast a `tool.async_started` event on the turn broadcaster. */
+  private broadcastAsyncStarted(
+    toolCall: ParsedToolCall<Tool>,
+    mode: ToolTaskMode,
+    taskId: string,
+    ack?: unknown,
+  ): void {
+    this.turnBroadcaster?.push({
+      type: 'tool.async_started' as const,
+      toolCallId: toolCall.id,
+      toolName: String(toolCall.name),
+      taskId,
+      mode,
+      ...(ack !== undefined && {
+        ack,
+      }),
+      timestamp: Date.now(),
+    } satisfies ToolAsyncStartedEvent);
+  }
+
+  /** Broadcast a `tool.async_settled` event on the turn broadcaster. */
+  private broadcastAsyncSettled(
+    settled: SettledToolTask,
+    delivery: 'injected' | 'pending_resume' | 'dropped',
+  ): void {
+    this.turnBroadcaster?.push({
+      type: 'tool.async_settled' as const,
+      toolCallId: settled.callId,
+      taskId: settled.taskId,
+      status: settled.status,
+      ...(settled.result !== undefined && {
+        result: settled.result as InferToolOutputsUnion<TTools>,
+      }),
+      ...(settled.error !== undefined && {
+        error: settled.error,
+      }),
+      delivery,
+      timestamp: Date.now(),
+    } satisfies ToolAsyncSettledEvent<InferToolOutputsUnion<TTools>>);
+  }
+
+  /**
+   * Build the pending placeholder `function_call_output` for an async tool
+   * call. Pairs the `function_call` immediately (providers 400 on unpaired
+   * calls in follow-up history); the real result arrives later as a
+   * `tool_task_result` envelope. The note steers the model: with check-ins
+   * enabled it points at the universal `task` tool; with check-ins
+   * disabled it forbids re-calling entirely.
+   */
+  private buildPendingPlaceholder(
+    toolCall: ParsedToolCall<Tool>,
+    taskId: string,
+    ack?: unknown,
+    pollAfterMs?: number,
+  ): models.FunctionCallOutputItem {
+    const checkinsEnabled = this.options.asyncTools?.checkins !== false;
+    const payload: Record<string, unknown> = {
+      status: 'pending',
+      taskId,
+      ...(pollAfterMs !== undefined && {
+        pollAfterMs,
+      }),
+      ...(checkinsEnabled && {
+        check: true,
+      }),
+    };
+    const directive = checkinsEnabled
+      ? `The result will be delivered to you automatically when ready. To check progress, steer, or cancel, call the task tool with { "taskId": "${taskId}" }. Keep working on other steps meanwhile.`
+      : 'The result will be delivered to you automatically when ready — do not call this tool again to check on it.';
+    if (typeof ack === 'string') {
+      payload['note'] = `${ack} ${directive}`;
+    } else {
+      if (ack !== undefined && typeof ack === 'object') {
+        Object.assign(payload, ack);
+      }
+      payload['note'] = `Started. ${directive}`;
+    }
+    return {
+      type: 'function_call_output' as const,
+      id: `output_${toolCall.id}`,
+      callId: toolCall.id,
+      output: JSON.stringify(payload),
+    };
+  }
+
+  /**
+   * True when the built-in task tool is active for this run. Mirrors
+   * `needsTaskTool` exactly: when a user tool claims the reserved name the
+   * built-in is not registered, so calls named "task" must NOT be
+   * intercepted — they belong to the user's tool.
+   */
+  private taskToolActive(): boolean {
+    if (this.options.asyncTools?.checkins === false) {
+      return false;
+    }
+    const tools = this.options.tools ?? [];
+    if (hasTaskToolNameCollision(tools)) {
+      return false;
+    }
+    return tools.some((t) => isLongRunningTool(t));
+  }
+
+  /**
+   * Answer a call to the universal `task` tool: resolve the taskId to its
+   * live registry task (or persisted pendingAsyncTools entry, post-restart)
+   * and its OWNING tool, then dispatch by action:
+   *
+   * - `check` (default): the owning tool's `check.execute` when declared
+   *   (custom `params` validated against `check.schema`), else the SDK
+   *   default status / logs / transcript views.
+   * - `steer`: deliver `message` to the run body's inbox.
+   * - `result`: the final result if settled, else the status view.
+   * - `cancel`: cancel the task.
+   */
+  private async answerTaskToolCall(toolCall: ParsedToolCall<Tool>): Promise<{
+    type: 'execution';
+    toolCall: ParsedToolCall<Tool>;
+    tool: Tool;
+    result: {
+      result: unknown;
+      error?: Error;
+    };
+    preliminaryResultsForCall: InferToolEventsUnion<TTools>[];
+  }> {
+    const taskTool = buildTaskToolStub();
+    const answer = (result: unknown, error?: Error) => {
+      if (error === undefined) {
+        this.broadcastToolResult(toolCall.id, 'client', result as InferToolOutputsUnion<TTools>);
+      }
+      return {
+        type: 'execution' as const,
+        toolCall,
+        tool: taskTool,
+        result: error
+          ? {
+              result: null,
+              error,
+            }
+          : {
+              result,
+            },
+        preliminaryResultsForCall: [] as InferToolEventsUnion<TTools>[],
+      };
+    };
+
+    let input: TaskToolInput;
+    try {
+      input = validateToolInput(TaskToolInputSchema, toolCall.arguments ?? {}) as TaskToolInput;
+    } catch (error) {
+      return answer(null, error instanceof Error ? error : new Error(String(error)));
+    }
+
+    const liveTask = this.asyncToolRegistry?.getTask(input.taskId);
+    const persisted = this.currentState?.pendingAsyncTools?.find((t) => t.taskId === input.taskId);
+    if (!liveTask && !persisted) {
+      return answer({
+        error: 'unknown_task',
+        taskId: input.taskId,
+        hint: 'No task with this id exists in this conversation. It may belong to another conversation, or its record was dropped.',
+      });
+    }
+
+    try {
+      switch (input.action ?? 'check') {
+        case 'cancel':
+          return answer(this.taskToolCancel(input, liveTask));
+        case 'steer':
+          return answer(...this.taskToolSteer(input, liveTask));
+        case 'result': {
+          const settled = taskToolResultIfSettled(input, liveTask);
+          if (settled !== null) {
+            return answer(settled);
+          }
+          // Not settled: fall through to the status view.
+          return answer(await this.taskToolCheck(input, liveTask, persisted as PendingAsyncTool));
+        }
+        default:
+          return answer(await this.taskToolCheck(input, liveTask, persisted as PendingAsyncTool));
+      }
+    } catch (error) {
+      return answer(null, error instanceof Error ? error : new Error(String(error)));
+    }
+  }
+
+  /** `task` tool, action=cancel. */
+  private taskToolCancel(input: TaskToolInput, liveTask: ToolTask | undefined): unknown {
+    const cancelled = liveTask
+      ? (this.asyncToolRegistry?.cancelTask(input.taskId, input.reason) ?? false)
+      : false;
+    return cancelled
+      ? {
+          taskId: input.taskId,
+          status: 'cancelled',
+        }
+      : {
+          taskId: input.taskId,
+          error: 'not_cancellable',
+          hint: liveTask
+            ? 'The task has already settled.'
+            : 'This task is owned by an external system — cancel it there (or via the tool’s .cancel() method).',
+        };
+  }
+
+  /** `task` tool, action=steer. Returns [result, error?] for `answer`. */
+  private taskToolSteer(
+    input: TaskToolInput,
+    liveTask: ToolTask | undefined,
+  ): [
+    unknown,
+    Error?,
+  ] {
+    if (typeof input.message !== 'string' || input.message.length === 0) {
+      return [
+        null,
+        new Error("action 'steer' requires a non-empty `message`"),
+      ];
+    }
+    if (!liveTask || liveTask.mode === 'defer') {
+      return [
+        {
+          taskId: input.taskId,
+          error: 'not_steerable',
+          hint: 'This task runs in an external system — steer it there.',
+        },
+      ];
+    }
+    liveTask.send(input.message);
+    return [
+      {
+        taskId: input.taskId,
+        steered: true,
+      },
+    ];
+  }
+
+  /**
+   * `task` tool, action=check (and the status-view fallback for `result`
+   * on an unsettled task): the owning tool's `check.execute` when
+   * declared, else the SDK default views — live-task-backed when the task
+   * is in this process, persisted-state-backed post-restart.
+   */
+  private async taskToolCheck(
+    input: TaskToolInput,
+    liveTask: ToolTask | undefined,
+    persisted: PendingAsyncTool,
+  ): Promise<unknown> {
+    const owningToolName = liveTask?.toolName ?? persisted?.name ?? '';
+    const owningTool = this.options.tools?.find(
+      (t) => isClientTool(t) && t.function.name === owningToolName,
+    );
+    const config = owningTool && isUnifiedTool(owningTool) ? owningTool.function.check : undefined;
+    const { schema, execute } = resolveCheckConfig(config);
+    const maxTranscriptChars = this.options.asyncTools?.maxTranscriptChars ?? 20_000;
+
+    // Custom params for the owning tool's handler are validated against
+    // its check.schema when both are present.
+    let customParams: Record<string, unknown> = input.params ?? {};
+    if (schema && input.params !== undefined) {
+      customParams = validateToolInput(schema, input.params) as Record<string, unknown>;
+    }
+
+    if (liveTask) {
+      const handle = this.buildTaskHandle(liveTask, maxTranscriptChars);
+      const checkTurnContext: TurnContext = {
+        numberOfTurns: this.allToolExecutionRounds.length + 1,
+        toolCallStatus: liveTask.status,
+        accumulatedYieldedEvents: liveTask.accumulatedYieldedEvents,
+        task: handle,
+      };
+      return execute
+        ? await Promise.resolve(execute(customParams, checkTurnContext))
+        : defaultCheckResult(
+            {
+              view: input.view,
+              tail: input.tail,
+            },
+            checkTurnContext,
+            {
+              maxTranscriptChars,
+            },
+          );
+    }
+
+    // Cross-process / post-restart: only persisted status survives. A
+    // custom check.execute still runs, with a state-backed context (no
+    // live task handle — `turnContext.task` is absent here). Handlers
+    // written against `task.statusView()` with optional chaining return
+    // undefined in this situation; fall back to the persisted status view
+    // rather than answering the model with nothing.
+    const checkTurnContext: TurnContext = {
+      numberOfTurns: this.allToolExecutionRounds.length + 1,
+      toolCallStatus: persisted.status,
+      accumulatedYieldedEvents: persisted.lastLog
+        ? [
+            persisted.lastLog.text,
+          ]
+        : [],
+    };
+    const customResult = execute
+      ? await Promise.resolve(execute(customParams, checkTurnContext))
+      : undefined;
+    return (
+      customResult ??
+      persistedTaskCheckResult(
+        {
+          view: input.view,
+        },
+        persisted,
+      )
+    );
+  }
+
+  /** Build the narrow ToolTaskHandle façade for check.execute handlers. */
+  private buildTaskHandle(task: ToolTask, maxTranscriptChars: number) {
+    const registry = this.asyncToolRegistry;
+    return {
+      taskId: task.taskId,
+      toolName: task.toolName,
+      mode: task.mode,
+      status: () => task.status,
+      statusView: () => task.toStatusView() as Record<string, unknown>,
+      tailLogs: (n: number) => task.tailLogs(n),
+      transcript: (maxChars?: number) => task.renderTranscript(maxChars ?? maxTranscriptChars),
+      send: (message: unknown) => task.send(message),
+      cancel: (reason?: string) => registry?.cancelTask(task.taskId, reason) ?? false,
     };
   }
 
@@ -2789,6 +4133,219 @@ export class ModelResult<
     const response = await this.materializeResponse(newResult.value, turnNumber);
     await this.emitPostModelCall(response, startedAt, 'tool_round', turnNumber);
     return response;
+  }
+
+  /**
+   * Append a response's output items to the accumulated request input,
+   * exactly as `makeFollowupRequest` does before adding tool results. Used
+   * by the end-of-run drain, where envelope messages must land AFTER the
+   * final assistant output in the request.
+   */
+  private accumulateResponseIntoInput(response: models.OpenResponsesResult): void {
+    if (!this.resolvedRequest) {
+      return;
+    }
+    const originalInput = this.resolvedRequest.input;
+    const normalizedOriginalInput: models.BaseInputsUnion[] = Array.isArray(originalInput)
+      ? originalInput
+      : originalInput
+        ? [
+            {
+              role: 'user',
+              content: originalInput,
+            },
+          ]
+        : [];
+    this.resolvedRequest = {
+      ...this.resolvedRequest,
+      input: [
+        ...normalizedOriginalInput,
+        ...(Array.isArray(response.output)
+          ? response.output
+          : [
+              response.output,
+            ]),
+      ],
+    };
+  }
+
+  /**
+   * End-of-run handling for async background tasks still in flight (or
+   * settled but unharvested) when the loop is about to finalize.
+   *
+   * - `'drain'` (default): wait for tasks (bounded by `drainTimeoutMs`),
+   *   inject their results, and give the model up to `maxDrainTurns` extra
+   *   `toolChoice: 'none'` turns so the final answer incorporates them.
+   * - `'detach'`: return immediately; still-working tasks are marked
+   *   `orphaned` on persisted state and their eventual results are dropped.
+   * - `'cancel'`: abort in-flight tasks and finish.
+   *
+   * @returns the (possibly replaced) final response.
+   */
+  private async handleRunEndAsyncTasks(
+    currentResponse: models.OpenResponsesResult,
+  ): Promise<models.OpenResponsesResult> {
+    const registry = this.asyncToolRegistry;
+    if (!registry || (!registry.hasInFlight() && !registry.hasUnharvestedSettled())) {
+      return currentResponse;
+    }
+
+    const config = this.options.asyncTools;
+    const mode = config?.onRunEnd ?? 'drain';
+
+    if (mode === 'cancel') {
+      registry.abortAll('Run ended (onRunEnd: cancel)');
+      await this.dropSettledTasks();
+      return currentResponse;
+    }
+
+    if (mode === 'detach') {
+      await this.detachWorkingTasks();
+      return currentResponse;
+    }
+
+    // 'drain': deliver late results and let the model incorporate them.
+    // Drain turns use the retry path (toolChoice forced to 'none' when tools
+    // are present) so a drain turn cannot open a fresh tool round — it
+    // exists purely to fold the delivered results into the final answer.
+    // ONE deadline spans the whole drain phase: drainTimeoutMs bounds total
+    // WAITING (documented contract), not per-turn waiting — maxDrainTurns
+    // bounds the extra model turns, not the wait.
+    const drainTimeoutMs = config?.drainTimeoutMs ?? 30_000;
+    const maxDrainTurns = config?.maxDrainTurns ?? 2;
+    const drainDeadline = Date.now() + drainTimeoutMs;
+    let response = currentResponse;
+
+    for (let drainTurn = 0; drainTurn < maxDrainTurns; drainTurn++) {
+      if (!registry.hasUnharvestedSettled() && registry.hasInFlight()) {
+        const remaining = drainDeadline - Date.now();
+        if (remaining <= 0) {
+          break;
+        }
+        await registry.drain(remaining);
+      }
+      // Accumulate the current final output BEFORE injecting so the
+      // envelope lands after the assistant's last message in the request.
+      this.accumulateResponseIntoInput(response);
+      // Queued steering (queueUserMessage / sendToTask) flushes here too —
+      // a drain turn is a model dispatch, and guidance queued while the
+      // last tool round was already finishing would otherwise be dropped.
+      await this.flushDoomLoopSteer();
+      const delivered = await this.flushAsyncToolDeliveries();
+      if (!delivered) {
+        // Drain timed out with nothing new settled — stop waiting.
+        break;
+      }
+
+      const turnNumber = this.allToolExecutionRounds.length + 1 + drainTurn;
+      response = await this.retryCurrentRequest(turnNumber);
+      await this.saveResponseToState(response);
+
+      if (!registry.hasInFlight() && !registry.hasUnharvestedSettled()) {
+        break;
+      }
+    }
+
+    // Drain budget exhausted with work still in flight: cut it loose.
+    if (registry.hasInFlight()) {
+      registry.abortAll('Async tool drain budget exhausted at run end');
+      await this.dropSettledTasks();
+    }
+
+    return response;
+  }
+
+  /**
+   * Broadcast every unharvested settlement as dropped (no in-run delivery),
+   * mirror the terminal status onto persisted `pendingAsyncTools`, and
+   * append a terminal `tool_task_result` envelope to persisted history.
+   *
+   * The status mirror prevents a stuck resume: an entry persisted as
+   * `working` for a task that only ever settles in-memory (abortAll at
+   * drain exhaustion / run cancel) would pin a later cross-process resume
+   * to `awaiting_async_tools` forever. The envelope keeps the pending
+   * placeholder's "the result will be delivered" promise honest for
+   * PERSISTED conversations: the run is over (no more model dispatch), but
+   * the terminal outcome rides along on the next `callModel({ state })`
+   * instead of vanishing.
+   */
+  private async dropSettledTasks(): Promise<void> {
+    const registry = this.asyncToolRegistry;
+    if (!registry) {
+      return;
+    }
+    const settled = registry.takeSettled();
+    for (const task of settled) {
+      this.broadcastAsyncSettled(task, 'dropped');
+    }
+    if (settled.length === 0 || !this.stateAccessor || !this.currentState) {
+      return;
+    }
+    const terminalByCallId = new Map(
+      settled.map((t) => [
+        t.callId,
+        t.status === 'completed' || t.status === 'cancelled' ? t.status : ('failed' as const),
+      ]),
+    );
+    const envelopes = settled.map((t) =>
+      JSON.stringify({
+        type: 'tool_task_result',
+        tool: t.name,
+        taskId: t.taskId,
+        callId: t.callId,
+        status: t.status,
+        ...(t.result !== undefined && {
+          result: t.result,
+        }),
+        ...(t.error !== undefined && {
+          error: t.error,
+        }),
+      }),
+    );
+    await this.saveStateSafely({
+      messages: appendToMessages(this.currentState.messages, [
+        {
+          role: 'user',
+          content: `${TASK_RESULT_BOUNDARY}\n${envelopes.join('\n')}`,
+        } as models.BaseInputsUnion,
+      ]),
+      ...(this.currentState.pendingAsyncTools?.length && {
+        pendingAsyncTools: this.currentState.pendingAsyncTools.map((entry) => {
+          const terminal = terminalByCallId.get(entry.callId);
+          return terminal !== undefined
+            ? {
+                ...entry,
+                status: terminal,
+              }
+            : entry;
+        }),
+      }),
+    });
+  }
+
+  /**
+   * `onRunEnd: 'detach'`: mark still-working tasks orphaned on persisted
+   * state (their eventual results are dropped) and drop unharvested
+   * settlements.
+   */
+  private async detachWorkingTasks(): Promise<void> {
+    const registry = this.asyncToolRegistry;
+    if (!registry) {
+      return;
+    }
+    const orphaned = registry.markWorkingAsOrphaned();
+    await this.dropSettledTasks();
+    if (orphaned.length > 0 && this.stateAccessor && this.currentState) {
+      const existing = (this.currentState.pendingAsyncTools ?? []).filter(
+        (t) => !orphaned.some((o) => o.callId === t.callId),
+      );
+      await this.saveStateSafely({
+        pendingAsyncTools: [
+          ...existing,
+          ...orphaned,
+        ],
+      });
+    }
   }
 
   /**
@@ -3017,6 +4574,9 @@ export class ModelResult<
       hooks: _h,
       doomLoop: _dl,
       signal: _sig,
+      toolTimeoutMs: _ttm,
+      toolConcurrency: _tc,
+      asyncTools: _at,
       ...rest
     } = this.options.request;
     return rest as ResolvedCallModelInput;
@@ -3147,6 +4707,35 @@ export class ModelResult<
       };
     }
 
+    // Mirror each live task's lastLog onto its persisted pendingAsyncTools
+    // entry (bounded ~200 chars) — the one piece of progress that survives
+    // a restart, surfaced by post-restart check calls. Debounced naturally:
+    // this runs only when state is being saved anyway, never per log entry.
+    if (this.asyncToolRegistry && this.currentState.pendingAsyncTools?.length) {
+      const registry = this.asyncToolRegistry;
+      this.currentState = {
+        ...this.currentState,
+        pendingAsyncTools: this.currentState.pendingAsyncTools.map((entry) => {
+          const live = registry.findByCallId(entry.callId);
+          const lastLog = live?.lastLog;
+          if (!lastLog) {
+            return entry;
+          }
+          const text =
+            typeof lastLog.data === 'string'
+              ? lastLog.data
+              : (JSON.stringify(lastLog.data) ?? String(lastLog.data));
+          return {
+            ...entry,
+            lastLog: {
+              at: lastLog.at,
+              text: text.length > 200 ? `${text.slice(0, 200)}…` : text,
+            },
+          };
+        }),
+      };
+    }
+
     try {
       await this.stateAccessor.save(this.currentState);
     } catch (error) {
@@ -3162,7 +4751,13 @@ export class ModelResult<
    * @param props - Array of property names to remove from current state
    */
   private clearOptionalStateProperties(
-    props: Array<'pendingToolCalls' | 'unsentToolResults' | 'interruptedBy' | 'partialResponse'>,
+    props: Array<
+      | 'pendingToolCalls'
+      | 'unsentToolResults'
+      | 'interruptedBy'
+      | 'partialResponse'
+      | 'pendingAsyncTools'
+    >,
   ): void {
     if (!this.currentState) {
       return;
@@ -3268,13 +4863,18 @@ export class ModelResult<
 
           // Keep manual calls durable until the resumed request produces a
           // response. Clearing before the API call would lose the only copy if
-          // that request failed.
+          // that request failed. `awaiting_async_tools` resumes the same way:
+          // the pending-task bookkeeping was already updated by
+          // resumeToolResults (or remains pending for tasks not yet resolved),
+          // and the placeholder outputs are in history, so a fresh request is
+          // valid.
           this.resumingFromClientTools = loadedState.status === 'awaiting_client_tools';
+          this.resumingFromAsyncTools = loadedState.status === 'awaiting_async_tools';
         } else {
           this.currentState = createInitialState<TTools>();
         }
 
-        if (!this.resumingFromClientTools) {
+        if (!this.resumingFromClientTools && !this.resumingFromAsyncTools) {
           await this.saveStateSafely({
             status: 'in_progress',
           });
@@ -3543,6 +5143,16 @@ export class ModelResult<
         // HITL tool paused on approval — keep the call visible to the caller
         // via pendingToolCalls (status becomes 'awaiting_hitl' below).
         hitlPausedIds.add(callId);
+        continue;
+      }
+
+      if (isAsyncToolInvocation(result)) {
+        unsentResults.push(
+          await this.settleAsyncInvocationAsUnsent(
+            toolCall as ParsedToolCall<TTools[number]>,
+            result,
+          ),
+        );
         continue;
       }
 
@@ -3892,10 +5502,11 @@ export class ModelResult<
           await this.resolveAsyncFunctionsForTurn(turnContext);
 
           // Execute tools
-          const { toolResults, pausedCalls } = await this.executeToolRound(
-            currentToolCalls,
-            turnContext,
-          );
+          const {
+            toolResults,
+            pausedCalls,
+            deferredTasks = [],
+          } = await this.executeToolRound(currentToolCalls, turnContext);
 
           // A tool round with observable progress resets the consecutive
           // forceResume counter so a legitimate override earlier in the run
@@ -3956,6 +5567,16 @@ export class ModelResult<
             return;
           }
 
+          // Deferred tools started durable external tasks this round: pause.
+          // Unlike HITL, the round is fully paired (placeholder outputs were
+          // persisted above), so the resumed conversation history is valid;
+          // the pause exists so the model's next turn can incorporate the
+          // real results supplied via .resolve()/resumeToolResults().
+          if (deferredTasks.length > 0) {
+            await this.persistAsyncToolPause(currentResponse, deferredTasks);
+            return;
+          }
+
           // Manual (client-executed) tools produce no output this round —
           // `executeToolRound` returns nothing for them — so a mixed round of
           // auto-executed and manual calls would otherwise send a follow-up
@@ -3994,6 +5615,11 @@ export class ModelResult<
           // accumulation) — semantically fine, the guidance names the
           // repeated pattern explicitly.
           await this.flushDoomLoopSteer();
+
+          // Inject any background-tool results that settled since the last
+          // flush. Same safe point as the steer flush: the round is fully
+          // paired, so a user-role envelope here is valid history.
+          await this.flushAsyncToolDeliveries();
 
           // Apply nextTurnParams
           await this.applyNextTurnParams(currentToolCalls);
@@ -4042,10 +5668,11 @@ export class ModelResult<
           await this.options.onTurnStart?.(turnContext);
           await this.resolveAsyncFunctionsForTurn(turnContext);
 
-          const { toolResults, pausedCalls } = await this.executeToolRound(
-            pendingToolCalls,
-            turnContext,
-          );
+          const {
+            toolResults,
+            pausedCalls,
+            deferredTasks: finalDeferredTasks = [],
+          } = await this.executeToolRound(pendingToolCalls, turnContext);
 
           // Track the executed round and persist real outputs BEFORE the HITL
           // pause check — mirrors the in-loop ordering at executeToolsIfNeeded
@@ -4066,6 +5693,14 @@ export class ModelResult<
             // text-coercion request. The conversation will resume via the
             // normal awaiting_hitl flow.
             await this.persistHitlPause(currentResponse, pausedCalls);
+            return;
+          }
+
+          if (finalDeferredTasks.length > 0) {
+            // Deferred tasks started on the halted turn — persist the pause
+            // and skip the final text-coercion request; the resumed run
+            // produces the final answer with the real results in hand.
+            await this.persistAsyncToolPause(currentResponse, finalDeferredTasks);
             return;
           }
 
@@ -4110,6 +5745,10 @@ export class ModelResult<
           }
         }
 
+        // Background tasks still in flight (or settled but undelivered) as
+        // the loop finalizes: drain / detach / cancel per asyncTools config.
+        currentResponse = await this.handleRunEndAsyncTasks(currentResponse);
+
         // Validate and finalize. Mini-class models intermittently return an
         // empty final turn after a successful tool round (the tool call was
         // the answer). Retry once, then tolerate empty output so a completed
@@ -4138,6 +5777,9 @@ export class ModelResult<
         await this.markStateComplete();
       } catch (error) {
         sessionEndReason = 'error';
+        // A failing (or aborted) run must not leave tool bodies or
+        // background tasks running against a dead conversation.
+        this.abortAllToolWork(error instanceof Error ? error.message : String(error));
         throw error;
       } finally {
         // Session teardown must never mask the original error: a throw from
@@ -4775,12 +6417,71 @@ export class ModelResult<
   }
 
   /**
-   * Cancel the underlying stream and all consumers
+   * Cancel the underlying stream and all consumers, and abort in-flight
+   * tool executions and background tasks (their `ctx.signal` fires).
+   *
+   * Note: prior releases only cancelled the stream; aborting tool work is
+   * new with async tool support.
    */
   async cancel(): Promise<void> {
+    this.abortAllToolWork('Cancelled via ModelResult.cancel()');
     if (this.reusableStream) {
       await this.reusableStream.cancel();
     }
+  }
+
+  /**
+   * Snapshot of every async tool task tracked by this run (background and
+   * deferred), including settled ones.
+   */
+  getAsyncTasks(): PendingAsyncTool[] {
+    return this.asyncToolRegistry?.snapshot() ?? [];
+  }
+
+  /**
+   * Cancel one in-process async task by its task id. Background tasks abort
+   * their `ctx.signal`; the model receives a `status: 'cancelled'` envelope
+   * at the next delivery point so it is not left waiting forever.
+   *
+   * For deferred tasks in a paused (possibly other-process) conversation,
+   * use the deferred tool's `.cancel()` method instead.
+   *
+   * @returns true when a working task was found and cancelled.
+   */
+  cancelTask(taskId: string, reason?: string): boolean {
+    return this.asyncToolRegistry?.cancelTask(taskId, reason) ?? false;
+  }
+
+  /**
+   * Send a steering message to a running in-process task. Delivered to the
+   * run body's `ctx.onMessage` handler (queued until one registers). Agent
+   * tools (`tool.agent()`) auto-forward messages into the child
+   * conversation as user messages at the child's next turn boundary.
+   *
+   * Throws for deferred tasks — their work runs in an external system;
+   * steer it there.
+   *
+   * @returns true when a working task received (or queued) the message.
+   */
+  sendToTask(taskId: string, message: unknown): boolean {
+    return this.asyncToolRegistry?.sendToTask(taskId, message) ?? false;
+  }
+
+  /**
+   * Queue a user-role message for injection into this run's conversation at
+   * the next safe turn boundary (the same mechanism doom-loop steer
+   * guidance uses — never between a dangling `function_call` and its
+   * output). The primary consumer is `tool.agent()`, which forwards
+   * steering messages into child conversations through this.
+   *
+   * Delivery requires a next dispatch: boundaries are post-tool-round
+   * follow-ups, pause-persists, and end-of-run drain turns. A message
+   * queued while the run is composing its FINAL text response (no further
+   * dispatch of any kind) has no boundary left and is not delivered —
+   * steer while the run still has work in flight.
+   */
+  queueUserMessage(text: string): void {
+    this.queueDoomLoopSteer(text);
   }
 
   // =========================================================================
@@ -4789,11 +6490,15 @@ export class ModelResult<
 
   /**
    * Check if the conversation requires human/client input to continue.
-   * Returns true when the conversation is paused waiting for caller-supplied
-   * decisions — approval/rejection (`awaiting_approval`), HITL tool resume
-   * (`awaiting_hitl`), or client-executed manual tools (`awaiting_client_tools`).
-   * Also returns true whenever `pendingToolCalls` is populated regardless of
-   * status.
+   * Returns true when the conversation is paused waiting on the CALLER —
+   * approval/rejection (`awaiting_approval`), HITL tool resume
+   * (`awaiting_hitl`), client-executed manual tools
+   * (`awaiting_client_tools`), or an external async task resolution
+   * (`awaiting_async_tools`, cleared via the deferred tool's `.resolve()` /
+   * `.fail()` / `.cancel()` or `resumeToolResults()` — NOT via
+   * `approveToolCalls`). Also returns true whenever `pendingToolCalls` is
+   * populated regardless of status. To branch on the pause KIND, read
+   * `(await getState()).status` instead.
    */
   async requiresApproval(): Promise<boolean> {
     await this.initStreamGuarded({
@@ -4804,7 +6509,8 @@ export class ModelResult<
     if (
       status === 'awaiting_approval' ||
       status === 'awaiting_hitl' ||
-      status === 'awaiting_client_tools'
+      status === 'awaiting_client_tools' ||
+      status === 'awaiting_async_tools'
     ) {
       return true;
     }
@@ -4870,4 +6576,68 @@ export class ModelResult<
     }
     return this.doomLoopStop;
   }
+}
+
+/**
+ * The unified-run affordances (`ctx.defer` for deferred tools, `ctx.log`,
+ * `ctx.onMessage`, the transcript-source slot) threaded into a tool's run
+ * context via `runExtras`.
+ */
+function buildRunExtras(tool: Tool, runBinding: RunBinding): Record<string, unknown> {
+  return {
+    ...(isUnifiedTool(tool) &&
+      tool.function.lifecycle === 'deferred' && {
+        defer: (taskId: string, options?: Record<string, unknown>) => ({
+          __deferred: true,
+          taskId,
+          ...(options ?? {}),
+        }),
+      }),
+    log: runBinding.log,
+    onMessage: runBinding.onMessage,
+    // Live getter through the binding — the ToolTask (and its id) is only
+    // created when the call escapes the round, after this object is built.
+    get taskId(): string | undefined {
+      return runBinding.task()?.taskId;
+    },
+    // Transcript slot only — deliberately NOT `task`: TurnContext.task is
+    // the ToolTaskHandle facade (check calls only) and a run body must not
+    // see a transcript-only object under that name.
+    taskTranscript: {
+      set transcriptSource(source: NonNullable<ToolTask['transcriptSource']>) {
+        runBinding.setTranscriptSource(source);
+      },
+      get transcriptSource(): ToolTask['transcriptSource'] {
+        return runBinding.task()?.transcriptSource;
+      },
+    },
+  };
+}
+
+/**
+ * `task` tool, action=result on a SETTLED live task: the final result
+ * (completed) or terminal status + error. Null when the task is not
+ * settled in-process — the caller falls back to the status view.
+ */
+function taskToolResultIfSettled(
+  input: TaskToolInput,
+  liveTask: ToolTask | undefined,
+): Record<string, unknown> | null {
+  if (liveTask?.status === 'completed') {
+    return {
+      taskId: input.taskId,
+      status: 'completed',
+      result: liveTask.result,
+    };
+  }
+  if (liveTask && liveTask.status !== 'working') {
+    return {
+      taskId: input.taskId,
+      status: liveTask.status,
+      ...(liveTask.error !== undefined && {
+        error: liveTask.error,
+      }),
+    };
+  }
+  return null;
 }

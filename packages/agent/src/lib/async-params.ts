@@ -126,11 +126,12 @@ type BaseCallModelInput<
    * consecutive repetitions). `true` enables recommended defaults; an
    * object tunes thresholds and text detection. Off by default.
    *
-   * Tools declare precise call identity via `loopKey` (hash the search
-   * query, the bash command + cwd + env, ...); without one the full
-   * arguments object is the identity. `loopKey: () => null` exempts a tool
-   * (legitimate polling). Detection is deterministic: the same transcript
-   * always produces the same verdicts.
+   * Tools declare precise call identity via `loopKey`: a computed function
+   * (return the search query, `({ command, cwd }) => ({ command, cwd })`,
+   * ...), a field-name array (`['command', 'cwd']` — serializable, used by
+   * MCP tool caches), or `false` to exempt a tool (legitimate polling);
+   * without one the full arguments object is the identity. Detection is
+   * deterministic: the same transcript always produces the same verdicts.
    */
   doomLoop?: DoomLoopOption;
   /**
@@ -144,8 +145,62 @@ type BaseCallModelInput<
    * `callModel` argument): when both are set, each request is bounded by
    * whichever fires first. (Passing a raw `signal` through `RequestOptions`
    * instead would silently disable the SDK's `timeoutMs` wiring.)
+   *
+   * Aborting also fires every in-flight tool's `ctx.signal` and aborts
+   * background tasks, so cooperative tool bodies stop working.
    */
   signal?: AbortSignal;
+  /**
+   * Default per-tool execution deadline in milliseconds; a tool-level
+   * `timeoutMs` overrides it. When the deadline elapses the round stops
+   * waiting — the model receives `{ error, code: 'tool_timeout' }`
+   * immediately and the tool's `ctx.signal` aborts. Bounds the round's
+   * WAIT, not the tool body: a body that ignores its signal keeps running
+   * detached and its result is discarded.
+   */
+  toolTimeoutMs?: number;
+  /**
+   * Concurrency limits for tool execution. A bare number is shorthand for
+   * `{ round: n }`.
+   * - `round`: max simultaneous tool executions within one tool round.
+   *   Unbounded by default (matching previous behavior).
+   * - `background`: max simultaneous detached background-tool executions
+   *   (`tool.background` work that outlived its grace window). Default 16.
+   *   When full, work queues FIFO; queue wait counts against `timeoutMs`.
+   * Execution order may change under a cap; OUTPUT order never does
+   * (results stay in call order for prompt-cache stability).
+   */
+  toolConcurrency?:
+    | number
+    | {
+        round?: number;
+        background?: number;
+      };
+  /**
+   * Behavior for async tools (`tool.background` / `tool.deferred`).
+   *
+   * `onRunEnd` decides what happens when the run would finish while
+   * background tasks are still in flight:
+   * - `'drain'` (default): wait up to `drainTimeoutMs` (default 30s),
+   *   inject settled results, and grant up to `maxDrainTurns` (default 2)
+   *   extra no-tool turns so the final answer incorporates them;
+   * - `'detach'`: return immediately — tasks keep running, results are
+   *   dropped (persisted as `orphaned` when a StateAccessor exists);
+   * - `'cancel'`: abort in-flight tasks and finish.
+   */
+  asyncTools?: {
+    onRunEnd?: 'drain' | 'detach' | 'cancel';
+    drainTimeoutMs?: number;
+    maxDrainTurns?: number;
+    /**
+     * Whether the single universal `task` tool is registered so the model
+     * can check/steer/result/cancel running tasks by taskId. Default true
+     * when any long-running tool is present.
+     */
+    checkins?: boolean;
+    /** Max characters for the `transcript` check view. Default 20_000. */
+    maxTranscriptChars?: number;
+  };
 };
 
 /**
@@ -251,6 +306,9 @@ export async function resolveAsyncFunctions<TTools extends readonly Tool[] = rea
     'hooks', // Client-side hook system
     'doomLoop', // Client-side doom-loop detection config
     'signal', // Client-side run cancellation
+    'toolTimeoutMs', // Client-side per-tool deadline default
+    'toolConcurrency', // Client-side tool concurrency limits
+    'asyncTools', // Client-side async tool (background/deferred) behavior
   ]);
 
   // Iterate over all keys in the input
