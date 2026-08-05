@@ -62,13 +62,24 @@ and `callStreaks`, both above); everything existing is untouched and old blobs
 restore cleanly with their old semantics.
 
 **Newly reachable false positive.** The detector compares arguments, not
-results, so a tool invoked with a stable *set* of parallel arguments every round
-now accumulates a streak where it previously could not — an agent re-reading the
-same context files each turn, or a fixed fan-out of pollers, is refused at the
-default `block` rung from round 3, with one synthesized error per call in the
-round. Exempt such tools with `loopKey: false` (or a `loopKey` returning `null`
-for the call). This class was invisible to the detector before, so no existing
-exemption covered it.
+results, so repetition shapes that were previously invisible now accumulate and
+are refused at the default `block` rung from round 3. Two variants:
+
+- A stable *set* of parallel arguments every round — an agent re-reading the
+  same context files each turn, or a fixed fan-out of pollers — blocks with one
+  synthesized error per call in the round.
+- A single call re-issued verbatim while its round-mates CHANGE — re-reading an
+  anchor file (README, config, schema) while exploring new files each turn
+  (`[a]`, `[a,b]`, `[a,b,c]`: `a` blocks from round 3 even though every round
+  adds work). The per-call detector counts the call's own consecutive rounds,
+  so the round being "progress" does not exempt a member that itself repeats:
+  a file already read is in context, and re-reading it is spend without
+  progress.
+
+Exempt such tools with `loopKey: false` (or a `loopKey` returning `null` for
+the call). These classes were invisible to the detector before, so no existing
+exemption covered them; the graduated ladder gives every shape a free round and
+an `observe` warning before anything is refused.
 
 For `callModel` users, nothing to change — `doomLoop` is configured exactly as
 before, and the engine declares each round for you. What changed is when it
