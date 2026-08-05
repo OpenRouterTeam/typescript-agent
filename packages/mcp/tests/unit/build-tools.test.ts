@@ -5,7 +5,7 @@ import type { McpToolDef } from '../../src/tool-wrapper.js';
 
 // A minimal stand-in for the MCP Client; buildTools only stores the reference
 // for the wrapped tools' execute closures, which these tests don't invoke.
-function fakeClient(): import('@modelcontextprotocol/sdk/client/index.js').Client {
+function fakeClient(): import('@modelcontextprotocol/client').Client {
   return {} as never;
 }
 

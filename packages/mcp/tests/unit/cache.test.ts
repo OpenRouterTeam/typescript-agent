@@ -75,15 +75,13 @@ describe('serializeServer', () => {
         kind: 'bearer',
         token: 'secret',
       },
-      sessionId: 'sess-1',
       cacheCredentials: false,
       cachedAt: 1_000,
     });
     expect(snap.auth).toBeUndefined();
-    expect(snap.sessionId).toBeUndefined();
   });
 
-  it('includes credentials + sessionId when cacheCredentials is true', async () => {
+  it('includes credentials when cacheCredentials is true', async () => {
     const snap = await serializeServer({
       url: 'https://mcp.example.com/mcp',
       transport: 'streamableHttp',
@@ -92,14 +90,39 @@ describe('serializeServer', () => {
         kind: 'bearer',
         token: 'secret',
       },
-      sessionId: 'sess-1',
       cacheCredentials: true,
       cachedAt: 1_000,
     });
     expect(snap.auth?.headers).toEqual({
       Authorization: 'Bearer secret',
     });
-    expect(snap.sessionId).toBe('sess-1');
+  });
+
+  /**
+   * A Streamable HTTP `Mcp-Session-Id` is bearer-equivalent to an authenticated
+   * server session. Nothing reads it back — the replay path stopped forwarding it
+   * once we found a transport reporting one makes SDK v2 skip negotiation and
+   * silently lose server capabilities — so writing it to an external store
+   * (Redis, a database, a file) is attack surface for no functionality.
+   *
+   * It is no longer accepted as `serializeServer` input at all, so this asserts
+   * the snapshot stays clean even under `cacheCredentials: true`, which is where
+   * it used to be written.
+   */
+  it('never persists a session id, even with cacheCredentials on', async () => {
+    const snap = await serializeServer({
+      url: 'https://mcp.example.com/mcp',
+      transport: 'streamableHttp',
+      toolDefs,
+      auth: {
+        kind: 'bearer',
+        token: 'secret',
+      },
+      cacheCredentials: true,
+      cachedAt: 1_000,
+    });
+    expect(snap.sessionId).toBeUndefined();
+    expect(Object.hasOwn(snap, 'sessionId')).toBe(false);
   });
 });
 

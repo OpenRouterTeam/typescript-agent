@@ -1,4 +1,4 @@
-import type { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import type { Client } from '@modelcontextprotocol/client';
 import { describe, expect, it } from 'vitest';
 import { buildResourceTools } from '../../src/resource-tools.js';
 
@@ -267,5 +267,115 @@ describe('buildResourceTools list_resources pagination', () => {
       undefined,
       'stuck',
     ]);
+  });
+});
+
+/**
+ * Cache disposition is asymmetric on purpose, so pin both halves.
+ *
+ * SDK v2 caches the cacheable verbs per client, honouring the server's `ttlMs`
+ * (24h ceiling). `list_resources` overrides that with `cacheMode: 'refresh'`
+ * because a listing's entire job is to say what exists *now* — a model that
+ * creates a resource and immediately lists must see it, and a cached listing
+ * reads to the model like the write silently failed.
+ *
+ * `read_resource` deliberately does not override: contents can be large, and a
+ * server-declared TTL on `resources/read` is a considered statement that the
+ * bytes are reusable. Freshness there is handled per-URI by the SDK's eviction
+ * on `notifications/resources/updated`.
+ *
+ * Without these assertions the distinction is a comment, and the next edit to
+ * either call site could quietly flip it.
+ */
+describe('resource tools cache disposition', () => {
+  function optionsRecordingClient(): {
+    client: Client;
+    listOpts: unknown[];
+    readOpts: unknown[];
+  } {
+    const listOpts: unknown[] = [];
+    const readOpts: unknown[] = [];
+    const client = {
+      listResources: (_params: unknown, opts: unknown) => {
+        listOpts.push(opts);
+        return Promise.resolve({
+          resources: [],
+        });
+      },
+      listResourceTemplates: (_params: unknown, opts: unknown) => {
+        listOpts.push(opts);
+        return Promise.resolve({
+          resourceTemplates: [],
+        });
+      },
+      readResource: (_params: unknown, opts: unknown) => {
+        readOpts.push(opts);
+        return Promise.resolve({
+          contents: [],
+        });
+      },
+    } as never;
+    return {
+      client,
+      listOpts,
+      readOpts,
+    };
+  }
+
+  function executableNamed(tools: unknown[], suffix: string) {
+    const found = tools.find((t) => hasExecutableFunction(t) && t.function.name.endsWith(suffix));
+    if (!hasExecutableFunction(found)) {
+      throw new Error(`no executable tool ending in ${suffix}`);
+    }
+    return found;
+  }
+
+  it("sends cacheMode 'refresh' on both list calls so a new resource is visible", async () => {
+    const { client, listOpts } = optionsRecordingClient();
+    const tools = buildResourceTools({
+      client,
+    });
+
+    await executableNamed(tools, 'list_resources').function.execute({});
+
+    // Both `resources/list` and `resources/templates/list`.
+    expect(listOpts).toHaveLength(2);
+    for (const opts of listOpts) {
+      expect(opts).toMatchObject({
+        cacheMode: 'refresh',
+      });
+    }
+  });
+
+  it('leaves read_resource on the default cache mode, honouring the server TTL', async () => {
+    const { client, readOpts } = optionsRecordingClient();
+    const tools = buildResourceTools({
+      client,
+    });
+
+    await executableNamed(tools, 'read_resource').function.execute({
+      uri: 'file:///x',
+    });
+
+    expect(readOpts).toHaveLength(1);
+    expect(readOpts[0]).not.toMatchObject({
+      cacheMode: 'refresh',
+    });
+  });
+
+  it('still forwards the abort signal alongside the cache mode', async () => {
+    const controller = new AbortController();
+    const { client, listOpts } = optionsRecordingClient();
+    const tools = buildResourceTools({
+      client,
+      signal: controller.signal,
+    });
+
+    await executableNamed(tools, 'list_resources').function.execute({});
+
+    expect(listOpts[0]).toMatchObject({
+      cacheMode: 'refresh',
+      signal: controller.signal,
+    });
   });
 });

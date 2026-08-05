@@ -1,5 +1,4 @@
-import type { Client } from '@modelcontextprotocol/sdk/client/index.js';
-import type { Progress } from '@modelcontextprotocol/sdk/types.js';
+import type { Client, Progress } from '@modelcontextprotocol/client';
 import { markMcp, tool } from '@openrouter/agent/tool';
 import type { McpBranded, ToolLoopKey } from '@openrouter/agent/tool-types';
 import * as z from 'zod';
@@ -61,12 +60,14 @@ interface InvokeToolArgs {
 
 async function invokeTool(invokeArgs: InvokeToolArgs): Promise<unknown> {
   const { options, mcpName, args, onprogress } = invokeArgs;
+  // SDK v2 signature is `callTool(params, options)` — v1's middle result-schema
+  // argument is gone. Passing three args here would silently drop `signal` and
+  // `onprogress` into an unread slot, killing cancellation and progress.
   const result = await options.client.callTool(
     {
       name: mcpName,
       arguments: args,
     },
-    undefined,
     {
       ...(options.signal !== undefined && {
         signal: options.signal,

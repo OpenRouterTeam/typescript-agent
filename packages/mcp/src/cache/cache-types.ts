@@ -35,6 +35,21 @@ export interface SerializedMCPServer {
     version?: string;
   };
   capabilities?: Readonly<Record<string, unknown>>;
+  /**
+   * Streamable HTTP session id, replayed on reconnect.
+   *
+   * @deprecated No longer written, and never read back. Protocol-level sessions
+   * and the `Mcp-Session-Id` header are removed in revision 2026-07-28
+   * (SEP-2567), where cross-call state moves to server-minted handles passed as
+   * ordinary tool arguments.
+   *
+   * The field remains only so snapshots written by older versions keep
+   * deserializing — a validator that rejected it would turn every existing cache
+   * entry into a hard failure. Nothing populates it now: it is bearer-equivalent
+   * to an authenticated server session, so persisting it to an external store was
+   * attack surface for no functionality once the replay path stopped forwarding
+   * it. Treat any value found here as untrusted legacy data. See the README.
+   */
   sessionId?: string;
   tools: SerializedMCPToolDef[];
   auth?: {
