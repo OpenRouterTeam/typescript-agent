@@ -337,6 +337,51 @@ describe('PostModelCall hook', () => {
     });
   });
 
+  it('emits when the source close arrives after the terminal event (isComplete still false)', async () => {
+    // Real network streams deliver the close frame after `response.completed`.
+    // Item consumers stop at the terminal event, so teardown typically runs
+    // before the pump has observed the close that flips `isComplete` — the
+    // parked telemetry must be recovered from the buffered terminal event,
+    // not dropped. Modeled here with a source that never closes: the
+    // completed event is buffered, `isComplete` stays false forever.
+    const streamed = textResponse('r_late_close');
+    const readable = new ReadableStream({
+      start(controller) {
+        controller.enqueue({
+          type: 'response.completed',
+          response: streamed,
+          sequenceNumber: 0,
+        });
+        // no controller.close(): the pump keeps awaiting the source.
+      },
+    });
+    mockBetaResponsesSend.mockResolvedValue({
+      ok: true,
+      value: readable,
+    });
+
+    const { hooks, calls, ends } = collectHooks();
+    const result = callModel(client, {
+      model: 'test-model',
+      input: 'hi',
+      hooks,
+    });
+    for await (const _item of result.getItemsStream()) {
+      // drain — terminates at the buffered response.completed event
+    }
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toMatchObject({
+      responseId: 'r_late_close',
+      turnType: 'initial',
+    });
+    expect(ends).toHaveLength(1);
+    expect(ends[0]?.totalUsage).toMatchObject({
+      modelCalls: 1,
+      totalTokens: 150,
+    });
+  });
+
   it('still emits SessionEnd and drains when teardown telemetry cannot materialize', async () => {
     // A stream that ends without a completion event (deltas only, then close)
     // makes the parked-telemetry materialization in teardown throw

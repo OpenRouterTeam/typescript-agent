@@ -42,7 +42,7 @@ import type {
 } from './doom-loop.js';
 import { DoomLoopMonitor, resolveDoomLoopOption, resolveLoopKeyMaterial } from './doom-loop.js';
 import type { HooksManager } from './hooks-manager.js';
-import type { ModelCallUsage, PostModelCallPayload } from './hooks-types.js';
+import type { ModelCallUsage, PostModelCallPayload, SessionUsageTotals } from './hooks-types.js';
 import {
   applyNextTurnParamsToRequest,
   executeNextTurnParamsFunctions,
@@ -55,6 +55,7 @@ import {
   buildResponsesMessageStream,
   buildToolCallStream,
   consumeStreamForCompletion,
+  extractCompletionFromBuffer,
   extractReasoningDeltas,
   extractResponsesMessageFromResponse,
   extractTextDeltas,
@@ -63,6 +64,7 @@ import {
   extractToolDeltas,
   itemsStreamHandlers,
   streamTerminationEvents,
+  tryExtractCompletionFromBuffer,
 } from './stream-transformers.js';
 import {
   hasTypeProperty,
@@ -2035,17 +2037,7 @@ export class ModelResult<
       {
         reason,
         ...(this.sessionUsage.modelCalls > 0 && {
-          totalUsage: {
-            modelCalls: this.sessionUsage.modelCalls,
-            inputTokens: this.sessionUsage.inputTokens,
-            outputTokens: this.sessionUsage.outputTokens,
-            totalTokens: this.sessionUsage.totalTokens,
-            cachedTokens: this.sessionUsage.cachedTokens,
-            reasoningTokens: this.sessionUsage.reasoningTokens,
-            ...(this.sessionUsage.hasCost && {
-              cost: this.sessionUsage.cost,
-            }),
-          },
+          totalUsage: this.snapshotSessionUsage(),
         }),
       },
       this.hookEmitContext(),
@@ -2053,8 +2045,35 @@ export class ModelResult<
   }
 
   /**
+   * Materialize the running session aggregate as an immutable
+   * `SessionUsageTotals`. `cost` is present only when at least one response
+   * reported it, matching the hook payload's optionality (a summed cost of
+   * `0` from cost-less responses would read as "free" rather than "unknown").
+   *
+   * Single source of truth for both `SessionEnd.totalUsage` and the public
+   * `getUsage()` accessor, so the two can never drift.
+   */
+  private snapshotSessionUsage(): SessionUsageTotals {
+    return {
+      modelCalls: this.sessionUsage.modelCalls,
+      inputTokens: this.sessionUsage.inputTokens,
+      outputTokens: this.sessionUsage.outputTokens,
+      totalTokens: this.sessionUsage.totalTokens,
+      cachedTokens: this.sessionUsage.cachedTokens,
+      reasoningTokens: this.sessionUsage.reasoningTokens,
+      ...(this.sessionUsage.hasCost && {
+        cost: this.sessionUsage.cost,
+      }),
+    };
+  }
+
+  /**
    * Emit PostModelCall for a completed model response and fold its usage
    * into the session aggregate. One emit per materialized response.
+   *
+   * Accumulation runs unconditionally — before the hooks short-circuit —
+   * because `getUsage()` surfaces these totals to callers who configured no
+   * hooks at all. Only the hook emit is gated on a `HooksManager`.
    */
   private async emitPostModelCall(
     response: models.OpenResponsesResult,
@@ -2062,9 +2081,6 @@ export class ModelResult<
     turnType: PostModelCallPayload['turnType'],
     turnNumber: number,
   ): Promise<void> {
-    if (!this.hooksManager) {
-      return;
-    }
     const usage = extractModelCallUsage(response.usage);
     this.sessionUsage.modelCalls++;
     if (usage) {
@@ -2077,6 +2093,9 @@ export class ModelResult<
         this.sessionUsage.cost += usage.cost;
         this.sessionUsage.hasCost = true;
       }
+    }
+    if (!this.hooksManager) {
+      return;
     }
     await this.hooksManager.emit(
       'PostModelCall',
@@ -2166,38 +2185,55 @@ export class ModelResult<
 
   /**
    * Session teardown for the no-tools stream paths, which bypass
-   * executeToolsIfNeeded (the normal SessionEnd site). Emits SessionEnd once
-   * and drains pending hook work. Never throws: teardown must not mask the
-   * stream's own outcome.
+   * executeToolsIfNeeded (the normal SessionEnd site). Materializes the
+   * parked model-call telemetry, emits SessionEnd once, and drains pending
+   * hook work. Never throws: teardown must not mask the stream's own outcome.
    */
   private async finishHooksSessionForStream(
     reason: 'complete' | 'error' = 'complete',
   ): Promise<void> {
+    // Materialize the parked initial-call telemetry when the stream fully
+    // completed (the retained buffer replays without touching the source).
+    // A failed/errored stream skips it: no materialized response exists.
+    // (`response.incomplete` responses DO emit — they are materialized, have
+    // a generation id, and consumed tokens.)
+    // Runs even without a HooksManager: this is the only site that folds the
+    // no-tools streaming response into `sessionUsage`, which `getUsage()`
+    // reports to hook-less callers.
+    // Isolated try: a telemetry failure (e.g. a buffer without a completion
+    // event, or a throwing strict-mode handler) must not skip SessionEnd or
+    // the drain below — those are contractual on every exit path.
+    try {
+      if (this.pendingModelCall) {
+        if (this.finalResponse) {
+          await this.emitPendingModelCallOnce(this.finalResponse);
+        } else if (this.reusableStream?.isComplete) {
+          // Sync backward scan of the retained buffer — not a consumer
+          // replay, which would cost one microtask hop per buffered event
+          // on every hook-less streaming teardown.
+          await this.emitPendingModelCallOnce(extractCompletionFromBuffer(this.reusableStream));
+        } else if (this.reusableStream) {
+          // Consumers stop at the terminal event (streamTerminationEvents),
+          // usually before the pump reads the source close that flips
+          // `isComplete` — with a real network stream the close frame
+          // arrives after `response.completed`. The terminal event is
+          // already buffered in that window, so recover it rather than
+          // dropping the parked telemetry. Stays silent (no emit, no
+          // throw) when nothing terminal was buffered — e.g. an errored
+          // mid-flight stream, where no materialized response exists.
+          const buffered = tryExtractCompletionFromBuffer(this.reusableStream);
+          if (buffered) {
+            await this.emitPendingModelCallOnce(buffered);
+          }
+        }
+      }
+    } catch (telemetryError) {
+      console.warn('[PostModelCall] error during stream teardown:', telemetryError);
+    }
     if (!this.hooksManager) {
       return;
     }
     try {
-      // Materialize the parked initial-call telemetry when the stream fully
-      // completed (the retained buffer replays without touching the source).
-      // A failed/errored stream skips it: no materialized response exists.
-      // (`response.incomplete` responses DO emit — they are materialized, have
-      // a generation id, and consumed tokens.)
-      // Isolated try: a telemetry failure (e.g. a buffer without a completion
-      // event, or a throwing strict-mode handler) must not skip SessionEnd or
-      // the drain below — those are contractual on every exit path.
-      try {
-        if (this.pendingModelCall) {
-          if (this.finalResponse) {
-            await this.emitPendingModelCallOnce(this.finalResponse);
-          } else if (this.reusableStream?.isComplete) {
-            await this.emitPendingModelCallOnce(
-              await consumeStreamForCompletion(this.reusableStream),
-            );
-          }
-        }
-      } catch (telemetryError) {
-        console.warn('[PostModelCall] error during stream teardown:', telemetryError);
-      }
       await this.emitSessionEndOnce(reason);
       await this.hooksManager.drain();
     } catch (teardownError) {
@@ -5835,6 +5871,10 @@ export class ModelResult<
    * Get the complete response object including usage information.
    * This will consume the stream until completion and execute any tools.
    * Returns the full OpenResponsesResult with usage data (inputTokens, outputTokens, cachedTokens, etc.)
+   *
+   * Note: in a multi-round tool loop this is the **final** round's response
+   * only — its `usage` block covers that one generation, not the run. For
+   * aggregate totals across every model call, use `getUsage()`.
    */
   async getResponse(): Promise<models.OpenResponsesResult> {
     await this.executeToolsIfNeeded();
@@ -5934,6 +5974,17 @@ export class ModelResult<
    * - file_search_call: File search operations
    * - image_generation_call: Image generation operations
    * - function_call_output: Results from executed tools
+   *
+   * This stream carries **output items only** — no usage or response-level
+   * metadata. The `response.completed` events (which hold each round's usage
+   * block) are not surfaced here, and `getResponse()` afterwards returns only
+   * the *final* round's response, so a multi-round tool loop's `tool_calls`
+   * generations are not accounted for by either. For usage, reach for:
+   * - `getUsage()` — aggregate token/cost totals across every round
+   * - the `PostModelCall` hook — one emit per model call, with
+   *   `turnType`/`turnNumber` and that call's own `usage`
+   * - `getFullResponsesStream()` — raw events including each round's
+   *   `response.completed`, and therefore its per-round usage block
    */
   getItemsStream(): AsyncIterableIterator<StreamableOutputItem<TTools>> {
     // Build the allowed-item-type scope from the tools actually passed to
@@ -6575,6 +6626,65 @@ export class ModelResult<
       await this.executeToolsIfNeeded();
     }
     return this.doomLoopStop;
+  }
+
+  /**
+   * Aggregate token/cost usage across **every** model call this run made —
+   * the initial request, each tool-round follow-up, the empty-final retry,
+   * the `allowFinalResponse` final turn, and approval-resume requests.
+   *
+   * This is the pull-based counterpart to the `SessionEnd.totalUsage` hook
+   * payload (same `SessionUsageTotals` shape, same numbers) and exists
+   * because `getResponse()` returns only the **final** round's response: in a
+   * multi-round tool loop the `tool_calls` generations' tokens are otherwise
+   * unreachable, and `getItemsStream()` carries output items only — no
+   * `response.completed` usage block.
+   *
+   * Gates on run completion the same way `getResponse()` does, so totals are
+   * final whether you await it directly, after `getResponse()`, or after
+   * consuming any of the streaming getters — except on an approval-resumed
+   * run, where reading usage never advances the tool loop: the resume
+   * request's own generation is awaited and counted, but no further rounds
+   * are driven, so totals can be mid-run. Await `getResponse()`/`getText()`
+   * first for final totals there. On a run that paused (approval / HITL) or
+   * failed, it returns the totals accrued so far — `modelCalls: 0` with
+   * zeroed tokens when no model call ever completed.
+   *
+   * Unlike `getResponse()`, this never rejects: a failed run still consumed
+   * tokens, and cost accounting typically runs in a `finally`/`catch` where a
+   * second throw would mask the run's original error. Await the run itself
+   * (e.g. `getResponse()`) if you need to observe the failure.
+   *
+   * `cost` is present only when the server reported cost accounting for at
+   * least one call; a `0` would be indistinguishable from "free".
+   *
+   * For per-call granularity use the `PostModelCall` hook (one emit per model
+   * call, with `turnType`/`turnNumber`) or `getFullResponsesStream()`, whose
+   * `response.completed` events carry each round's own usage block.
+   */
+  async getUsage(): Promise<SessionUsageTotals> {
+    try {
+      await this.initStreamGuarded({
+        requireStream: false,
+      });
+      if (!this.isResumingFromApproval) {
+        await this.executeToolsIfNeeded();
+      } else if (this.pendingModelCall && this.reusableStream) {
+        // The resume dispatch returned a live event stream whose telemetry
+        // is still parked (the non-streaming branch folds usage in
+        // immediately — see continueWithUnsentResults). Consuming the
+        // reusable stream is a passive observation: it buffers events
+        // without executing tools or mutating conversation state, so the
+        // resume generation is counted without advancing the loop.
+        await this.emitPendingModelCallOnce(await consumeStreamForCompletion(this.reusableStream));
+      }
+    } catch (error) {
+      // Intentionally swallowed — see the "never rejects" note above. The
+      // aggregate below still reports whatever calls completed before the
+      // failure; the warn leaves a diagnostic thread for the swallowed cause.
+      console.warn('[getUsage] run failed; reporting totals accrued so far:', error);
+    }
+    return this.snapshotSessionUsage();
   }
 }
 
