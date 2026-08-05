@@ -48,6 +48,7 @@ import {
   extractToolDeltas,
   itemsStreamHandlers,
   streamTerminationEvents,
+  tryExtractCompletionFromBuffer,
 } from './stream-transformers.js';
 import {
   hasTypeProperty,
@@ -1968,6 +1969,19 @@ export class ModelResult<
           // replay, which would cost one microtask hop per buffered event
           // on every hook-less streaming teardown.
           await this.emitPendingModelCallOnce(extractCompletionFromBuffer(this.reusableStream));
+        } else if (this.reusableStream) {
+          // Consumers stop at the terminal event (streamTerminationEvents),
+          // usually before the pump reads the source close that flips
+          // `isComplete` — with a real network stream the close frame
+          // arrives after `response.completed`. The terminal event is
+          // already buffered in that window, so recover it rather than
+          // dropping the parked telemetry. Stays silent (no emit, no
+          // throw) when nothing terminal was buffered — e.g. an errored
+          // mid-flight stream, where no materialized response exists.
+          const buffered = tryExtractCompletionFromBuffer(this.reusableStream);
+          if (buffered) {
+            await this.emitPendingModelCallOnce(buffered);
+          }
         }
       }
     } catch (telemetryError) {
