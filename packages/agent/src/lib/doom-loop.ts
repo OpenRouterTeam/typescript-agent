@@ -1645,9 +1645,13 @@ function setsMatch(left: readonly string[], right: readonly string[]): boolean {
  * the ROUND's identity — identical text for every call, deliberately, because
  * the steer rung dedupes queued guidance by exact message text and one round
  * of evidence must not queue N near-identical corrections. When the PER-CALL
- * streak alone decides (its count exceeds the round's), only this one call is
- * the evidence, so quoting its own fingerprint is both accurate and
- * dedupe-safe: no other call of the round carries the same verdict.
+ * streak alone decides (its count exceeds the round's), the text carries
+ * neither the call's fingerprint nor its exact count: both vary between
+ * members of one round (an expanding fan-out holds counts 4, 3, 2 at once),
+ * and either would split one piece of guidance into per-member strings. The
+ * enforced bound is therefore at most TWO distinct messages per tool per
+ * round — one per-call text, one round-set text — each stating a distinct
+ * fact; exact counts live in the verdict payload's `streak`.
  *
  * `roundDeclared` says whether the detector was told the round's true
  * membership. Only then does `callSet` describe the round, so only then may the
@@ -1670,18 +1674,20 @@ function buildToolVerdictMessage(input: {
   const { toolName, fingerprint, callSet, roundStreak, callStreak, roundDeclared } = input;
   if (callStreak > roundStreak || !roundDeclared) {
     /*
-     * Fingerprint-free, so every member of the round renders identically and
-     * the steer dedupe collapses them to one correction. Reached when the
-     * per-call streak decides, and when the round's true membership is unknown
-     * (undeclared path) — in both cases quoting one call's hash would either
-     * be inaccurate for the round or diverge between its members. The text
-     * asserts only what the per-call evidence actually shows — this one call
-     * repeated — because on the undeclared path the round's other calls (if
-     * any) are unknown, and a plain single-call repeat has no "other calls"
-     * at all.
+     * Fingerprint-free AND count-free, so every per-call verdict of one tool
+     * renders byte-identical text and the steer dedupe collapses them to one
+     * correction. Reached when the per-call streak decides, and when the
+     * round's true membership is unknown (undeclared path). Both varying
+     * elements had to go for the dedupe to hold: quoting one call's hash
+     * diverged the members of a wide round, and quoting the exact count
+     * diverged members whose repeats started at different times (an expanding
+     * fan-out carries counts 4, 3, 2 in one round — three near-identical
+     * strings for one piece of guidance). The exact count still reaches
+     * consumers via the verdict payload's `streak`; the prose tells the model
+     * what to do about it, which does not depend on the number.
      */
     return (
-      `Doom loop suspected: this exact "${toolName}" call was repeated in ${Math.max(roundStreak, callStreak)} ` +
+      `Doom loop suspected: this exact "${toolName}" call has been repeated across ` +
       'consecutive rounds. Repeating it will not change the result. ' +
       'Take a different approach, or explain why repetition is required.'
     );

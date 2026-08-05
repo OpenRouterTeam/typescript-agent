@@ -1113,6 +1113,82 @@ describe('same-tool fan-out streaks', () => {
     ]);
   });
 
+  it('collapses STAGGERED per-call counts in one round to a single message', async () => {
+    /*
+     * An expanding fan-out carries different per-call counts in one round —
+     * `[a]`, `[a,b]`, `[a,b,c]`, `[a,b,c,d]` puts a=4, b=3, c=2 in round 4.
+     * The per-call message used to interpolate each call's own count, so the
+     * three verdicts rendered three near-identical strings and the exact-text
+     * steer dedupe queued all of them: the real bound was the round's WIDTH,
+     * not the documented two. The per-call text is now count-free (the exact
+     * count still reaches consumers via the verdict payload's `streak`), so
+     * every per-call verdict of one tool collapses to one correction.
+     */
+    const detector = new DoomLoopMonitor(
+      resolveDoomLoopOption({
+        ladder: {
+          steer: 2,
+        },
+      }),
+    );
+    const rounds = [
+      [
+        'a',
+      ],
+      [
+        'a',
+        'b',
+      ],
+      [
+        'a',
+        'b',
+        'c',
+      ],
+      [
+        'a',
+        'b',
+        'c',
+        'd',
+      ],
+    ];
+    const messages: string[] = [];
+    const streaks: number[] = [];
+    for (const [round, paths] of rounds.entries()) {
+      await detector.declareRound(
+        round,
+        paths.map((path) => ({
+          toolName: 'read',
+          keyMaterial: {
+            path,
+          },
+        })),
+      );
+      for (const path of paths) {
+        const record = await detector.recordToolCall(
+          'read',
+          {
+            path,
+          },
+          round,
+        );
+        if (round === 3 && record.verdict) {
+          messages.push(record.verdict.message);
+          streaks.push(record.verdict.streak);
+        }
+      }
+    }
+
+    /* Three verdicts with distinct counts — the payload keeps the numbers... */
+    expect(streaks).toEqual([
+      4,
+      3,
+      2,
+    ]);
+    /* ...but the prose is byte-identical, so steer queues ONE correction. */
+    expect(messages).toHaveLength(3);
+    expect(new Set(messages).size).toBe(1);
+  });
+
   it('bounds a mixed-evidence round to one message per distinct fact', async () => {
     /*
      * One round can carry TWO pieces of evidence: `[a]`, `[a,b]`, `[a,b]` —
@@ -1178,7 +1254,7 @@ describe('same-tool fan-out streaks', () => {
      */
     expect(messages).toHaveLength(2);
     expect(new Set(messages).size).toBe(2);
-    expect(messages[0]).toContain('3 consecutive rounds');
+    expect(messages[0]).toContain('this exact "read" call has been repeated');
     expect(messages[1]).toContain('same set of 2 parallel calls');
   });
 
