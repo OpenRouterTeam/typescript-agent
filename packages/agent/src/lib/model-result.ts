@@ -39,6 +39,7 @@ import {
   buildResponsesMessageStream,
   buildToolCallStream,
   consumeStreamForCompletion,
+  extractCompletionFromBuffer,
   extractReasoningDeltas,
   extractResponsesMessageFromResponse,
   extractTextDeltas,
@@ -1963,9 +1964,10 @@ export class ModelResult<
         if (this.finalResponse) {
           await this.emitPendingModelCallOnce(this.finalResponse);
         } else if (this.reusableStream?.isComplete) {
-          await this.emitPendingModelCallOnce(
-            await consumeStreamForCompletion(this.reusableStream),
-          );
+          // Sync backward scan of the retained buffer — not a consumer
+          // replay, which would cost one microtask hop per buffered event
+          // on every hook-less streaming teardown.
+          await this.emitPendingModelCallOnce(extractCompletionFromBuffer(this.reusableStream));
         }
       }
     } catch (telemetryError) {
@@ -4213,6 +4215,10 @@ export class ModelResult<
    * Get the complete response object including usage information.
    * This will consume the stream until completion and execute any tools.
    * Returns the full OpenResponsesResult with usage data (inputTokens, outputTokens, cachedTokens, etc.)
+   *
+   * Note: in a multi-round tool loop this is the **final** round's response
+   * only — its `usage` block covers that one generation, not the run. For
+   * aggregate totals across every model call, use `getUsage()`.
    */
   async getResponse(): Promise<models.OpenResponsesResult> {
     await this.executeToolsIfNeeded();
@@ -4916,9 +4922,13 @@ export class ModelResult<
    *
    * Gates on run completion the same way `getResponse()` does, so totals are
    * final whether you await it directly, after `getResponse()`, or after
-   * consuming any of the streaming getters. On a run that paused (approval /
-   * HITL) or failed, it returns the totals accrued so far — `modelCalls: 0`
-   * with zeroed tokens when no model call ever completed.
+   * consuming any of the streaming getters — except on an approval-resumed
+   * run, where reading usage never advances the tool loop: the resume
+   * request's own generation is awaited and counted, but no further rounds
+   * are driven, so totals can be mid-run. Await `getResponse()`/`getText()`
+   * first for final totals there. On a run that paused (approval / HITL) or
+   * failed, it returns the totals accrued so far — `modelCalls: 0` with
+   * zeroed tokens when no model call ever completed.
    *
    * Unlike `getResponse()`, this never rejects: a failed run still consumed
    * tokens, and cost accounting typically runs in a `finally`/`catch` where a
@@ -4939,11 +4949,20 @@ export class ModelResult<
       });
       if (!this.isResumingFromApproval) {
         await this.executeToolsIfNeeded();
+      } else if (this.pendingModelCall && this.reusableStream) {
+        // The resume dispatch returned a live event stream whose telemetry
+        // is still parked (the non-streaming branch folds usage in
+        // immediately — see continueWithUnsentResults). Consuming the
+        // reusable stream is a passive observation: it buffers events
+        // without executing tools or mutating conversation state, so the
+        // resume generation is counted without advancing the loop.
+        await this.emitPendingModelCallOnce(await consumeStreamForCompletion(this.reusableStream));
       }
-    } catch {
+    } catch (error) {
       // Intentionally swallowed — see the "never rejects" note above. The
       // aggregate below still reports whatever calls completed before the
-      // failure.
+      // failure; the warn leaves a diagnostic thread for the swallowed cause.
+      console.warn('[getUsage] run failed; reporting totals accrued so far:', error);
     }
     return this.snapshotSessionUsage();
   }

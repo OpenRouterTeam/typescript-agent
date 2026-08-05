@@ -13,6 +13,9 @@
  * - usage-less responses still counted in modelCalls, cost omitted
  * - a run paused at `awaiting_approval` reports only its pre-pause calls,
  *   including on the approval-resume path that skips executeToolsIfNeeded
+ * - an approval resume whose response is a real event stream still gets its
+ *   resume generation counted by a bare getUsage(), without loop side effects
+ * - a totally failed run warns with the swallowed cause (never-throw ≠ silent)
  */
 import type * as models from '@openrouter/sdk/models';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -376,11 +379,12 @@ describe('ModelResult.getUsage()', () => {
     expect(usage.cost).toBeUndefined();
   });
 
-  it('returns zeroed totals when no model call completed', async () => {
+  it('returns zeroed totals when no model call completed, warning with the swallowed cause', async () => {
     mockBetaResponsesSend.mockResolvedValue({
       ok: false,
       error: new Error('api down'),
     });
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
 
     const result = callModel(client, {
       model: 'test-model',
@@ -394,6 +398,16 @@ describe('ModelResult.getUsage()', () => {
       totalTokens: 0,
     });
     expect(usage.cost).toBeUndefined();
+
+    // Never-throws must not mean silent: the caller who only ever awaits
+    // getUsage() (e.g. a cost-accounting sidecar) needs a diagnostic to
+    // distinguish "the API was down" from "the run was genuinely free".
+    expect(warnSpy).toHaveBeenCalledWith(
+      '[getUsage] run failed; reporting totals accrued so far:',
+      expect.objectContaining({
+        message: 'api down',
+      }),
+    );
   });
 
   describe('paused at awaiting_approval', () => {
@@ -585,6 +599,76 @@ describe('ModelResult.getUsage()', () => {
       expect(await resumed.getUsage()).toMatchObject({
         modelCalls: 1,
       });
+      expect(accessor.getLatest()?.status).toBe('in_progress');
+    });
+
+    it('counts a STREAMING resume generation without advancing the loop', async () => {
+      // The resume dispatch may return a real event stream instead of a
+      // non-streaming body. Its telemetry stays parked until something
+      // consumes the stream — a bare getUsage() must do that consumption
+      // itself (a passive buffer read) rather than under-report the resume
+      // request's tokens, while still not driving the tool loop.
+      mockBetaResponsesSend.mockResolvedValueOnce({
+        ok: true,
+        value: toolCallResponse('r1', undefined, riskyCall),
+      });
+
+      const accessor = makeStateAccessor();
+      const first = callModel(client, {
+        model: 'test-model',
+        input: 'do the risky thing',
+        tools: [
+          approvalTool,
+        ] as const,
+        state: accessor,
+      });
+      await first.getPendingToolCalls();
+      const pausedCallId = accessor.getLatest()?.pendingToolCalls?.[0]?.id;
+
+      const resumeResponse = textResponse(
+        'r2_streamed',
+        usageBlock({
+          inputTokens: 200,
+          outputTokens: 100,
+          totalTokens: 300,
+          cost: 0.003,
+        }),
+      );
+      mockBetaResponsesSend.mockResolvedValueOnce({
+        ok: true,
+        value: new ReadableStream({
+          start(controller) {
+            controller.enqueue({
+              type: 'response.completed',
+              response: resumeResponse,
+              sequenceNumber: 0,
+            });
+            controller.close();
+          },
+        }),
+      });
+
+      const resumed = callModel(client, {
+        model: 'test-model',
+        input: undefined as unknown as string,
+        tools: [
+          approvalTool,
+        ] as const,
+        state: accessor,
+        approveToolCalls: [
+          pausedCallId as string,
+        ],
+      });
+
+      // Bare read, nothing else has consumed the resume stream.
+      expect(await resumed.getUsage()).toMatchObject({
+        modelCalls: 1,
+        inputTokens: 200,
+        outputTokens: 100,
+        totalTokens: 300,
+        cost: 0.003,
+      });
+      // Observation only: the run has not been settled as a side effect.
       expect(accessor.getLatest()?.status).toBe('in_progress');
     });
   });

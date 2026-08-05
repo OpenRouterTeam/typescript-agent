@@ -630,6 +630,34 @@ export async function* buildMessageStream(
 }
 
 /**
+ * Synchronous counterpart to `consumeStreamForCompletion` for streams that
+ * have already fully buffered (`isComplete`): scan the retained buffer
+ * backwards for the terminal event instead of replaying every event through
+ * a fresh consumer (one async microtask hop per event). Same contract —
+ * returns the completed/incomplete response, throws on a failed response or
+ * a buffer with no terminal event.
+ */
+export function extractCompletionFromBuffer(
+  stream: ReusableReadableStream<models.StreamEvents>,
+): models.OpenResponsesResult {
+  const terminal = stream.findLastBuffered(
+    (event) =>
+      'type' in event &&
+      (isResponseCompletedEvent(event) ||
+        isResponseFailedEvent(event) ||
+        isResponseIncompleteEvent(event)),
+  );
+
+  if (terminal && isResponseFailedEvent(terminal)) {
+    throw new Error(`Response failed: ${JSON.stringify(terminal.response.error)}`);
+  }
+  if (terminal && (isResponseCompletedEvent(terminal) || isResponseIncompleteEvent(terminal))) {
+    return terminal.response;
+  }
+  throw new Error('Stream ended without completion event');
+}
+
+/**
  * Consume stream until completion and return the complete response
  */
 export async function consumeStreamForCompletion(
