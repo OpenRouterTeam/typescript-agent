@@ -1992,6 +1992,18 @@ describe('callModel E2E Tests', () => {
           },
         ]),
         toolChoice: 'required',
+        // Forced final triggers only when all of these are true:
+        // - stopWhen ended the loop.
+        // - The current model response still contains a pending tool call.
+        // - That tool is executable.
+        // - allowFinalResponse !== false.
+        // The SDK then executes the pending tool and sends one final request
+        // with toolChoice: 'none'.
+        //
+        // stepCountIs(0) stops on the initial tool-call response, so forced
+        // final is guaranteed. stepCountIs(1) stops after the relaxed `auto`
+        // follow-up returns, so forced final occurs only if that response
+        // contains another tool call.
         stopWhen: stepCountIs(0),
         allowFinalResponse:
           'Stop calling tools. Reply with exactly the word "FINAL" and nothing else.',
