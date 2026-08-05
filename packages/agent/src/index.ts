@@ -139,6 +139,7 @@ export type {
   DoomLoopVerdict,
   LoopKeyResolution,
   ResolvedDoomLoopConfig,
+  ResolvedEscalationConfig,
   TextRepetitionResult,
 } from './lib/doom-loop.js';
 export {
