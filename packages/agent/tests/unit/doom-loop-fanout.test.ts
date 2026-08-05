@@ -1374,11 +1374,14 @@ describe('same-tool fan-out streaks', () => {
     };
     expect(saved.tools.read.streak).toBe(2);
     expect(saved.tools.read.roundFingerprints).toHaveLength(3);
-    expect(Object.values(saved.tools.read.callStreaks ?? {})).toEqual([
-      2,
-      2,
-      2,
-    ]);
+    /*
+     * Steady state — every member's per-call count equals the round streak —
+     * is exactly the case where `callStreaks` carries no information beyond
+     * the set, so getState() omits it (persisting it stored each 64-char hash
+     * twice). restore() rebuilds `{member: streak}` for the whole set; the
+     * resume assertions below are what actually pin that reconstruction.
+     */
+    expect(saved.tools.read.callStreaks).toBeUndefined();
 
     /*
      * ANY member resumed alone continues its own earned count (2 -> 3): a

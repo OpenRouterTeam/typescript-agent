@@ -848,6 +848,32 @@ function isValidStreak(value: unknown): value is DoomLoopStreak {
 }
 
 /**
+ * True when an entry's per-call counts carry no information beyond its round
+ * set and round streak, so getState() may omit them and restore() can rebuild
+ * them exactly. Holds in the steady state of a repeating fan-out — every
+ * member has been issued in the same consecutive rounds, so every count equals
+ * the round streak. Persisting both in that state stored each 64-char hash
+ * twice (once in the set, once as a count key): ~13 KB per width-100 round,
+ * copied on every save. The counts must also cover exactly the set members —
+ * a shrunk round (count > streak) or an extra recorded non-member is real
+ * evidence and is still persisted verbatim.
+ */
+function callStreaksReconstructible(entry: StreakEntry): boolean {
+  const counts = entry.callStreaks;
+  if (counts === undefined) {
+    return true;
+  }
+  const set = entry.roundFingerprints ?? [
+    entry.fingerprint,
+  ];
+  const keys = Object.keys(counts);
+  return (
+    keys.length === set.length &&
+    keys.every((key) => set.includes(key) && counts[key] === entry.streak)
+  );
+}
+
+/**
  * Rebuild one tool's in-memory streak entry from its persisted shape.
  *
  * The persisted set (when the last round was multi-call) restores the round's
@@ -904,12 +930,22 @@ function restoreStreakEntry(entry: DoomLoopStreak): StreakEntry {
     fingerprint: entry.fingerprint,
     streak,
     roundFingerprints: persistedSet,
+    /*
+     * Absent per-call counts mean getState() proved them reconstructible:
+     * every member of the round set carried exactly the round streak (the
+     * steady state of a repeating fan-out — see callStreaksReconstructible).
+     * Rebuild them for the WHOLE set, not just the last-recorded member, or a
+     * width-W fan-out would resume with W−1 members' evidence reset.
+     */
     callStreaks:
       Object.keys(persistedCallStreaks).length > 0
         ? persistedCallStreaks
-        : {
-            [entry.fingerprint]: streak,
-          },
+        : Object.fromEntries(
+            persistedSet.map((member) => [
+              member,
+              streak,
+            ]),
+          ),
   };
 }
 
@@ -941,9 +977,10 @@ interface StreakEntry extends DoomLoopStreak {
    * Fingerprints of {@link round} already recorded, used to collapse in-round
    * duplicates (one decision per `(tool, fingerprint)` per round). Distinct
    * from {@link roundFingerprints}, which is the round's declared whole.
-   * Never serialized: meaningful only within one round.
+   * Never serialized: meaningful only within one round — which is why it can
+   * be a Set: only serialized state needs a plain-array shape.
    */
-  seenThisRound?: readonly string[];
+  seenThisRound?: ReadonlySet<string>;
   /**
    * The set the previous round was called with, and the streak it earned.
    * Carried unchanged for the length of {@link round} so that every call in
@@ -1190,13 +1227,7 @@ export class DoomLoopMonitor {
              * the per-call count keeps climbing, and dropping it would hand
              * the repeat a fresh grace window on resume.
              */
-            ...(entry.callStreaks !== undefined &&
-            (Object.keys(entry.callStreaks).length > 1 ||
-              (entry.roundFingerprints?.length ?? 0) > 1 ||
-              Object.entries(entry.callStreaks).some(
-                ([callFingerprint, count]) =>
-                  callFingerprint !== entry.fingerprint || count !== entry.streak,
-              ))
+            ...(entry.callStreaks !== undefined && !callStreaksReconstructible(entry)
               ? {
                   callStreaks: Object.fromEntries(Object.entries(entry.callStreaks)),
                 }
@@ -1310,8 +1341,8 @@ export class DoomLoopMonitor {
         : undefined;
     const declaredMember = declared?.includes(fingerprint) === true;
 
-    const seen = isSameRound ? (previous?.seenThisRound ?? []) : [];
-    const duplicateInRound = seen.includes(fingerprint);
+    const seen = isSameRound ? (previous?.seenThisRound ?? EMPTY_SEEN) : EMPTY_SEEN;
+    const duplicateInRound = seen.has(fingerprint);
 
     /*
      * The baseline every call of this round is measured against: the set the
@@ -1386,7 +1417,18 @@ export class DoomLoopMonitor {
           ? previous.fingerprint
           : fingerprint,
       round,
-      seenThisRound: mergeFingerprint(seen, fingerprint),
+      /*
+       * Grown in place, O(1) per record: run-local, never serialized, and only
+       * the latest entry's set is ever read, so sharing the object between the
+       * previous and next entry is fine. The shared EMPTY_SEEN sentinel is the
+       * one instance that must never be mutated.
+       */
+      seenThisRound:
+        seen === EMPTY_SEEN
+          ? new Set([
+              fingerprint,
+            ])
+          : (seen as Set<string>).add(fingerprint),
       roundFingerprints: roundSet,
       streak: score(roundSet),
       ...(priorSet !== undefined
@@ -1396,10 +1438,7 @@ export class DoomLoopMonitor {
         : {}),
       priorStreak,
       priorCallStreaks,
-      callStreaks: {
-        ...(isSameRound ? (previous?.callStreaks ?? {}) : {}),
-        [fingerprint]: callStreak,
-      },
+      callStreaks: growCallStreaks(isSameRound ? previous : undefined, fingerprint, callStreak),
     });
 
     /*
@@ -1554,15 +1593,34 @@ function strongerVerdict(
 
 //#endregion
 
-/** Adds a fingerprint to a round's sorted set, ignoring duplicates. */
-function mergeFingerprint(existing: readonly string[], fingerprint: string): readonly string[] {
-  return existing.includes(fingerprint)
-    ? existing
-    : [
-        ...existing,
-        fingerprint,
-      ].sort();
+/**
+ * This round's per-call accumulator, grown in place — O(1) per record instead
+ * of an O(W) spread per call of a W-wide round. Safe because only the latest
+ * entry's object is ever read mid-round, and `priorCallStreaks` aliases the
+ * PREVIOUS round's object (a fresh object is created at each round
+ * transition), so mutating this round's accumulator never disturbs the
+ * baseline. getState() copies before persisting either.
+ */
+function growCallStreaks(
+  previous: StreakEntry | undefined,
+  fingerprint: string,
+  callStreak: number,
+): Record<string, number> {
+  if (previous?.callStreaks !== undefined) {
+    previous.callStreaks[fingerprint] = callStreak;
+    return previous.callStreaks;
+  }
+  return {
+    [fingerprint]: callStreak,
+  };
 }
+
+/**
+ * The empty seen-set, shared: `recordToolCall` runs per call, and most rounds
+ * open with no prior members — allocating a fresh empty Set for each would be
+ * churn for nothing. Never mutated (the write path copies before adding).
+ */
+const EMPTY_SEEN: ReadonlySet<string> = new Set();
 
 /**
  * Short, stable identity for a round's fingerprint set: the first members'
