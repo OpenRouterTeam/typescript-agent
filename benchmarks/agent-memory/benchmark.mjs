@@ -303,7 +303,10 @@ async function runRawFetch(apiKey) {
     measurements.sequential = await benchmarkRawFetchSequential(apiKey);
   }
   if (liveSections.includes('tool-turns')) {
-    measurements.toolTurns = await benchmarkRawFetchToolTurns(apiKey);
+    measurements.toolTurns = await benchmarkRawFetchToolTurns(apiKey, false);
+  }
+  if (liveSections.includes('stream-tool-turns')) {
+    measurements.streamToolTurns = await benchmarkRawFetchToolTurns(apiKey, true);
   }
   if (liveSections.includes('multi-turn-long')) {
     measurements.multiTurnLong = await benchmarkLongMultiTurn({
@@ -351,7 +354,7 @@ async function benchmarkRawFetchSequential(apiKey) {
   };
 }
 
-async function benchmarkRawFetchToolTurns(apiKey) {
+async function benchmarkRawFetchToolTurns(apiKey, stream) {
   const baseline = await settledMemory();
   let executions = 0;
   let requests = 0;
@@ -392,18 +395,28 @@ async function benchmarkRawFetchToolTurns(apiKey) {
 
   const measured = await capturePeak(async () => {
     let finalResponse;
+    let eventCount = 0;
     while (requests <= toolTurnCount) {
-      const response = await postRawOpenRouter(apiKey, {
+      const request = {
         model,
         input,
         tools,
         parallel_tool_calls: false,
         max_output_tokens: toolFinalOutputWords + 64,
         temperature: 0,
+        stream,
         ...(executions === toolTurnCount && {
           tool_choice: 'none',
         }),
-      });
+      };
+      const streamed = stream
+        ? await postRawOpenRouterStream(apiKey, request)
+        : {
+            response: await postRawOpenRouter(apiKey, request),
+            eventCount: 0,
+          };
+      const response = streamed.response;
+      eventCount += streamed.eventCount;
       requests += 1;
       const output = Array.isArray(response.output) ? response.output : [];
       const functionCalls = output.filter((item) => item.type === 'function_call');
@@ -447,6 +460,7 @@ async function benchmarkRawFetchToolTurns(apiKey) {
       usage: normalizeUsage(finalResponse.usage),
       outputCharacters: extractResponseText(finalResponse).length,
       historyItems: input.length,
+      eventCount,
     };
   });
   const retained = await settledMemory();
@@ -456,7 +470,7 @@ async function benchmarkRawFetchToolTurns(apiKey) {
     executions,
     executedSteps,
     turns: requests,
-    eventCount: 0,
+    eventCount: measured.value.eventCount,
     outputTokens: measured.value.usage.outputTokens,
     outputCharacters: measured.value.outputCharacters,
     historyItems: measured.value.historyItems,
@@ -956,6 +970,93 @@ async function postRawOpenRouter(apiKey, requestBody) {
     );
   }
   return body;
+}
+
+async function postRawOpenRouterStream(apiKey, requestBody) {
+  const httpResponse = await fetch('https://openrouter.ai/api/v1/responses', {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+      'Content-Type': 'application/json',
+      Accept: 'text/event-stream',
+    },
+    body: JSON.stringify(requestBody),
+  });
+  if (!httpResponse.ok) {
+    const errorBody = await httpResponse.text();
+    throw new Error(
+      `Raw streaming OpenRouter request failed (${httpResponse.status}): ${errorBody.slice(0, 500)}`,
+    );
+  }
+  if (!httpResponse.body) {
+    throw new Error('Raw streaming OpenRouter response had no body.');
+  }
+
+  const reader = httpResponse.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+  let completedResponse;
+  let eventCount = 0;
+  try {
+    while (true) {
+      const result = await reader.read();
+      buffer += decoder.decode(result.value, {
+        stream: !result.done,
+      });
+      while (true) {
+        const boundary = findSseBoundary(buffer);
+        if (!boundary) {
+          break;
+        }
+        const message = buffer.slice(0, boundary.index);
+        buffer = buffer.slice(boundary.index + boundary.length);
+        const data = message
+          .split(/\r\n|\r|\n/)
+          .filter((line) => line.startsWith('data:'))
+          .map((line) => line.slice(5).trimStart())
+          .join('\n');
+        if (!data || data === '[DONE]') {
+          continue;
+        }
+        const event = JSON.parse(data);
+        eventCount += 1;
+        if (event.type === 'response.completed' || event.type === 'response.incomplete') {
+          completedResponse = event.response;
+        }
+        if (event.type === 'response.failed') {
+          throw new Error(
+            `Raw streaming response failed: ${JSON.stringify(event.response?.error)}`,
+          );
+        }
+      }
+      if (result.done) {
+        break;
+      }
+    }
+  } catch (error) {
+    await reader.cancel(error).catch(() => undefined);
+    throw error;
+  } finally {
+    reader.releaseLock();
+  }
+
+  if (!completedResponse) {
+    throw new Error('Raw streaming response ended without a completed response.');
+  }
+  return {
+    response: completedResponse,
+    eventCount,
+  };
+}
+
+function findSseBoundary(buffer) {
+  const match = /\r\n\r\n|\r\n\r|\r\n\n|\r\r\n|\n\r\n|\r\r|\n\r|\n\n/.exec(buffer);
+  return match
+    ? {
+        index: match.index,
+        length: match[0].length,
+      }
+    : undefined;
 }
 
 async function runShortRequest(client) {

@@ -24,6 +24,7 @@ const availableCases = [
   'no-tools',
   'tool-turns',
   'fetch-tool-turns',
+  'fetch-stream-tool-turns',
 ];
 const cases = casesArg ? casesArg.slice('--cases='.length).split(',') : availableCases;
 if (cases.some((name) => !availableCases.includes(name))) {
@@ -50,8 +51,13 @@ const samples = new Map(
 
 const runCase = (name) =>
   new Promise((resolve, reject) => {
-    const section = name === 'no-tools' ? 'output-scaling' : 'tool-turns';
-    const rawFetch = name === 'fetch-tool-turns';
+    const section =
+      name === 'no-tools'
+        ? 'output-scaling'
+        : name === 'fetch-stream-tool-turns'
+          ? 'stream-tool-turns'
+          : 'tool-turns';
+    const rawFetch = name === 'fetch-tool-turns' || name === 'fetch-stream-tool-turns';
     const args = [
       '--expose-gc',
       '--max-old-space-size=128',
@@ -99,7 +105,9 @@ const runCase = (name) =>
       }
       const report = JSON.parse(stdout);
       const measurement = rawFetch
-        ? report.measurements.rawFetch.toolTurns
+        ? name === 'fetch-stream-tool-turns'
+          ? report.measurements.rawFetch.streamToolTurns
+          : report.measurements.rawFetch.toolTurns
         : name === 'no-tools'
           ? report.measurements.live.outputScaling.cases[0]
           : report.measurements.live.toolTurns;

@@ -88,9 +88,18 @@ executions and 11 model requests in all 20 runs:
 - Agent orchestration peak above baseline was 3.08x raw fetch at the median.
 - Median agent-minus-fetch peak delta: 5.367 MiB.
 
-The fetch loop used non-streaming JSON for each turn, while the agent used
-schema-validated SSE plus its event journal. The comparison therefore includes
-transport/parsing behavior as well as orchestration.
+A minimal raw-fetch SSE/JSON loop was also measured across 20 runs. It parsed
+each event incrementally, retained only the completed response required for the
+next turn, and completed the same 10 tool executions plus final turn:
+
+- Peak above baseline median/p95: 2,904,016 / 3,127,587 bytes
+  (2.769 / 2.983 MiB).
+- Event count median/p95: 1,557 / 1,783, close to the agent's 1,647 / 1,934.
+- Agent peak above baseline was 2.87x streaming fetch at the median.
+- Median agent-minus-streaming-fetch peak delta: 5.177 MiB.
+
+The remaining difference includes SDK schema validation, transformed event
+objects, replay journaling, and orchestration.
 
 These are live OpenRouter results and include model/provider event-count
 variation. `tracked` is `heapUsed + external`, not Cloudflare's complete
