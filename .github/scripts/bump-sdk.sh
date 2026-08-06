@@ -39,6 +39,14 @@ DESIRED_RANGE="^${TARGET_VERSION}"
 
 out() { echo "$1=$2" >> "${GITHUB_OUTPUT:-/dev/stdout}"; }
 
+# Set by prepare(). A separate flag rather than prepare's exit status: the
+# callers would have to invoke prepare in a conditional (`if prepare` /
+# `prepare || true`), and bash disables `set -e` inside a function called
+# that way — a failed relock would then sail on to commit/push a broken
+# bump PR instead of failing the run. With the flag, prepare is invoked
+# plainly (set -e fully active inside) and only the no-op is special-cased.
+NOOP=false
+
 prepare() {
   # --- No-op guard: already at the desired caret floor? ---------------------
   CURRENT_RANGE="$(node -p "require('./${PKG_JSON}').dependencies['${DEP}']")"
@@ -47,7 +55,8 @@ prepare() {
     echo "Already at ${DESIRED_RANGE} — nothing to do"
     out noop true
     out branch ""
-    return 1
+    NOOP=true
+    return 0
   fi
 
   # --- Edit the dependency range --------------------------------------------
@@ -130,8 +139,11 @@ remote() {
 }
 
 case "$PHASE" in
-  prepare) prepare || true ;;
+  prepare) prepare ;;
   remote)  remote ;;
-  all)     if prepare; then remote; fi ;;
+  all)
+    prepare
+    if [ "$NOOP" != "true" ]; then remote; fi
+    ;;
   *) echo "::error::Unknown PHASE '${PHASE}'"; exit 1 ;;
 esac
