@@ -37,11 +37,23 @@ jobs:
       noop: ${{ steps.bump.outputs.noop }}
       pr_number: ${{ steps.open.outputs.pr_number }}
     steps:
-      # GH_TOKEN is a PAT (not the Actions GITHUB_TOKEN) so the opened PR
-      # triggers Perry + CI — GITHUB_TOKEN would suppress those downstream runs.
+      # Short-lived App token (same App as publish.yaml / release-train.yaml),
+      # minted before checkout because checkout persists it for the branch
+      # push below. An App token (not the Actions GITHUB_TOKEN) so the opened
+      # PR triggers Perry + CI — GITHUB_TOKEN would suppress those downstream
+      # runs. Replaces the GH_TOKEN PAT the enterprise lifetime policy killed.
+      - name: Mint release-bot token
+        id: app-token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ vars.RELEASE_BOT_APP_ID }}
+          private-key: ${{ secrets.RELEASE_BOT_PRIVATE_KEY }}
+          owner: OpenRouterTeam
+          repositories: typescript-agent
+
       - uses: actions/checkout@v6
         with:
-          token: ${{ secrets.GH_TOKEN }}
+          token: ${{ steps.app-token.outputs.token }}
           fetch-depth: 0
 
       - uses: pnpm/action-setup@v6
@@ -66,7 +78,7 @@ jobs:
         id: bump
         env:
           TARGET_VERSION: ${{ steps.ver.outputs.version }}
-          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
           chmod +x .github/scripts/bump-sdk.sh
           ./.github/scripts/bump-sdk.sh
@@ -75,7 +87,7 @@ jobs:
         id: open
         if: steps.bump.outputs.noop != 'true'
         env:
-          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
           set -euo pipefail
           PR_URL=$(gh pr create \
@@ -105,9 +117,21 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
+      # Minted per-job: installation tokens cannot be passed between jobs
+      # (GitHub drops job outputs that contain secrets), and the bump job's
+      # token may expire during a long gate anyway (1h lifetime, 30m poll).
+      - name: Mint release-bot token
+        id: app-token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ vars.RELEASE_BOT_APP_ID }}
+          private-key: ${{ secrets.RELEASE_BOT_PRIVATE_KEY }}
+          owner: OpenRouterTeam
+          repositories: typescript-agent
+
       - name: Wait for Perry + CI, then merge or alert
         env:
-          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
           PR: ${{ needs.bump.outputs.pr_number }}
           REPO: OpenRouterTeam/typescript-agent
           AUTO_MERGE: ${{ github.event.inputs.dry_run != 'true' }}

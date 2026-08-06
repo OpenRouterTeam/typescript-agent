@@ -52,10 +52,24 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
+      # Short-lived App installation token (same App as publish.yaml /
+      # bump-openrouter-sdk.yaml). Replaces the old GH_TOKEN PAT, which the
+      # enterprise's 366-day-lifetime policy started rejecting — that outage
+      # surfaced as every train run failing at the first gh call. Only this
+      # repo is needed here: the train reads, gates, and merges locally.
+      - name: Mint release-bot token
+        id: app-token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ vars.RELEASE_BOT_APP_ID }}
+          private-key: ${{ secrets.RELEASE_BOT_PRIVATE_KEY }}
+          owner: OpenRouterTeam
+          repositories: typescript-agent
+
       - name: Find Version Packages PR
         id: find
         env:
-          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
           SLACK_BOT_TOKEN: ${{ secrets.CI_RELEASE_ALERT_SLACK_BOT_TOKEN }}
           SLACK_CHANNEL_ID: ${{ secrets.CI_RELEASE_ALERT_SLACK_CHANNEL_ID }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
@@ -175,7 +189,7 @@ jobs:
         id: scope
         if: steps.find.outputs.pr_number != '' && steps.find.outputs.held != 'true'
         env:
-          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
           PR: ${{ steps.find.outputs.pr_number }}
           SLACK_BOT_TOKEN: ${{ secrets.CI_RELEASE_ALERT_SLACK_BOT_TOKEN }}
           SLACK_CHANNEL_ID: ${{ secrets.CI_RELEASE_ALERT_SLACK_CHANNEL_ID }}
@@ -202,7 +216,7 @@ jobs:
       - name: Gate and merge Version Packages PR
         if: steps.find.outputs.pr_number != '' && steps.find.outputs.held != 'true'
         env:
-          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
           PR: ${{ steps.find.outputs.pr_number }}
           # REPO comes from the workflow-level env block.
           # On schedule runs `inputs` is empty, so dry_run != true → AUTO_MERGE=true.
