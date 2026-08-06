@@ -141,12 +141,38 @@ jobs:
       - name: Mint release-bot token
         id: app-token
         if: ${{ !(inputs.dry-run && inputs.mode == 'publish') }}
+        continue-on-error: true
         uses: actions/create-github-app-token@v2
         with:
           app-id: ${{ vars.RELEASE_BOT_APP_ID }}
           private-key: ${{ secrets.RELEASE_BOT_PRIVATE_KEY }}
           owner: OpenRouterTeam
           repositories: typescript-agent
+
+      # Same mint-failure paging as the train: this workflow runs on every
+      # push to main with nobody watching, so a broken App credential must
+      # page rather than just turn the run red. Alert, then stop the job —
+      # nothing downstream can succeed without the token.
+      - name: Alert if token minting failed
+        if: ${{ !(inputs.dry-run && inputs.mode == 'publish') && steps.app-token.outcome != 'success' }}
+        env:
+          SLACK_BOT_TOKEN: ${{ secrets.CI_RELEASE_ALERT_SLACK_BOT_TOKEN }}
+          SLACK_CHANNEL_ID: ${{ secrets.CI_RELEASE_ALERT_SLACK_CHANNEL_ID }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          TEXT=":rotating_light: Release publish: could not mint the release-bot App token (RELEASE_BOT_APP_ID/RELEASE_BOT_PRIVATE_KEY missing or App uninstalled?). Releases are stalled until this is fixed. <${RUN_URL}|run>"
+          echo "::error::App token minting failed — releases are stalled."
+          if [ -n "${SLACK_BOT_TOKEN:-}" ] && [ -n "${SLACK_CHANNEL_ID:-}" ]; then
+            curl -fsS -X POST https://slack.com/api/chat.postMessage \
+              -H "Authorization: Bearer ${SLACK_BOT_TOKEN}" \
+              -H "Content-type: application/json; charset=utf-8" \
+              --data "$(python3 -c "import json,sys; print(json.dumps({'channel':sys.argv[1],'unfurl_links':False,'text':sys.argv[2]}))" "$SLACK_CHANNEL_ID" "$TEXT")" \
+              >/dev/null || echo "::warning::Slack post failed"
+          else
+            echo "(slack not configured; would have posted) $TEXT"
+          fi
+          exit 1
 
       # Deliberately after install/build/test (see the checkout comment).
       # changesets/action pushes changeset-release/main (and release tags on

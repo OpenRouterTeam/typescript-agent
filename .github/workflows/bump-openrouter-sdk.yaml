@@ -37,23 +37,14 @@ jobs:
       noop: ${{ steps.bump.outputs.noop }}
       pr_number: ${{ steps.open.outputs.pr_number }}
     steps:
-      # Short-lived App token (same App as publish.yaml / release-train.yaml),
-      # minted before checkout because checkout persists it for the branch
-      # push below. An App token (not the Actions GITHUB_TOKEN) so the opened
-      # PR triggers Perry + CI — GITHUB_TOKEN would suppress those downstream
-      # runs. Replaces the GH_TOKEN PAT the enterprise lifetime policy killed.
-      - name: Mint release-bot token
-        id: app-token
-        uses: actions/create-github-app-token@v2
-        with:
-          app-id: ${{ vars.RELEASE_BOT_APP_ID }}
-          private-key: ${{ secrets.RELEASE_BOT_PRIVATE_KEY }}
-          owner: OpenRouterTeam
-          repositories: typescript-agent
-
+      # No credentials persisted: the prepare phase below runs `pnpm install`,
+      # which executes dependency lifecycle scripts that must not be able to
+      # read a write-capable token out of .git/config (same reasoning as
+      # publish.yaml's checkout). The App token is minted only after that
+      # phase and passed per-command to the push.
       - uses: actions/checkout@v6
         with:
-          token: ${{ steps.app-token.outputs.token }}
+          persist-credentials: false
           fetch-depth: 0
 
       - uses: pnpm/action-setup@v6
@@ -74,14 +65,42 @@ jobs:
           echo "version=$V" >> "$GITHUB_OUTPUT"
           echo "Target @openrouter/sdk version: $V"
 
-      - name: Bump, relock, changeset, push branch
+      # Phase 1: edit + relock + changeset + local commit. Runs pnpm install
+      # (lifecycle scripts) — deliberately tokenless.
+      - name: Bump, relock, changeset (no token)
         id: bump
         env:
           TARGET_VERSION: ${{ steps.ver.outputs.version }}
-          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          PHASE: prepare
         run: |
           chmod +x .github/scripts/bump-sdk.sh
           ./.github/scripts/bump-sdk.sh
+
+      # Short-lived App token (same App as publish.yaml / release-train.yaml),
+      # minted only now that lifecycle scripts are done. An App token (not the
+      # Actions GITHUB_TOKEN) so the opened PR triggers Perry + CI —
+      # GITHUB_TOKEN would suppress those downstream runs. Replaces the
+      # GH_TOKEN PAT the enterprise lifetime policy killed.
+      - name: Mint release-bot token
+        id: app-token
+        if: steps.bump.outputs.noop != 'true'
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ vars.RELEASE_BOT_APP_ID }}
+          private-key: ${{ secrets.RELEASE_BOT_PRIVATE_KEY }}
+          owner: OpenRouterTeam
+          repositories: typescript-agent
+
+      # Phase 2: close superseded PRs + push. Token passed per-command; never
+      # persisted to .git/config.
+      - name: Close prior PRs, push branch
+        if: steps.bump.outputs.noop != 'true'
+        env:
+          TARGET_VERSION: ${{ steps.ver.outputs.version }}
+          PHASE: remote
+          BRANCH: ${{ steps.bump.outputs.branch }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: ./.github/scripts/bump-sdk.sh
 
       - name: Open PR
         id: open
