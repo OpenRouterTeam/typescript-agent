@@ -8,6 +8,7 @@ import {
   resumeToolResults,
   ToolTaskAlreadySettledError,
 } from '../../src/inner-loop/resume-tool-results.js';
+import { canonicalizeKeyMaterial } from '../../src/lib/doom-loop.js';
 import { tool } from '../../src/lib/tool.js';
 
 const mockBetaResponsesSend = vi.hoisted(() => vi.fn());
@@ -404,7 +405,7 @@ describe('tool.deferred — cross-process resume', () => {
     }).getState();
 
     expect(mockBetaResponsesSend.mock.calls[0]?.[1]?.responsesRequest?.toolChoice).toBe('required');
-    expect(get()?.forcedToolChoiceSatisfied).toBe(true);
+    expect(get()?.consumedForcedToolChoiceKey).toBe(canonicalizeKeyMaterial('required'));
     mockBetaResponsesSend.mockReset();
 
     mockBetaResponsesSend.mockResolvedValueOnce({

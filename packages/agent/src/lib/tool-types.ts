@@ -1621,15 +1621,14 @@ export interface ConversationState<TTools extends readonly Tool[] = readonly Too
   /** Previous response ID for chaining (OpenRouter server-side optimization) */
   previousResponseId?: string;
   /**
-   * Whether a tool round has already satisfied the caller's forced
-   * `toolChoice` for the active logical run. Persisted across approval,
-   * HITL, client-tool, and async-tool pauses so a resumed follow-up can
-   * synthesize text instead of being forced into another tool call.
+   * RFC 8785 canonical key of the forced `toolChoice` most recently consumed
+   * by the active logical run. Persisted across approval, HITL, client-tool,
+   * and async-tool pauses so an unchanged forced choice stays relaxed after
+   * resume while a newly resolved forced value can re-arm.
    *
-   * Cleared when the run completes. Absence means `false` for compatibility
-   * with state written by older SDK versions.
+   * Cleared when the configured choice becomes unforced or the run completes.
    */
-  forcedToolChoiceSatisfied?: true;
+  consumedForcedToolChoiceKey?: string;
   /** Tool calls awaiting human approval */
   pendingToolCalls?: Array<ParsedToolCall<TTools[number]>>;
   /** Tool results executed but not yet sent to the model */

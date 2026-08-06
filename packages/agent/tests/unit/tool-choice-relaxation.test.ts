@@ -10,6 +10,7 @@ vi.mock('@openrouter/sdk/funcs/betaResponsesSend', () => ({
 }));
 
 import { callModel } from '../../src/inner-loop/call-model.js';
+import { canonicalizeKeyMaterial } from '../../src/lib/doom-loop.js';
 import { stepCountIs } from '../../src/lib/stop-conditions.js';
 import type { ConversationState, StateAccessor } from '../../src/lib/tool-types.js';
 import { ToolType } from '../../src/lib/tool-types.js';
@@ -125,10 +126,11 @@ function createMemoryAccessor(): {
 }
 
 /**
- * DEV-785: a forced tool choice must apply to the initial model turn only.
- * Reapplying it on every follow-up turn forbids the model from ever
- * answering in text, looping it through tool calls until the step budget
- * runs out.
+ * DEV-785: a concrete forced tool choice is one-shot until its resolved
+ * semantic value changes. Reapplying an unchanged choice on every follow-up
+ * forbids the model from ever answering in text, while suppressing a newly
+ * resolved dynamic choice prevents callers from intentionally forcing a
+ * later turn.
  */
 describe('forced tool choice relaxation on follow-up turns', () => {
   beforeEach(() => {
@@ -301,6 +303,113 @@ describe('forced tool choice relaxation on follow-up turns', () => {
     expect(requestOfCall(2).toolChoice).toBe('none');
   });
 
+  it('keeps an unchanged consumed choice relaxed across multiple follow-up turns', async () => {
+    mockBetaResponsesSend
+      .mockResolvedValueOnce({
+        ok: true,
+        value: toolCallResponse('resp_1', 'call_1'),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        value: toolCallResponse('resp_2', 'call_2'),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        value: textResponse('Final summary.'),
+      });
+
+    const text = await callModel(client, {
+      model: 'test-model',
+      input: 'What is the weather in Tokyo?',
+      tools: [
+        weatherTool,
+      ] as const,
+      toolChoice: 'required',
+      stopWhen: stepCountIs(5),
+    }).getText();
+
+    expect(text).toBe('Final summary.');
+    expect(requestOfCall(0).toolChoice).toBe('required');
+    expect(requestOfCall(1).toolChoice).toBe('auto');
+    expect(requestOfCall(2).toolChoice).toBe('auto');
+  });
+
+  it('re-arms when a dynamic forced choice resolves to a different semantic value', async () => {
+    mockBetaResponsesSend
+      .mockResolvedValueOnce({
+        ok: true,
+        value: toolCallResponse('resp_1', 'call_1'),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        value: toolCallResponse('resp_2', 'call_2'),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        value: textResponse('Done.'),
+      });
+
+    const text = await callModel(client, {
+      model: 'test-model',
+      input: 'What is the weather in Tokyo?',
+      tools: [
+        weatherTool,
+      ] as const,
+      toolChoice: (context) =>
+        context.numberOfTurns === 0
+          ? 'required'
+          : {
+              type: 'function',
+              name: 'get_weather',
+            },
+      stopWhen: stepCountIs(5),
+    }).getText();
+
+    expect(text).toBe('Done.');
+    expect(requestOfCall(0).toolChoice).toBe('required');
+    expect(requestOfCall(1).toolChoice).toEqual({
+      type: 'function',
+      name: 'get_weather',
+    });
+    expect(requestOfCall(2).toolChoice).toBe('auto');
+  });
+
+  it('re-arms the same dynamic forced choice after an unforced turn', async () => {
+    mockBetaResponsesSend
+      .mockResolvedValueOnce({
+        ok: true,
+        value: toolCallResponse('resp_1', 'call_1'),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        value: toolCallResponse('resp_2', 'call_2'),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        value: toolCallResponse('resp_3', 'call_3'),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        value: textResponse('Done.'),
+      });
+
+    const text = await callModel(client, {
+      model: 'test-model',
+      input: 'What is the weather in Tokyo?',
+      tools: [
+        weatherTool,
+      ] as const,
+      toolChoice: (context) => (context.numberOfTurns === 1 ? 'auto' : 'required'),
+      stopWhen: stepCountIs(5),
+    }).getText();
+
+    expect(text).toBe('Done.');
+    expect(requestOfCall(0).toolChoice).toBe('required');
+    expect(requestOfCall(1).toolChoice).toBe('auto');
+    expect(requestOfCall(2).toolChoice).toBe('required');
+    expect(requestOfCall(3).toolChoice).toBe('auto');
+  });
+
   it('persists satisfaction across approval resume and resets it after completion', async () => {
     const approvalWeatherTool = {
       ...weatherTool,
@@ -328,7 +437,7 @@ describe('forced tool choice relaxation on follow-up turns', () => {
 
     expect(requestOfCall(0).toolChoice).toBe('required');
     expect(get()?.status).toBe('awaiting_approval');
-    expect(get()?.forcedToolChoiceSatisfied).toBe(true);
+    expect(get()?.consumedForcedToolChoiceKey).toBe(canonicalizeKeyMaterial('required'));
 
     mockBetaResponsesSend.mockResolvedValueOnce({
       ok: true,
@@ -351,7 +460,7 @@ describe('forced tool choice relaxation on follow-up turns', () => {
     expect(resumedText).toBe('It is 22 degrees.');
     expect(requestOfCall(1).toolChoice).toBe('auto');
     expect(get()?.status).toBe('complete');
-    expect(get()?.forcedToolChoiceSatisfied).toBeUndefined();
+    expect(get()?.consumedForcedToolChoiceKey).toBeUndefined();
 
     mockBetaResponsesSend.mockResolvedValueOnce({
       ok: true,
@@ -402,7 +511,7 @@ describe('forced tool choice relaxation on follow-up turns', () => {
     }).getResponse();
 
     expect(get()?.status).toBe('awaiting_client_tools');
-    expect(get()?.forcedToolChoiceSatisfied).toBe(true);
+    expect(get()?.consumedForcedToolChoiceKey).toBe(canonicalizeKeyMaterial('required'));
 
     const resumedText = await callModel(client, {
       model: 'test-model',

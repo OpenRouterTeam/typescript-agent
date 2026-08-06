@@ -40,7 +40,12 @@ import type {
   DoomLoopVerdict,
   ResolvedEscalationConfig,
 } from './doom-loop.js';
-import { DoomLoopMonitor, resolveDoomLoopOption, resolveLoopKeyMaterial } from './doom-loop.js';
+import {
+  canonicalizeKeyMaterial,
+  DoomLoopMonitor,
+  resolveDoomLoopOption,
+  resolveLoopKeyMaterial,
+} from './doom-loop.js';
 import type { HooksManager } from './hooks-manager.js';
 import type { ModelCallUsage, PostModelCallPayload } from './hooks-types.js';
 import {
@@ -62,6 +67,7 @@ import {
   extractToolCallsFromResponse,
   extractToolDeltas,
   itemsStreamHandlers,
+  responseHasToolCalls,
   streamTerminationEvents,
 } from './stream-transformers.js';
 import {
@@ -175,6 +181,11 @@ function isForcedToolChoice(toolChoice: models.ResponsesRequest['toolChoice']): 
     return toolChoice === 'required';
   }
   return toolChoice.type !== 'allowed_tools' || toolChoice.mode === 'required';
+}
+
+/** Stable identity for a concrete forced choice; null means tools are not forced. */
+function forcedToolChoiceKey(toolChoice: models.ResponsesRequest['toolChoice']): string | null {
+  return isForcedToolChoice(toolChoice) ? canonicalizeKeyMaterial(toolChoice) : null;
 }
 
 /**
@@ -559,11 +570,13 @@ export class ModelResult<
   }> = [];
   // Track resolved request after async function resolution
   private resolvedRequest: models.ResponsesRequest | null = null;
-  // A forced caller-configured tool choice is a one-shot requirement for the
-  // active logical run. This bit survives state-backed pauses; the effective
-  // value is derived per turn so async parameters and allowed-tool sets stay
-  // current.
-  private shouldRelaxForcedToolChoice = false;
+  // A forced caller-configured tool choice is one-shot until its resolved
+  // semantic value changes. The consumed key survives state-backed pauses;
+  // the configured key/value are refreshed whenever async parameters resolve.
+  private activeConsumedForcedToolChoiceKey: string | null = null;
+  private configuredForcedToolChoiceKey: string | null = null;
+  private configuredToolChoice: models.ResponsesRequest['toolChoice'];
+  private pendingForcedToolChoiceKey: string | null = null;
   // Fresh user items to persist atomically with the assistant response
   private pendingFreshItems: models.BaseInputsUnion[] | undefined;
   private resumingFromClientTools = false;
@@ -1107,7 +1120,10 @@ export class ModelResult<
   private async markStateComplete(): Promise<void> {
     // A later conversational turn is a new logical run and may force its
     // first tool call again.
-    this.shouldRelaxForcedToolChoice = false;
+    this.activeConsumedForcedToolChoiceKey = null;
+    this.configuredForcedToolChoiceKey = null;
+    this.configuredToolChoice = undefined;
+    this.pendingForcedToolChoiceKey = null;
     await this.saveStateSafely({
       status: 'complete',
     });
@@ -4607,7 +4623,7 @@ export class ModelResult<
   private async resolveRequestForContext(context: TurnContext): Promise<ResolvedCallModelInput> {
     if (hasAsyncFunctions(this.options.request)) {
       const resolved = await resolveAsyncFunctions(this.options.request, context);
-      return this.applyForcedToolChoicePolicy(resolved);
+      return this.applyResolvedForcedToolChoicePolicy(resolved);
     }
     // Already resolved, extract non-function fields.
     // Strip ALL client-only fields — keep this list in sync with
@@ -4633,7 +4649,33 @@ export class ModelResult<
       asyncTools: _at,
       ...rest
     } = this.options.request;
-    return this.applyForcedToolChoicePolicy(rest as ResolvedCallModelInput);
+    return this.applyResolvedForcedToolChoicePolicy(rest as ResolvedCallModelInput);
+  }
+
+  /**
+   * Record the freshly-resolved caller choice before deriving its wire value.
+   * An unforced turn clears the consumed key, re-arming the same forced value
+   * if it appears again later. A different forced key re-arms immediately.
+   */
+  private applyResolvedForcedToolChoicePolicy<
+    TRequest extends {
+      toolChoice?: models.ResponsesRequest['toolChoice'];
+    },
+  >(request: TRequest): TRequest {
+    this.configuredToolChoice = request.toolChoice;
+    this.configuredForcedToolChoiceKey = forcedToolChoiceKey(request.toolChoice);
+
+    if (this.configuredForcedToolChoiceKey === null) {
+      this.activeConsumedForcedToolChoiceKey = null;
+      this.pendingForcedToolChoiceKey = null;
+    } else {
+      this.pendingForcedToolChoiceKey =
+        this.configuredForcedToolChoiceKey === this.activeConsumedForcedToolChoiceKey
+          ? null
+          : this.configuredForcedToolChoiceKey;
+    }
+
+    return this.applyForcedToolChoicePolicy(request);
   }
 
   /**
@@ -4646,10 +4688,11 @@ export class ModelResult<
       toolChoice?: models.ResponsesRequest['toolChoice'];
     },
   >(request: TRequest): TRequest {
-    if (!this.shouldRelaxForcedToolChoice) {
-      return request;
-    }
-    const toolChoice = relaxForcedToolChoice(request.toolChoice);
+    const toolChoice =
+      this.configuredForcedToolChoiceKey !== null &&
+      this.configuredForcedToolChoiceKey === this.activeConsumedForcedToolChoiceKey
+        ? relaxForcedToolChoice(this.configuredToolChoice)
+        : this.configuredToolChoice;
     return toolChoice === request.toolChoice
       ? request
       : {
@@ -4659,19 +4702,16 @@ export class ModelResult<
   }
 
   /**
-   * Record that this logical run has spent its caller-configured forced
-   * choice. An automatic tool call must not consume a `required` choice that
-   * a dynamic parameter or explicit resume configuration introduces later.
+   * Consume the forced choice actually dispatched for this turn. A response
+   * to an `auto` turn cannot consume a future forced value because only an
+   * armed (different, unresolved) canonical key is held in pending state.
    */
-  private markForcedToolChoiceSatisfied(hasToolCalls: boolean): void {
-    if (
-      this.shouldRelaxForcedToolChoice ||
-      !isForcedToolChoice(this.resolvedRequest?.toolChoice) ||
-      !hasToolCalls
-    ) {
+  private markForcedToolChoiceConsumed(hasToolCalls: boolean): void {
+    if (!hasToolCalls || this.pendingForcedToolChoiceKey === null) {
       return;
     }
-    this.shouldRelaxForcedToolChoice = true;
+    this.activeConsumedForcedToolChoiceKey = this.pendingForcedToolChoiceKey;
+    this.pendingForcedToolChoiceKey = null;
   }
 
   /**
@@ -4774,18 +4814,18 @@ export class ModelResult<
       this.currentState = updateState(this.currentState, updates);
     }
 
-    // Persist only the policy state, not a copied effective toolChoice. The
-    // configured value may be dynamic and is re-resolved on every turn.
-    if (this.shouldRelaxForcedToolChoice) {
+    // Persist only the consumed semantic key, never the callback or a copied
+    // effective toolChoice. Dynamic values are re-resolved on every turn.
+    if (this.activeConsumedForcedToolChoiceKey !== null) {
       this.currentState = {
         ...this.currentState,
-        forcedToolChoiceSatisfied: true,
+        consumedForcedToolChoiceKey: this.activeConsumedForcedToolChoiceKey,
       };
-    } else if (this.currentState.forcedToolChoiceSatisfied !== undefined) {
+    } else if (this.currentState.consumedForcedToolChoiceKey !== undefined) {
       const nextState = {
         ...this.currentState,
       };
-      delete nextState.forcedToolChoiceSatisfied;
+      delete nextState.consumedForcedToolChoiceKey;
       this.currentState = nextState;
     }
 
@@ -4894,7 +4934,7 @@ export class ModelResult<
         const loadedState = await this.stateAccessor.load();
         if (loadedState) {
           this.currentState = loadedState;
-          this.shouldRelaxForcedToolChoice = loadedState.forcedToolChoiceSatisfied === true;
+          this.activeConsumedForcedToolChoiceKey = loadedState.consumedForcedToolChoiceKey ?? null;
 
           // Rehydrate doom-loop state so a resumed run continues where it
           // left off: streak counters always; the queued steer guidance;
@@ -5487,10 +5527,8 @@ export class ModelResult<
         // toolChoice constrains model output, so a forced requirement is
         // satisfied as soon as this turn emits a tool call. Record it before
         // any approval/HITL/client/async pause can persist the run.
-        const hasToolCalls = currentResponse.output.some(
-          (item) => hasTypeProperty(item) && item.type === 'function_call',
-        );
-        this.markForcedToolChoiceSatisfied(hasToolCalls);
+        const hasToolCalls = responseHasToolCalls(currentResponse);
+        this.markForcedToolChoiceConsumed(hasToolCalls);
 
         // Save initial response to state
         await this.saveResponseToState(currentResponse);
@@ -5741,11 +5779,7 @@ export class ModelResult<
             toolResults,
             turnNumber,
           );
-          this.markForcedToolChoiceSatisfied(
-            currentResponse.output.some(
-              (item) => hasTypeProperty(item) && item.type === 'function_call',
-            ),
-          );
+          this.markForcedToolChoiceConsumed(responseHasToolCalls(currentResponse));
           // A fresh response replaces the prior one -- that's new progress,
           // so reset consecutive forceResume counting.
           forceResumeCount = 0;
