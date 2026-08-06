@@ -132,12 +132,15 @@ jobs:
       # or update workflow"). The Version PR and SDK-bump branches never
       # touch workflow files today; if one ever must, grant that permission
       # on the App rather than working around the rejected push.
-      # Skipped on dry-run: that leg publishes nothing, pushes nothing, and
-      # dispatches nothing, so a broken App setup must not block it — it's
-      # the diagnostic escape hatch you'd reach for while fixing exactly that.
+      # Skipped only on the mode=publish dry-run leg: that leg publishes
+      # nothing, pushes nothing, and dispatches nothing, so a broken App
+      # setup must not block it — it's the diagnostic escape hatch you'd
+      # reach for while fixing exactly that. NOT skipped on mode=version +
+      # dry-run: the changesets step ignores dry-run entirely (see the job
+      # `if` comment) and runs for real, so it needs the real token.
       - name: Mint release-bot token
         id: app-token
-        if: ${{ !inputs.dry-run }}
+        if: ${{ !(inputs.dry-run && inputs.mode == 'publish') }}
         uses: actions/create-github-app-token@v2
         with:
           app-id: ${{ vars.RELEASE_BOT_APP_ID }}
@@ -154,7 +157,7 @@ jobs:
       # train (release-train.yaml) could merge on checks from the first
       # revision. App-token pushes trigger workflows normally.
       - name: Configure git push credentials (App token)
-        if: ${{ !inputs.dry-run }}
+        if: ${{ !(inputs.dry-run && inputs.mode == 'publish') }}
         run: |
           git remote set-url origin \
             "https://x-access-token:${{ steps.app-token.outputs.token }}@github.com/${{ github.repository }}.git"
@@ -289,13 +292,31 @@ jobs:
           owner: OpenRouterTeam
           repositories: go-agent
 
+      # Degraded ≠ silent: annotations alone are invisible on a green
+      # scheduled run, so also page the release-alert channel (no-op until
+      # the CI_RELEASE_ALERT_* secrets exist, like the train's alerts).
       - name: Warn about unavailable dispatch tokens
         if: ${{ !cancelled() && !inputs.dry-run && (steps.web-token.outcome == 'failure' || steps.py-token.outcome == 'failure' || steps.go-token.outcome == 'failure') }}
+        env:
+          SLACK_BOT_TOKEN: ${{ secrets.CI_RELEASE_ALERT_SLACK_BOT_TOKEN }}
+          SLACK_CHANNEL_ID: ${{ secrets.CI_RELEASE_ALERT_SLACK_CHANNEL_ID }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
-          [ "${{ steps.web-token.outcome }}" = "failure" ] && echo "::warning::No dispatch token for openrouter-web (App not installed there?) — its HOP B notification will be skipped."
-          [ "${{ steps.py-token.outcome }}" = "failure" ] && echo "::warning::No dispatch token for python-agent (App not installed there?) — its HOP C notification will be skipped."
-          [ "${{ steps.go-token.outcome }}" = "failure" ] && echo "::warning::No dispatch token for go-agent (App not installed there?) — its HOP C notification will be skipped."
-          exit 0
+          set -euo pipefail
+          MISSING=""
+          [ "${{ steps.web-token.outcome }}" = "failure" ] && { echo "::warning::No dispatch token for openrouter-web — its HOP B notification will be skipped."; MISSING="$MISSING openrouter-web"; }
+          [ "${{ steps.py-token.outcome }}" = "failure" ] && { echo "::warning::No dispatch token for python-agent — its HOP C notification will be skipped."; MISSING="$MISSING python-agent"; }
+          [ "${{ steps.go-token.outcome }}" = "failure" ] && { echo "::warning::No dispatch token for go-agent — its HOP C notification will be skipped."; MISSING="$MISSING go-agent"; }
+          TEXT=":warning: Release publish: could not mint dispatch token(s) for${MISSING} (App not installed there?). Their release notifications were skipped — trigger downstream flows manually. <${RUN_URL}|run>"
+          if [ -n "${SLACK_BOT_TOKEN:-}" ] && [ -n "${SLACK_CHANNEL_ID:-}" ]; then
+            curl -fsS -X POST https://slack.com/api/chat.postMessage \
+              -H "Authorization: Bearer ${SLACK_BOT_TOKEN}" \
+              -H "Content-type: application/json; charset=utf-8" \
+              --data "$(python3 -c "import json,sys; print(json.dumps({'channel':sys.argv[1],'unfurl_links':False,'text':sys.argv[2]}))" "$SLACK_CHANNEL_ID" "$TEXT")" \
+              >/dev/null || echo "::warning::Slack post failed"
+          else
+            echo "(slack not configured; would have posted) $TEXT"
+          fi
 
       # HOP B trigger: when @openrouter/agent is actually published, tell the
       # monorepo (openrouter-web) to bump its pinned @openrouter/agent for
@@ -340,19 +361,32 @@ jobs:
           # openrouter-web-scoped App token; its contents:write is what makes
           # the repository_dispatch accepted.
           GH_TOKEN: ${{ steps.web-token.outputs.token }}
+          SLACK_BOT_TOKEN: ${{ secrets.CI_RELEASE_ALERT_SLACK_BOT_TOKEN }}
+          SLACK_CHANNEL_ID: ${{ secrets.CI_RELEASE_ALERT_SLACK_CHANNEL_ID }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           set -euo pipefail
           # if/else rather than a bare call: under continue-on-error a bare
-          # failure leaves a green job with no annotation — the warning is
-          # what makes the dropped notification visible (same pattern as the
-          # per-repo loop in the HOP C step).
+          # failure leaves a green job with no annotation — the warning +
+          # Slack page are what make the dropped notification visible (same
+          # pattern as the per-repo loop in the HOP C step).
           if gh api repos/OpenRouterTeam/openrouter-web/dispatches \
                -f event_type=openrouter-agent-published \
                -F "client_payload[version]=${{ steps.published.outputs.version }}" \
-               -F "client_payload[source_run_url]=${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"; then
+               -F "client_payload[source_run_url]=${RUN_URL}"; then
             echo "Dispatched openrouter-agent-published (version ${{ steps.published.outputs.version }}) to openrouter-web"
           else
             echo "::warning::Failed to dispatch openrouter-agent-published to openrouter-web. Bump its pinned @openrouter/agent manually or re-dispatch from its own workflow."
+            TEXT=":warning: Release publish: @openrouter/agent ${{ steps.published.outputs.version }} shipped but the openrouter-web bump dispatch failed — bump it manually. <${RUN_URL}|run>"
+            if [ -n "${SLACK_BOT_TOKEN:-}" ] && [ -n "${SLACK_CHANNEL_ID:-}" ]; then
+              curl -fsS -X POST https://slack.com/api/chat.postMessage \
+                -H "Authorization: Bearer ${SLACK_BOT_TOKEN}" \
+                -H "Content-type: application/json; charset=utf-8" \
+                --data "$(python3 -c "import json,sys; print(json.dumps({'channel':sys.argv[1],'unfurl_links':False,'text':sys.argv[2]}))" "$SLACK_CHANNEL_ID" "$TEXT")" \
+                >/dev/null || echo "::warning::Slack post failed"
+            else
+              echo "(slack not configured; would have posted) $TEXT"
+            fi
           fi
 
       # HOP C trigger: tell the Python and Go ports of @openrouter/agent that a
