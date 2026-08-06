@@ -324,11 +324,37 @@ if (verdict) console.warn(verdict.message);
 
 Detection is **deterministic** — a verdict is a pure function of the
 transcript, so the same sequence of calls/text always fires at the same
-point. Identical calls in consecutive **rounds** build a per-tool streak:
-interleaved calls to *other* tools don't reset it, and N identical calls
-fanned out in parallel within ONE round count once (a streak measures the
-model re-issuing a call *after seeing its result*, which requires a round
-trip). The streak crosses a graduated ladder — strongest crossed rung wins:
+point. Repeated **rounds** build a per-tool streak: interleaved calls to
+*other* tools don't reset it, and N identical calls fanned out in parallel
+within ONE round count once (a streak measures the model re-issuing a call
+*after seeing its result*, which requires a round trip).
+
+Two kinds of evidence accumulate side by side, and the stronger one decides:
+
+- **Round-set streaks.** A round's identity for one tool is the **set** of
+  calls it made, so a fan-out of *distinct* arguments reissued verbatim
+  counts: `read(a), read(b), read(c)` every round accumulates. Ordering
+  within the round is irrelevant, and a round whose membership changes — in
+  either direction — resets this streak, since adding or dropping work is
+  progress for the round as a unit.
+- **Per-call streaks.** Each `(tool, arguments)` identity also counts its own
+  consecutive rounds, whatever its round-mates did. A call repeating inside
+  varying company (`[a,b]`, `[a,c]`, `[a,d]` — `a` is a 3-peat) is flagged
+  even though every round's set differs, and a repeat spanning an approval
+  pause keeps counting when the paused member drops from the resumed round.
+  For an exactly-repeating round both counts are equal, so nothing
+  double-fires.
+
+When a repeating fan-out crosses a rung, every call in the round gets the
+verdict (so `block` stops the whole fan-out, not just one member), and calls
+carrying the SAME evidence share byte-identical text — the `steer` rung
+dedupes on exact text, so one piece of evidence injects one correction. A
+round can carry two pieces of evidence at once (`[a]`, `[a,b]`, `[a,b]`: by
+round 3, `a` is a 3-peat call while `{a,b}` is a 2-peat set), in which case
+each renders its own message — at most two per tool per round, each stating
+a distinct fact. When the per-call count alone crosses a rung, only that
+call is refused and genuinely new round-mates run free. The streak crosses
+a graduated ladder — strongest crossed rung wins:
 
 | Action | Effect |
 |---|---|
@@ -419,6 +445,18 @@ via `_meta['openrouter/loopKey']`. MCP-wrapped tools accept a `loopKey`
 via `markMcp(tool, { loopKey })` or the `loopKeys` map on
 `createMCPTools`.
 
+> **Exempt tools that repeat by design — including repeating *fan-outs*.**
+> The detector compares arguments, not results, so a call whose arguments are
+> stable while its results change is indistinguishable from a loop. Since a
+> round's identity is now the whole *set* of a tool's calls, this covers
+> parallel shapes too: an agent that re-reads the same context files at the
+> start of every turn, or fans out a fixed set of pollers, accumulates a streak
+> and is refused at the default `block` rung from round 3 — and because every
+> call in the round gets the verdict, that is N synthesized error outputs per
+> round, not one. These shapes were invisible before this behavior existed, so
+> `loopKey: false` (or a `loopKey` returning `null`) is the opt-out for any
+> tool whose repetition is legitimate.
+
 **Fingerprints are a cross-port contract**: key material is canonicalized
 per RFC 8785 (JCS) and hashed with SHA-256 over the UTF-8 bytes, so the
 Python/Go ports produce identical fingerprints — they MUST use an RFC 8785
@@ -454,6 +492,11 @@ block to observe for a known-chatty tool, or escalate straight to stop.
 - **Manual/client-executed calls** pause the loop for the caller and are
   not recorded (only executed, blocked, and parse-error calls are
   evidence).
+- **Cross-tool round patterns.** Streaks are per tool: a loop alternating
+  BETWEEN tools with no per-tool repetition (`read(a)` one round, `grep(a)`
+  the next, forever) shows each tool a sparse pattern its own evidence
+  cannot condemn. Interleaved calls to other tools never *reset* a tool's
+  streak, so an every-other-round repeat still accumulates — slowly.
 
 ### Async Tools
 
@@ -700,7 +743,7 @@ const result = callModel(client, { model, input, tools, hooks });
 | `SessionStart` | Once per run, before the initial request. `config` summarizes the session (`hasTools`, `hasApproval`, `hasState`) | none (void) |
 | `SessionEnd` | Once per run, on every exit path — completion, approval pause, interruption, error, and the no-tools streaming paths. `reason` is `'complete' \| 'error' \| 'max_turns' \| 'user' \| 'doom_loop'`. When at least one model call completed, `totalUsage` aggregates tokens/cost across all of them (`modelCalls`, `inputTokens`, `outputTokens`, `totalTokens`, `cachedTokens`, `reasoningTokens`, and `cost` when the server reported it) | none (void) |
 | `PostModelCall` | Once per completed model response, on **every** request the loop makes — initial, each tool-round follow-up, the empty-final retry, the `allowFinalResponse` final turn, and approval-resume requests. Payload: `responseId` (the OpenRouter generation id), `model`, `durationMs` (dispatch → fully materialized response, including stream consumption), `turnType` (`'initial' \| 'resume' \| 'tool_round' \| 'final' \| 'retry'`), `turnNumber`, and `usage` (`inputTokens`, `outputTokens`, `totalTokens`, `cachedTokens`, `reasoningTokens`, `cost?`) when the server reported usage accounting. Purely observational — the telemetry primitive for tracing/benchmark consumers: one span per model call | none (void) |
-| `DoomLoopDetected` | Every time doom-loop detection crosses a ladder rung, once per `(tool, fingerprint)` per round — parallel duplicates in one round share the event (requires the `doomLoop` option). Payload: `detector` (`'tool-fingerprint' \| 'server-tool-fingerprint' \| 'text-repetition' \| 'text-streak'`), the resolved `action` (`'observe' \| 'steer' \| 'escalate' \| 'block' \| 'stop'`), the `streak`, the `fingerprint`, `toolName`/`toolInput` for tool verdicts, and the explanatory `message` | `overrideAction` replaces the engine's resolved action for this event (last handler wins); `block` on a text or server-tool verdict downgrades to `observe`; `escalate` without an `escalation` config or remaining budget downgrades to `observe` |
+| `DoomLoopDetected` | Every time doom-loop detection crosses a ladder rung, once per `(tool, fingerprint)` per round — *identical* parallel duplicates in one round share the event, but a repeating fan-out of DISTINCT arguments emits one event per member, since each is its own `(tool, fingerprint)` (requires the `doomLoop` option). Payload: `detector` (`'tool-fingerprint' \| 'server-tool-fingerprint' \| 'text-repetition' \| 'text-streak'`), the resolved `action` (`'observe' \| 'steer' \| 'escalate' \| 'block' \| 'stop'`), the `streak`, the `fingerprint`, `toolName`/`toolInput` for tool verdicts, and the explanatory `message` | `overrideAction` replaces the engine's resolved action for this event (last handler wins); `block` on a text or server-tool verdict downgrades to `observe`; `escalate` without an `escalation` config or remaining budget downgrades to `observe` |
 
 Notes on lifecycle pairing: `SessionEnd` only fires when a matching
 `SessionStart` succeeded, and at most once per run. Pending async hook work is

@@ -32,7 +32,14 @@
  * - **Round-scoped streaks.** A streak measures the model *re-issuing a call
  *   after seeing its result*, which requires a model round trip. N identical
  *   calls fanned out in ONE round count once; the duplicates share that
- *   round's decision.
+ *   round's decision. A round's identity for one tool is the *set* of
+ *   fingerprints it was called with, so a fan-out of distinct arguments
+ *   (`read(a), read(b), read(c)`) reissued verbatim accumulates, and every
+ *   call in the round reports the round's streak. Ports must declare a
+ *   round's complete set before scoring any of its calls (see
+ *   `declareRound`): scoring a set as it accumulates makes a superset round
+ *   transiently match the previous one, which both fires on real progress
+ *   and makes the outcome depend on emission order.
  * - **Graduated response.** Detection feeds a configurable action ladder
  *   (observe → steer → block → stop) rather than killing the run outright.
  * - **Never the cause of failure.** Detection may only affect a run through
@@ -75,10 +82,12 @@ export type DoomLoopDetectorKind =
  * A doom-loop detection event.
  *
  * `streak` is the repetition count that crossed a ladder threshold: for
- * fingerprint detectors the consecutive identical-fingerprint round count
- * for that tool; for `text-repetition` the number of consecutive repeats of
- * a token block within one response; for `text-streak` the number of
- * consecutive steps with identical assistant text.
+ * fingerprint detectors the number of consecutive rounds in which that tool
+ * was called with the same fingerprint *set* (so a repeated fan-out counts,
+ * and every call in the round reports the round's count); for
+ * `text-repetition` the number of consecutive repeats of a token block within
+ * one response; for `text-streak` the number of consecutive steps with
+ * identical assistant text.
  */
 export interface DoomLoopVerdict {
   detector: DoomLoopDetectorKind;
@@ -186,6 +195,29 @@ export type DoomLoopOption = boolean | DoomLoopConfig;
 export interface DoomLoopStreak {
   fingerprint: string;
   streak: number;
+  /**
+   * The full fingerprint set of the tool's last round, present only when that
+   * round had more than one distinct call. `fingerprint`+`streak` alone cannot
+   * say WHICH set earned a count, so without this a fan-out streak either
+   * attached to one arbitrary member (refusing a lesser resumed call on first
+   * appearance) or had to be discarded at every save — losing block-level
+   * evidence across approval pauses and re-baselining on every per-turn
+   * resume. Absent for single-call rounds and in pre-existing blobs, where
+   * `fingerprint` fully describes the round. Never present on text streaks.
+   */
+  roundFingerprints?: readonly string[];
+  /**
+   * Per-call streaks for the tool's last round: fingerprint → number of
+   * consecutive rounds that exact call has been issued in. This is the
+   * evidence for the PER-CALL detector, which catches a call repeating inside
+   * rounds whose other members keep changing (`[a,b]`, `[a,c]`, `[a,d]` — the
+   * round set differs every time, but `a` is a 3-peat). Persisted so a repeat
+   * spanning a save/resume boundary (approval pause, per-turn resume) keeps
+   * counting. Bounded by the width of one round; absent in pre-existing
+   * blobs, where per-call evidence simply restarts. Never present on text
+   * streaks.
+   */
+  callStreaks?: Record<string, number>;
 }
 
 /**
@@ -344,7 +376,16 @@ function warnOnLadderHazards(ladder: Required<DoomLoopLadder>): void {
 /**
  * Normalize the `doomLoop` option. `undefined` / `false` → null (detection
  * off — the SDK's default posture: explicit control over implicit magic).
+ *
+ * Overloaded so the direct-construction pattern compiles without a null
+ * check: `true` or a config object always yields a resolved config, so
+ * `new DoomLoopMonitor(resolveDoomLoopOption(true))` is well-typed. Only the
+ * engine's pass-through of a caller's raw option can produce `null`.
  */
+export function resolveDoomLoopOption(option: DoomLoopConfig | true): ResolvedDoomLoopConfig;
+export function resolveDoomLoopOption(
+  option: DoomLoopOption | undefined,
+): ResolvedDoomLoopConfig | null;
 export function resolveDoomLoopOption(
   option: DoomLoopOption | undefined,
 ): ResolvedDoomLoopConfig | null {
@@ -806,6 +847,108 @@ function isValidStreak(value: unknown): value is DoomLoopStreak {
   );
 }
 
+/**
+ * True when an entry's per-call counts carry no information beyond its round
+ * set and round streak, so getState() may omit them and restore() can rebuild
+ * them exactly. Holds in the steady state of a repeating fan-out — every
+ * member has been issued in the same consecutive rounds, so every count equals
+ * the round streak. Persisting both in that state stored each 64-char hash
+ * twice (once in the set, once as a count key): ~13 KB per width-100 round,
+ * copied on every save. The counts must also cover exactly the set members —
+ * a shrunk round (count > streak) or an extra recorded non-member is real
+ * evidence and is still persisted verbatim.
+ */
+function callStreaksReconstructible(entry: StreakEntry): boolean {
+  const counts = entry.callStreaks;
+  if (counts === undefined) {
+    return true;
+  }
+  const set = entry.roundFingerprints ?? [
+    entry.fingerprint,
+  ];
+  const keys = Object.keys(counts);
+  return (
+    keys.length === set.length &&
+    keys.every((key) => set.includes(key) && counts[key] === entry.streak)
+  );
+}
+
+/**
+ * Rebuild one tool's in-memory streak entry from its persisted shape.
+ *
+ * The persisted set (when the last round was multi-call) restores the round's
+ * identity exactly, so a resumed fan-out continues its streak and a resumed
+ * SUBSET cannot match it — the false-positive and false-negative failure
+ * modes of a single-fingerprint save. Older blobs (and single-call rounds)
+ * carry no set; the lone fingerprint fully describes those rounds. Malformed
+ * sets fall back the same way rather than dropping the entry.
+ *
+ * Per-call counts restore into the CURRENT-round slot: the first resumed
+ * record is a new round, so `recordToolCall` rolls them into its baseline
+ * (`priorCallStreaks`) exactly as a live round transition would. Validated
+ * entry-by-entry — the blob is caller-writable JSON, and one malformed count
+ * must not poison the rest. `Object.create(null)` + direct assignment so a
+ * persisted "__proto__" key is inert data, mirroring the Map rationale at the
+ * `tools` field. `round` is intentionally absent from the result: the first
+ * resumed record is always a new round, whatever the numbering.
+ */
+function restoreStreakEntry(entry: DoomLoopStreak): StreakEntry {
+  const persistedSet =
+    Array.isArray(entry.roundFingerprints) &&
+    entry.roundFingerprints.length > 1 &&
+    entry.roundFingerprints.every((value) => typeof value === 'string')
+      ? [
+          ...entry.roundFingerprints,
+        ].sort()
+      : [
+          entry.fingerprint,
+        ];
+  const persistedCallStreaks: Record<string, number> = Object.create(null) as Record<
+    string,
+    number
+  >;
+  if (typeof entry.callStreaks === 'object' && entry.callStreaks !== null) {
+    for (const [callFingerprint, count] of Object.entries(entry.callStreaks)) {
+      if (typeof count === 'number' && Number.isFinite(count) && count >= 1) {
+        persistedCallStreaks[callFingerprint] = Math.floor(count);
+      }
+    }
+  }
+  /*
+   * The round streak gets the same range validation as the per-call counts —
+   * the blob is caller-writable JSON, and `isValidStreak` only checks "finite
+   * number". A negative count would hold the guardrail below every rung for
+   * that tool (thresholds compare with `>=`); a fractional or absurd one
+   * would feed the ladder garbage. Clamped to a sane count rather than
+   * rejected: a corrupt streak must degrade the entry, not drop the tool's
+   * evidence entirely (fail-open, like every other restore path). The cap is
+   * generous — real streaks stop the run at single digits — and exists only
+   * to bound arithmetic, not to change semantics.
+   */
+  const streak = Math.min(Math.max(Math.floor(entry.streak), 1), 1_000_000);
+  return {
+    fingerprint: entry.fingerprint,
+    streak,
+    roundFingerprints: persistedSet,
+    /*
+     * Absent per-call counts mean getState() proved them reconstructible:
+     * every member of the round set carried exactly the round streak (the
+     * steady state of a repeating fan-out — see callStreaksReconstructible).
+     * Rebuild them for the WHOLE set, not just the last-recorded member, or a
+     * width-W fan-out would resume with W−1 members' evidence reset.
+     */
+    callStreaks:
+      Object.keys(persistedCallStreaks).length > 0
+        ? persistedCallStreaks
+        : Object.fromEntries(
+            persistedSet.map((member) => [
+              member,
+              streak,
+            ]),
+          ),
+  };
+}
+
 /** In-memory streak entry: serialized shape + the round of the last record. */
 interface StreakEntry extends DoomLoopStreak {
   /**
@@ -814,6 +957,51 @@ interface StreakEntry extends DoomLoopStreak {
    * always increment on its first record, whatever its round numbering.
    */
   round?: number;
+  /**
+   * The fingerprint set this tool was called with during {@link round}, in
+   * sorted order. A round's identity is the whole set, not its last call, so a
+   * fan-out of *distinct* arguments (`read(a), read(b), read(c)`) reissued
+   * verbatim is a repeat. Comparing only the last call let each round's first
+   * call reset the streak, so a repeating fan-out never accumulated evidence.
+   *
+   * This is the round's COMPLETE set, known before its first call is scored —
+   * see {@link DoomLoopMonitor.declareRound}. Accumulating it incrementally
+   * instead made a growing round transiently equal the previous round's set,
+   * so a superset round (`[a,b]`, `[a,b]`, `[a,b,c]`) scored a verdict on the
+   * call that completed the prefix and blocked real progress — and did so
+   * order-dependently, since a different emission order never formed the
+   * matching prefix. Never serialized: meaningful only within one round.
+   */
+  roundFingerprints?: readonly string[];
+  /**
+   * Fingerprints of {@link round} already recorded, used to collapse in-round
+   * duplicates (one decision per `(tool, fingerprint)` per round). Distinct
+   * from {@link roundFingerprints}, which is the round's declared whole.
+   * Never serialized: meaningful only within one round — which is why it can
+   * be a Set: only serialized state needs a plain-array shape.
+   */
+  seenThisRound?: ReadonlySet<string>;
+  /**
+   * The set the previous round was called with, and the streak it earned.
+   * Carried unchanged for the length of {@link round} so that every call in
+   * an UNDECLARED round is measured against the round before it rather than
+   * against a set this round is still assembling. Unused once a round is
+   * declared (those calls share the round's streak directly).
+   * Never serialized: meaningful only within one run.
+   */
+  priorRoundFingerprints?: readonly string[];
+  priorStreak?: number;
+  /**
+   * The PREVIOUS round's per-call streaks (fingerprint → consecutive-round
+   * count), fixed at the round transition like {@link priorRoundFingerprints}
+   * so arrival order within the current round cannot affect a per-call score.
+   * A call present here repeated from last round and extends its own count; a
+   * call absent here starts at 1. The CURRENT round's counts live in the
+   * inherited {@link DoomLoopStreak.callStreaks}, accumulate as calls arrive
+   * (only calls actually recorded — a declared-but-skipped call must not
+   * carry per-call evidence), and become this field at the next transition.
+   */
+  priorCallStreaks?: Record<string, number>;
 }
 
 /**
@@ -837,12 +1025,134 @@ export class DoomLoopMonitor {
   // Escalation recoveries consumed by this conversation. Persisted (see
   // getState/restore) so a resumed run cannot reset its budget.
   private escalationsUsed = 0;
+  // The current round's declared per-tool fingerprint sets — see
+  // `declareRound`. Run-local and never serialized.
+  private declaredRound:
+    | {
+        round: number;
+        fingerprints: Map<string, readonly string[]>;
+      }
+    | undefined;
 
   constructor(config: ResolvedDoomLoopConfig, initialState?: unknown) {
     this.config = config;
     if (initialState !== undefined) {
       this.restore(initialState);
     }
+  }
+
+  /**
+   * Declare the complete set of calls a round will make, before any of them
+   * is recorded. Each entry is one call's `(toolName, keyMaterial)`; the
+   * monitor groups them per tool into that tool's round set.
+   *
+   * A round's identity is the *set* of fingerprints a tool was called with,
+   * so that set has to be known up front. Accumulating it call by call meant
+   * a round that is a strict superset of the previous one transiently equaled
+   * it while filling — `[a,b]`, `[a,b]`, `[a,b,c]` scored a verdict on the `b`
+   * of the third round and refused a call that represented real progress. It
+   * was also emission-order dependent: `[c,a,b]` never formed the matching
+   * prefix and scored nothing. Declaring the whole set removes both.
+   *
+   * Idempotent per round, and safe to skip: PER-CALL detection needs no
+   * declaration — every repeated `(tool, arguments)` identity accumulates its
+   * own consecutive-round count regardless, so an undeclared repeating
+   * fan-out still flags each repeated member (server-tool records take that
+   * path). What the declaration adds is round-set evidence: the fan-out
+   * scored as one unit, with a shared verdict and one steer message, instead
+   * of member-by-member. Unhashable key material is skipped here with a
+   * warning; the caller's own fallback chain handles it at record time.
+   * Never serialized.
+   */
+  async declareRound(
+    round: number,
+    calls: readonly {
+      toolName: string;
+      keyMaterial: unknown;
+    }[],
+  ): Promise<void> {
+    /*
+     * Independent digests run concurrently — declaration gates dispatch of
+     * the whole batch, so serial awaits would add one hash latency per call
+     * to every round. Failures are per-call and fail open, as before.
+     */
+    const hashed = await Promise.all(
+      calls.map(async (call) => {
+        try {
+          return {
+            call,
+            fingerprint: await this.fingerprintOnce(call.toolName, call.keyMaterial),
+          };
+        } catch (error) {
+          // Unhashable: leave it out of the declared set — recordToolCall's
+          // fallback chain decides this call's identity on its own — but say
+          // so, like every other fail-open path: a direct consumer debugging
+          // an unexpectedly incomplete declaration needs the tool name and
+          // cause. (The engine warns separately on its own declaration path.)
+          console.warn(
+            `[DoomLoop] could not fingerprint a "${call.toolName}" call while declaring round ` +
+              `${round}; excluding it from the round set:`,
+            error,
+          );
+          return null;
+        }
+      }),
+    );
+
+    /* Accumulate per tool, dedupe and sort ONCE per set — not per member. */
+    const collected = new Map<string, Set<string>>();
+    for (const entry of hashed) {
+      if (entry === null) {
+        continue;
+      }
+      const set = collected.get(entry.call.toolName) ?? new Set<string>();
+      set.add(entry.fingerprint);
+      collected.set(entry.call.toolName, set);
+    }
+    const fingerprints = new Map<string, readonly string[]>();
+    for (const [toolName, set] of collected) {
+      fingerprints.set(
+        toolName,
+        [
+          ...set,
+        ].sort(),
+      );
+    }
+    this.declaredRound = {
+      round,
+      fingerprints,
+    };
+  }
+
+  /**
+   * Fingerprint with a per-object memo. The engine hands the SAME key-material
+   * object to `declareRound` and then to `recordToolCall` (the resolved
+   * `loopKey` output is cached per call id), so without this every checked
+   * call is canonicalized and SHA-256'd twice per round. WeakMap keeps the
+   * memo from retaining arguments beyond their natural lifetime; primitive
+   * key material (raw-string malformed args) skips the memo — it cannot key a
+   * WeakMap, and such calls are rare and small. Callers that mutate key
+   * material between declare and record get the declare-time identity, which
+   * is the identity the round was declared with — the consistent choice.
+   */
+  private readonly fingerprintMemo = new WeakMap<object, Map<string, string>>();
+  private async fingerprintOnce(toolName: string, keyMaterial: unknown): Promise<string> {
+    const memoizable = typeof keyMaterial === 'object' && keyMaterial !== null;
+    if (memoizable) {
+      // Keyed by object AND tool name: the tool name participates in the
+      // hash, so one arguments object used by two tools must not collide.
+      const hit = this.fingerprintMemo.get(keyMaterial as object)?.get(toolName);
+      if (hit !== undefined) {
+        return hit;
+      }
+    }
+    const fingerprint = await fingerprintToolCall(toolName, keyMaterial);
+    if (memoizable) {
+      const perTool = this.fingerprintMemo.get(keyMaterial as object) ?? new Map<string, string>();
+      perTool.set(toolName, fingerprint);
+      this.fingerprintMemo.set(keyMaterial as object, perTool);
+    }
+    return fingerprint;
   }
 
   /**
@@ -882,6 +1192,46 @@ export class DoomLoopMonitor {
           {
             fingerprint: entry.fingerprint,
             streak: entry.streak,
+            /*
+             * A multi-call round persists its full set, so a resumed run knows
+             * WHICH set earned the count. Without it, the streak either
+             * attached to one arbitrary member — a resumed round of just that
+             * call inherited a fan-out's whole evidence and could be refused
+             * on its first appearance — or had to be discarded at every save,
+             * which reset condemned fan-outs across approval pauses and made
+             * per-turn-resume topologies never accumulate. Single-call rounds
+             * omit it: their fingerprint fully describes the round.
+             *
+             * COPIED, not aliased: the in-memory array is shared with the live
+             * streak entry (and, for declared rounds, with `declaredRound`
+             * itself), and the snapshot is handed to the caller's
+             * StateAccessor. An in-place mutation of the saved blob must not
+             * corrupt the detector still running against it.
+             */
+            ...((entry.roundFingerprints?.length ?? 0) > 1
+              ? {
+                  roundFingerprints: [
+                    ...(entry.roundFingerprints as readonly string[]),
+                  ],
+                }
+              : {}),
+            /*
+             * Per-call counts persist so a repeat spanning a save/resume
+             * boundary keeps counting. Copied for the same isolation reason
+             * as the set above. `fromEntries` for the same "__proto__" safety
+             * as the outer record. Omitted only when `fingerprint`+`streak`
+             * already carry the identical information (a single-call round
+             * whose per-call count equals its round count — `restore`
+             * reconstructs exactly that). The count-mismatch check matters:
+             * when a round SHRINKS to one call, the round streak resets while
+             * the per-call count keeps climbing, and dropping it would hand
+             * the repeat a fresh grace window on resume.
+             */
+            ...(entry.callStreaks !== undefined && !callStreaksReconstructible(entry)
+              ? {
+                  callStreaks: Object.fromEntries(Object.entries(entry.callStreaks)),
+                }
+              : {}),
           },
         ]),
       ),
@@ -913,11 +1263,7 @@ export class DoomLoopMonitor {
     if (typeof candidate.tools === 'object' && candidate.tools !== null) {
       for (const [name, entry] of Object.entries(candidate.tools)) {
         if (isValidStreak(entry)) {
-          tools.set(name, {
-            fingerprint: entry.fingerprint,
-            streak: entry.streak,
-            // round intentionally absent: first resumed record increments.
-          });
+          tools.set(name, restoreStreakEntry(entry));
         }
       }
     }
@@ -949,7 +1295,14 @@ export class DoomLoopMonitor {
    *   re-issuing a call *after seeing its result*, which requires a round
    *   trip; N parallel identical calls in one turn are one piece of
    *   evidence, not N.
-   * - A different fingerprint for the same tool resets the streak to 1.
+   * - A round's identity is the *set* of fingerprints the tool was called
+   *   with, not its last call, so a fan-out of distinct arguments reissued
+   *   verbatim accumulates. A round whose set differs from the previous
+   *   round's — in either direction, including a superset — resets to 1.
+   *   Every call in a round reports that round's streak, so the ladder
+   *   applies to the round as a unit. See {@link declareRound}: the set must
+   *   be declared before the round's first call for this to hold for
+   *   multi-call rounds.
    *
    * Blocked calls are recorded like any other — a model re-issuing a
    * blocked call in a later round is stronger loop evidence, not progress.
@@ -969,52 +1322,166 @@ export class DoomLoopMonitor {
       detector?: Extract<DoomLoopDetectorKind, 'tool-fingerprint' | 'server-tool-fingerprint'>;
     },
   ): Promise<DoomLoopCallRecord> {
-    const fingerprint = await fingerprintToolCall(toolName, keyMaterial);
+    const fingerprint = await this.fingerprintOnce(toolName, keyMaterial);
     const previous = this.tools.get(toolName);
-    let streak: number;
-    let duplicateInRound = false;
-    if (previous && previous.fingerprint === fingerprint) {
-      if (previous.round !== undefined && previous.round === round) {
-        streak = previous.streak;
-        duplicateInRound = true;
-      } else {
-        streak = previous.streak + 1;
-      }
-    } else {
-      streak = 1;
-    }
-    this.tools.set(toolName, {
+    const isSameRound = previous?.round !== undefined && previous.round === round;
+
+    /*
+     * The round's declared membership, when the engine announced it (see
+     * `declareRound`). A declaration only speaks for the calls it contains: a
+     * call dropped as unhashable still records here via the caller's fallback
+     * chain, but as a NON-member — it cannot inherit or move the ROUND's
+     * counters. Its own repetition still counts: the per-call detector below
+     * needs no declaration, so a fallback-identity call reissued verbatim
+     * every round accumulates like any other repeat.
+     */
+    const declared =
+      this.declaredRound?.round === round
+        ? this.declaredRound.fingerprints.get(toolName)
+        : undefined;
+    const declaredMember = declared?.includes(fingerprint) === true;
+
+    const seen = isSameRound ? (previous?.seenThisRound ?? EMPTY_SEEN) : EMPTY_SEEN;
+    const duplicateInRound = seen.has(fingerprint);
+
+    /*
+     * The baseline every call of this round is measured against: the set the
+     * PREVIOUS round was called with and the streak it earned. Fixed at the
+     * round transition and carried unchanged for the round's length, so
+     * arrival order within a round can never affect a score.
+     */
+    const priorSet = isSameRound
+      ? previous?.priorRoundFingerprints
+      : (previous?.roundFingerprints ??
+        (previous
+          ? [
+              previous.fingerprint,
+            ]
+          : undefined));
+    const priorStreak = isSameRound ? (previous?.priorStreak ?? 0) : (previous?.streak ?? 0);
+    const score = (set: readonly string[]): number =>
+      priorSet !== undefined && setsMatch(priorSet, set) ? priorStreak + 1 : 1;
+
+    /*
+     * PER-CALL evidence, alongside the round-set streak: the number of
+     * consecutive rounds THIS exact fingerprint has been issued in, whatever
+     * its round-mates did. Round identity treats any membership change as
+     * progress, which is right for the fan-out as a unit but blind to one
+     * call repeating inside varying company (`[a,b]`, `[a,c]`, `[a,d]` — the
+     * set differs every round, yet `a` is a 3-peat) and to a paused HITL
+     * member changing the resumed round's identity. The per-call count sees
+     * exactly those. Baseline fixed at the round transition, like the set
+     * baseline, so arrival order cannot affect it.
+     */
+    const priorCallStreaks = isSameRound
+      ? (previous?.priorCallStreaks ?? {})
+      : (previous?.callStreaks ?? {});
+    const callStreak =
+      (Object.hasOwn(priorCallStreaks, fingerprint)
+        ? (priorCallStreaks[fingerprint] as number)
+        : 0) + 1;
+
+    /*
+     * Two identities, one scoring rule.
+     *
+     * What this CALL reports: the declared set when it is a member (every
+     * member of a repeating fan-out shares the round's streak, so the ladder
+     * applies to the round as a unit), its own singleton otherwise. On the
+     * undeclared path the singleton comparison is the pre-fan-out per-call
+     * semantics for single-call rounds; for undeclared MULTI-call rounds it
+     * accumulates only on whichever call lands last (see the README limit).
+     *
+     * What the ROUND stores: the declared set when there is one — a
+     * non-member must not overwrite the round's identity with its singleton,
+     * or the next round's members would compare against it and reset forever.
+     */
+    const callSet = declaredMember
+      ? (declared as readonly string[])
+      : [
+          fingerprint,
+        ];
+    const streak = score(callSet);
+    const roundSet = declared ?? [
       fingerprint,
-      streak,
+    ];
+
+    this.tools.set(toolName, {
+      /*
+       * The identity that pairs with `streak` in persisted state: a non-member
+       * must not become it, or the saved count would attach to a call that
+       * never earned it (blocked on first appearance after a resume, while the
+       * real repeat lost its evidence).
+       */
+      fingerprint:
+        declared !== undefined && !declaredMember && previous !== undefined
+          ? previous.fingerprint
+          : fingerprint,
       round,
+      /*
+       * Grown in place, O(1) per record: run-local, never serialized, and only
+       * the latest entry's set is ever read, so sharing the object between the
+       * previous and next entry is fine. The shared EMPTY_SEEN sentinel is the
+       * one instance that must never be mutated.
+       */
+      seenThisRound:
+        seen === EMPTY_SEEN
+          ? new Set([
+              fingerprint,
+            ])
+          : (seen as Set<string>).add(fingerprint),
+      roundFingerprints: roundSet,
+      streak: score(roundSet),
+      ...(priorSet !== undefined
+        ? {
+            priorRoundFingerprints: priorSet,
+          }
+        : {}),
+      priorStreak,
+      priorCallStreaks,
+      callStreaks: growCallStreaks(isSameRound ? previous : undefined, fingerprint, callStreak),
     });
 
+    /*
+     * The stronger of the two detectors decides. The round streak covers the
+     * reissued fan-out as a unit; the per-call streak covers a repeat whose
+     * round-mates keep changing. For an exactly-repeating round both counts
+     * are equal, so nothing double-fires — the counts only diverge when one
+     * detector sees something the other cannot.
+     */
+    const effectiveStreak = Math.max(streak, callStreak);
     const allowBlock = options?.allowBlock ?? true;
-    const action = resolveLadderAction(this.config.ladder, streak, {
+    const action = resolveLadderAction(this.config.ladder, effectiveStreak, {
       allowBlock,
       allowEscalate: this.canEscalate(),
     });
     if (!action) {
       return {
         fingerprint,
-        streak,
+        streak: effectiveStreak,
         duplicateInRound,
       };
     }
     return {
       fingerprint,
-      streak,
+      streak: effectiveStreak,
       duplicateInRound,
       verdict: {
         detector: options?.detector ?? 'tool-fingerprint',
         action,
-        streak,
+        streak: effectiveStreak,
         fingerprint,
         toolName,
-        message:
-          `Doom loop suspected: tool "${toolName}" was invoked in ${streak} consecutive rounds ` +
-          `with identical arguments (fingerprint ${fingerprint.slice(0, 16)}…). Repeating the call ` +
-          'will not change the result. Take a different approach, or explain why repetition is required.',
+        message: buildToolVerdictMessage({
+          toolName,
+          fingerprint,
+          callSet,
+          roundStreak: streak,
+          callStreak,
+          // An undeclared record's `callSet` is just this one call, which says
+          // nothing about the round's real width — so it may not be described
+          // as a set, nor have its fingerprint quoted as the round's identity.
+          roundDeclared: declaredMember,
+        }),
       },
     };
   }
@@ -1125,3 +1592,117 @@ function strongerVerdict(
 }
 
 //#endregion
+
+/**
+ * This round's per-call accumulator, grown in place — O(1) per record instead
+ * of an O(W) spread per call of a W-wide round. Safe because only the latest
+ * entry's object is ever read mid-round, and `priorCallStreaks` aliases the
+ * PREVIOUS round's object (a fresh object is created at each round
+ * transition), so mutating this round's accumulator never disturbs the
+ * baseline. getState() copies before persisting either.
+ */
+function growCallStreaks(
+  previous: StreakEntry | undefined,
+  fingerprint: string,
+  callStreak: number,
+): Record<string, number> {
+  if (previous?.callStreaks !== undefined) {
+    previous.callStreaks[fingerprint] = callStreak;
+    return previous.callStreaks;
+  }
+  return {
+    [fingerprint]: callStreak,
+  };
+}
+
+/**
+ * The empty seen-set, shared: `recordToolCall` runs per call, and most rounds
+ * open with no prior members — allocating a fresh empty Set for each would be
+ * churn for nothing. Never mutated (the write path copies before adding).
+ */
+const EMPTY_SEEN: ReadonlySet<string> = new Set();
+
+/**
+ * Short, stable identity for a round's fingerprint set: the first members'
+ * prefixes, so every call of one round produces the same string (see the
+ * verdict message — steer dedupes on exact text).
+ */
+function summarizeRound(fingerprints: readonly string[]): string {
+  const shown = fingerprints.slice(0, 3).map((value) => value.slice(0, 8));
+  return fingerprints.length > 3
+    ? `${shown.join('+')}+${fingerprints.length - 3} more…`
+    : `${shown.join('+')}…`;
+}
+
+/** Set equality over two sorted fingerprint lists. */
+function setsMatch(left: readonly string[], right: readonly string[]): boolean {
+  return left.length === right.length && left.every((value, index) => value === right[index]);
+}
+
+/**
+ * Verdict text for a tool-fingerprint detection, naming what actually
+ * repeated. When the round streak decides (or ties), a multi-call round quotes
+ * the ROUND's identity — identical text for every call, deliberately, because
+ * the steer rung dedupes queued guidance by exact message text and one round
+ * of evidence must not queue N near-identical corrections. When the PER-CALL
+ * streak alone decides (its count exceeds the round's), the text carries
+ * neither the call's fingerprint nor its exact count: both vary between
+ * members of one round (an expanding fan-out holds counts 4, 3, 2 at once),
+ * and either would split one piece of guidance into per-member strings. The
+ * enforced bound is therefore at most TWO distinct messages per tool per
+ * round — one per-call text, one round-set text — each stating a distinct
+ * fact; exact counts live in the verdict payload's `streak`.
+ *
+ * `roundDeclared` says whether the detector was told the round's true
+ * membership. Only then does `callSet` describe the round, so only then may the
+ * text name a set or quote an argument fingerprint. On the UNDECLARED path
+ * (server-tool records, direct `DoomLoopMonitor` consumers, the SDK ports) each
+ * call is recorded alone, so `callSet` holds just that call however wide the
+ * round really was: the last-recorded call tied at `roundStreak == callStreak`
+ * and rendered the fingerprint-bearing single-call text while its round-mates
+ * rendered the per-call text — two strings for one round, which defeats the
+ * exact-text steer dedupe this shaping exists to preserve.
+ */
+function buildToolVerdictMessage(input: {
+  toolName: string;
+  fingerprint: string;
+  callSet: readonly string[];
+  roundStreak: number;
+  callStreak: number;
+  roundDeclared: boolean;
+}): string {
+  const { toolName, fingerprint, callSet, roundStreak, callStreak, roundDeclared } = input;
+  if (callStreak > roundStreak || !roundDeclared) {
+    /*
+     * Fingerprint-free AND count-free, so every per-call verdict of one tool
+     * renders byte-identical text and the steer dedupe collapses them to one
+     * correction. Reached when the per-call streak decides, and when the
+     * round's true membership is unknown (undeclared path). Both varying
+     * elements had to go for the dedupe to hold: quoting one call's hash
+     * diverged the members of a wide round, and quoting the exact count
+     * diverged members whose repeats started at different times (an expanding
+     * fan-out carries counts 4, 3, 2 in one round — three near-identical
+     * strings for one piece of guidance). The exact count still reaches
+     * consumers via the verdict payload's `streak`; the prose tells the model
+     * what to do about it, which does not depend on the number.
+     */
+    return (
+      `Doom loop suspected: this exact "${toolName}" call has been repeated across ` +
+      'consecutive rounds. Repeating it will not change the result. ' +
+      'Take a different approach, or explain why repetition is required.'
+    );
+  }
+  if (callSet.length > 1) {
+    return (
+      `Doom loop suspected: tool "${toolName}" was invoked in ${roundStreak} consecutive rounds ` +
+      `with the same set of ${callSet.length} parallel calls ` +
+      `(round identity ${summarizeRound(callSet)}). Reissuing the same fan-out ` +
+      'will not change the results. Take a different approach, or explain why repetition is required.'
+    );
+  }
+  return (
+    `Doom loop suspected: tool "${toolName}" was invoked in ${roundStreak} consecutive rounds ` +
+    `with identical arguments (fingerprint ${fingerprint.slice(0, 16)}…). Repeating the call ` +
+    'will not change the result. Take a different approach, or explain why repetition is required.'
+  );
+}

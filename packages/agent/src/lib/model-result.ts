@@ -38,6 +38,7 @@ import type {
   DoomLoopOption,
   DoomLoopSerializedState,
   DoomLoopVerdict,
+  LoopKeyResolution,
   ResolvedEscalationConfig,
 } from './doom-loop.js';
 import { DoomLoopMonitor, resolveDoomLoopOption, resolveLoopKeyMaterial } from './doom-loop.js';
@@ -196,6 +197,16 @@ function extractServerToolIdentity(item: ServerToolResultItem): Record<string, u
 // let a hook gather a couple of follow-up actions but small enough that a
 // buggy handler fails fast with a visible warning.
 const MAX_FORCE_RESUME_OVERRIDES = 3;
+
+/**
+ * Sentinel marking a tool-call id that appeared MORE THAN ONCE in one batch.
+ * Ids are model-emitted and nothing upstream enforces uniqueness; a colliding
+ * id must poison the loop-key cache entry rather than let the last write win,
+ * or one call's doom-loop identity aliases onto another's and its repetition
+ * becomes invisible to the per-call detector. Colliding calls fall through to
+ * per-call resolution at the checkpoint.
+ */
+const DUPLICATE_CALL_ID = Symbol('duplicate-call-id');
 
 /**
  * Human-readable label for a value that failed the `isRecord` check. Used
@@ -620,6 +631,16 @@ export class ModelResult<
       action: DoomLoopAction | 'proceed';
       message?: string;
     }
+  >();
+  // Loop-key resolutions computed while declaring the current round, keyed by
+  // tool-call id. A `loopKey` function is user code that may count, log, or
+  // return something different each time, so it must run at most once per
+  // call: the per-call checkpoint reuses what the declaration resolved instead
+  // of resolving again. Cleared with the round. An id seen twice in one batch
+  // maps to DUPLICATE_CALL_ID — see the write site.
+  private readonly doomLoopRoundKeyMaterial = new Map<
+    string,
+    LoopKeyResolution | typeof DUPLICATE_CALL_ID
   >();
   // Serialization chain for doom evaluations: parallel tool executions
   // append their evaluation here in call order (the .map() over a round's
@@ -1489,17 +1510,154 @@ export class ModelResult<
   }
 
   /**
-   * Advance the doom-loop round counter. Called at every execution-batch
-   * boundary (main tool round, auto-approve batch while pausing, approved-
-   * on-resume batch). Identical calls WITHIN one round are duplicates —
-   * one piece of loop evidence, one shared decision.
+   * Advance the doom-loop round counter and declare the round's calls. Called
+   * at every execution-batch boundary (main tool round, auto-approve batch
+   * while pausing, approved-on-resume batch). Identical calls WITHIN one round
+   * are duplicates — one piece of loop evidence, one shared decision.
+   *
+   * `batch` is every call the round will make. A round's identity for one tool
+   * is the *set* of fingerprints it was called with, and that set has to be
+   * complete before any of the round's calls is scored: accumulating it call
+   * by call made a round that is a superset of the previous one transiently
+   * match it, blocking calls that represented real progress, with the outcome
+   * depending on emission order. Declaration is best-effort — a call whose key
+   * material is exempt or unhashable is simply left out, and the per-call
+   * fallback chain in `enqueueDoomLoopEvaluation` still governs identity at
+   * record time.
+   *
+   * Only calls that the round will actually CHECK are declared. A `loopKey`
+   * function is user code that may count or log, so it must not run for a call
+   * the detector never evaluates: manual tool calls (no `execute`, no
+   * `onToolCalled`) are handed to the caller and never recorded, and every
+   * execution path skips them with the same `isAutoResolvableTool` predicate
+   * used here. Their absence from the declared set is also correct on its own
+   * terms — they are not evidence, so they are not part of the round.
+   *
+   * INVARIANT — every declared member must eventually be recorded. A call
+   * that is declared but never reaches the doom-loop checkpoint is a phantom
+   * member of the round's identity: the tool's streak silently resets the
+   * moment the phantom stops being emitted (pinned by the "declared-but-
+   * never-recorded member" test in doom-loop-fanout.test.ts). The filters
+   * below therefore MIRROR every path that skips recording — unknown/manual
+   * tools (`isAutoResolvableTool`, also gating executeAutoApproveTools and
+   * the approval-resume loop), `hookDeniedCalls` (consumed before the
+   * checkpoint in executeSingleToolCall), and `loopKey`-exempt calls (early
+   * return in checkDoomLoopBeforeExecution; the same resolution is cached
+   * here so both sides agree). If you add a new short-circuit between
+   * declaration and the checkpoint — a pre-execution gate, a batch filter —
+   * it MUST be reflected here, or fan-out detection degrades silently for
+   * that tool rather than failing loudly.
+   *
+   * KNOWN RESIDUAL (documented, not mirrored): a per-request timeout or
+   * abort can cancel a call AFTER declaration but BEFORE its checkpoint,
+   * leaving a declared phantom for that round. Bounded and fail-safe: the
+   * round-set streak for that tool resets when the phantom stops recurring,
+   * while per-call streaks are unaffected — detection degrades to per-call
+   * for the affected tool rather than being lost. Un-declaring mid-round
+   * would mutate the round's identity while it is being scored, which is the
+   * incremental-set order-dependence this design exists to prevent.
    */
-  private beginDoomLoopRound(): void {
-    if (!this.doomLoopMonitor) {
+  private async beginDoomLoopRound(batch: readonly ParsedToolCall<Tool>[] = []): Promise<void> {
+    const monitor = this.doomLoopMonitor;
+    if (!monitor) {
       return;
     }
     this.doomLoopRound++;
     this.doomLoopRoundDecisions.clear();
+    this.doomLoopRoundKeyMaterial.clear();
+
+    const declared: {
+      toolName: string;
+      keyMaterial: unknown;
+    }[] = [];
+    for (const toolCall of batch) {
+      const tool = this.options.tools?.find(
+        (t) => isClientTool(t) && t.function.name === toolCall.name,
+      );
+      /*
+       * Never checked => never recorded => must not be declared. Declaring a
+       * call that never arrives inflates the round's identity: a sibling that
+       * IS recorded gets scored against a set containing a phantom member, and
+       * the streak resets spuriously once the phantom stops appearing (e.g. the
+       * model drops a malformed call while still repeating the valid one).
+       * Keeping `loopKey` from running for such a call is the same check.
+       *
+       * This gate deliberately precedes the malformed-arguments branch below:
+       * a raw-string call to an unknown or manual tool is still never recorded.
+       */
+      if (tool === undefined || !isAutoResolvableTool(tool)) {
+        continue;
+      }
+      /*
+       * Same reasoning for a call the PermissionRequest hook denied without
+       * pausing: `hookDeniedCalls` is populated before the round begins, and
+       * `runToolWithHooks` synthesizes the rejection before reaching the
+       * doom-loop checkpoint, so the call is never recorded either.
+       */
+      if (this.hookDeniedCalls.has(toolCall.id)) {
+        continue;
+      }
+      const rawArgs: unknown = toolCall.arguments;
+      if (typeof rawArgs === 'string') {
+        // Malformed call: its identity is the raw string (see runToolWithHooks).
+        declared.push({
+          toolName: String(toolCall.name),
+          keyMaterial: rawArgs,
+        });
+        continue;
+      }
+      /*
+       * `resolveLoopKeyMaterial` catches a throwing `loopKey`, but not every
+       * throw: the field-list form reads `args[field]`, so a getter on the
+       * arguments object throws out of it uncaught. Declaration runs once for
+       * the whole batch, so letting that escape would fail the entire round —
+       * and the run — over one odd call, breaking the invariant that detection
+       * never affects a run except through its ladder actions. Skip just that
+       * call; the per-call checkpoint hits the same throw inside its own
+       * try/catch and applies the documented fallback chain there.
+       */
+      let resolution: LoopKeyResolution;
+      try {
+        resolution = resolveLoopKeyMaterial(
+          isClientTool(tool) ? tool.function.loopKey : undefined,
+          (toolCall.arguments ?? {}) as Record<string, unknown>,
+        );
+      } catch (error) {
+        console.warn(
+          `[DoomLoop] could not resolve loop identity for "${toolCall.name}" while declaring the round; ` +
+            'excluding it from the round set:',
+          error,
+        );
+        continue;
+      }
+      /*
+       * Cache so the per-call checkpoint does not invoke `loopKey` a second
+       * time; keyed by call id. Ids are MODEL-emitted strings and nothing
+       * upstream enforces uniqueness, so a duplicate id must not alias one
+       * call's identity onto another: overwriting here meant the first call's
+       * checkpoint read the second call's key material, its true fingerprint
+       * was never recorded, and a model emitting `(id=X, read a), (id=X,
+       * read b_i)` each round evaded the per-call detector for `a` entirely
+       * (measured: zero detections across four such rounds). On a duplicate
+       * id the cache poisons that id instead: both calls fall through to
+       * per-call resolution at the checkpoint, costing at most a duplicate
+       * `loopKey` invocation for the colliding calls — correctness over the
+       * single-invocation economy, for protocol-malformed input only.
+       */
+      if (this.doomLoopRoundKeyMaterial.has(toolCall.id)) {
+        this.doomLoopRoundKeyMaterial.set(toolCall.id, DUPLICATE_CALL_ID);
+      } else {
+        this.doomLoopRoundKeyMaterial.set(toolCall.id, resolution);
+      }
+      if (resolution.kind === 'exempt') {
+        continue;
+      }
+      declared.push({
+        toolName: String(toolCall.name),
+        keyMaterial: resolution.keyMaterial,
+      });
+    }
+    await monitor.declareRound(this.doomLoopRound, declared);
   }
 
   /**
@@ -1663,8 +1821,41 @@ export class ModelResult<
     // arguments, so what remains is the parsed record (or null/undefined for
     // no-args calls — coerced to {} the same way the PreToolUse payload is).
     const callArguments = (toolCall.arguments ?? {}) as Record<string, unknown>;
-    const loopKey = isClientTool(tool) ? tool.function.loopKey : undefined;
-    const resolution = resolveLoopKeyMaterial(loopKey, callArguments);
+    /*
+     * Reuse what `beginDoomLoopRound` resolved for this call when it declared
+     * the round. `loopKey` is user code — it may count, log, or return a fresh
+     * value each time — so it must run at most once per call. Resolving here
+     * as well would double-invoke it and, for a non-repeatable callback, make
+     * the declared identity and the recorded identity disagree.
+     */
+    const cached = this.doomLoopRoundKeyMaterial.get(toolCall.id);
+    let resolution: LoopKeyResolution;
+    if (cached !== undefined && cached !== DUPLICATE_CALL_ID) {
+      resolution = cached;
+    } else {
+      /*
+       * Not declared (undeclared round, or the declaration skipped this call).
+       * `resolveLoopKeyMaterial` can throw despite catching `loopKey` itself —
+       * the field-list form reads `args[field]`, so a getter on the arguments
+       * throws out of it. Detection must never reject a call or fail a run
+       * except through a ladder action, so skip detection for this one call.
+       */
+      try {
+        resolution = resolveLoopKeyMaterial(
+          isClientTool(tool) ? tool.function.loopKey : undefined,
+          callArguments,
+        );
+      } catch (error) {
+        console.warn(
+          `[DoomLoop] could not resolve loop identity for "${toolCall.name}"; ` +
+            'skipping detection for this call:',
+          error,
+        );
+        return {
+          blocked: false,
+        };
+      }
+    }
     if (resolution.kind === 'exempt') {
       return {
         blocked: false,
@@ -2487,7 +2678,7 @@ export class ModelResult<
   ): Promise<UnsentToolResult<TTools>[]> {
     // Auto-approved batch = one doom-loop round: identical parallel calls
     // count once (see beginDoomLoopRound).
-    this.beginDoomLoopRound();
+    await this.beginDoomLoopRound(toolCalls as ParsedToolCall<Tool>[]);
     const toolCallPromises = toolCalls.map(async (tc) => {
       const tool = this.options.tools?.find((t) => isClientTool(t) && t.function.name === tc.name);
       if (!tool || !isAutoResolvableTool(tool)) {
@@ -3258,7 +3449,7 @@ export class ModelResult<
   }> {
     // One executed batch = one doom-loop round: identical parallel calls in
     // this batch count as ONE piece of loop evidence and share a decision.
-    this.beginDoomLoopRound();
+    await this.beginDoomLoopRound(toolCalls);
     const toolCallPromises = toolCalls.map((toolCall) =>
       this.executeSingleToolCall(toolCall, turnContext),
     );
@@ -5131,7 +5322,15 @@ export class ModelResult<
     // The approved batch is one doom-loop round: N approved duplicates of
     // the same call count once (the sequential loop below still evaluates
     // in order; restored streaks from the persisted state carry forward).
-    this.beginDoomLoopRound();
+    // Declared from the approved calls only — a pending call the user did not
+    // approve is not part of this round.
+    await this.beginDoomLoopRound(
+      [
+        ...this.approvedToolCalls,
+      ]
+        .map((callId) => pendingCalls.find((tc) => tc.id === callId))
+        .filter((tc): tc is ParsedToolCall<Tool> => tc !== undefined),
+    );
 
     // Process approvals - execute the approved tools. Route through
     // runToolWithHooks so PreToolUse/PostToolUse fire even on this path.

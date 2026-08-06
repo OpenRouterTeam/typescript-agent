@@ -138,6 +138,8 @@ export type {
   DoomLoopTextOptions,
   DoomLoopVerdict,
   LoopKeyResolution,
+  ResolvedDoomLoopConfig,
+  ResolvedEscalationConfig,
   TextRepetitionResult,
 } from './lib/doom-loop.js';
 export {
@@ -149,6 +151,7 @@ export {
   fingerprintKeyMaterial,
   fingerprintToolCall,
   MAX_CANONICALIZE_DEPTH,
+  resolveDoomLoopOption,
   resolveLoopKeyMaterial,
 } from './lib/doom-loop.js';
 // Lifecycle hooks system (PreToolUse, PostToolUse, Stop, SessionStart, ...).
