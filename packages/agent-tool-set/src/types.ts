@@ -270,6 +270,14 @@ export type StatusByToolMap<TIds extends string> = {
  * `P['enabled']` and the snapshot is fully known at compile time.
  * When conditional ≠ never, TActive is the sound upper bound
  * `P['enabled'] | P['conditional']`; runtime arrays/status are exact.
+ *
+ * `disabled` is declared as the complement of the *definitely-enabled* set
+ * (`P['enabled']`), not of `TActive`. A conditional id's predicate can
+ * resolve to either outcome at runtime — `#resolveWithActivation` pushes it
+ * into `disabled` whenever the predicate says off — so conditional ids must
+ * remain in both the `enabled` and `disabled` upper bounds for the declared
+ * types to stay sound. (Subtracting `TActive`, which already includes
+ * `P['conditional']`, would wrongly exclude conditional ids from `disabled`.)
  */
 export type ResolvedToolSnapshot<
   TTools extends readonly Tool[],
@@ -287,8 +295,12 @@ export type ResolvedToolSnapshot<
   };
   /** IDs that resolved active (client + server). */
   readonly enabled: readonly (TActive & ToolIdsOfTuple<TTools>)[];
-  /** IDs that resolved inactive. */
-  readonly disabled: readonly Exclude<ToolIdsOfTuple<TTools>, TActive & ToolIdsOfTuple<TTools>>[];
+  /**
+   * IDs that resolved inactive (client + server). Sound upper bound: the
+   * complement of the definitely-enabled set, so conditional ids whose
+   * predicate resolves `false` are included here too.
+   */
+  readonly disabled: readonly Exclude<ToolIdsOfTuple<TTools>, P['enabled']>[];
   /** Exhaustive id → status entry. Every ToolIdsOfTuple key present. */
   readonly statusByTool: StatusByToolMap<ToolIdsOfTuple<TTools>>;
 };

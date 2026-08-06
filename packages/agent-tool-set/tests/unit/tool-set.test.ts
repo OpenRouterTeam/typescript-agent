@@ -507,7 +507,27 @@ describe('compile-time partition inference', () => {
     // Static-only resolve is exact; with conditional IDs, tools is the upper bound.
     const snapshot = ts.resolve();
     expectTypeOf(snapshot.enabled).toEqualTypeOf<readonly ('a' | 'c')[]>();
-    expectTypeOf(snapshot.disabled).toEqualTypeOf<readonly 'b'[]>();
+    // `disabled`'s sound upper bound includes conditional ids too ('a' | 'c'),
+    // since a predicate can resolve to inactive for a different input.
+    expectTypeOf(snapshot.disabled).toEqualTypeOf<readonly ('a' | 'b' | 'c')[]>();
+  });
+
+  it('includes a conditional id in the runtime disabled array when its predicate resolves false', () => {
+    const ts = createToolSet({
+      tools: [
+        a,
+        b,
+      ] as const,
+    })
+      .deactivate('b')
+      .activateWhen('a', () => false);
+
+    const snapshot = ts.resolve();
+    expectTypeOf(snapshot.disabled).toEqualTypeOf<readonly ('a' | 'b')[]>();
+    expect(snapshot.disabled).toEqual([
+      'a',
+      'b',
+    ]);
   });
 
   it('returns an exactly-typed active tool tuple for static partitions', () => {
@@ -798,6 +818,7 @@ describe('defineSituations / resolveSituation', () => {
       'b',
       'c',
     ]);
+    expectTypeOf(denied.disabled).toEqualTypeOf<readonly ('b' | 'c')[]>();
     expect(denied.statusByTool.c).toMatchObject({
       enabled: false,
       reason: 'situation',
@@ -847,6 +868,7 @@ describe('defineSituations / resolveSituation', () => {
     expect(blocked.disabled).toEqual([
       'a',
     ]);
+    expectTypeOf(blocked.disabled).toEqualTypeOf<readonly 'a'[]>();
     expect(blocked.statusByTool.a).toEqual({
       enabled: false,
       reason: 'situation',
