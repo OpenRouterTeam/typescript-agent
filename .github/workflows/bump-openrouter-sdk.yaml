@@ -84,12 +84,37 @@ jobs:
       - name: Mint release-bot token
         id: app-token
         if: steps.bump.outputs.noop != 'true'
+        continue-on-error: true
         uses: actions/create-github-app-token@v2
         with:
           app-id: ${{ vars.RELEASE_BOT_APP_ID }}
           private-key: ${{ secrets.RELEASE_BOT_PRIVATE_KEY }}
           owner: OpenRouterTeam
           repositories: typescript-agent
+
+      # Same mint-failure paging as publish.yaml / release-train.yaml: this
+      # workflow is repository_dispatch-driven with nobody watching the run,
+      # so a broken App credential must page, not just redden the Actions UI.
+      - name: Alert if token minting failed
+        if: steps.bump.outputs.noop != 'true' && steps.app-token.outcome != 'success'
+        env:
+          SLACK_BOT_TOKEN: ${{ secrets.CI_RELEASE_ALERT_SLACK_BOT_TOKEN }}
+          SLACK_CHANNEL_ID: ${{ secrets.CI_RELEASE_ALERT_SLACK_CHANNEL_ID }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          TEXT=":rotating_light: SDK bump: could not mint the release-bot App token (RELEASE_BOT_APP_ID/RELEASE_BOT_PRIVATE_KEY missing or App uninstalled?). The @openrouter/sdk bump chain is stalled. <${RUN_URL}|run>"
+          echo "::error::App token minting failed — SDK bump chain stalled."
+          if [ -n "${SLACK_BOT_TOKEN:-}" ] && [ -n "${SLACK_CHANNEL_ID:-}" ]; then
+            curl -fsS -X POST https://slack.com/api/chat.postMessage \
+              -H "Authorization: Bearer ${SLACK_BOT_TOKEN}" \
+              -H "Content-type: application/json; charset=utf-8" \
+              --data "$(python3 -c "import json,sys; print(json.dumps({'channel':sys.argv[1],'unfurl_links':False,'text':sys.argv[2]}))" "$SLACK_CHANNEL_ID" "$TEXT")" \
+              >/dev/null || echo "::warning::Slack post failed"
+          else
+            echo "(slack not configured; would have posted) $TEXT"
+          fi
+          exit 1
 
       # Phase 2: close superseded PRs + push. Token passed per-command; never
       # persisted to .git/config.
@@ -141,12 +166,37 @@ jobs:
       # token may expire during a long gate anyway (1h lifetime, 30m poll).
       - name: Mint release-bot token
         id: app-token
+        continue-on-error: true
         uses: actions/create-github-app-token@v2
         with:
           app-id: ${{ vars.RELEASE_BOT_APP_ID }}
           private-key: ${{ secrets.RELEASE_BOT_PRIVATE_KEY }}
           owner: OpenRouterTeam
           repositories: typescript-agent
+
+      # Same mint-failure paging as the bump job above: at this point a bump
+      # PR is already open and unmerged, so a silent stall leaves it dangling.
+      - name: Alert if token minting failed
+        if: steps.app-token.outcome != 'success'
+        env:
+          SLACK_BOT_TOKEN: ${{ secrets.CI_RELEASE_ALERT_SLACK_BOT_TOKEN }}
+          SLACK_CHANNEL_ID: ${{ secrets.CI_RELEASE_ALERT_SLACK_CHANNEL_ID }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          PR: ${{ needs.bump.outputs.pr_number }}
+        run: |
+          set -euo pipefail
+          TEXT=":rotating_light: SDK bump: could not mint the App token for the gate job — PR #${PR} is open but ungated/unmerged. Merge it manually or re-run after fixing the App credentials. <${RUN_URL}|run>"
+          echo "::error::App token minting failed — bump PR #${PR} left ungated."
+          if [ -n "${SLACK_BOT_TOKEN:-}" ] && [ -n "${SLACK_CHANNEL_ID:-}" ]; then
+            curl -fsS -X POST https://slack.com/api/chat.postMessage \
+              -H "Authorization: Bearer ${SLACK_BOT_TOKEN}" \
+              -H "Content-type: application/json; charset=utf-8" \
+              --data "$(python3 -c "import json,sys; print(json.dumps({'channel':sys.argv[1],'unfurl_links':False,'text':sys.argv[2]}))" "$SLACK_CHANNEL_ID" "$TEXT")" \
+              >/dev/null || echo "::warning::Slack post failed"
+          else
+            echo "(slack not configured; would have posted) $TEXT"
+          fi
+          exit 1
 
       - name: Wait for Perry + CI, then merge or alert
         env:

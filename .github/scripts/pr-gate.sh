@@ -199,6 +199,22 @@ LAST_REASON=""
 while :; do
   NOW=$(date +%s); ELAPSED=$((NOW - START)); PERRY_ELAPSED=$((NOW - PERRY_START))
 
+  # Deadlines at the TOP of the loop, before any branch can `continue` past
+  # them: the settle re-check path loops back whenever the verdict flips away
+  # from PASS, so bottom-of-loop checks would let a PR oscillating green/
+  # not-green spin past both deadlines until the job's own 6-hour limit —
+  # long after the job's App token expired.
+  if [ "$ELAPSED" -ge "$TIMEOUT" ]; then
+    slack ":warning: ${GATE_LABEL} <${PR_URL}|PR #${PR}> did not settle within ${TIMEOUT}s (last: ${LAST_REASON:-none}). Not merging. <${RUN_URL:-$PR_URL}|run>"
+    echo "::error::Gate timed out after ${TIMEOUT}s (last: ${LAST_REASON:-none})"
+    exit 1
+  fi
+  if [ $((NOW - WALL_START)) -ge "$MAX_WALL" ]; then
+    slack ":warning: ${GATE_LABEL} <${PR_URL}|PR #${PR}> hit the ${MAX_WALL}s wall-clock ceiling (repeated head refreshes?) — stopping before the job credential expires. Re-run to continue gating. <${RUN_URL:-$PR_URL}|run>"
+    echo "::error::Gate hit the ${MAX_WALL}s wall-clock ceiling (last: ${LAST_REASON:-none})"
+    exit 1
+  fi
+
   check_hold "during the gate"
 
   REASON="$(verdict 2>/tmp/gate.state)" || true
@@ -307,15 +323,5 @@ while :; do
       ;;
   esac
 
-  if [ "$ELAPSED" -ge "$TIMEOUT" ]; then
-    slack ":warning: ${GATE_LABEL} <${PR_URL}|PR #${PR}> did not settle within ${TIMEOUT}s (last: ${REASON}). Not merging. <${RUN_URL:-$PR_URL}|run>"
-    echo "::error::Gate timed out after ${TIMEOUT}s (last: ${REASON})"
-    exit 1
-  fi
-  if [ $((NOW - WALL_START)) -ge "$MAX_WALL" ]; then
-    slack ":warning: ${GATE_LABEL} <${PR_URL}|PR #${PR}> hit the ${MAX_WALL}s wall-clock ceiling (repeated head refreshes?) — stopping before the job credential expires. Re-run to continue gating. <${RUN_URL:-$PR_URL}|run>"
-    echo "::error::Gate hit the ${MAX_WALL}s wall-clock ceiling (last: ${REASON})"
-    exit 1
-  fi
   sleep "$INTERVAL"
 done
