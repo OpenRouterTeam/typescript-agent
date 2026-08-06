@@ -160,6 +160,25 @@ describe('convertToolsToAPIFormat', () => {
     });
   });
 
+  it('serializes strict: false as false instead of null', () => {
+    const nonStrictTool = tool({
+      name: 'echo',
+      inputSchema: z.object({
+        msg: z.string(),
+      }),
+      strict: false,
+      execute: ({ msg }) => msg,
+    });
+    const api = convertToolsToAPIFormat([
+      nonStrictTool,
+    ]);
+    expect(api[0]).toMatchObject({
+      type: 'function',
+      strict: false,
+    });
+    expect(api[0]?.strict).not.toBeNull();
+  });
+
   it('defaults strict to null when not declared', () => {
     const plainTool = tool({
       name: 'echo',
