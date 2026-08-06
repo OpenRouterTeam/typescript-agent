@@ -1389,29 +1389,64 @@ export type CorrelatedToolResultEvent<T extends Tool> = ToolResultEvent<
 };
 
 /**
+ * Widest backward-compatible shape for {@link CorrelatedToolEventUnion} when
+ * `T` is the generic `readonly Tool[]` (e.g. a tool handle from
+ * `@openrouter/mcp`, whose concrete tuple isn't known at the type level).
+ * Mirrors the pre-existing {@link ToolPreliminaryResultEvent} /
+ * {@link ToolResultEvent} default shapes.
+ */
+type WidestCorrelatedToolEvent = ToolPreliminaryResultEvent | ToolResultEvent;
+
+/**
  * Discriminated union of name-correlated tool events across a tools tuple.
  * Checking `event.toolName === 'my_tool'` narrows `result` to that tool's output.
+ *
+ * For the generic `readonly Tool[]` case, falls back to the widest
+ * backward-compatible shape instead of collapsing to `never`: the mapped-type
+ * check `T[K] extends ClientTool` is a non-distributive check on the indexed
+ * access `T[K]` (only a *naked* type parameter distributes over a union), so
+ * when `T[K]` resolves to the full `Tool` union (`ClientTool | ServerToolBase`)
+ * the check fails as a monolithic comparison rather than narrowing per-member.
  */
-export type CorrelatedToolEventUnion<T extends readonly Tool[]> = {
-  [K in keyof T]: T[K] extends ClientTool
-    ? CorrelatedToolPreliminaryResultEvent<T[K]> | CorrelatedToolResultEvent<T[K]>
-    : never;
-}[number];
+export type CorrelatedToolEventUnion<T extends readonly Tool[]> = readonly Tool[] extends T
+  ? WidestCorrelatedToolEvent
+  : {
+      [K in keyof T]: T[K] extends ClientTool
+        ? CorrelatedToolPreliminaryResultEvent<T[K]> | CorrelatedToolResultEvent<T[K]>
+        : never;
+    }[number];
+
+/**
+ * Widest backward-compatible shape for {@link CorrelatedToolStreamPreliminaryUnion}
+ * when `T` is the generic `readonly Tool[]`. Mirrors the pre-existing
+ * {@link ToolStreamEvent} preliminary-result shape.
+ */
+type WidestCorrelatedToolStreamPreliminary = {
+  type: 'preliminary_result';
+  toolCallId: string;
+  toolName: string;
+  result: unknown;
+};
 
 /**
  * Discriminated union of name-correlated preliminary stream events
- * (legacy `getToolStream` shape) across a tools tuple.
+ * (legacy `getToolStream` shape) across a tools tuple. Falls back to the
+ * widest backward-compatible shape for the generic `readonly Tool[]` case;
+ * see {@link CorrelatedToolEventUnion} for why the naive mapped check collapses.
  */
-export type CorrelatedToolStreamPreliminaryUnion<T extends readonly Tool[]> = {
-  [K in keyof T]: T[K] extends ClientTool
-    ? {
-        type: 'preliminary_result';
-        toolCallId: string;
-        toolName: InferToolName<T[K]>;
-        result: InferToolEvent<T[K]>;
-      }
-    : never;
-}[number];
+export type CorrelatedToolStreamPreliminaryUnion<T extends readonly Tool[]> =
+  readonly Tool[] extends T
+    ? WidestCorrelatedToolStreamPreliminary
+    : {
+        [K in keyof T]: T[K] extends ClientTool
+          ? {
+              type: 'preliminary_result';
+              toolCallId: string;
+              toolName: InferToolName<T[K]>;
+              result: InferToolEvent<T[K]>;
+            }
+          : never;
+      }[number];
 
 /**
  * Tool call output event carrying the fully-formed FunctionCallOutputItem.
