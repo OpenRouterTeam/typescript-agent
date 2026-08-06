@@ -6132,6 +6132,26 @@ export class ModelResult<
           this.hasExecutableToolCalls(pendingToolCalls)
         ) {
           const turnNumber = currentRound + 1;
+
+          // Gate these calls exactly like a normal round would. This path
+          // executes real tools, so it needs the same approval check as the
+          // in-loop call sites above — without it, `stopWhen` firing on a turn
+          // that carries a `requireApproval` call would run that call
+          // unguarded, and hook-based 'deny' would never fire either (the
+          // deny bookkeeping lives inside handleApprovalCheck).
+          //
+          // On pause, handleApprovalCheck persists `pendingToolCalls` +
+          // status 'awaiting_approval', executes any auto-approved calls as
+          // unsent results, and sets `finalResponse` — so returning here is
+          // safe: nothing executed, so there is no round to record, and we
+          // must NOT fall through to markStateComplete() or the final
+          // text-coercion request. `sessionEndReason` stays 'max_turns' —
+          // accurate (the loop did stop on the stop condition) and consistent
+          // with the HITL pause return further down this same block.
+          if (await this.handleApprovalCheck(pendingToolCalls, turnNumber, currentResponse)) {
+            return;
+          }
+
           const turnContext: TurnContext = {
             numberOfTurns: turnNumber,
           };

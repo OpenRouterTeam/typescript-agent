@@ -1,4 +1,10 @@
 import type * as models from '@openrouter/sdk/models';
+// Same zod entry point the executor validates through (see
+// `validateToolInput` in tool-executor.ts) so the approval predicate and
+// `execute` agree on parse semantics. Imported directly rather than reusing
+// that helper because tool-executor.ts imports this module — sharing it would
+// create an import cycle.
+import * as z4 from 'zod/v4';
 import type {
   ConversationState,
   ParsedToolCall,
@@ -294,18 +300,27 @@ export async function toolRequiresApproval<TTools extends readonly Tool[]>(
   const requireApproval = tool.function.requireApproval;
 
   // If it's a function, call it with the tool's arguments and context.
-  // Arguments have already been parsed and validated against the tool's
-  // Zod inputSchema (a ZodObject), so the runtime shape is always a
-  // record here. A non-record value signals a real upstream bug — surface
-  // it rather than substituting an empty object.
+  //
+  // `toolCall.arguments` at this point is only the JSON-parsed wire payload
+  // (see extractToolCallsFromResponse) — it has NOT been validated against
+  // the tool's Zod inputSchema. The executor validates separately, right
+  // before calling `execute` (see validateToolInput in tool-executor.ts), so
+  // handing the raw payload to the predicate would let the two see different
+  // values whenever the schema applies a default, coercion, or transform
+  // (e.g. schema `{ dangerous: z.boolean().default(true) }` + model emits
+  // `{}`: the predicate sees `undefined` and waves the call through, then
+  // `execute` runs with `dangerous: true`).
+  //
+  // Parse with the same schema the executor uses so the predicate decides on
+  // exactly the values `execute` will receive. Fail CLOSED: if the arguments
+  // don't satisfy the schema there is no trustworthy value to judge, so
+  // require approval rather than guessing.
   if (typeof requireApproval === 'function') {
-    const rawArgs: unknown = toolCall.arguments;
-    if (!isRecord(rawArgs)) {
-      throw new Error(
-        `toolCall.arguments for "${toolCall.name}" must be an object after Zod validation, got ${rawArgs === null ? 'null' : Array.isArray(rawArgs) ? 'array' : typeof rawArgs}`,
-      );
+    const parsed = z4.safeParse(tool.function.inputSchema, toolCall.arguments);
+    if (!parsed.success || !isRecord(parsed.data)) {
+      return true;
     }
-    return requireApproval(rawArgs, context);
+    return requireApproval(parsed.data, context);
   }
 
   // Otherwise treat as boolean
