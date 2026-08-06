@@ -252,72 +252,6 @@ jobs:
       # packages are already on npm when the dispatches run, so a repo missing
       # from the App installation must degrade to a skipped notification with
       # a warning — exactly like a failed dispatch — never a red release.
-      # One narrowly-scoped token PER dispatch target, each best-effort.
-      # Not one shared mint: an explicit multi-repo list is all-or-nothing
-      # (one uninstalled port repo kills the unrelated monorepo notification
-      # too), and an owner-wide mint hands the job a token for every repo the
-      # App is installed on. Per-target mints get both properties — a missing
-      # target degrades only its own notification, and each token can touch
-      # exactly one repo.
-      - name: Mint dispatch token (openrouter-web)
-        id: web-token
-        if: ${{ !cancelled() && !inputs.dry-run }}
-        continue-on-error: true
-        uses: actions/create-github-app-token@v2
-        with:
-          app-id: ${{ vars.RELEASE_BOT_APP_ID }}
-          private-key: ${{ secrets.RELEASE_BOT_PRIVATE_KEY }}
-          owner: OpenRouterTeam
-          repositories: openrouter-web
-
-      - name: Mint dispatch token (python-agent)
-        id: py-token
-        if: ${{ !cancelled() && !inputs.dry-run }}
-        continue-on-error: true
-        uses: actions/create-github-app-token@v2
-        with:
-          app-id: ${{ vars.RELEASE_BOT_APP_ID }}
-          private-key: ${{ secrets.RELEASE_BOT_PRIVATE_KEY }}
-          owner: OpenRouterTeam
-          repositories: python-agent
-
-      - name: Mint dispatch token (go-agent)
-        id: go-token
-        if: ${{ !cancelled() && !inputs.dry-run }}
-        continue-on-error: true
-        uses: actions/create-github-app-token@v2
-        with:
-          app-id: ${{ vars.RELEASE_BOT_APP_ID }}
-          private-key: ${{ secrets.RELEASE_BOT_PRIVATE_KEY }}
-          owner: OpenRouterTeam
-          repositories: go-agent
-
-      # Degraded ≠ silent: annotations alone are invisible on a green
-      # scheduled run, so also page the release-alert channel (no-op until
-      # the CI_RELEASE_ALERT_* secrets exist, like the train's alerts).
-      - name: Warn about unavailable dispatch tokens
-        if: ${{ !cancelled() && !inputs.dry-run && (steps.web-token.outcome == 'failure' || steps.py-token.outcome == 'failure' || steps.go-token.outcome == 'failure') }}
-        env:
-          SLACK_BOT_TOKEN: ${{ secrets.CI_RELEASE_ALERT_SLACK_BOT_TOKEN }}
-          SLACK_CHANNEL_ID: ${{ secrets.CI_RELEASE_ALERT_SLACK_CHANNEL_ID }}
-          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-        run: |
-          set -euo pipefail
-          MISSING=""
-          [ "${{ steps.web-token.outcome }}" = "failure" ] && { echo "::warning::No dispatch token for openrouter-web — its HOP B notification will be skipped."; MISSING="$MISSING openrouter-web"; }
-          [ "${{ steps.py-token.outcome }}" = "failure" ] && { echo "::warning::No dispatch token for python-agent — its HOP C notification will be skipped."; MISSING="$MISSING python-agent"; }
-          [ "${{ steps.go-token.outcome }}" = "failure" ] && { echo "::warning::No dispatch token for go-agent — its HOP C notification will be skipped."; MISSING="$MISSING go-agent"; }
-          TEXT=":warning: Release publish: could not mint dispatch token(s) for${MISSING} (App not installed there?). Their release notifications were skipped — trigger downstream flows manually. <${RUN_URL}|run>"
-          if [ -n "${SLACK_BOT_TOKEN:-}" ] && [ -n "${SLACK_CHANNEL_ID:-}" ]; then
-            curl -fsS -X POST https://slack.com/api/chat.postMessage \
-              -H "Authorization: Bearer ${SLACK_BOT_TOKEN}" \
-              -H "Content-type: application/json; charset=utf-8" \
-              --data "$(python3 -c "import json,sys; print(json.dumps({'channel':sys.argv[1],'unfurl_links':False,'text':sys.argv[2]}))" "$SLACK_CHANNEL_ID" "$TEXT")" \
-              >/dev/null || echo "::warning::Slack post failed"
-          else
-            echo "(slack not configured; would have posted) $TEXT"
-          fi
-
       # HOP B trigger: when @openrouter/agent is actually published, tell the
       # monorepo (openrouter-web) to bump its pinned @openrouter/agent for
       # server tools. Two publish paths produce a real publish:
@@ -349,6 +283,77 @@ jobs:
             echo "Published @openrouter/agent $VERSION"
           else
             echo "No new @openrouter/agent publish detected — no dispatch"
+          fi
+
+      # Minted AFTER publish detection and gated on it: publish.yaml runs on
+      # every push to main, and most runs release nothing — minting (and
+      # potentially paging about) dispatch tokens on those runs would be
+      # noise. These steps only run when a version actually shipped.
+      #
+      # One narrowly-scoped token PER dispatch target, each best-effort.
+      # Not one shared mint: an explicit multi-repo list is all-or-nothing
+      # (one uninstalled port repo kills the unrelated monorepo notification
+      # too), and an owner-wide mint hands the job a token for every repo the
+      # App is installed on. Per-target mints get both properties — a missing
+      # target degrades only its own notification, and each token can touch
+      # exactly one repo.
+      - name: Mint dispatch token (openrouter-web)
+        id: web-token
+        if: ${{ !cancelled() && !inputs.dry-run && steps.published.outputs.version != '' }}
+        continue-on-error: true
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ vars.RELEASE_BOT_APP_ID }}
+          private-key: ${{ secrets.RELEASE_BOT_PRIVATE_KEY }}
+          owner: OpenRouterTeam
+          repositories: openrouter-web
+
+      - name: Mint dispatch token (python-agent)
+        id: py-token
+        if: ${{ !cancelled() && !inputs.dry-run && steps.published.outputs.version != '' }}
+        continue-on-error: true
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ vars.RELEASE_BOT_APP_ID }}
+          private-key: ${{ secrets.RELEASE_BOT_PRIVATE_KEY }}
+          owner: OpenRouterTeam
+          repositories: python-agent
+
+      - name: Mint dispatch token (go-agent)
+        id: go-token
+        if: ${{ !cancelled() && !inputs.dry-run && steps.published.outputs.version != '' }}
+        continue-on-error: true
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ vars.RELEASE_BOT_APP_ID }}
+          private-key: ${{ secrets.RELEASE_BOT_PRIVATE_KEY }}
+          owner: OpenRouterTeam
+          repositories: go-agent
+
+      # Degraded ≠ silent: annotations alone are invisible on a green
+      # scheduled run, so also page the release-alert channel (no-op until
+      # the CI_RELEASE_ALERT_* secrets exist, like the train's alerts).
+      - name: Warn about unavailable dispatch tokens
+        if: ${{ !cancelled() && !inputs.dry-run && steps.published.outputs.version != '' && (steps.web-token.outcome == 'failure' || steps.py-token.outcome == 'failure' || steps.go-token.outcome == 'failure') }}
+        env:
+          SLACK_BOT_TOKEN: ${{ secrets.CI_RELEASE_ALERT_SLACK_BOT_TOKEN }}
+          SLACK_CHANNEL_ID: ${{ secrets.CI_RELEASE_ALERT_SLACK_CHANNEL_ID }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          MISSING=""
+          [ "${{ steps.web-token.outcome }}" = "failure" ] && { echo "::warning::No dispatch token for openrouter-web — its HOP B notification will be skipped."; MISSING="$MISSING openrouter-web"; }
+          [ "${{ steps.py-token.outcome }}" = "failure" ] && { echo "::warning::No dispatch token for python-agent — its HOP C notification will be skipped."; MISSING="$MISSING python-agent"; }
+          [ "${{ steps.go-token.outcome }}" = "failure" ] && { echo "::warning::No dispatch token for go-agent — its HOP C notification will be skipped."; MISSING="$MISSING go-agent"; }
+          TEXT=":warning: Release publish: could not mint dispatch token(s) for${MISSING} (App not installed there?). Their release notifications were skipped — trigger downstream flows manually. <${RUN_URL}|run>"
+          if [ -n "${SLACK_BOT_TOKEN:-}" ] && [ -n "${SLACK_CHANNEL_ID:-}" ]; then
+            curl -fsS -X POST https://slack.com/api/chat.postMessage \
+              -H "Authorization: Bearer ${SLACK_BOT_TOKEN}" \
+              -H "Content-type: application/json; charset=utf-8" \
+              --data "$(python3 -c "import json,sys; print(json.dumps({'channel':sys.argv[1],'unfurl_links':False,'text':sys.argv[2]}))" "$SLACK_CHANNEL_ID" "$TEXT")" \
+              >/dev/null || echo "::warning::Slack post failed"
+          else
+            echo "(slack not configured; would have posted) $TEXT"
           fi
 
       # continue-on-error for the same reason as HOP C: the packages are on
