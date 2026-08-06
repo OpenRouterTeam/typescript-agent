@@ -139,6 +139,13 @@ export type AgentToolConfig<
   description?: string;
   inputSchema: TInput;
   /**
+   * Whether providers should enforce strict schema adherence for this agent
+   * tool's generated arguments. OpenAI-style strict mode requires every
+   * property to be required; those providers may reject `.optional()` fields,
+   * so use `.nullable()` when the key may conceptually have no value.
+   */
+  strict?: boolean | null;
+  /**
    * Required. The mapped child result is validated against it — the same
    * rule every long-running tool obeys (results settle after the round).
    */
@@ -327,6 +334,7 @@ export function agentToolBuilder<
   };
   const optionalFields = [
     'description',
+    'strict',
     'contextSchema',
     'nextTurnParams',
     'requireApproval',

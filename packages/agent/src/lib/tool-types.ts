@@ -427,6 +427,17 @@ export interface BaseToolFunction<
   description?: string;
   inputSchema: TInput;
   /**
+   * Whether providers should enforce strict schema adherence when generating
+   * this tool's call arguments (OpenAI structured-outputs style). Serialized
+   * onto the wire tool definition; `null`/absent leaves provider default.
+   *
+   * OpenAI-style strict mode requires every declared object property to be
+   * listed in `required`. Use Zod `.nullable()` for values that may be absent
+   * conceptually; `.optional()` produces a schema those providers may reject.
+   * The SDK forwards the caller's schema unchanged.
+   */
+  strict?: boolean | null;
+  /**
    * Zod schema declaring the context data this tool needs.
    * `readonly` keeps TCtx covariant so tools carrying a concrete schema stay
    * assignable to the wide `Tool` union.

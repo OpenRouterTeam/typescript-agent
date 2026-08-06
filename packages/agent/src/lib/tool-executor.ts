@@ -128,7 +128,7 @@ export function convertToolsToAPIFormat(
       type: 'function' as const,
       name: tool.function.name,
       description: tool.function.description || null,
-      strict: null,
+      strict: tool.function.strict ?? null,
       parameters: convertZodToJsonSchema(tool.function.inputSchema),
     };
     return apiTool;
