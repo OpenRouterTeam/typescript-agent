@@ -120,9 +120,11 @@ jobs:
       # and is auto-revoked at job end, so the exfiltration surface the PAT
       # reviews worried about shrinks to a job-scoped credential.
       #
-      # The App must be installed on ALL FOUR repos listed: this one (push +
-      # Version PR) and the HOP B/C dispatch targets. Minting fails loudly if
-      # it isn't — no silent fallback to a broken release.
+      # Two tokens, deliberately: the release itself must never depend on the
+      # HOP dispatch targets. This one is scoped to THIS repo only and gates
+      # the publish path (fails loudly if the App/installation is missing).
+      # The cross-repo dispatch token below is minted separately, best-effort,
+      # matching the HOP steps' own "must not fail the release" contract.
       - name: Mint release-bot token
         id: app-token
         uses: actions/create-github-app-token@v2
@@ -130,7 +132,7 @@ jobs:
           app-id: ${{ vars.RELEASE_BOT_APP_ID }}
           private-key: ${{ secrets.RELEASE_BOT_PRIVATE_KEY }}
           owner: OpenRouterTeam
-          repositories: typescript-agent,openrouter-web,python-agent,go-agent
+          repositories: typescript-agent
 
       # Deliberately after install/build/test (see the checkout comment).
       # changesets/action pushes changeset-release/main (and release tags on
@@ -230,6 +232,31 @@ jobs:
         if: github.event_name == 'workflow_dispatch' && inputs.mode == 'publish' && inputs.dry-run
         run: pnpm -r publish --dry-run --access public --no-git-checks
 
+      # Cross-repo token for the HOP B/C dispatches only. Minted separately
+      # from the publish token and best-effort (continue-on-error): the
+      # packages are already on npm when the dispatches run, so a repo missing
+      # from the App installation must degrade to a skipped notification with
+      # a warning — exactly like a failed dispatch — never a red release.
+      # typescript-agent is in the list too: the HOP C step reads this repo's
+      # release tag via `gh api .../git/ref/tags/...` with this token. Its
+      # presence can't recreate the coupling problem — the publish token above
+      # already proved the App covers this repo, so only a HOP target going
+      # missing can fail this mint, and that failure is non-fatal by design.
+      - name: Mint dispatch token (best-effort)
+        id: dispatch-token
+        if: ${{ !cancelled() && !inputs.dry-run }}
+        continue-on-error: true
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ vars.RELEASE_BOT_APP_ID }}
+          private-key: ${{ secrets.RELEASE_BOT_PRIVATE_KEY }}
+          owner: OpenRouterTeam
+          repositories: typescript-agent,openrouter-web,python-agent,go-agent
+
+      - name: Warn if dispatch token unavailable
+        if: ${{ !cancelled() && !inputs.dry-run && steps.dispatch-token.outcome == 'failure' }}
+        run: echo "::warning::Could not mint the cross-repo dispatch token (App not installed on a HOP target?). Skipping HOP B/C notifications — trigger them manually or let the port crons catch up."
+
       # HOP B trigger: when @openrouter/agent is actually published, tell the
       # monorepo (openrouter-web) to bump its pinned @openrouter/agent for
       # server tools. Two publish paths produce a real publish:
@@ -264,11 +291,11 @@ jobs:
           fi
 
       - name: Dispatch monorepo bump
-        if: ${{ !inputs.dry-run && steps.published.outputs.version != '' }}
+        if: ${{ !inputs.dry-run && steps.published.outputs.version != '' && steps.dispatch-token.outcome == 'success' }}
         env:
           # Cross-repo App token; the App's contents:write on
           # OpenRouterTeam/openrouter-web makes the repository_dispatch accepted.
-          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          GH_TOKEN: ${{ steps.dispatch-token.outputs.token }}
         run: |
           set -euo pipefail
           gh api repos/OpenRouterTeam/openrouter-web/dispatches \
@@ -301,12 +328,12 @@ jobs:
       # `!cancelled()` keeps this independent of the HOP B step above: a failed
       # monorepo dispatch should not also stop the ports from being told.
       - name: Dispatch port repos
-        if: ${{ !cancelled() && !inputs.dry-run && steps.published.outputs.version != '' }}
+        if: ${{ !cancelled() && !inputs.dry-run && steps.published.outputs.version != '' && steps.dispatch-token.outcome == 'success' }}
         continue-on-error: true
         env:
           # Same cross-repo App token as HOP B; the App must also cover
           # OpenRouterTeam/python-agent and OpenRouterTeam/go-agent.
-          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          GH_TOKEN: ${{ steps.dispatch-token.outputs.token }}
           VERSION: ${{ steps.published.outputs.version }}
           SOURCE_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
