@@ -4747,6 +4747,17 @@ export class ModelResult<
   /**
    * Validate the final response has required fields.
    *
+   * Message prefixes (`Invalid final response: missing required fields`,
+   * `Invalid final response: empty or invalid output`) are load-bearing —
+   * callers and tests match on them. Detail is appended after an em dash;
+   * never reword the prefixes.
+   *
+   * The detail exists because the bare "empty or invalid output" message was
+   * routinely misread as "the model returned a tool call and validation
+   * rejected it" (issue #45). It does not: this is a pure array-length check,
+   * so a `function_call`-only output passes. Naming the actual defect —
+   * empty array vs. wrong type — stops that misdiagnosis at the error string.
+   *
    * @param response - The response to validate
    * @param allowEmptyOutput - When true, tolerate an empty (but present) output array
    * @throws Error if response is missing required fields or has invalid output
@@ -4756,13 +4767,23 @@ export class ModelResult<
     allowEmptyOutput = false,
   ): void {
     if (!response?.id || !response?.output) {
-      throw new Error('Invalid final response: missing required fields');
+      const missing: string[] = [];
+      if (!response?.id) {
+        missing.push('id');
+      }
+      if (!response?.output) {
+        missing.push('output');
+      }
+      throw new Error(`Invalid final response: missing required fields: ${missing.join(', ')}`);
     }
     if (!Array.isArray(response.output) || response.output.length === 0) {
       if (allowEmptyOutput) {
         return;
       }
-      throw new Error('Invalid final response: empty or invalid output');
+      const detail = Array.isArray(response.output)
+        ? `output array is empty (length 0) for response "${response.id}". The model returned no output items. This can happen when the provider returns an empty final turn; see the strictFinalResponse/allowFinalResponse options`
+        : `output is not an array (got ${describeNonRecord(response.output)}) for response "${response.id}"`;
+      throw new Error(`Invalid final response: empty or invalid output — ${detail}`);
     }
   }
 
