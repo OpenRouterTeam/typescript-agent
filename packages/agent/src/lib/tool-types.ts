@@ -858,8 +858,13 @@ export interface ServerToolBase {
   /**
    * Stable tool-set identity used by `@openrouter/agent-tool-set` activation.
    * Defaults to `server:${config.type}` when constructed via {@link serverTool}.
+   *
+   * Optional here for source compatibility with legacy hand-constructed
+   * `ServerToolBase` values that predate this field. `ServerTool<T, TId>`
+   * (the type returned by {@link serverTool}) still requires it as a
+   * literal `TId` via interface narrowing below.
    */
-  readonly id: string;
+  readonly id?: string;
 }
 
 /**
@@ -1318,8 +1323,13 @@ export interface APITool {
 export type ToolPreliminaryResultEvent<TEvent = unknown, TName extends string = string> = {
   type: 'tool.preliminary_result';
   toolCallId: string;
-  /** Name of the tool that produced this preliminary result */
-  toolName: TName;
+  /**
+   * Name of the tool that produced this preliminary result.
+   * Optional for source compatibility with legacy hand-constructed events
+   * that predate this field; {@link CorrelatedToolPreliminaryResultEvent}
+   * re-requires it as a literal for a concrete tool.
+   */
+  toolName?: TName;
   result: TEvent;
   timestamp: number;
 };
@@ -1338,8 +1348,13 @@ export type ToolResultEvent<
 > = {
   type: 'tool.result';
   toolCallId: string;
-  /** Name of the tool that produced this result */
-  toolName: TName;
+  /**
+   * Name of the tool that produced this result.
+   * Optional for source compatibility with legacy hand-constructed events
+   * that predate this field; {@link CorrelatedToolResultEvent} re-requires
+   * it as a literal for a concrete tool.
+   */
+  toolName?: TName;
   /**
    * Origin of the tool: `'mcp'` for tools wrapped from a remote MCP server
    * (whose `result` is `unknown`), `'client'` for locally-defined tools. Lets
@@ -1355,36 +1370,52 @@ export type ToolResultEvent<
 /**
  * Name-correlated preliminary result event for one concrete tool.
  * Narrowing on `toolName` recovers this tool's event payload type.
+ *
+ * `toolName` is optional on the underlying {@link ToolPreliminaryResultEvent}
+ * base (for legacy source compatibility), so it's overridden back to a
+ * required literal here via `Omit<...> & {...}` — parameterizing the base
+ * type alone does not re-require an optional field.
  */
-export type CorrelatedToolPreliminaryResultEvent<T extends Tool> = ToolPreliminaryResultEvent<
-  InferToolEvent<T>,
-  InferToolName<T>
->;
+export type CorrelatedToolPreliminaryResultEvent<T extends Tool> = Omit<
+  ToolPreliminaryResultEvent<InferToolEvent<T>, InferToolName<T>>,
+  'toolName'
+> & {
+  toolName: InferToolName<T>;
+};
 
 /**
  * Name-correlated final result event for one concrete tool.
  * Narrowing on `toolName` recovers this tool's result (and preliminary) types.
+ *
+ * `toolName` is optional on the underlying {@link ToolResultEvent} base (for
+ * legacy source compatibility), so it's overridden back to a required
+ * literal here via `Omit<...> & {...}` — parameterizing the base type alone
+ * does not re-require an optional field.
  */
-export type CorrelatedToolResultEvent<T extends Tool> = ToolResultEvent<
-  T extends {
-    readonly _mcp: true;
-  }
-    ? unknown
-    : [
-          Tool,
-        ] extends [
-          T,
-        ]
+export type CorrelatedToolResultEvent<T extends Tool> = Omit<
+  ToolResultEvent<
+    T extends {
+      readonly _mcp: true;
+    }
       ? unknown
-      : T extends
-            | ToolWithExecute<$ZodObject<$ZodShape>, infer O>
-            | ToolWithGenerator<$ZodObject<$ZodShape>, $ZodType<unknown>, infer O>
-            | HITLTool<$ZodObject<$ZodShape>, infer O>
-        ? zodInfer<O>
-        : InferToolOutput<T>,
-  T extends ToolWithGenerator<$ZodObject<$ZodShape>, infer E> ? zodInfer<E> : never,
-  InferToolName<T>
+      : [
+            Tool,
+          ] extends [
+            T,
+          ]
+        ? unknown
+        : T extends
+              | ToolWithExecute<$ZodObject<$ZodShape>, infer O>
+              | ToolWithGenerator<$ZodObject<$ZodShape>, $ZodType<unknown>, infer O>
+              | HITLTool<$ZodObject<$ZodShape>, infer O>
+          ? zodInfer<O>
+          : InferToolOutput<T>,
+    T extends ToolWithGenerator<$ZodObject<$ZodShape>, infer E> ? zodInfer<E> : never,
+    InferToolName<T>
+  >,
+  'toolName'
 > & {
+  toolName: InferToolName<T>;
   source: ToolSource<T>;
 };
 
@@ -1622,7 +1653,12 @@ export type ToolStreamEvent<TEvent = unknown, TName extends string = string> =
   | {
       type: 'preliminary_result';
       toolCallId: string;
-      toolName: TName;
+      /**
+       * Optional for source compatibility with legacy hand-constructed
+       * events; {@link CorrelatedToolStreamEvent} re-requires it as a
+       * literal for a concrete tool.
+       */
+      toolName?: TName;
       result: TEvent;
     };
 
@@ -1655,7 +1691,11 @@ export type ChatStreamEvent<TEvent = unknown, TName extends string = string> =
   | {
       type: 'tool.preliminary_result';
       toolCallId: string;
-      toolName: TName;
+      /**
+       * Optional for source compatibility with legacy hand-constructed
+       * events that predate this field.
+       */
+      toolName?: TName;
       result: TEvent;
     }
   | {
