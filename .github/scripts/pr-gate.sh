@@ -58,7 +58,14 @@ fi
 GATE_LABEL="${GATE_LABEL:-@openrouter/sdk bump}"
 
 INTERVAL="${INTERVAL:-30}"
-TIMEOUT="${TIMEOUT:-1800}"      # 30 min overall
+TIMEOUT="${TIMEOUT:-1800}"      # 30 min per vetted head (resets on head adoption)
+# Hard wall-clock ceiling that NEVER resets, unlike TIMEOUT: the head-adoption
+# path restarts TIMEOUT per fresh head, so repeated changesets/action refreshes
+# could otherwise keep the loop alive past the 1-hour lifetime of the App
+# installation token the caller minted — after which every gh call 401s and
+# the failure mode turns confusing. Default 50 min leaves headroom to alert
+# cleanly while the token still works.
+MAX_WALL="${MAX_WALL:-3000}"
 PERRY_TIMEOUT="${PERRY_TIMEOUT:-480}" # 8 min for perry/review to appear at all
 SETTLE="${SETTLE:-45}"
 
@@ -179,8 +186,9 @@ print("PASS", file=sys.stderr); print("all green")
 PY
 }
 
-echo "Gating PR #${PR} on ${REPO} (timeout ${TIMEOUT}s, interval ${INTERVAL}s)"
+echo "Gating PR #${PR} on ${REPO} (timeout ${TIMEOUT}s, max wall ${MAX_WALL}s, interval ${INTERVAL}s)"
 START=$(date +%s)
+WALL_START=$START # never reset — see MAX_WALL above
 # perry/review's "never appeared" clock. Reset whenever a new head is adopted
 # mid-gate: the fresh head's checks (perry included) start from scratch, so
 # measuring them against the run's original start time would misreport a
@@ -302,6 +310,11 @@ while :; do
   if [ "$ELAPSED" -ge "$TIMEOUT" ]; then
     slack ":warning: ${GATE_LABEL} <${PR_URL}|PR #${PR}> did not settle within ${TIMEOUT}s (last: ${REASON}). Not merging. <${RUN_URL:-$PR_URL}|run>"
     echo "::error::Gate timed out after ${TIMEOUT}s (last: ${REASON})"
+    exit 1
+  fi
+  if [ $((NOW - WALL_START)) -ge "$MAX_WALL" ]; then
+    slack ":warning: ${GATE_LABEL} <${PR_URL}|PR #${PR}> hit the ${MAX_WALL}s wall-clock ceiling (repeated head refreshes?) — stopping before the job credential expires. Re-run to continue gating. <${RUN_URL:-$PR_URL}|run>"
+    echo "::error::Gate hit the ${MAX_WALL}s wall-clock ceiling (last: ${REASON})"
     exit 1
   fi
   sleep "$INTERVAL"
