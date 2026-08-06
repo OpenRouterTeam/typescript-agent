@@ -11,6 +11,7 @@ import type {
   CorrelatedToolEventUnion,
   CorrelatedToolResultEvent,
   CorrelatedToolStreamEvent,
+  CorrelatedToolStreamPreliminaryUnion,
   InferToolName,
   Tool,
   ToolWithExecute,
@@ -154,3 +155,49 @@ expectTypeOf<CorrelatedToolResultEvent<typeof weather>['toolName']>().toEqualTyp
 expectTypeOf<CorrelatedToolResultEvent<typeof weather>['result']>().toEqualTypeOf<{
   tempC: number;
 }>();
+
+// --- Generic `readonly Tool[]` must not collapse to `never` -----------------
+//
+// A tool handle whose concrete tuple isn't known at the type level (e.g. an
+// `@openrouter/mcp` tool array typed as `readonly Tool[]`) must still produce
+// a usable, backward-compatible event shape instead of `never`. The mapped
+// check `T[K] extends ClientTool` doesn't distribute over the indexed access
+// `T[K]` when `T` is the wide `readonly Tool[]`, so these types fall back to
+// the widest shape (matching the pre-existing, non-tuple-parameterized
+// `ToolPreliminaryResultEvent`/`ToolResultEvent`/`ToolStreamEvent` defaults).
+type WideEvents = CorrelatedToolEventUnion<readonly Tool[]>;
+type WideStream = CorrelatedResponseStreamEvent<readonly Tool[]>;
+type WideToolStream = CorrelatedToolStreamEvent<readonly Tool[]>;
+type WidePreliminaryUnion = CorrelatedToolStreamPreliminaryUnion<readonly Tool[]>;
+
+expectTypeOf<WideEvents>().not.toBeNever();
+expectTypeOf<WideStream>().not.toBeNever();
+expectTypeOf<WideToolStream>().not.toBeNever();
+expectTypeOf<WidePreliminaryUnion>().not.toBeNever();
+
+// The wide shapes still carry `tool.result` / `tool.preliminary_result` /
+// `preliminary_result` variants (not silently dropped).
+expectTypeOf<Extract<WideEvents, { type: 'tool.result' }>>().not.toBeNever();
+expectTypeOf<Extract<WideEvents, { type: 'tool.preliminary_result' }>>().not.toBeNever();
+expectTypeOf<Extract<WideStream, { type: 'tool.result' }>>().not.toBeNever();
+expectTypeOf<Extract<WideStream, { type: 'tool.preliminary_result' }>>().not.toBeNever();
+expectTypeOf<Extract<WideToolStream, { type: 'preliminary_result' }>>().not.toBeNever();
+expectTypeOf<Extract<WidePreliminaryUnion, { type: 'preliminary_result' }>>().not.toBeNever();
+
+// `toolName`/`result` degrade gracefully to `string`/`unknown` for the wide
+// case (no correlation possible without a concrete tuple).
+declare const wideResult: Extract<WideEvents, { type: 'tool.result' }>;
+expectTypeOf(wideResult.toolName).toEqualTypeOf<string>();
+expectTypeOf(wideResult.result).toEqualTypeOf<unknown>();
+
+// --- Concrete tuples still retain full name correlation ----------------------
+//
+// Passing a real tuple (not the wide `readonly Tool[]`) must keep narrowing
+// `result` from a literal `toolName`, proving the wide-case fallback above
+// doesn't regress tuple correlation.
+declare const narrowResult: Extract<CorrelatedToolEventUnion<Tools>, { type: 'tool.result' }>;
+if (narrowResult.toolName === 'weather') {
+  expectTypeOf(narrowResult.result).toEqualTypeOf<{
+    tempC: number;
+  }>();
+}
