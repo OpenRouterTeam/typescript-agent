@@ -125,6 +125,13 @@ jobs:
       # the publish path (fails loudly if the App/installation is missing).
       # The cross-repo dispatch token below is minted separately, best-effort,
       # matching the HOP steps' own "must not fail the release" contract.
+      #
+      # Known constraint: App tokens cannot push changes under
+      # .github/workflows/ without the App also granting `workflows: write`
+      # (the push is rejected with "refusing to allow a GitHub App to create
+      # or update workflow"). The Version PR and SDK-bump branches never
+      # touch workflow files today; if one ever must, grant that permission
+      # on the App rather than working around the rejected push.
       - name: Mint release-bot token
         id: app-token
         uses: actions/create-github-app-token@v2
@@ -305,11 +312,18 @@ jobs:
           GH_TOKEN: ${{ steps.dispatch-token.outputs.token }}
         run: |
           set -euo pipefail
-          gh api repos/OpenRouterTeam/openrouter-web/dispatches \
-            -f event_type=openrouter-agent-published \
-            -F "client_payload[version]=${{ steps.published.outputs.version }}" \
-            -F "client_payload[source_run_url]=${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
-          echo "Dispatched openrouter-agent-published (version ${{ steps.published.outputs.version }}) to openrouter-web"
+          # if/else rather than a bare call: under continue-on-error a bare
+          # failure leaves a green job with no annotation — the warning is
+          # what makes the dropped notification visible (same pattern as the
+          # per-repo loop in the HOP C step).
+          if gh api repos/OpenRouterTeam/openrouter-web/dispatches \
+               -f event_type=openrouter-agent-published \
+               -F "client_payload[version]=${{ steps.published.outputs.version }}" \
+               -F "client_payload[source_run_url]=${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"; then
+            echo "Dispatched openrouter-agent-published (version ${{ steps.published.outputs.version }}) to openrouter-web"
+          else
+            echo "::warning::Failed to dispatch openrouter-agent-published to openrouter-web. Bump its pinned @openrouter/agent manually or re-dispatch from its own workflow."
+          fi
 
       # HOP C trigger: tell the Python and Go ports of @openrouter/agent that a
       # new version shipped, so each opens a PR porting the delta. Those repos run
