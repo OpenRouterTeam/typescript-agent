@@ -177,16 +177,63 @@ expectTypeOf<WidePreliminaryUnion>().not.toBeNever();
 
 // The wide shapes still carry `tool.result` / `tool.preliminary_result` /
 // `preliminary_result` variants (not silently dropped).
-expectTypeOf<Extract<WideEvents, { type: 'tool.result' }>>().not.toBeNever();
-expectTypeOf<Extract<WideEvents, { type: 'tool.preliminary_result' }>>().not.toBeNever();
-expectTypeOf<Extract<WideStream, { type: 'tool.result' }>>().not.toBeNever();
-expectTypeOf<Extract<WideStream, { type: 'tool.preliminary_result' }>>().not.toBeNever();
-expectTypeOf<Extract<WideToolStream, { type: 'preliminary_result' }>>().not.toBeNever();
-expectTypeOf<Extract<WidePreliminaryUnion, { type: 'preliminary_result' }>>().not.toBeNever();
+expectTypeOf<
+  Extract<
+    WideEvents,
+    {
+      type: 'tool.result';
+    }
+  >
+>().not.toBeNever();
+expectTypeOf<
+  Extract<
+    WideEvents,
+    {
+      type: 'tool.preliminary_result';
+    }
+  >
+>().not.toBeNever();
+expectTypeOf<
+  Extract<
+    WideStream,
+    {
+      type: 'tool.result';
+    }
+  >
+>().not.toBeNever();
+expectTypeOf<
+  Extract<
+    WideStream,
+    {
+      type: 'tool.preliminary_result';
+    }
+  >
+>().not.toBeNever();
+expectTypeOf<
+  Extract<
+    WideToolStream,
+    {
+      type: 'preliminary_result';
+    }
+  >
+>().not.toBeNever();
+expectTypeOf<
+  Extract<
+    WidePreliminaryUnion,
+    {
+      type: 'preliminary_result';
+    }
+  >
+>().not.toBeNever();
 
 // `toolName`/`result` degrade gracefully to `string`/`unknown` for the wide
 // case (no correlation possible without a concrete tuple).
-declare const wideResult: Extract<WideEvents, { type: 'tool.result' }>;
+declare const wideResult: Extract<
+  WideEvents,
+  {
+    type: 'tool.result';
+  }
+>;
 expectTypeOf(wideResult.toolName).toEqualTypeOf<string>();
 expectTypeOf(wideResult.result).toEqualTypeOf<unknown>();
 
@@ -195,7 +242,12 @@ expectTypeOf(wideResult.result).toEqualTypeOf<unknown>();
 // Passing a real tuple (not the wide `readonly Tool[]`) must keep narrowing
 // `result` from a literal `toolName`, proving the wide-case fallback above
 // doesn't regress tuple correlation.
-declare const narrowResult: Extract<CorrelatedToolEventUnion<Tools>, { type: 'tool.result' }>;
+declare const narrowResult: Extract<
+  CorrelatedToolEventUnion<Tools>,
+  {
+    type: 'tool.result';
+  }
+>;
 if (narrowResult.toolName === 'weather') {
   expectTypeOf(narrowResult.result).toEqualTypeOf<{
     tempC: number;
