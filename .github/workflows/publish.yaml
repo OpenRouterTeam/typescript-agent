@@ -472,11 +472,21 @@ jobs:
           # this repo ever goes private and the fallback would fire every time.
           # gh authenticates from GH_TOKEN in env, independent of .git/config.
           ENCODED_TAG="$(jq -rn --arg t "$TAG" '$t|@uri')"
-          if gh api "repos/${{ github.repository }}/git/ref/tags/${ENCODED_TAG}" >/dev/null 2>&1; then
+          # Distinguish "tag missing" (404) from auth/API failures (401 if the
+          # 1h App token expired on a very slow run, 5xx, network): both fall
+          # back to the commit SHA — same tree — but a triage-misleading
+          # "tag not on origin" message on a token failure would send someone
+          # hunting the wrong problem.
+          HTTP_STATUS="$(gh api "repos/${{ github.repository }}/git/ref/tags/${ENCODED_TAG}" >/dev/null 2>&1; echo $?)"
+          if [ "$HTTP_STATUS" = "0" ]; then
             REF="$TAG"
           else
             REF="${{ github.sha }}"
-            echo "::warning::${TAG} is not on origin; dispatching ref=${REF} instead."
+            if gh api rate_limit >/dev/null 2>&1; then
+              echo "::warning::${TAG} is not on origin; dispatching ref=${REF} instead."
+            else
+              echo "::warning::Could not query the tag (token expired or API failure — not necessarily a missing tag); dispatching ref=${REF} instead."
+            fi
           fi
 
           for ENTRY in "python-agent:${PY_TOKEN}" "go-agent:${GO_TOKEN}"; do
