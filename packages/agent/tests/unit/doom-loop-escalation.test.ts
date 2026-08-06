@@ -411,6 +411,53 @@ describe('engine escalation recovery', () => {
     });
   });
 
+  it('does not consume a caller choice replaced by an advisor override', async () => {
+    scriptModelTurns(
+      toolCallTurn('web_search', {
+        query: 'same',
+      }),
+      toolCallTurn('web_search', {
+        query: 'same',
+      }),
+      toolCallTurn('web_search', {
+        query: 'unblocked',
+      }),
+      textTurn('done'),
+    );
+
+    await callModel(client, {
+      model: 'cheap-model',
+      input: 'go',
+      tools: [
+        searchTool,
+      ] as const,
+      toolChoice: ({ numberOfTurns }) =>
+        numberOfTurns >= 2
+          ? {
+              type: 'function',
+              name: 'web_search',
+            }
+          : 'auto',
+      doomLoop: {
+        ladder: ESCALATE_AT_2,
+        escalation: {
+          advisor: true,
+        },
+      },
+    }).getText();
+
+    expect(requestOf(2)['toolChoice']).toMatchObject({
+      type: 'allowed_tools',
+      mode: 'required',
+    });
+    // The caller's web_search choice did not reach dispatch 2, so it remains
+    // armed and must still be forced after the one-turn advisor override.
+    expect(requestOf(3)['toolChoice']).toEqual({
+      type: 'function',
+      name: 'web_search',
+    });
+  });
+
   it('advisor object config merges over the defaults', async () => {
     scriptModelTurns(
       toolCallTurn('web_search', {

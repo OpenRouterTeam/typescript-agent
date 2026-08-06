@@ -1620,6 +1620,16 @@ export interface ConversationState<TTools extends readonly Tool[] = readonly Too
   messages: models.InputsUnion;
   /** Previous response ID for chaining (OpenRouter server-side optimization) */
   previousResponseId?: string;
+  /**
+   * RFC 8785 canonical key of the forced `toolChoice` most recently consumed
+   * by the active logical run. Persisted across approval, HITL, client-tool,
+   * and async-tool pauses so an unchanged forced choice stays relaxed after
+   * resume while a newly resolved forced value can re-arm.
+   *
+   * Cleared after an unforced caller choice is successfully dispatched or the
+   * run reaches a terminal exit.
+   */
+  consumedForcedToolChoiceKey?: string;
   /** Tool calls awaiting human approval */
   pendingToolCalls?: Array<ParsedToolCall<TTools[number]>>;
   /** Tool results executed but not yet sent to the model */

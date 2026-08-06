@@ -8,6 +8,7 @@ import {
   resumeToolResults,
   ToolTaskAlreadySettledError,
 } from '../../src/inner-loop/resume-tool-results.js';
+import { canonicalizeKeyMaterial } from '../../src/lib/doom-loop.js';
 import { tool } from '../../src/lib/tool.js';
 
 const mockBetaResponsesSend = vi.hoisted(() => vi.fn());
@@ -174,6 +175,31 @@ describe('tool.deferred — pause & placeholder', () => {
     expect(placeholder?.output).toContain('call the task tool');
 
     expect(await result.requiresApproval()).toBe(true);
+  });
+
+  it('does not commit a dynamic auto transition when deferred execution pauses before dispatch', async () => {
+    mockBetaResponsesSend.mockResolvedValueOnce({
+      ok: true,
+      value: makeResponse('resp_1', [
+        functionCallItem('call_d1', 'request_legal_review', '{"contractId":"c-9"}'),
+      ]),
+    });
+
+    const { accessor } = createMemoryAccessor();
+    const state = await callModel(client, {
+      model: 'test-model',
+      input: 'review contract c-9',
+      tools: [
+        legalReview,
+      ] as const,
+      toolChoice: ({ numberOfTurns }) => (numberOfTurns === 0 ? 'required' : 'auto'),
+      state: accessor,
+    }).getState();
+
+    expect(mockBetaResponsesSend).toHaveBeenCalledTimes(1);
+    expect(mockBetaResponsesSend.mock.calls[0]?.[1]?.responsesRequest?.toolChoice).toBe('required');
+    expect(state.status).toBe('awaiting_async_tools');
+    expect(state.consumedForcedToolChoiceKey).toBe(canonicalizeKeyMaterial('required'));
   });
 
   it('run returning a plain value resolves synchronously like a regular tool', async () => {
@@ -382,6 +408,54 @@ describe('tool.deferred — cross-process resume', () => {
     );
     const placeholderIdx = input.findIndex((m) => m.type === 'function_call_output');
     expect(envelopeIdx).toBeGreaterThan(placeholderIdx);
+  });
+
+  it('.resolve() with run config relaxes a previously satisfied required toolChoice', async () => {
+    mockBetaResponsesSend.mockResolvedValueOnce({
+      ok: true,
+      value: makeResponse('resp_1', [
+        functionCallItem('call_d1', 'request_legal_review', '{"contractId":"c-9"}'),
+      ]),
+    });
+    const { accessor, get } = createMemoryAccessor();
+
+    await callModel(client, {
+      model: 'test-model',
+      input: 'review contract c-9',
+      tools: [
+        legalReview,
+      ] as const,
+      toolChoice: 'required',
+      state: accessor,
+    }).getState();
+
+    expect(mockBetaResponsesSend.mock.calls[0]?.[1]?.responsesRequest?.toolChoice).toBe('required');
+    expect(get()?.consumedForcedToolChoiceKey).toBe(canonicalizeKeyMaterial('required'));
+    mockBetaResponsesSend.mockReset();
+
+    mockBetaResponsesSend.mockResolvedValueOnce({
+      ok: true,
+      value: makeResponse('resp_2', [
+        messageItem('msg_1', 'The contract was approved.'),
+      ]),
+    });
+
+    const result = await legalReview.resolve(client, {
+      state: accessor,
+      taskId: 'ticket_c-9',
+      output: {
+        approved: true,
+      },
+      run: {
+        model: 'test-model',
+        toolChoice: 'required',
+      },
+    });
+
+    expect(result).not.toBeNull();
+    await expect(result?.getText()).resolves.toBe('The contract was approved.');
+    expect(mockBetaResponsesSend).toHaveBeenCalledTimes(1);
+    expect(mockBetaResponsesSend.mock.calls[0]?.[1]?.responsesRequest?.toolChoice).toBe('auto');
   });
 
   it('output is validated against outputSchema before anything is persisted', async () => {

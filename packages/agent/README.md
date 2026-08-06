@@ -196,6 +196,26 @@ const confirmTool = tool({
 });
 ```
 
+**Forced tool choices** are one-shot for each resolved semantic value. After a
+forced choice produces a tool call, unchanged follow-up choices are relaxed to
+`auto` so the model can either call another tool or answer in text. A dynamic
+choice re-arms when it resolves to a different value (or after an unforced
+turn):
+
+```typescript
+callModel(client, {
+  model: 'openai/gpt-4o',
+  input: 'Plan, research, then submit.',
+  tools: [planTool, searchTool, submitTool] as const,
+  toolChoice: ({ numberOfTurns }) =>
+    numberOfTurns === 0
+      ? { type: 'function', name: 'plan' }
+      : numberOfTurns === 3
+        ? { type: 'function', name: 'submit' }
+        : 'auto',
+});
+```
+
 ### Stop Conditions
 
 Control when the agent loop stops executing tools:
