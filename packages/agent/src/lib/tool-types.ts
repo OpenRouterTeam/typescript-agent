@@ -433,8 +433,8 @@ export interface BaseToolFunction<
    *
    * OpenAI-style strict mode requires every declared object property to be
    * listed in `required`. Use Zod `.nullable()` for values that may be absent
-   * conceptually; `.optional()` produces an incompatible wire schema and the
-   * SDK rejects it before dispatch rather than changing the runtime contract.
+   * conceptually; `.optional()` produces a schema those providers may reject.
+   * The SDK forwards the caller's schema unchanged.
    */
   strict?: boolean | null;
   /**

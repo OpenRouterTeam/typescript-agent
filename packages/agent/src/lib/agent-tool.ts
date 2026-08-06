@@ -141,7 +141,8 @@ export type AgentToolConfig<
   /**
    * Whether providers should enforce strict schema adherence for this agent
    * tool's generated arguments. OpenAI-style strict mode requires every
-   * property to be required; use `.nullable()` rather than `.optional()`.
+   * property to be required; those providers may reject `.optional()` fields,
+   * so use `.nullable()` when the key may conceptually have no value.
    */
   strict?: boolean | null;
   /**

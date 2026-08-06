@@ -561,10 +561,10 @@ const weatherTool = tool({
 });
 ```
 
-When `strict: true`, the SDK validates the generated schema before dispatch
-and reports the exact optional-property path. Use `.nullable()`, or set
-`strict: false` when omission is part of the tool's contract. Provider support
-and additional strict-schema restrictions can vary.
+The SDK sends the generated schema unchanged. Providers validate it according
+to their own strict-mode dialect and the SDK propagates any API error. Use
+`.nullable()`, or set `strict: false` when omission is part of the tool's
+contract. Provider support and strict-schema restrictions can vary.
 
 ### Per-Tool Timeouts & Concurrency
 

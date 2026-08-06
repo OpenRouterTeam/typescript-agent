@@ -57,7 +57,8 @@ describe('full-field examples (PR documentation, compile-verified)', () => {
 
     // Lifecycle: 'sync' (default) | 'background' | 'deferred'
     lifecycle: 'background',
-    // `quality.default(...)` is optional on the wire, so use non-strict mode.
+    // Zod emits defaulted fields as required, but provider support for the
+    // `default` JSON Schema keyword varies, so this example stays non-strict.
     strict: false,
 
     // Schemas
@@ -157,7 +158,8 @@ describe('full-field examples (PR documentation, compile-verified)', () => {
     name: 'request_legal_review',
     description: 'Send a contract for legal review. Pauses until the webhook resolves it.',
     lifecycle: 'deferred',
-    // `urgency.default(...)` is optional on the wire, so use non-strict mode.
+    // Zod emits defaulted fields as required, but provider support for the
+    // `default` JSON Schema keyword varies, so this example stays non-strict.
     strict: false,
     inputSchema: z.object({
       contractId: z.string(),

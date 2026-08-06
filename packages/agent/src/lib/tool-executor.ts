@@ -108,53 +108,6 @@ export function convertZodToJsonSchema(zodSchema: $ZodType): Record<string, unkn
 }
 
 /**
- * Fail before dispatch when a generated schema cannot satisfy OpenAI-style
- * strict function calling. Zod `.optional()` intentionally omits a property
- * from `required`; silently rewriting it to nullable would make the wire
- * contract disagree with the caller's runtime Zod validator.
- */
-function assertOpenAIStrictToolSchemaCompatible(
-  toolName: string,
-  schema: Record<string, unknown>,
-): void {
-  const seen = new Set<object>();
-
-  const visit = (value: unknown, path: string): void => {
-    if (Array.isArray(value)) {
-      for (let index = 0; index < value.length; index++) {
-        visit(value[index], `${path}[${index}]`);
-      }
-      return;
-    }
-    if (!isNonNullObject(value) || seen.has(value)) {
-      return;
-    }
-
-    seen.add(value);
-    const properties = value['properties'];
-    if (isNonNullObject(properties)) {
-      const required = new Set(
-        Array.isArray(value['required'])
-          ? value['required'].filter((entry): entry is string => typeof entry === 'string')
-          : [],
-      );
-      const missing = Object.keys(properties).filter((property) => !required.has(property));
-      if (missing.length > 0) {
-        throw new Error(
-          `Tool "${toolName}" uses strict: true, but its generated JSON Schema has optional properties at "${path}": ${missing.map((property) => `"${property}"`).join(', ')}. OpenAI-style strict tool schemas require every property to be listed in required. Use Zod .nullable() instead of .optional(), or set strict: false.`,
-        );
-      }
-    }
-
-    for (const [key, child] of Object.entries(value)) {
-      visit(child, `${path}.${key}`);
-    }
-  };
-
-  visit(schema, 'parameters');
-}
-
-/**
  * Convert tools to OpenRouter API format. Server tools pass their SDK-shaped
  * config through untouched; client tools are packaged into the function-call
  * shape — their wire definitions are NEVER augmented per tool (interacting
@@ -171,16 +124,12 @@ export function convertToolsToAPIFormat(
     if (isServerTool(tool)) {
       return tool.config;
     }
-    const parameters = convertZodToJsonSchema(tool.function.inputSchema);
-    if (tool.function.strict === true) {
-      assertOpenAIStrictToolSchemaCompatible(tool.function.name, parameters);
-    }
     const apiTool: APITool = {
       type: 'function' as const,
       name: tool.function.name,
       description: tool.function.description || null,
       strict: tool.function.strict ?? null,
-      parameters,
+      parameters: convertZodToJsonSchema(tool.function.inputSchema),
     };
     return apiTool;
   });
