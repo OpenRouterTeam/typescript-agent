@@ -5,15 +5,22 @@
 
 import { expectTypeOf } from 'vitest';
 import * as z from 'zod';
-import { tool } from '../../src/lib/tool.js';
+import { serverTool, tool } from '../../src/lib/tool.js';
 import type {
+  ChatStreamEvent,
   CorrelatedResponseStreamEvent,
   CorrelatedToolEventUnion,
+  CorrelatedToolPreliminaryResultEvent,
   CorrelatedToolResultEvent,
   CorrelatedToolStreamEvent,
   CorrelatedToolStreamPreliminaryUnion,
   InferToolName,
+  ServerTool,
+  ServerToolBase,
   Tool,
+  ToolPreliminaryResultEvent,
+  ToolResultEvent,
+  ToolStreamEvent,
   ToolWithExecute,
 } from '../../src/lib/tool-types.js';
 
@@ -253,3 +260,123 @@ if (narrowResult.toolName === 'weather') {
     tempC: number;
   }>();
 }
+// --- Source compatibility: legacy hand-constructed shapes still compile ----
+//
+// `ServerToolBase.id` and the `toolName` field on the wide (non-correlated)
+// event types were made optional so that values built by hand before these
+// fields existed keep compiling under a minor release, without loosening the
+// strongly-typed literal guarantees on `serverTool()` output or on the
+// per-tool "correlated" event helpers below.
+
+// A legacy server tool literal that predates `id` compiles as `ServerToolBase`.
+const legacyServerTool: ServerToolBase = {
+  _brand: 'server-tool',
+  config: {
+    type: 'openrouter:datetime',
+  },
+};
+expectTypeOf(legacyServerTool).toExtend<Tool>();
+expectTypeOf(legacyServerTool.id).toEqualTypeOf<string | undefined>();
+
+// A legacy preliminary-result event literal that predates `toolName` compiles.
+const legacyPreliminary: ToolPreliminaryResultEvent = {
+  type: 'tool.preliminary_result',
+  toolCallId: 'call_1',
+  result: {
+    stage: 'start',
+  },
+  timestamp: Date.now(),
+};
+expectTypeOf(legacyPreliminary.toolName).toEqualTypeOf<string | undefined>();
+
+// A legacy result event literal that predates `toolName` compiles.
+const legacyResult: ToolResultEvent = {
+  type: 'tool.result',
+  toolCallId: 'call_1',
+  source: 'client',
+  result: {
+    tempC: 20,
+  },
+  timestamp: Date.now(),
+};
+expectTypeOf(legacyResult.toolName).toEqualTypeOf<string | undefined>();
+
+// A legacy `getToolStream` preliminary event literal that predates `toolName`.
+const legacyToolStreamEvent: ToolStreamEvent = {
+  type: 'preliminary_result',
+  toolCallId: 'call_1',
+  result: {
+    stage: 'start',
+  },
+};
+expectTypeOf(legacyToolStreamEvent.toolName).toEqualTypeOf<string | undefined>();
+
+// A legacy `getFullChatStream` preliminary event literal that predates `toolName`.
+const legacyChatStreamEvent: ChatStreamEvent = {
+  type: 'tool.preliminary_result',
+  toolCallId: 'call_1',
+  result: {
+    stage: 'start',
+  },
+};
+expectTypeOf(legacyChatStreamEvent.toolName).toEqualTypeOf<string | undefined>();
+
+// --- serverTool() factory output stays required + literal -------------------
+
+const publicSearch = serverTool(
+  {
+    type: 'web_search_2025_08_26',
+  },
+  {
+    id: 'server:public_search',
+  },
+);
+expectTypeOf(publicSearch.id).toEqualTypeOf<'server:public_search'>();
+expectTypeOf(publicSearch).toExtend<ServerTool<'web_search_2025_08_26', 'server:public_search'>>();
+// @ts-expect-error ServerTool<T, TId> still requires a literal `id`, not `string | undefined`
+const _missingId: ServerTool<'web_search_2025_08_26'> = {
+  _brand: 'server-tool',
+  config: {
+    type: 'web_search_2025_08_26',
+  },
+};
+void _missingId;
+
+// --- Correlated per-tool helpers still require + provide literal names -----
+
+expectTypeOf<
+  CorrelatedToolPreliminaryResultEvent<typeof progress>['toolName']
+>().toEqualTypeOf<'progress_tool'>();
+expectTypeOf<CorrelatedToolPreliminaryResultEvent<typeof progress>['result']>().toEqualTypeOf<{
+  stage: string;
+}>();
+
+// @ts-expect-error correlated preliminary events require a literal `toolName`, not optional
+const _preliminaryMissingName: CorrelatedToolPreliminaryResultEvent<typeof progress> = {
+  type: 'tool.preliminary_result',
+  toolCallId: 'call_1',
+  result: {
+    stage: 'start',
+  },
+  timestamp: Date.now(),
+};
+void _preliminaryMissingName;
+
+// @ts-expect-error correlated result events require a literal `toolName`, not optional
+const _resultMissingName: CorrelatedToolResultEvent<typeof weather> = {
+  type: 'tool.result',
+  toolCallId: 'call_1',
+  source: 'client',
+  result: {
+    tempC: 20,
+  },
+  timestamp: Date.now(),
+};
+void _resultMissingName;
+
+// Correlated tuple-typed unions still discriminate on a required literal `toolName`.
+expectTypeOf<CorrelatedToolEventUnion<Tools>['toolName']>().toEqualTypeOf<
+  'weather' | 'progress_tool' | 'manual_tool' | 'hitl_tool'
+>();
+expectTypeOf<Stream['toolName' & keyof Stream]>().not.toEqualTypeOf<string | undefined>();
+expectTypeOf<ToolStream['toolName' & keyof ToolStream]>().not.toEqualTypeOf<string | undefined>();
