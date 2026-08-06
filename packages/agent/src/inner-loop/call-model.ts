@@ -122,9 +122,18 @@ export function callModel<
   // before they are registered for execution, so the model cannot call filtered
   // tools and the executor does not carry orphaned definitions.
   const activeSet = activeTools ? new Set(activeTools) : undefined;
-  const filteredTools = activeSet
+  const activeFilteredTools = activeSet
     ? tools?.filter((t) => isServerTool(t) || activeSet.has(t.function.name))
     : tools;
+
+  // Collapse a filtered-to-empty (or explicitly empty) tools list to
+  // `undefined` so a fully-deactivated tool set (a first-class output of
+  // `inferTools()`/`.resolve()`) omits the outbound `tools` key entirely
+  // instead of sending `tools: []` — several providers reject an empty
+  // array outright. `ModelResult` treats `undefined` as its no-tools state
+  // (see the `?.length` / truthiness checks throughout), so this also keeps
+  // the engine's tool-execution machinery correctly disabled.
+  const filteredTools = activeFilteredTools?.length ? activeFilteredTools : undefined;
 
   // Convert tools to API format - no cast needed now that convertToolsToAPIFormat accepts readonly
   const apiTools = filteredTools ? convertToolsToAPIFormat(filteredTools) : undefined;

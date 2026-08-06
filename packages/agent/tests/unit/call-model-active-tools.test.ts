@@ -162,4 +162,48 @@ describe('callModel activeTools filter', () => {
       'b',
     ]);
   });
+
+  it('omits the tools key entirely (not an empty array) when activeTools filters out every tool', async () => {
+    const captured: {
+      names: string[] | null;
+      raw: unknown;
+    } = {
+      names: null,
+      raw: null,
+    };
+    const httpClient = makeCapturingClient(captured);
+    const client = new OpenRouterCore({
+      apiKey: 'test-key',
+      httpClient,
+    });
+
+    const result = callModel(client, {
+      model: 'openai/gpt-4o-mini',
+      input: 'hi',
+      tools: [
+        toolA,
+        toolB,
+      ],
+      activeTools: [
+        'missing',
+      ],
+    });
+
+    try {
+      await result.getText();
+    } catch (err) {
+      if (captured.raw === null) {
+        throw err;
+      }
+    }
+
+    if (captured.raw === null) {
+      throw new Error('request body was not captured');
+    }
+    expect(isCapturedPayload(captured.raw)).toBe(true);
+    // The bug this guards against: sending `tools: []` instead of omitting the
+    // key. Several providers reject an explicit empty tools array outright, so
+    // the outbound request must not have a `tools` property at all.
+    expect(captured.raw).not.toHaveProperty('tools');
+  });
 });
