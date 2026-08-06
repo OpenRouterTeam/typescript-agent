@@ -71,6 +71,8 @@ export type {
   FunctionProgressItem,
   FunctionResultItem,
   Item,
+  NewAssistantMessageItem,
+  NewSystemMessageItem,
   NewUserMessageItem,
   ReasoningItem,
   SystemMessageItem,
