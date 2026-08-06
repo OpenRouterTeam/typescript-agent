@@ -480,6 +480,22 @@ export class ToolSet<
 
   /**
    * Back-compat alias for {@link resolve}. Prefer `resolve` for new code.
+   *
+   * Returns the full snapshot, including metadata (`enabled`, `disabled`,
+   * `statusByTool`) that is not a valid `callModel` input. Only `tools` and
+   * `activeTools` are meant to reach `callModel` — spread those two fields
+   * (or use `resolve(...).callModel`, which contains exactly them),
+   * not the whole return value of this method:
+   *
+   * ```ts
+   * const { tools, activeTools } = toolSet.inferTools();
+   * callModel(client, { model, input, tools, activeTools });
+   * ```
+   *
+   * `callModel` also defensively strips `enabled` / `disabled` /
+   * `statusByTool` (and a top-level `callModel` key) from whatever it's
+   * given, so spreading this method's full result is safe too — but the
+   * two-field pattern above is the documented, minimal contract.
    */
   inferTools(input?: ActivationInput<TShared>): {
     tools: Tool[];

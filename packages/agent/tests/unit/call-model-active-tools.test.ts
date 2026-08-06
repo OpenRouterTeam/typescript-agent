@@ -64,6 +64,31 @@ async function captureOutboundTools(options: {
   tools: ReadonlyArray<ReturnType<typeof tool>>;
   activeTools?: readonly string[];
 }): Promise<string[]> {
+  const { names } = await captureOutboundRequest({
+    model: 'openai/gpt-4o-mini',
+    input: 'hi',
+    tools: options.tools,
+    ...(options.activeTools !== undefined && {
+      activeTools: options.activeTools,
+    }),
+  });
+
+  if (names === null) {
+    throw new Error('request body was not captured');
+  }
+  return names;
+}
+
+/**
+ * Run `callModel` with an arbitrary request object (deliberately typed as
+ * `unknown` so tests can pass shapes that don't type-check, such as a whole
+ * `@openrouter/agent-tool-set` snapshot spread in) and capture the raw JSON
+ * body sent to the HTTP client, short-circuiting the actual network call.
+ */
+async function captureOutboundRequest(request: unknown): Promise<{
+  names: string[] | null;
+  raw: unknown;
+}> {
   const captured: {
     names: string[] | null;
     raw: unknown;
@@ -77,19 +102,15 @@ async function captureOutboundTools(options: {
     httpClient,
   });
 
-  const result = callModel(client, {
-    model: 'openai/gpt-4o-mini',
-    input: 'hi',
-    tools: options.tools,
-    ...(options.activeTools !== undefined && {
-      activeTools: options.activeTools,
-    }),
-  });
+  // Deliberately bypasses CallModelInput's type checking to exercise runtime
+  // stripping of stray keys (a plain `unknown` cast is enough here; the repo's
+  // biome config doesn't flag this `as` chain as `noExplicitAny`).
+  const result = callModel(client, request as unknown as Parameters<typeof callModel>[1]);
 
   try {
     await result.getText();
   } catch (err) {
-    if (captured.names === null) {
+    if (captured.raw === null) {
       throw err;
     }
     if (!(err instanceof Error) || err.message !== STOP_ERROR) {
@@ -97,10 +118,10 @@ async function captureOutboundTools(options: {
     }
   }
 
-  if (captured.names === null) {
-    throw new Error(`request body was not captured; raw=${JSON.stringify(captured.raw)}`);
+  if (captured.raw === null) {
+    throw new Error('request body was not captured');
   }
-  return captured.names;
+  return captured;
 }
 
 describe('callModel activeTools filter', () => {
@@ -205,5 +226,77 @@ describe('callModel activeTools filter', () => {
     // key. Several providers reject an explicit empty tools array outright, so
     // the outbound request must not have a `tools` property at all.
     expect(captured.raw).not.toHaveProperty('tools');
+  });
+});
+
+describe('callModel strips @openrouter/agent-tool-set snapshot metadata', () => {
+  const toolA = tool({
+    name: 'a',
+    inputSchema: z.object({}),
+    execute: async () => ({
+      ok: true,
+    }),
+  });
+
+  it('never sends enabled/disabled/statusByTool/callModel keys when a whole tool-set snapshot is spread in', async () => {
+    // Mirrors the documented-but-dangerous pattern of spreading the full
+    // return value of `ToolSet.inferTools()` / `.resolve()` /
+    // `.resolveSituation()` straight into callModel, instead of picking out
+    // just `{ tools, activeTools }` (or `.callModel`).
+    const snapshotLikeRequest = {
+      model: 'openai/gpt-4o-mini',
+      input: 'hi',
+      tools: [
+        toolA,
+      ],
+      activeTools: [
+        'a',
+      ],
+      enabled: [
+        'a',
+      ],
+      disabled: [] as string[],
+      statusByTool: {
+        a: 'enabled',
+      },
+      // A whole `ResolvedToolSnapshot` also carries a nested, spread-safe
+      // `callModel` field; a bare top-level `callModel` key must never reach
+      // the outbound request body either.
+      callModel: {
+        tools: [
+          toolA,
+        ],
+        activeTools: [
+          'a',
+        ],
+      },
+    };
+
+    const { raw } = await captureOutboundRequest(snapshotLikeRequest);
+
+    expect(raw).not.toHaveProperty('enabled');
+    expect(raw).not.toHaveProperty('disabled');
+    expect(raw).not.toHaveProperty('statusByTool');
+    expect(raw).not.toHaveProperty('callModel');
+    // The legitimate fields must still make it through unaffected.
+    expect(extractToolNames(raw as CapturedPayload)).toEqual([
+      'a',
+    ]);
+  });
+
+  it('still sends the documented { tools, activeTools } spread-safe pattern unaffected', async () => {
+    // Guards against over-eager stripping: `tools`/`activeTools` themselves
+    // (the two fields the docs say to spread) must keep working.
+    const names = await captureOutboundTools({
+      tools: [
+        toolA,
+      ],
+      activeTools: [
+        'a',
+      ],
+    });
+    expect(names).toEqual([
+      'a',
+    ]);
   });
 });
