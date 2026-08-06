@@ -17,6 +17,7 @@
     "benchmark:memory:single-journal": "pnpm build && node benchmarks/agent-memory/run-single-journal-peak-matrix.mjs --runs=20 --events=50000",
     "benchmark:memory:sdk-transport-cleanup": "pnpm build && node benchmarks/agent-memory/run-sdk-transport-cleanup-peak-matrix.mjs --runs=20 --events=5000",
     "benchmark:memory:context-queue": "node benchmarks/agent-memory/run-context-queue-peak-matrix.mjs --runs=20 --events=50000",
+    "benchmark:memory:live-peaks": "pnpm benchmark:memory:bundle && node benchmarks/agent-memory/run-live-peak-matrix.mjs --runs=20 --concurrency=4",
     "benchmark:memory:synthetic": "node --expose-gc --max-old-space-size=128 --max-semi-space-size=8 benchmarks/agent-memory/benchmark.mjs --mode synthetic",
     "benchmark:memory:live": "pnpm benchmark:memory:bundle && node --expose-gc --max-old-space-size=128 --max-semi-space-size=8 benchmarks/agent-memory/benchmark.mjs --mode live --bundle .turbo/agent-memory/cloudflare-worker.bundle.mjs",
     "lint": "turbo run lint",

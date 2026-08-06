@@ -59,6 +59,31 @@ At run 50, the agent was about 92 KiB above the SDK control. The SDK path was
 about 583 KiB above raw fetch, though raw used non-streaming JSON while SDK and
 agent used SSE.
 
+## Twenty-run live peak profiles
+
+Each profile ran in 20 fresh processes in randomized order with four processes
+in flight. Every tool case was required to execute exactly 10 sequential tool
+turns followed by one final model turn.
+
+No tools, 2,080 output-token cap:
+
+- Absolute tracked peak median/p95: 58,192,392 / 61,156,651 bytes
+  (55.497 / 58.324 MiB).
+- Peak above each process's warmed baseline median/p95: 4,304,085 /
+  7,270,736 bytes.
+- Stream event count median/p95: 714 / 1,141.
+
+Ten sequential tool turns plus a 2,112-token final turn:
+
+- Absolute tracked peak median/p95: 62,374,974 / 63,672,240 bytes
+  (59.485 / 60.723 MiB).
+- Peak above warmed baseline median/p95: 8,332,084 / 9,666,181 bytes.
+- Unified stream event count median/p95: 1,647 / 1,934.
+
+These are live OpenRouter results and include model/provider event-count
+variation. `tracked` is `heapUsed + external`, not Cloudflare's complete
+isolate accounting.
+
 ## Other implementation ablations
 
 Each result below also uses 20 randomized fresh processes.

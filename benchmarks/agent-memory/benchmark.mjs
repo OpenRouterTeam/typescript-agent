@@ -36,6 +36,8 @@ const concurrencyLevels = integerListArg(
 const concurrencyOutputWords = integerArg('concurrency-output-words', 0);
 const multiTurnCount = integerArg('multi-turn-count', 4);
 const multiTurnOutputWords = integerArg('multi-turn-output-words', 2_048);
+const toolTurnCount = integerArg('tool-turn-count', 10);
+const toolFinalOutputWords = integerArg('tool-final-output-words', 2_048);
 const outputWordCounts = integerListArg(
   'output-words',
   [
@@ -74,6 +76,8 @@ const report = {
     concurrencyOutputWords,
     multiTurnCount,
     multiTurnOutputWords,
+    toolTurnCount,
+    toolFinalOutputWords,
     outputWordCounts,
     workersLimitBytes: WORKERS_LIMIT_BYTES,
     v8HeapSizeLimitBytes: getHeapStatistics().heap_size_limit,
@@ -253,6 +257,9 @@ async function runLive(agent, apiKey) {
       stepCountIs,
       z,
     });
+  }
+  if (liveSections.includes('tool-turns')) {
+    measurements.toolTurns = await benchmarkSequentialToolTurns(client, tool, z);
   }
   if (liveSections.includes('multi-turn-long')) {
     measurements.multiTurnLong = await benchmarkLongMultiTurn({
@@ -648,6 +655,78 @@ async function benchmarkToolLoop({ client, tool, stepCountIs, z }) {
     turns,
     eventCount,
     outputTokens,
+    baseline,
+    peak: measured.peak,
+    peakDelta: memoryDelta(measured.peak, baseline),
+    retained,
+    retainedDelta: memoryDelta(retained, baseline),
+    released,
+    releasedDelta: memoryDelta(released, baseline),
+  };
+}
+
+async function benchmarkSequentialToolTurns(client, tool, z) {
+  let executions = 0;
+  const executedSteps = [];
+  const advanceStep = tool({
+    name: 'advance_step',
+    description:
+      'Advance exactly one step. Call once per model response and wait for the result before the next call.',
+    inputSchema: z.object({
+      step: z.number().int().min(1).max(toolTurnCount),
+    }),
+    outputSchema: z.object({
+      completedStep: z.number(),
+      nextStep: z.number().nullable(),
+    }),
+    execute: async ({ step }) => {
+      executions += 1;
+      executedSteps.push(step);
+      return {
+        completedStep: step,
+        nextStep: step < toolTurnCount ? step + 1 : null,
+      };
+    },
+  });
+  const baseline = await settledMemory();
+  let held = client.callModel({
+    model,
+    input:
+      `Perform exactly ${toolTurnCount} sequential steps. ` +
+      'Call advance_step exactly once per model response, starting with step 1. ' +
+      'After each result, call the next numbered step. Never issue two calls in one response. ' +
+      `After step ${toolTurnCount}, output exactly ${toolFinalOutputWords} copies of the word "token" separated by spaces.`,
+    tools: [
+      advanceStep,
+    ],
+    parallelToolCalls: false,
+    maxOutputTokens: toolFinalOutputWords + 64,
+    temperature: 0,
+  });
+  let eventCount = 0;
+  let turns = 0;
+  const measured = await capturePeak(async () => {
+    for await (const event of held.getFullResponsesStream()) {
+      eventCount += 1;
+      if (event.type === 'turn.start') {
+        turns += 1;
+      }
+    }
+    return held.getResponse();
+  });
+  const retained = await settledMemory();
+  const outputTokens = measured.value.usage?.outputTokens ?? 0;
+  const outputCharacters = extractResponseText(measured.value).length;
+  held = null;
+  const released = await settledMemory();
+  return {
+    requestedToolTurns: toolTurnCount,
+    executions,
+    executedSteps,
+    turns,
+    eventCount,
+    outputTokens,
+    outputCharacters,
     baseline,
     peak: measured.peak,
     peakDelta: memoryDelta(measured.peak, baseline),
