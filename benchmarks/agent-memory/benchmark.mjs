@@ -289,15 +289,55 @@ async function runRawFetch(apiKey) {
     response.release();
   }
 
-  return {
+  const measurements = {
     warmupIterations,
-    multiTurnLong: await benchmarkLongMultiTurn({
+  };
+  if (liveSections.includes('sequential')) {
+    measurements.sequential = await benchmarkRawFetchSequential(apiKey);
+  }
+  if (liveSections.includes('multi-turn-long')) {
+    measurements.multiTurnLong = await benchmarkLongMultiTurn({
       executeTurn: (input) =>
         fetchOpenRouter(apiKey, {
           input,
           maxOutputTokens: multiTurnOutputWords + 64,
         }),
-    }),
+    });
+  }
+  return measurements;
+}
+
+async function benchmarkRawFetchSequential(apiKey) {
+  const baseline = await settledMemory();
+  const settledSamples = [];
+  let absolutePeak = baseline;
+  let outputTokens = 0;
+
+  for (let iteration = 0; iteration < sequentialIterations; iteration += 1) {
+    const measured = await capturePeak(() =>
+      fetchOpenRouter(apiKey, {
+        input: 'Reply with exactly the word ok.',
+        maxOutputTokens: 16,
+      }),
+    );
+    outputTokens += measured.value.usage.outputTokens;
+    measured.value.release();
+    absolutePeak = maxMemory(absolutePeak, measured.peak);
+    settledSamples.push(await settledMemory());
+  }
+
+  const final = settledSamples.at(-1) ?? baseline;
+  return {
+    iterations: sequentialIterations,
+    outputTokens,
+    baseline,
+    peak: absolutePeak,
+    peakDelta: memoryDelta(absolutePeak, baseline),
+    final,
+    finalDelta: memoryDelta(final, baseline),
+    heapUsedSlopeBytesPerRequest: linearSlope(settledSamples.map((sample) => sample.heapUsed)),
+    trackedSlopeBytesPerRequest: linearSlope(settledSamples.map((sample) => sample.tracked)),
+    settledSamples,
   };
 }
 

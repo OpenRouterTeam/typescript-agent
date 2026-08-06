@@ -44,6 +44,21 @@ target, minification, and explicit `treeShaking: true`.
 Twenty-run randomized fresh-import medians were 42,210,052 tracked bytes for
 the agent bundle and 40,498,156 bytes for the SDK-only bundle.
 
+## Fifty-request live retained growth
+
+Each path ran 5 warmups followed by 50 sequential
+`openai/gpt-5.6-luna` requests. The process forced garbage collection after
+every request. This is one live sequence per path, not a 20-run confidence
+sample.
+
+- Raw non-streaming fetch: +0.738 MiB at run 50; 7.61 KiB/request overall.
+- SDK streaming control: +1.307 MiB; 14.52 KiB/request.
+- Agent streaming: +1.397 MiB; 15.27 KiB/request.
+
+At run 50, the agent was about 92 KiB above the SDK control. The SDK path was
+about 583 KiB above raw fetch, though raw used non-streaming JSON while SDK and
+agent used SSE.
+
 ## Other implementation ablations
 
 Each result below also uses 20 randomized fresh processes.
