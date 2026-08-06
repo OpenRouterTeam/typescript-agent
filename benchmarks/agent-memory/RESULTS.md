@@ -80,6 +80,18 @@ Ten sequential tool turns plus a 2,112-token final turn:
 - Peak above warmed baseline median/p95: 8,332,084 / 9,666,181 bytes.
 - Unified stream event count median/p95: 1,647 / 1,934.
 
+The equivalent manual raw-fetch loop also completed exactly 10 local tool
+executions and 11 model requests in all 20 runs:
+
+- Peak above its warmed baseline median/p95: 2,704,625 / 3,008,390 bytes
+  (2.579 / 2.869 MiB).
+- Agent orchestration peak above baseline was 3.08x raw fetch at the median.
+- Median agent-minus-fetch peak delta: 5.367 MiB.
+
+The fetch loop used non-streaming JSON for each turn, while the agent used
+schema-validated SSE plus its event journal. The comparison therefore includes
+transport/parsing behavior as well as orchestration.
+
 These are live OpenRouter results and include model/provider event-count
 variation. `tracked` is `heapUsed + external`, not Cloudflare's complete
 isolate accounting.

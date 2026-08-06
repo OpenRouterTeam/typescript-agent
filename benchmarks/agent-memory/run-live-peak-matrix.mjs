@@ -3,6 +3,7 @@ import { fileURLToPath } from 'node:url';
 
 const runsArg = process.argv.find((arg) => arg.startsWith('--runs='));
 const concurrencyArg = process.argv.find((arg) => arg.startsWith('--concurrency='));
+const casesArg = process.argv.find((arg) => arg.startsWith('--cases='));
 const runs = Number.parseInt(runsArg?.slice('--runs='.length) ?? '20', 10);
 const concurrency = Number.parseInt(concurrencyArg?.slice('--concurrency='.length) ?? '4', 10);
 if (!Number.isSafeInteger(runs) || runs < 20) {
@@ -19,10 +20,15 @@ const benchmark = fileURLToPath(new URL('./benchmark.mjs', import.meta.url));
 const bundle = fileURLToPath(
   new URL('../../.turbo/agent-memory/cloudflare-worker.bundle.mjs', import.meta.url),
 );
-const cases = [
+const availableCases = [
   'no-tools',
   'tool-turns',
+  'fetch-tool-turns',
 ];
+const cases = casesArg ? casesArg.slice('--cases='.length).split(',') : availableCases;
+if (cases.some((name) => !availableCases.includes(name))) {
+  throw new Error(`--cases must use: ${availableCases.join(', ')}`);
+}
 const schedule = Array.from(
   {
     length: runs,
@@ -45,13 +51,18 @@ const samples = new Map(
 const runCase = (name) =>
   new Promise((resolve, reject) => {
     const section = name === 'no-tools' ? 'output-scaling' : 'tool-turns';
+    const rawFetch = name === 'fetch-tool-turns';
     const args = [
       '--expose-gc',
       '--max-old-space-size=128',
       '--max-semi-space-size=8',
       benchmark,
-      '--mode=live',
-      `--bundle=${bundle}`,
+      `--mode=${rawFetch ? 'raw-fetch' : 'live'}`,
+      ...(!rawFetch
+        ? [
+            `--bundle=${bundle}`,
+          ]
+        : []),
       '--model=openai/gpt-5.6-luna',
       `--sections=${section}`,
       '--warmups=1',
@@ -87,11 +98,12 @@ const runCase = (name) =>
         return;
       }
       const report = JSON.parse(stdout);
-      const measurement =
-        name === 'no-tools'
+      const measurement = rawFetch
+        ? report.measurements.rawFetch.toolTurns
+        : name === 'no-tools'
           ? report.measurements.live.outputScaling.cases[0]
           : report.measurements.live.toolTurns;
-      if (name === 'tool-turns' && (measurement.executions !== 10 || measurement.turns !== 11)) {
+      if (name !== 'no-tools' && (measurement.executions !== 10 || measurement.turns !== 11)) {
         reject(
           new Error(
             `Tool case did not complete 10 sequential turns: ${JSON.stringify({
@@ -104,9 +116,9 @@ const runCase = (name) =>
         return;
       }
       resolve({
-        peakBytes: measurement.peak.tracked,
+        absolutePeakBytes: measurement.peak.tracked,
         baselineBytes: measurement.baseline.tracked,
-        peakDeltaBytes: measurement.peakDelta.tracked,
+        peakAboveBaselineBytes: measurement.peakDelta.tracked,
         eventCount: measurement.eventCount,
         outputTokens: measurement.outputTokens,
       });
@@ -144,15 +156,15 @@ const summarize = (name) => {
   return {
     name,
     runs: values.length,
-    peakBytes: {
-      median: percentile(metric('peakBytes'), 0.5),
-      p95: percentile(metric('peakBytes'), 0.95),
-      min: Math.min(...metric('peakBytes')),
-      max: Math.max(...metric('peakBytes')),
+    peakAboveBaselineBytes: {
+      median: percentile(metric('peakAboveBaselineBytes'), 0.5),
+      p95: percentile(metric('peakAboveBaselineBytes'), 0.95),
+      min: Math.min(...metric('peakAboveBaselineBytes')),
+      max: Math.max(...metric('peakAboveBaselineBytes')),
     },
-    peakDeltaBytes: {
-      median: percentile(metric('peakDeltaBytes'), 0.5),
-      p95: percentile(metric('peakDeltaBytes'), 0.95),
+    absolutePeakBytes: {
+      median: percentile(metric('absolutePeakBytes'), 0.5),
+      p95: percentile(metric('absolutePeakBytes'), 0.95),
     },
     eventCount: {
       median: percentile(metric('eventCount'), 0.5),

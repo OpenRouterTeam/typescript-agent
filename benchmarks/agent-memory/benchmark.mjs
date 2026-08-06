@@ -302,6 +302,9 @@ async function runRawFetch(apiKey) {
   if (liveSections.includes('sequential')) {
     measurements.sequential = await benchmarkRawFetchSequential(apiKey);
   }
+  if (liveSections.includes('tool-turns')) {
+    measurements.toolTurns = await benchmarkRawFetchToolTurns(apiKey);
+  }
   if (liveSections.includes('multi-turn-long')) {
     measurements.multiTurnLong = await benchmarkLongMultiTurn({
       executeTurn: (input) =>
@@ -345,6 +348,125 @@ async function benchmarkRawFetchSequential(apiKey) {
     heapUsedSlopeBytesPerRequest: linearSlope(settledSamples.map((sample) => sample.heapUsed)),
     trackedSlopeBytesPerRequest: linearSlope(settledSamples.map((sample) => sample.tracked)),
     settledSamples,
+  };
+}
+
+async function benchmarkRawFetchToolTurns(apiKey) {
+  const baseline = await settledMemory();
+  let executions = 0;
+  let requests = 0;
+  const executedSteps = [];
+  const input = [
+    {
+      role: 'user',
+      content:
+        `Perform exactly ${toolTurnCount} sequential steps. ` +
+        'Call advance_step exactly once per response, starting with step 1. ' +
+        'After each result, call the next numbered step. Never issue two calls in one response. ' +
+        `After step ${toolTurnCount}, output exactly ${toolFinalOutputWords} copies of the word "token" separated by spaces.`,
+    },
+  ];
+  const tools = [
+    {
+      type: 'function',
+      name: 'advance_step',
+      description:
+        'Advance exactly one step. Call once per response and wait for the result before the next call.',
+      parameters: {
+        type: 'object',
+        properties: {
+          step: {
+            type: 'integer',
+            minimum: 1,
+            maximum: toolTurnCount,
+          },
+        },
+        required: [
+          'step',
+        ],
+        additionalProperties: false,
+      },
+      strict: true,
+    },
+  ];
+
+  const measured = await capturePeak(async () => {
+    let finalResponse;
+    while (requests <= toolTurnCount) {
+      const response = await postRawOpenRouter(apiKey, {
+        model,
+        input,
+        tools,
+        parallel_tool_calls: false,
+        max_output_tokens: toolFinalOutputWords + 64,
+        temperature: 0,
+        ...(executions === toolTurnCount && {
+          tool_choice: 'none',
+        }),
+      });
+      requests += 1;
+      const output = Array.isArray(response.output) ? response.output : [];
+      const functionCalls = output.filter((item) => item.type === 'function_call');
+      input.push(...output);
+
+      if (executions < toolTurnCount) {
+        if (functionCalls.length !== 1) {
+          throw new Error(
+            `Expected one function call on request ${requests}, received ${functionCalls.length}.`,
+          );
+        }
+        const functionCall = functionCalls[0];
+        const args = JSON.parse(functionCall.arguments ?? '{}');
+        const expectedStep = executions + 1;
+        if (args.step !== expectedStep) {
+          throw new Error(`Expected step ${expectedStep}, received ${String(args.step)}.`);
+        }
+        executions += 1;
+        executedSteps.push(args.step);
+        input.push({
+          type: 'function_call_output',
+          call_id: functionCall.call_id ?? functionCall.callId,
+          output: JSON.stringify({
+            completedStep: args.step,
+            nextStep: args.step < toolTurnCount ? args.step + 1 : null,
+          }),
+        });
+        continue;
+      }
+
+      if (functionCalls.length > 0) {
+        throw new Error('Final raw-fetch response unexpectedly contained a function call.');
+      }
+      finalResponse = response;
+      break;
+    }
+    if (!finalResponse) {
+      throw new Error('Raw-fetch tool loop ended without a final response.');
+    }
+    return {
+      usage: normalizeUsage(finalResponse.usage),
+      outputCharacters: extractResponseText(finalResponse).length,
+      historyItems: input.length,
+    };
+  });
+  const retained = await settledMemory();
+  const released = await settledMemory();
+  return {
+    requestedToolTurns: toolTurnCount,
+    executions,
+    executedSteps,
+    turns: requests,
+    eventCount: 0,
+    outputTokens: measured.value.usage.outputTokens,
+    outputCharacters: measured.value.outputCharacters,
+    historyItems: measured.value.historyItems,
+    baseline,
+    peak: measured.peak,
+    peakDelta: memoryDelta(measured.peak, baseline),
+    retained,
+    retainedDelta: memoryDelta(retained, baseline),
+    released,
+    releasedDelta: memoryDelta(released, baseline),
   };
 }
 
@@ -799,26 +921,12 @@ async function benchmarkLongMultiTurn({ executeTurn }) {
 }
 
 async function fetchOpenRouter(apiKey, { input, maxOutputTokens }) {
-  const response = await fetch('https://openrouter.ai/api/v1/responses', {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${apiKey}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({
-      model,
-      input,
-      max_output_tokens: maxOutputTokens,
-      temperature: 0,
-    }),
+  const body = await postRawOpenRouter(apiKey, {
+    model,
+    input,
+    max_output_tokens: maxOutputTokens,
+    temperature: 0,
   });
-  const body = await response.json();
-  if (!response.ok) {
-    throw new Error(
-      `Raw OpenRouter request failed (${response.status}): ${JSON.stringify(body).slice(0, 500)}`,
-    );
-  }
-
   let held = body;
   return {
     text: extractResponseText(body),
@@ -830,6 +938,24 @@ async function fetchOpenRouter(apiKey, { input, maxOutputTokens }) {
       held = null;
     },
   };
+}
+
+async function postRawOpenRouter(apiKey, requestBody) {
+  const response = await fetch('https://openrouter.ai/api/v1/responses', {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(requestBody),
+  });
+  const body = await response.json();
+  if (!response.ok) {
+    throw new Error(
+      `Raw OpenRouter request failed (${response.status}): ${JSON.stringify(body).slice(0, 500)}`,
+    );
+  }
+  return body;
 }
 
 async function runShortRequest(client) {
