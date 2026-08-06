@@ -430,6 +430,11 @@ export interface BaseToolFunction<
    * Whether providers should enforce strict schema adherence when generating
    * this tool's call arguments (OpenAI structured-outputs style). Serialized
    * onto the wire tool definition; `null`/absent leaves provider default.
+   *
+   * OpenAI-style strict mode requires every declared object property to be
+   * listed in `required`. Use Zod `.nullable()` for values that may be absent
+   * conceptually; `.optional()` produces an incompatible wire schema and the
+   * SDK rejects it before dispatch rather than changing the runtime contract.
    */
   strict?: boolean | null;
   /**

@@ -536,6 +536,36 @@ const researcher = tool.agent({
 
 The parent keeps working while children run (several can run concurrently under the background pool). The child's conversation is the check-in **transcript**; each child turn is a **log** entry; `status` reports `turnsCompleted` and `currentActivity`. `cancelTask(taskId)` (or parent abort / `timeoutMs`) cancels the child; `sendToTask` steers it mid-run. Children run **in-memory** (no `StateAccessor`) and do not inherit the parent's hooks — pass child hooks explicitly in the `agent` spec if needed. A child that pauses (HITL/manual/approval/deferred tools inside it) fails the task with a clear error.
 
+### Strict Tool Schemas
+
+Every client tool kind, including `tool.agent()`, accepts `strict: true` to
+request provider-enforced schema adherence for generated tool-call arguments.
+The SDK faithfully converts the caller's `inputSchema`; it does not rewrite
+the runtime Zod contract.
+
+OpenAI-style strict function calling requires every declared object property
+to appear in JSON Schema's `required` list. Use `.nullable()` for a value that
+may be absent conceptually, because `.optional()` omits the property from
+`required`:
+
+```typescript
+const weatherTool = tool({
+  name: 'get_weather',
+  inputSchema: z.object({
+    location: z.string(),
+    // The key is required, but the model may return null.
+    units: z.enum(['celsius', 'fahrenheit']).nullable(),
+  }),
+  strict: true,
+  execute: async ({ location, units }) => getWeather(location, units),
+});
+```
+
+When `strict: true`, the SDK validates the generated schema before dispatch
+and reports the exact optional-property path. Use `.nullable()`, or set
+`strict: false` when omission is part of the tool's contract. Provider support
+and additional strict-schema restrictions can vary.
+
 ### Per-Tool Timeouts & Concurrency
 
 Every tool kind accepts `timeoutMs` (per-execution deadline; the run-level `toolTimeoutMs` sets a default) and `maxConcurrency` (max simultaneous executions of that tool). On timeout the round stops waiting — the model receives `{ error, code: 'tool_timeout' }` and the tool's `ctx.signal` aborts; the timeout bounds the round's *wait*, not the tool body, so signal-ignoring bodies can't hang the run. `ctx.signal` also fires on run abort (`signal` option) and `ModelResult.cancel()`.

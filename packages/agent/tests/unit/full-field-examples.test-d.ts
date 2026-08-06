@@ -57,6 +57,8 @@ describe('full-field examples (PR documentation, compile-verified)', () => {
 
     // Lifecycle: 'sync' (default) | 'background' | 'deferred'
     lifecycle: 'background',
+    // `quality.default(...)` is optional on the wire, so use non-strict mode.
+    strict: false,
 
     // Schemas
     inputSchema: z.object({
@@ -155,6 +157,8 @@ describe('full-field examples (PR documentation, compile-verified)', () => {
     name: 'request_legal_review',
     description: 'Send a contract for legal review. Pauses until the webhook resolves it.',
     lifecycle: 'deferred',
+    // `urgency.default(...)` is optional on the wire, so use non-strict mode.
+    strict: false,
     inputSchema: z.object({
       contractId: z.string(),
       urgency: z
@@ -204,6 +208,7 @@ describe('full-field examples (PR documentation, compile-verified)', () => {
   // ─── Example 3: agent tool — every field ─────────────────────────────────
   const childSearch = tool({
     name: 'web_search',
+    strict: true,
     inputSchema: z.object({
       q: z.string(),
     }),
@@ -215,9 +220,10 @@ describe('full-field examples (PR documentation, compile-verified)', () => {
   const researcher = tool.agent({
     name: 'research_topic',
     description: 'Deep-research a topic as a background subagent.',
+    strict: true,
     inputSchema: z.object({
       topic: z.string(),
-      depth: z.number().int().min(1).max(20).default(5),
+      depth: z.number().int().min(1).max(20),
     }),
     outputSchema: z.object({
       text: z.string(),

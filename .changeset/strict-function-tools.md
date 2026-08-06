@@ -2,7 +2,9 @@
 '@openrouter/agent': minor
 ---
 
-Add `strict` to `tool()` function-tool definitions and pass it through serialization instead of hardcoding `strict: null`, so providers can enforce structured-outputs-style schema adherence on tool-call arguments.
+Add `strict` to all client function-tool definitions, including `tool.agent()`, and pass it through serialization instead of hardcoding `strict: null`, so providers can enforce structured-outputs-style schema adherence on tool-call arguments.
+
+When `strict: true`, the SDK now validates the generated schema before dispatch. OpenAI-style strict schemas require every object property to be listed in `required`; use Zod `.nullable()` for conceptually optional values because `.optional()` changes the runtime contract by allowing the key to be omitted.
 
 ```ts
 import { tool } from '@openrouter/agent';

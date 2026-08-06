@@ -115,6 +115,124 @@ describe('convertToolsToAPIFormat', () => {
     });
   });
 
+  it('serializes strict: true from a unified run tool', () => {
+    const strictRunTool = tool({
+      name: 'run-echo',
+      inputSchema: z.object({
+        msg: z.string(),
+      }),
+      strict: true,
+      lifecycle: 'sync',
+      run: ({ msg }) => msg,
+    });
+    const api = convertToolsToAPIFormat([
+      strictRunTool,
+    ]);
+    expect(api[0]).toMatchObject({
+      type: 'function',
+      name: 'run-echo',
+      strict: true,
+    });
+  });
+
+  it('serializes strict: true from an agent tool', () => {
+    const strictAgentTool = tool.agent({
+      name: 'research',
+      inputSchema: z.object({
+        topic: z.string(),
+      }),
+      outputSchema: z.object({
+        text: z.string(),
+      }),
+      strict: true,
+      agent: ({ topic }) => ({
+        model: 'test-model',
+        input: topic,
+      }),
+    });
+    const api = convertToolsToAPIFormat([
+      strictAgentTool,
+    ]);
+    expect(api[0]).toMatchObject({
+      type: 'function',
+      name: 'research',
+      strict: true,
+    });
+  });
+
+  it('rejects optional Zod properties before dispatch when strict is true', () => {
+    const strictOptionalTool = tool({
+      name: 'get_weather',
+      inputSchema: z.object({
+        location: z.string(),
+        options: z.object({
+          units: z.string().optional(),
+        }),
+      }),
+      strict: true,
+      execute: ({ location }) => location,
+    });
+
+    expect(() =>
+      convertToolsToAPIFormat([
+        strictOptionalTool,
+      ]),
+    ).toThrow(
+      /Tool "get_weather".*"parameters\.properties\.options".*"units".*\.nullable\(\).*strict: false/,
+    );
+  });
+
+  it('accepts nullable Zod properties when strict is true', () => {
+    const strictNullableTool = tool({
+      name: 'get_weather',
+      inputSchema: z.object({
+        location: z.string(),
+        units: z.string().nullable(),
+      }),
+      strict: true,
+      execute: ({ location }) => location,
+    });
+
+    const api = convertToolsToAPIFormat([
+      strictNullableTool,
+    ]);
+    expect(api[0]).toMatchObject({
+      type: 'function',
+      strict: true,
+      parameters: {
+        required: [
+          'location',
+          'units',
+        ],
+      },
+    });
+  });
+
+  it('preserves optional Zod properties when strict is false', () => {
+    const nonStrictOptionalTool = tool({
+      name: 'get_weather',
+      inputSchema: z.object({
+        location: z.string(),
+        units: z.string().optional(),
+      }),
+      strict: false,
+      execute: ({ location }) => location,
+    });
+
+    const api = convertToolsToAPIFormat([
+      nonStrictOptionalTool,
+    ]);
+    expect(api[0]).toMatchObject({
+      type: 'function',
+      strict: false,
+      parameters: {
+        required: [
+          'location',
+        ],
+      },
+    });
+  });
+
   it('defaults strict to null when not declared', () => {
     const plainTool = tool({
       name: 'echo',
