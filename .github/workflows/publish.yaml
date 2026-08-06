@@ -237,11 +237,14 @@ jobs:
       # packages are already on npm when the dispatches run, so a repo missing
       # from the App installation must degrade to a skipped notification with
       # a warning — exactly like a failed dispatch — never a red release.
-      # typescript-agent is in the list too: the HOP C step reads this repo's
-      # release tag via `gh api .../git/ref/tags/...` with this token. Its
-      # presence can't recreate the coupling problem — the publish token above
-      # already proved the App covers this repo, so only a HOP target going
-      # missing can fail this mint, and that failure is non-fatal by design.
+      # No `repositories:` list, deliberately: with only `owner` set the
+      # token covers whatever repos the installation currently includes, and
+      # the mint does NOT fail when one HOP target is missing from it — the
+      # dispatch to that repo 404s individually instead, hitting the per-repo
+      # warning paths below. An explicit list would be all-or-nothing: one
+      # uninstalled port repo would kill this mint and silently skip the
+      # unrelated monorepo notification too. Scope cost is nil as long as the
+      # App is only installed on the four release-chain repos.
       - name: Mint dispatch token (best-effort)
         id: dispatch-token
         if: ${{ !cancelled() && !inputs.dry-run }}
@@ -251,11 +254,10 @@ jobs:
           app-id: ${{ vars.RELEASE_BOT_APP_ID }}
           private-key: ${{ secrets.RELEASE_BOT_PRIVATE_KEY }}
           owner: OpenRouterTeam
-          repositories: typescript-agent,openrouter-web,python-agent,go-agent
 
       - name: Warn if dispatch token unavailable
         if: ${{ !cancelled() && !inputs.dry-run && steps.dispatch-token.outcome == 'failure' }}
-        run: echo "::warning::Could not mint the cross-repo dispatch token (App not installed on a HOP target?). Skipping HOP B/C notifications — trigger them manually or let the port crons catch up."
+        run: echo "::warning::Could not mint the cross-repo dispatch token (App credentials broken?). Skipping HOP B/C notifications — trigger them manually or let the port crons catch up."
 
       # HOP B trigger: when @openrouter/agent is actually published, tell the
       # monorepo (openrouter-web) to bump its pinned @openrouter/agent for
@@ -290,8 +292,13 @@ jobs:
             echo "No new @openrouter/agent publish detected — no dispatch"
           fi
 
+      # continue-on-error for the same reason as HOP C: the packages are on
+      # npm by now, and with the unscoped dispatch token a missing
+      # openrouter-web installation surfaces here as a 404 — degrade with a
+      # warning, never a red release.
       - name: Dispatch monorepo bump
         if: ${{ !inputs.dry-run && steps.published.outputs.version != '' && steps.dispatch-token.outcome == 'success' }}
+        continue-on-error: true
         env:
           # Cross-repo App token; the App's contents:write on
           # OpenRouterTeam/openrouter-web makes the repository_dispatch accepted.
