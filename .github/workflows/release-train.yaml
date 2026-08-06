@@ -52,10 +52,52 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
+      # Short-lived App installation token (same App as publish.yaml /
+      # bump-openrouter-sdk.yaml). Replaces the old GH_TOKEN PAT, which the
+      # enterprise's 366-day-lifetime policy started rejecting — that outage
+      # surfaced as every train run failing at the first gh call. Only this
+      # repo is needed here: the train reads, gates, and merges locally.
+      #
+      # continue-on-error + the guard step below: a mint failure (missing
+      # var/secret, uninstalled App, token-API outage) must page like every
+      # other failure mode in this workflow — a bare failing first step would
+      # kill the run before any alerting exists, recreating exactly the
+      # silent 2026-08 PAT stall this migration is fixing.
+      - name: Mint release-bot token
+        id: app-token
+        continue-on-error: true
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ vars.RELEASE_BOT_APP_ID }}
+          private-key: ${{ secrets.RELEASE_BOT_PRIVATE_KEY }}
+          owner: OpenRouterTeam
+          repositories: typescript-agent
+
+      - name: Alert if token minting failed
+        if: steps.app-token.outcome != 'success'
+        env:
+          SLACK_BOT_TOKEN: ${{ secrets.CI_RELEASE_ALERT_SLACK_BOT_TOKEN }}
+          SLACK_CHANNEL_ID: ${{ secrets.CI_RELEASE_ALERT_SLACK_CHANNEL_ID }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          TEXT=":rotating_light: Release train: could not mint the release-bot App token (RELEASE_BOT_APP_ID/RELEASE_BOT_PRIVATE_KEY missing or App uninstalled?). Releases are stalled until this is fixed. <${RUN_URL}|run>"
+          echo "::error::App token minting failed — releases are stalled."
+          if [ -n "${SLACK_BOT_TOKEN:-}" ] && [ -n "${SLACK_CHANNEL_ID:-}" ]; then
+            curl -fsS -X POST https://slack.com/api/chat.postMessage \
+              -H "Authorization: Bearer ${SLACK_BOT_TOKEN}" \
+              -H "Content-type: application/json; charset=utf-8" \
+              --data "$(python3 -c "import json,sys; print(json.dumps({'channel':sys.argv[1],'unfurl_links':False,'text':sys.argv[2]}))" "$SLACK_CHANNEL_ID" "$TEXT")" \
+              >/dev/null || echo "::warning::Slack post failed"
+          else
+            echo "(slack not configured; would have posted) $TEXT"
+          fi
+          exit 1
+
       - name: Find Version Packages PR
         id: find
         env:
-          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
           SLACK_BOT_TOKEN: ${{ secrets.CI_RELEASE_ALERT_SLACK_BOT_TOKEN }}
           SLACK_CHANNEL_ID: ${{ secrets.CI_RELEASE_ALERT_SLACK_CHANNEL_ID }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
@@ -175,7 +217,7 @@ jobs:
         id: scope
         if: steps.find.outputs.pr_number != '' && steps.find.outputs.held != 'true'
         env:
-          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
           PR: ${{ steps.find.outputs.pr_number }}
           SLACK_BOT_TOKEN: ${{ secrets.CI_RELEASE_ALERT_SLACK_BOT_TOKEN }}
           SLACK_CHANNEL_ID: ${{ secrets.CI_RELEASE_ALERT_SLACK_CHANNEL_ID }}
@@ -202,7 +244,7 @@ jobs:
       - name: Gate and merge Version Packages PR
         if: steps.find.outputs.pr_number != '' && steps.find.outputs.held != 'true'
         env:
-          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
           PR: ${{ steps.find.outputs.pr_number }}
           # REPO comes from the workflow-level env block.
           # On schedule runs `inputs` is empty, so dry_run != true → AUTO_MERGE=true.
