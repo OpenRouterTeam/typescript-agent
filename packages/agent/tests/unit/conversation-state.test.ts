@@ -12,6 +12,7 @@ import {
   updateState,
 } from '../../src/lib/conversation-state.js';
 import { tool } from '../../src/lib/tool.js';
+import { executeTool } from '../../src/lib/tool-executor.js';
 import { hasApprovalRequiredTools, toolHasApprovalConfigured } from '../../src/lib/tool-types.js';
 
 describe('Conversation State Utilities', () => {
@@ -306,6 +307,108 @@ describe('Conversation State Utilities', () => {
           context,
         ),
       ).toBe(true);
+    });
+
+    it('should apply schema defaults before function-based approval checks', async () => {
+      const toolWithDefaultedApproval = tool({
+        name: 'defaulted_action',
+        inputSchema: z.object({
+          destructive: z.boolean().default(true),
+        }),
+        requireApproval: (params) => params.destructive === true,
+        execute: async () => ({}),
+      });
+
+      const toolCall = {
+        id: '1',
+        name: 'defaulted_action',
+        arguments: {},
+      };
+
+      expect(
+        await toolRequiresApproval(
+          toolCall,
+          [
+            toolWithDefaultedApproval,
+          ],
+          context,
+        ),
+      ).toBe(true);
+      expect(toolCall.arguments).toEqual({
+        destructive: true,
+      });
+    });
+
+    it('should apply schema defaults before call-level requireApproval', async () => {
+      const toolWithDefaultedInput = tool({
+        name: 'call_level_defaulted_action',
+        inputSchema: z.object({
+          destructive: z.boolean().default(true),
+        }),
+        execute: async () => ({}),
+      });
+      const toolCall = {
+        id: '1',
+        name: 'call_level_defaulted_action',
+        arguments: {},
+      };
+      let receivedArguments: unknown;
+
+      await toolRequiresApproval(
+        toolCall,
+        [
+          toolWithDefaultedInput,
+        ],
+        context,
+        (normalizedToolCall) => {
+          receivedArguments = normalizedToolCall.arguments;
+          return false;
+        },
+      );
+
+      expect(receivedArguments).toEqual({
+        destructive: true,
+      });
+    });
+
+    it('should surface invalid arguments through execution without running approval or tool code', async () => {
+      let approvalChecked = false;
+      let toolExecuted = false;
+      const validatedTool = tool({
+        name: 'validated_action',
+        inputSchema: z.object({
+          count: z.number(),
+        }),
+        execute: async () => {
+          toolExecuted = true;
+          return {};
+        },
+      });
+      const toolCall = {
+        id: '1',
+        name: 'validated_action',
+        arguments: {
+          count: 'not a number',
+        },
+      };
+
+      const requiresApproval = await toolRequiresApproval(
+        toolCall,
+        [
+          validatedTool,
+        ],
+        context,
+        () => {
+          approvalChecked = true;
+          return true;
+        },
+      );
+      const execution = await executeTool(validatedTool, toolCall, context);
+
+      expect(requiresApproval).toBe(false);
+      expect(approvalChecked).toBe(false);
+      expect(toolExecuted).toBe(false);
+      expect(execution?.error).toBeInstanceOf(z.ZodError);
     });
 
     it('should support async function-based tool-level requireApproval', async () => {
