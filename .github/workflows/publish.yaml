@@ -132,8 +132,12 @@ jobs:
       # or update workflow"). The Version PR and SDK-bump branches never
       # touch workflow files today; if one ever must, grant that permission
       # on the App rather than working around the rejected push.
+      # Skipped on dry-run: that leg publishes nothing, pushes nothing, and
+      # dispatches nothing, so a broken App setup must not block it — it's
+      # the diagnostic escape hatch you'd reach for while fixing exactly that.
       - name: Mint release-bot token
         id: app-token
+        if: ${{ !inputs.dry-run }}
         uses: actions/create-github-app-token@v2
         with:
           app-id: ${{ vars.RELEASE_BOT_APP_ID }}
@@ -150,6 +154,7 @@ jobs:
       # train (release-train.yaml) could merge on checks from the first
       # revision. App-token pushes trigger workflows normally.
       - name: Configure git push credentials (App token)
+        if: ${{ !inputs.dry-run }}
         run: |
           git remote set-url origin \
             "https://x-access-token:${{ steps.app-token.outputs.token }}@github.com/${{ github.repository }}.git"
@@ -244,16 +249,15 @@ jobs:
       # packages are already on npm when the dispatches run, so a repo missing
       # from the App installation must degrade to a skipped notification with
       # a warning — exactly like a failed dispatch — never a red release.
-      # No `repositories:` list, deliberately: with only `owner` set the
-      # token covers whatever repos the installation currently includes, and
-      # the mint does NOT fail when one HOP target is missing from it — the
-      # dispatch to that repo 404s individually instead, hitting the per-repo
-      # warning paths below. An explicit list would be all-or-nothing: one
-      # uninstalled port repo would kill this mint and silently skip the
-      # unrelated monorepo notification too. Scope cost is nil as long as the
-      # App is only installed on the four release-chain repos.
-      - name: Mint dispatch token (best-effort)
-        id: dispatch-token
+      # One narrowly-scoped token PER dispatch target, each best-effort.
+      # Not one shared mint: an explicit multi-repo list is all-or-nothing
+      # (one uninstalled port repo kills the unrelated monorepo notification
+      # too), and an owner-wide mint hands the job a token for every repo the
+      # App is installed on. Per-target mints get both properties — a missing
+      # target degrades only its own notification, and each token can touch
+      # exactly one repo.
+      - name: Mint dispatch token (openrouter-web)
+        id: web-token
         if: ${{ !cancelled() && !inputs.dry-run }}
         continue-on-error: true
         uses: actions/create-github-app-token@v2
@@ -261,10 +265,37 @@ jobs:
           app-id: ${{ vars.RELEASE_BOT_APP_ID }}
           private-key: ${{ secrets.RELEASE_BOT_PRIVATE_KEY }}
           owner: OpenRouterTeam
+          repositories: openrouter-web
 
-      - name: Warn if dispatch token unavailable
-        if: ${{ !cancelled() && !inputs.dry-run && steps.dispatch-token.outcome == 'failure' }}
-        run: echo "::warning::Could not mint the cross-repo dispatch token (App credentials broken?). Skipping HOP B/C notifications — trigger them manually or let the port crons catch up."
+      - name: Mint dispatch token (python-agent)
+        id: py-token
+        if: ${{ !cancelled() && !inputs.dry-run }}
+        continue-on-error: true
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ vars.RELEASE_BOT_APP_ID }}
+          private-key: ${{ secrets.RELEASE_BOT_PRIVATE_KEY }}
+          owner: OpenRouterTeam
+          repositories: python-agent
+
+      - name: Mint dispatch token (go-agent)
+        id: go-token
+        if: ${{ !cancelled() && !inputs.dry-run }}
+        continue-on-error: true
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ vars.RELEASE_BOT_APP_ID }}
+          private-key: ${{ secrets.RELEASE_BOT_PRIVATE_KEY }}
+          owner: OpenRouterTeam
+          repositories: go-agent
+
+      - name: Warn about unavailable dispatch tokens
+        if: ${{ !cancelled() && !inputs.dry-run && (steps.web-token.outcome == 'failure' || steps.py-token.outcome == 'failure' || steps.go-token.outcome == 'failure') }}
+        run: |
+          [ "${{ steps.web-token.outcome }}" = "failure" ] && echo "::warning::No dispatch token for openrouter-web (App not installed there?) — its HOP B notification will be skipped."
+          [ "${{ steps.py-token.outcome }}" = "failure" ] && echo "::warning::No dispatch token for python-agent (App not installed there?) — its HOP C notification will be skipped."
+          [ "${{ steps.go-token.outcome }}" = "failure" ] && echo "::warning::No dispatch token for go-agent (App not installed there?) — its HOP C notification will be skipped."
+          exit 0
 
       # HOP B trigger: when @openrouter/agent is actually published, tell the
       # monorepo (openrouter-web) to bump its pinned @openrouter/agent for
@@ -300,16 +331,15 @@ jobs:
           fi
 
       # continue-on-error for the same reason as HOP C: the packages are on
-      # npm by now, and with the unscoped dispatch token a missing
-      # openrouter-web installation surfaces here as a 404 — degrade with a
-      # warning, never a red release.
+      # npm by now, and a missing openrouter-web installation surfaces as a
+      # skipped mint / 404 — degrade with a warning, never a red release.
       - name: Dispatch monorepo bump
-        if: ${{ !inputs.dry-run && steps.published.outputs.version != '' && steps.dispatch-token.outcome == 'success' }}
+        if: ${{ !inputs.dry-run && steps.published.outputs.version != '' && steps.web-token.outcome == 'success' }}
         continue-on-error: true
         env:
-          # Cross-repo App token; the App's contents:write on
-          # OpenRouterTeam/openrouter-web makes the repository_dispatch accepted.
-          GH_TOKEN: ${{ steps.dispatch-token.outputs.token }}
+          # openrouter-web-scoped App token; its contents:write is what makes
+          # the repository_dispatch accepted.
+          GH_TOKEN: ${{ steps.web-token.outputs.token }}
         run: |
           set -euo pipefail
           # if/else rather than a bare call: under continue-on-error a bare
@@ -349,12 +379,15 @@ jobs:
       # `!cancelled()` keeps this independent of the HOP B step above: a failed
       # monorepo dispatch should not also stop the ports from being told.
       - name: Dispatch port repos
-        if: ${{ !cancelled() && !inputs.dry-run && steps.published.outputs.version != '' && steps.dispatch-token.outcome == 'success' }}
+        if: ${{ !cancelled() && !inputs.dry-run && steps.published.outputs.version != '' }}
         continue-on-error: true
         env:
-          # Same cross-repo App token as HOP B; the App must also cover
-          # OpenRouterTeam/python-agent and OpenRouterTeam/go-agent.
-          GH_TOKEN: ${{ steps.dispatch-token.outputs.token }}
+          # The tag lookup reads THIS repo, so it uses the typescript-agent-
+          # scoped publish token; each dispatch uses its own target-scoped
+          # token (empty when that repo's mint failed → skipped with warning).
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          PY_TOKEN: ${{ steps.py-token.outputs.token }}
+          GO_TOKEN: ${{ steps.go-token.outputs.token }}
           VERSION: ${{ steps.published.outputs.version }}
           SOURCE_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
@@ -381,11 +414,18 @@ jobs:
             echo "::warning::${TAG} is not on origin; dispatching ref=${REF} instead."
           fi
 
-          for REPO in python-agent go-agent; do
+          for ENTRY in "python-agent:${PY_TOKEN}" "go-agent:${GO_TOKEN}"; do
+            REPO="${ENTRY%%:*}"
+            TOKEN="${ENTRY#*:}"
+            if [ -z "$TOKEN" ]; then
+              echo "::warning::No token for OpenRouterTeam/${REPO} (mint skipped/failed) — not dispatching. Trigger its Upstreamer Port workflow manually with ref=${REF}, or wait for its weekly cron."
+              FAILED="$FAILED ${REPO}"
+              continue
+            fi
             # -f (--raw-field) everywhere: -F treats values starting with `@`
             # (like TAG) as filenames to read, which would error out before the
             # request is even sent.
-            if gh api "repos/OpenRouterTeam/${REPO}/dispatches" \
+            if GH_TOKEN="$TOKEN" gh api "repos/OpenRouterTeam/${REPO}/dispatches" \
                  -f event_type=openrouter-agent-published \
                  -f "client_payload[version]=${VERSION}" \
                  -f "client_payload[ref]=${REF}" \
