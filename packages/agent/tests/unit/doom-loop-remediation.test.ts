@@ -531,6 +531,7 @@ describe('D2/D3: approval-resume doom gating and verdict persistence', () => {
           stop: 2,
         },
       },
+      toolChoice: 'required',
       state: accessor,
     });
     await result.getResponse();
@@ -581,6 +582,7 @@ describe('D2/D3: approval-resume doom gating and verdict persistence', () => {
           stop: 2,
         },
       },
+      toolChoice: 'required',
       state: accessor,
       approveToolCalls: [
         pausedCallId as string,
@@ -610,6 +612,7 @@ describe('D2/D3: approval-resume doom gating and verdict persistence', () => {
           stop: 2,
         },
       },
+      toolChoice: 'required',
       state: accessor,
       approveToolCalls: [
         secondCallId as string,
@@ -630,6 +633,9 @@ describe('D2/D3: approval-resume doom gating and verdict persistence', () => {
       action: 'stop',
       streak: 2,
     });
+    // Doom stop is terminal: a later fresh run must not inherit the consumed
+    // forced-choice key from the approval continuation.
+    expect(accessor.getLatest()?.consumedForcedToolChoiceKey).toBeUndefined();
   });
 
   it('a fresh conversational turn clears the persisted stop verdict; streaks survive', async () => {

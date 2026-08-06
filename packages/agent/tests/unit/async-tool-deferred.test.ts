@@ -177,6 +177,31 @@ describe('tool.deferred — pause & placeholder', () => {
     expect(await result.requiresApproval()).toBe(true);
   });
 
+  it('does not commit a dynamic auto transition when deferred execution pauses before dispatch', async () => {
+    mockBetaResponsesSend.mockResolvedValueOnce({
+      ok: true,
+      value: makeResponse('resp_1', [
+        functionCallItem('call_d1', 'request_legal_review', '{"contractId":"c-9"}'),
+      ]),
+    });
+
+    const { accessor } = createMemoryAccessor();
+    const state = await callModel(client, {
+      model: 'test-model',
+      input: 'review contract c-9',
+      tools: [
+        legalReview,
+      ] as const,
+      toolChoice: ({ numberOfTurns }) => (numberOfTurns === 0 ? 'required' : 'auto'),
+      state: accessor,
+    }).getState();
+
+    expect(mockBetaResponsesSend).toHaveBeenCalledTimes(1);
+    expect(mockBetaResponsesSend.mock.calls[0]?.[1]?.responsesRequest?.toolChoice).toBe('required');
+    expect(state.status).toBe('awaiting_async_tools');
+    expect(state.consumedForcedToolChoiceKey).toBe(canonicalizeKeyMaterial('required'));
+  });
+
   it('run returning a plain value resolves synchronously like a regular tool', async () => {
     mockBetaResponsesSend
       .mockResolvedValueOnce({

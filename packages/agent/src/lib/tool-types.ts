@@ -1626,7 +1626,8 @@ export interface ConversationState<TTools extends readonly Tool[] = readonly Too
    * and async-tool pauses so an unchanged forced choice stays relaxed after
    * resume while a newly resolved forced value can re-arm.
    *
-   * Cleared when the configured choice becomes unforced or the run completes.
+   * Cleared after an unforced caller choice is successfully dispatched or the
+   * run reaches a terminal exit.
    */
   consumedForcedToolChoiceKey?: string;
   /** Tool calls awaiting human approval */

@@ -480,6 +480,68 @@ describe('forced tool choice relaxation on follow-up turns', () => {
     expect(requestOfCall(2).toolChoice).toBe('required');
   });
 
+  it('clears consumed choice state when an interrupted run becomes a fresh request', async () => {
+    const approvalWeatherTool = {
+      ...weatherTool,
+      function: {
+        ...weatherTool.function,
+        requireApproval: true,
+      },
+    } as const;
+    let stored: ConversationState | null = null;
+    let loadCount = 0;
+    const accessor: StateAccessor = {
+      load: async () => {
+        loadCount++;
+        if (loadCount === 2 && stored) {
+          return {
+            ...stored,
+            interruptedBy: 'user',
+          };
+        }
+        return stored;
+      },
+      save: async (state) => {
+        stored = state;
+      },
+    };
+
+    mockBetaResponsesSend.mockResolvedValueOnce({
+      ok: true,
+      value: toolCallResponse('resp_1', 'call_1'),
+    });
+
+    await callModel(client, {
+      model: 'test-model',
+      input: 'What is the weather in Tokyo?',
+      tools: [
+        weatherTool,
+      ] as const,
+      toolChoice: 'required',
+      state: accessor,
+    }).getResponse();
+
+    expect(stored?.status).toBe('interrupted');
+    expect(stored?.consumedForcedToolChoiceKey).toBeUndefined();
+
+    mockBetaResponsesSend.mockResolvedValueOnce({
+      ok: true,
+      value: toolCallResponse('resp_2', 'call_2'),
+    });
+
+    await callModel(client, {
+      model: 'test-model',
+      input: 'Start a fresh weather request.',
+      tools: [
+        approvalWeatherTool,
+      ] as const,
+      toolChoice: 'required',
+      state: accessor,
+    }).getResponse();
+
+    expect(requestOfCall(1).toolChoice).toBe('required');
+  });
+
   it('relaxes the first model request after a manual client-tool resume', async () => {
     const manualWeatherTool = {
       ...weatherTool,
