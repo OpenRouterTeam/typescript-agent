@@ -5,7 +5,11 @@ import type { RequestOptions } from '@openrouter/sdk/lib/sdks';
 import type * as models from '@openrouter/sdk/models';
 import type { $ZodObject, $ZodShape } from 'zod/v4/core';
 import type { CallModelInput, ResolvedCallModelInput } from './async-params.js';
-import { hasAsyncFunctions, resolveAsyncFunctions } from './async-params.js';
+import {
+  hasAsyncFunctions,
+  resolveAsyncFunctions,
+  TOOL_SET_SNAPSHOT_METADATA_KEYS,
+} from './async-params.js';
 import type { SettledToolTask, TaskToolInput, ToolSemaphore, ToolTaskMode } from './async-tools.js';
 import {
   AsyncToolRegistry,
@@ -4921,7 +4925,15 @@ export class ModelResult<
       asyncTools: _at,
       ...rest
     } = this.options.request;
-    return this.applyResolvedForcedToolChoicePolicy(rest as ResolvedCallModelInput);
+    // Defense-in-depth: also drop `@openrouter/agent-tool-set` snapshot
+    // metadata in case it reached this stage without callModel filtering it.
+    const resolved: Record<string, unknown> = {
+      ...rest,
+    };
+    for (const key of TOOL_SET_SNAPSHOT_METADATA_KEYS) {
+      delete resolved[key];
+    }
+    return this.applyResolvedForcedToolChoicePolicy(resolved as ResolvedCallModelInput);
   }
 
   /**
