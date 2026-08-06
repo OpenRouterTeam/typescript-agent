@@ -133,8 +133,16 @@ remote() {
   fi
 
   # --- Push -------------------------------------------------------------------
-  # Token passed per-command; nothing token-bearing is persisted in .git/config.
-  git push "https://x-access-token:${GH_TOKEN}@github.com/${REPO}.git" "$BRANCH"
+  # Credential via GIT_CONFIG_* environment (the env equivalent of `git -c`)
+  # rather than embedded in the URL or passed as an argument: URL tokens and
+  # -c values both leak through argv (/proc/<pid>/cmdline) and set -x
+  # tracing. Env vars are visible only to this process tree, and nothing
+  # token-bearing persists in .git/config.
+  AUTH_B64="$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 | tr -d '\n')"
+  GIT_CONFIG_COUNT=1 \
+  GIT_CONFIG_KEY_0="http.https://github.com/.extraheader" \
+  GIT_CONFIG_VALUE_0="AUTHORIZATION: basic ${AUTH_B64}" \
+    git push "https://github.com/${REPO}.git" "$BRANCH"
   echo "Pushed ${BRANCH}"
 }
 
