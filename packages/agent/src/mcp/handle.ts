@@ -1,4 +1,4 @@
-import type { Tool } from '@openrouter/agent/tool-types';
+import type { Tool } from '../lib/tool-types.js';
 import type { BuildToolsOptions } from './build-tools.js';
 import { buildTools } from './build-tools.js';
 import type { SerializedMCPServer } from './cache/cache-types.js';

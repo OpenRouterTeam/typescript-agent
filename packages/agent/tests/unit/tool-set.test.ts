@@ -1,22 +1,22 @@
-import type {
-  ConversationState,
-  CorrelatedToolEventUnion,
-  ServerToolBase,
-} from '@openrouter/agent';
-import { serverTool, tool } from '@openrouter/agent';
 import { describe, expect, expectTypeOf, it, vi } from 'vitest';
 import { z } from 'zod/v4';
+import { serverTool, tool } from '../../src/lib/tool.js';
+import type { ToolSet } from '../../src/lib/tool-set.js';
+import { createToolSet } from '../../src/lib/tool-set.js';
 import type {
   InferAllIds,
   InferConditionalIds,
   InferDisabledIds,
   InferEnabledIds,
   InferToolSet,
-  ToolSet,
   WidenedPartition,
   WidenedSituationMap,
-} from '../../src/index.js';
-import { createToolSet } from '../../src/index.js';
+} from '../../src/lib/tool-set-types.js';
+import type {
+  ConversationState,
+  CorrelatedToolEventUnion,
+  ServerToolBase,
+} from '../../src/lib/tool-types.js';
 
 const makeTool = (name: string) =>
   tool({

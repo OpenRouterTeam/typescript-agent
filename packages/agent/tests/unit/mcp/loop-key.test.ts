@@ -12,13 +12,13 @@
  */
 import type { Client } from '@modelcontextprotocol/client';
 import { describe, expect, it } from 'vitest';
-import { buildTools } from '../../src/build-tools.js';
-import { isSerializedMCPServer } from '../../src/cache/cache-types.js';
-import { serializeServer } from '../../src/cache/serialize.js';
-import { listToolDefs } from '../../src/handle.js';
-import type { MCPConnection } from '../../src/mcp-connection.js';
-import type { McpToolDef } from '../../src/tool-wrapper.js';
-import { wrapMcpTool } from '../../src/tool-wrapper.js';
+import { buildTools } from '../../../src/mcp/build-tools.js';
+import { isSerializedMCPServer } from '../../../src/mcp/cache/cache-types.js';
+import { serializeServer } from '../../../src/mcp/cache/serialize.js';
+import { listToolDefs } from '../../../src/mcp/handle.js';
+import type { MCPConnection } from '../../../src/mcp/mcp-connection.js';
+import type { McpToolDef } from '../../../src/mcp/tool-wrapper.js';
+import { wrapMcpTool } from '../../../src/mcp/tool-wrapper.js';
 
 function fakeClient(): Client {
   return {} as never;

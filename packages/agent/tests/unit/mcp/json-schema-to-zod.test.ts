@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import * as z from 'zod';
-import { MCPError } from '../../src/errors.js';
-import { convertMcpInputSchema } from '../../src/schema/json-schema-to-zod.js';
+import { MCPError } from '../../../src/mcp/errors.js';
+import { convertMcpInputSchema } from '../../../src/mcp/schema/json-schema-to-zod.js';
 
 describe('convertMcpInputSchema', () => {
   it('converts primitives, enums, and required fields faithfully', () => {

@@ -1,5 +1,5 @@
 /**
- * Base error for all @openrouter/mcp failures.
+ * Base error for all @openrouter/agent/mcp failures.
  */
 export class MCPError extends Error {
   constructor(

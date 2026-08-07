@@ -82,7 +82,7 @@ async function captureOutboundTools(options: {
 /**
  * Run `callModel` with an arbitrary request object (deliberately typed as
  * `unknown` so tests can pass shapes that don't type-check, such as a whole
- * `@openrouter/agent-tool-set` snapshot spread in) and capture the raw JSON
+ * `@openrouter/agent/tool-set` snapshot spread in) and capture the raw JSON
  * body sent to the HTTP client, short-circuiting the actual network call.
  */
 async function captureOutboundRequest(request: unknown): Promise<{
@@ -229,7 +229,7 @@ describe('callModel activeTools filter', () => {
   });
 });
 
-describe('callModel strips @openrouter/agent-tool-set snapshot metadata', () => {
+describe('callModel strips @openrouter/agent/tool-set snapshot metadata', () => {
   const toolA = tool({
     name: 'a',
     inputSchema: z.object({}),

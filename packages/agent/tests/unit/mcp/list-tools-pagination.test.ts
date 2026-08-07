@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import type { ConnectOptions, MCPConnection } from '../../src/mcp-connection.js';
+import type { ConnectOptions, MCPConnection } from '../../../src/mcp/mcp-connection.js';
 
 // Pages of tools the fake client serves, one cursor at a time. Captured so the
 // test can assert which cursors freshConnect requested.
@@ -43,7 +43,7 @@ const toolPages: ToolPage[] = [
   },
 ];
 
-vi.mock('../../src/mcp-connection.js', () => ({
+vi.mock('../../../src/mcp/mcp-connection.js', () => ({
   connect: (_options: ConnectOptions): Promise<MCPConnection> => {
     let idx = 0;
     const connection: MCPConnection = {
@@ -67,7 +67,7 @@ vi.mock('../../src/mcp-connection.js', () => ({
   },
 }));
 
-const { freshConnect } = await import('../../src/handle.js');
+const { freshConnect } = await import('../../../src/mcp/handle.js');
 
 function nameOf(tool: unknown): string | undefined {
   if (

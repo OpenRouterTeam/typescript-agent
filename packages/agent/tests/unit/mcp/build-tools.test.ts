@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import { buildTools, filterToolDefs } from '../../src/build-tools.js';
-import { MCPError } from '../../src/errors.js';
-import type { McpToolDef } from '../../src/tool-wrapper.js';
+import { buildTools, filterToolDefs } from '../../../src/mcp/build-tools.js';
+import { MCPError } from '../../../src/mcp/errors.js';
+import type { McpToolDef } from '../../../src/mcp/tool-wrapper.js';
 
 // A minimal stand-in for the MCP Client; buildTools only stores the reference
 // for the wrapped tools' execute closures, which these tests don't invoke.

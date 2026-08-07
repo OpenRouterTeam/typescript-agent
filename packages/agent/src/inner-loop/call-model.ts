@@ -158,7 +158,7 @@ export function callModel<
   // checking does not run on spread arguments — so a caller who does
   // `callModel(client, { ...toolSet.inferTools(), model, input })` (a
   // documented, intended pattern for `tools`/`activeTools`) can silently
-  // carry `@openrouter/agent-tool-set` snapshot metadata (`enabled`,
+  // carry `@openrouter/agent/tool-set` snapshot metadata (`enabled`,
   // `disabled`, `statusByTool`) straight through to the outbound request
   // with no compile-time or destructure-time signal. Strip any such keys
   // here, at the single choke point every callModel() call passes through,

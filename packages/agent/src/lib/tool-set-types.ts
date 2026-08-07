@@ -4,7 +4,7 @@ import type {
   CorrelatedToolEventUnion,
   ServerToolBase,
   Tool,
-} from '@openrouter/agent';
+} from './tool-types.js';
 
 // ─── identity ───────────────────────────────────────────────────────────────
 
@@ -87,7 +87,7 @@ type KeepIfActive<El, Active extends string> = El extends Tool
  *
  * A genuine fixed-length tuple (`T['length']` is a literal number) is
  * filtered by exact head/tail recursion, preserving order and concrete
- * per-element types. A dynamic `readonly Tool[]` (e.g. an `@openrouter/mcp`
+ * per-element types. A dynamic `readonly Tool[]` (e.g. an `@openrouter/agent/mcp`
  * tool array not typed as a literal tuple) has `number extends T['length']`,
  * so it falls back to a distributive per-element filter instead of
  * recursing — the tuple pattern never matches a general array, and without

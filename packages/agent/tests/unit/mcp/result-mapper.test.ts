@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { MCPToolCallError } from '../../src/errors.js';
-import { mapCallToolResult } from '../../src/result-mapper.js';
+import { MCPToolCallError } from '../../../src/mcp/errors.js';
+import { mapCallToolResult } from '../../../src/mcp/result-mapper.js';
 
 describe('mapCallToolResult', () => {
   it('prefers structuredContent when present', () => {
