@@ -2,7 +2,7 @@
   "name": "@openrouter/agent",
   "version": "0.9.0",
   "author": "OpenRouter",
-  "description": "Agent toolkit for building AI applications with OpenRouter — tool orchestration, streaming, multi-turn conversations, and format compatibility.",
+  "description": "Agent toolkit for building AI applications with OpenRouter \u2014 tool orchestration, streaming, multi-turn conversations, and format compatibility.",
   "keywords": [
     "openrouter",
     "agent",
@@ -153,11 +153,14 @@
     "zod": "^4.0.0"
   },
   "peerDependencies": {
-    "@modelcontextprotocol/sdk": "^1.29.0"
+    "@modelcontextprotocol/client": "^2.0.0"
   },
   "peerDependenciesMeta": {
-    "@modelcontextprotocol/sdk": {
+    "@modelcontextprotocol/client": {
       "optional": true
     }
+  },
+  "devDependencies": {
+    "@modelcontextprotocol/client": "^2.0.0"
   }
 }

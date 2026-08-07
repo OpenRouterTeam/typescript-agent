@@ -619,7 +619,11 @@ export async function rehydrateMCPTools(
     if (
       reconnectOnExpiry &&
       options.signal?.aborted !== true &&
-      !isAuthFailure(err, effectiveAuth)
+      !isAuthFailure({
+        err,
+        auth: effectiveAuth,
+        UnauthorizedErrorType: undefined,
+      })
     ) {
       return freshConnect(createOptions, url, cacheKey);
     }
