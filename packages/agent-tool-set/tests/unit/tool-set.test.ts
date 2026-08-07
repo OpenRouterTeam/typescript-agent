@@ -1,4 +1,8 @@
-import type { ConversationState, CorrelatedToolEventUnion } from '@openrouter/agent';
+import type {
+  ConversationState,
+  CorrelatedToolEventUnion,
+  ServerToolBase,
+} from '@openrouter/agent';
 import { serverTool, tool } from '@openrouter/agent';
 import { describe, expect, expectTypeOf, it, vi } from 'vitest';
 import { z } from 'zod/v4';
@@ -814,6 +818,65 @@ describe('server tools', () => {
       ] as const,
     });
     expect(() => ts.activate('web_search_2025_08_26' as 'a')).toThrow(/Unknown tool/);
+  });
+
+  describe('custom-ID server tool erased to ServerToolBase', () => {
+    // Reproduces the reviewed scenario: a custom-ID server tool value whose
+    // static type has been widened to the exported `ServerToolBase`
+    // interface (e.g. crossing a module boundary, or via a variable
+    // annotation). The literal id is no longer visible at the type level, so
+    // `ServerToolIdOf` must widen to `string` rather than falsely claiming
+    // the synthesized default `server:${config.type}` is the only valid id.
+    const erased: ServerToolBase = serverTool(
+      {
+        type: 'web_search_2025_08_26',
+      },
+      {
+        id: 'server:public_search',
+      },
+    );
+
+    it('accepts the real runtime ID for .activate/.deactivate (type-level)', () => {
+      const ts = createToolSet({
+        tools: [
+          a,
+          erased,
+        ] as const,
+      });
+      // Sound: widens to `string` instead of falsely narrowing to just the
+      // synthesized default (`'a' | 'server:web_search_2025_08_26'`).
+      expectTypeOf<InferAllIds<typeof ts>>().toEqualTypeOf<'a' | string>();
+      // And the real runtime id type-checks as an argument to .deactivate(...).
+      ts.deactivate('server:public_search');
+    });
+
+    it('accepts the real runtime ID for .activate/.deactivate (runtime)', () => {
+      const ts = createToolSet({
+        tools: [
+          a,
+          erased,
+        ] as const,
+      }).deactivate('server:public_search');
+      const { enabled, disabled } = ts.resolve();
+      expect(enabled).toEqual([
+        'a',
+      ]);
+      expect(disabled).toEqual([
+        'server:public_search',
+      ]);
+    });
+
+    it('throws Unknown tool for the synthesized default id, which was never the real id', () => {
+      const ts = createToolSet({
+        tools: [
+          a,
+          erased,
+        ] as const,
+      });
+      expect(() => ts.deactivate('server:web_search_2025_08_26' as 'server:public_search')).toThrow(
+        /Unknown tool/,
+      );
+    });
   });
 });
 

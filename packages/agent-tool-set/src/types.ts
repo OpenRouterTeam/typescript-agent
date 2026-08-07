@@ -21,18 +21,22 @@ export type ClientToolName<T> = T extends {
  * Server-tool stable ID.
  * Prefixed so it can never collide with a client function name.
  * Prefers an explicit `id` on the tool; falls back to `server:${config.type}`.
+ *
+ * When `T`'s `id` has been widened to plain `string` (e.g. a custom-ID
+ * `ServerTool<T, TId>` value erased to the exported `ServerToolBase`
+ * interface), the concrete literal is no longer visible at the type level.
+ * Synthesizing `` `server:${config.type}` `` in that case would be unsound:
+ * the runtime `id` could be anything, and the synthesized literal would
+ * both reject the real id and falsely claim a default that may not hold.
+ * Widening to `string` here is the sound choice — it accepts any runtime id.
+ * Only tools with no structural `id` at all fall back to the synthesized
+ * default, and concrete `ServerTool<T, TId>` values keep their literal `TId`.
  */
 export type ServerToolIdOf<T> = T extends {
   readonly id: infer Id extends string;
 }
   ? string extends Id
-    ? T extends {
-        readonly config: {
-          type: infer K extends string;
-        };
-      }
-      ? `server:${K}`
-      : never
+    ? string
     : Id
   : T extends {
         readonly config: {
