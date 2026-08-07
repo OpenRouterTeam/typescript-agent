@@ -602,7 +602,18 @@ export class ToolSet<
     const activeTools: string[] = [];
     const enabled: string[] = [];
     const disabled: string[] = [];
-    const statusByTool: Record<string, ToolStatusEntry> = {};
+    // Object.create(null), not `{}`: tool IDs are caller-supplied strings
+    // (serverTool only rejects the empty string), so `__proto__` is a valid
+    // ID. Assigning `statusByTool['__proto__'] = ...` on a `{}` object would
+    // invoke the inherited setter and reassign the object's prototype
+    // instead of creating an own property, silently dropping that ID from
+    // the exhaustive map. Same reasoning as extractServerToolIdentity in
+    // packages/agent/src/lib/model-result.ts and the subset builder in
+    // packages/agent/src/lib/doom-loop.ts.
+    const statusByTool: Record<string, ToolStatusEntry> = Object.create(null) as Record<
+      string,
+      ToolStatusEntry
+    >;
 
     for (const id of this.#index.orderedIds) {
       const tool = this.#index.toolById.get(id);
