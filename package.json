@@ -11,6 +11,7 @@
     "lint": "turbo run lint",
     "lint:fix": "biome check --write packages/*/src packages/*/tests",
     "typecheck": "turbo run typecheck",
+    "verify:packages": "node scripts/verify-package-boundaries.mjs",
     "changeset": "changeset",
     "version": "changeset version && turbo run gen:version",
     "prepare": "husky"

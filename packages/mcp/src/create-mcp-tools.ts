@@ -1,5 +1,7 @@
-// Thin compatibility wrapper: re-exports the "create-mcp-tools" subpath from
-// @openrouter/agent/mcp so `@openrouter/mcp/create-mcp-tools` keeps working.
+/**
+ * @deprecated Import from `@openrouter/agent/mcp/create-mcp-tools` instead.
+ * This compatibility subpath remains available for migration.
+ */
 
 export type { SerializedMCPServer } from '@openrouter/agent/mcp/create-mcp-tools';
 export { createMCPTools } from '@openrouter/agent/mcp/create-mcp-tools';

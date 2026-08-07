@@ -1,6 +1,12 @@
 {
   "extends": "./tsconfig.json",
   "compilerOptions": { "noEmit": true, "rootDir": "." },
-  "include": ["src/**/*.ts", "tests/unit/context-schema-inference.test-d.ts"],
+  "include": [
+    "src/**/*.ts",
+    "tests/unit/context-schema-inference.test-d.ts",
+    "tests/unit/filter-tools-by-ids.test-d.ts",
+    "tests/unit/has-approval-tools.test-d.ts",
+    "tests/unit/mcp-result-discrimination.test-d.ts"
+  ],
   "exclude": ["node_modules", "esm"]
 }

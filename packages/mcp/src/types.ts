@@ -1,5 +1,7 @@
-// Thin compatibility wrapper: re-exports the "types" subpath from
-// @openrouter/agent/mcp so `@openrouter/mcp/types` keeps working.
+/**
+ * @deprecated Import from `@openrouter/agent/mcp/types` instead.
+ * This compatibility subpath remains available for migration.
+ */
 export type {
   CreateMCPToolsOptions,
   ElicitationHandler,

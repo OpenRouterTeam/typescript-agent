@@ -17,6 +17,7 @@ export {
   MCPCacheError,
   MCPConnectionError,
   MCPError,
+  MCPMissingPeerDependencyError,
   MCPToolCallError,
 } from './errors.js';
 export type { RehydrateMCPToolsOptions } from './rehydrate.js';
