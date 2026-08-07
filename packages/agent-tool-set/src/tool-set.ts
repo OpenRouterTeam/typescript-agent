@@ -24,6 +24,8 @@ import type {
   ToolIdOf,
   ToolIdsOfTuple,
   ToolStatusEntry,
+  WidenedPartition,
+  WidenedSituationMap,
 } from './types.js';
 
 type ActivationEntry<TShared extends Record<string, unknown>> =
@@ -148,6 +150,37 @@ function normalizeConditionalRule<TShared extends Record<string, unknown>>(
 }
 
 /**
+ * Selects the return type of a mutator call.
+ *
+ * A mutable `ToolSet` mutates one shared runtime object in place, and any
+ * number of aliases can reference that object. If a mutator refined `P`/`Sit`
+ * on a mutable instance the way the immutable path does, two aliases of the
+ * *same* live object could statically claim different, contradictory exact
+ * types the instant either one mutated — unsound, since both aliases still
+ * point at the one object whose actual state matches only the latest call.
+ *
+ * When `TMutable extends true`, mutators therefore return the receiver's own
+ * unchanged type (`ToolSet<TTools, TShared, P, Sit, true>`) instead of a
+ * refined `NextP`/`NextSit` — every alias of a mutable instance keeps the
+ * exact same (already maximally conservative) static type for its whole
+ * lifetime, so no alias can ever contradict another. Immutable instances
+ * (`TMutable extends false`) are unaffected: each mutation still returns a
+ * brand-new object with the precisely refined `NextP`/`NextSit`, exactly as
+ * before.
+ */
+type Mutated<
+  TTools extends readonly Tool[],
+  TShared extends Record<string, unknown>,
+  P extends Partition,
+  Sit extends SituationMap,
+  TMutable extends boolean,
+  NextP extends Partition,
+  NextSit extends SituationMap = Sit,
+> = TMutable extends true
+  ? ToolSet<TTools, TShared, P, Sit, true>
+  : ToolSet<TTools, TShared, NextP, NextSit, false>;
+
+/**
  * Immutable-by-default stateful set of tools with a three-way static
  * partition (enabled / disabled / conditional) and optional named situations.
  *
@@ -155,12 +188,17 @@ function normalizeConditionalRule<TShared extends Record<string, unknown>>(
  * @typeParam TShared - Shared context shape for predicates
  * @typeParam P - Compile-time partition of tool-set IDs
  * @typeParam Sit - Named situation registry
+ * @typeParam TMutable - Whether this instance mutates in place. Mutable
+ *   instances deliberately carry a single widened `P`/`Sit` for their entire
+ *   lifetime (see {@link Mutated}) so that every alias stays sound; immutable
+ *   instances keep the exact, precisely-refined `P`/`Sit` per instance.
  */
 export class ToolSet<
   TTools extends readonly Tool[] = readonly Tool[],
   TShared extends Record<string, unknown> = Record<string, unknown>,
   P extends Partition = InitialPartition<TTools>,
   Sit extends SituationMap = EmptySituations,
+  TMutable extends boolean = false,
 > {
   readonly #index: IndexedTools<TTools>;
   readonly #activation: Map<string, ActivationEntry<TShared>>;
@@ -191,12 +229,40 @@ export class ToolSet<
   static create<
     T extends readonly Tool[],
     S extends Record<string, unknown> = Record<string, unknown>,
-  >(opts: { tools: T; mutable?: boolean }): ToolSet<T, S, InitialPartition<T>, EmptySituations> {
-    return new ToolSet<T, S, InitialPartition<T>, EmptySituations>(
+  >(opts: {
+    tools: T;
+    mutable: true;
+  }): ToolSet<T, S, WidenedPartition<T>, WidenedSituationMap, true>;
+  static create<
+    T extends readonly Tool[],
+    S extends Record<string, unknown> = Record<string, unknown>,
+  >(opts: {
+    tools: T;
+    mutable?: false;
+  }): ToolSet<T, S, InitialPartition<T>, EmptySituations, false>;
+  static create<
+    T extends readonly Tool[],
+    S extends Record<string, unknown> = Record<string, unknown>,
+  >(opts: {
+    tools: T;
+    mutable?: boolean;
+  }):
+    | ToolSet<T, S, WidenedPartition<T>, WidenedSituationMap, true>
+    | ToolSet<T, S, InitialPartition<T>, EmptySituations, false> {
+    const mutable = opts.mutable ?? false;
+    if (mutable) {
+      return new ToolSet<T, S, WidenedPartition<T>, WidenedSituationMap, true>(
+        indexTools(opts.tools),
+        new Map(),
+        new Map(),
+        true,
+      );
+    }
+    return new ToolSet<T, S, InitialPartition<T>, EmptySituations, false>(
       indexTools(opts.tools),
       new Map(),
       new Map(),
-      opts.mutable ?? false,
+      false,
     );
   }
 
@@ -213,26 +279,29 @@ export class ToolSet<
 
   #withPartitionMutation<NextP extends Partition>(
     mutate: (activation: Map<string, ActivationEntry<TShared>>) => void,
-  ): ToolSet<TTools, TShared, NextP, Sit> {
+  ): Mutated<TTools, TShared, P, Sit, TMutable, NextP> {
     if (this.#mutable) {
-      // Mutable mode deliberately does not refine partition type params —
-      // successive mutations would leave stale compile-time brands. Runtime state still updates.
+      // Mutable mode mutates the shared runtime object in place and returns
+      // `this` unchanged: every alias of a mutable instance already carries
+      // the same widened `P`/`Sit`, so returning that same (unrefined) type
+      // here — instead of a freshly refined `NextP` — keeps all aliases
+      // statically consistent with the one object they actually reference.
       mutate(this.#activation);
-      return this as unknown as ToolSet<TTools, TShared, NextP, Sit>;
+      return this as unknown as Mutated<TTools, TShared, P, Sit, TMutable, NextP>;
     }
     const nextActivation = cloneActivationMap(this.#activation);
     mutate(nextActivation);
-    return new ToolSet<TTools, TShared, NextP, Sit>(
+    return new ToolSet<TTools, TShared, NextP, Sit, false>(
       this.#index,
       nextActivation,
       this.#situations,
       false,
-    );
+    ) as unknown as Mutated<TTools, TShared, P, Sit, TMutable, NextP>;
   }
 
   activate<const N extends ToolIdsOfTuple<TTools>>(
     names: N | readonly N[],
-  ): ToolSet<TTools, TShared, ActivatePartition<P, N>, Sit> {
+  ): Mutated<TTools, TShared, P, Sit, TMutable, ActivatePartition<P, N>> {
     const list = toIdArray(names as string | readonly string[]);
     for (const n of list) {
       this.#assertKnown(n);
@@ -250,7 +319,7 @@ export class ToolSet<
 
   deactivate<const N extends ToolIdsOfTuple<TTools>>(
     names: N | readonly N[],
-  ): ToolSet<TTools, TShared, DeactivatePartition<P, N>, Sit> {
+  ): Mutated<TTools, TShared, P, Sit, TMutable, DeactivatePartition<P, N>> {
     const list = toIdArray(names as string | readonly string[]);
     for (const n of list) {
       this.#assertKnown(n);
@@ -269,21 +338,25 @@ export class ToolSet<
   activateWhen<const N extends ToolIdsOfTuple<TTools>>(
     name: N,
     predicate: ActivationPredicate<TShared>,
-  ): ToolSet<TTools, TShared, ConditionalPartition<P, N>, Sit>;
+  ): Mutated<TTools, TShared, P, Sit, TMutable, ConditionalPartition<P, N>>;
   activateWhen<const N extends ToolIdsOfTuple<TTools>>(
     map: {
       readonly [K in N]?: ActivationPredicate<TShared>;
     },
-  ): ToolSet<TTools, TShared, ConditionalPartition<P, N>, Sit>;
-  activateWhen(
-    nameOrMap: unknown,
+  ): Mutated<TTools, TShared, P, Sit, TMutable, ConditionalPartition<P, N>>;
+  activateWhen<const N extends ToolIdsOfTuple<TTools>>(
+    nameOrMap:
+      | N
+      | {
+          readonly [K in N]?: ActivationPredicate<TShared>;
+        },
     predicate?: ActivationPredicate<TShared>,
-  ): ToolSet<TTools, TShared, any, Sit> {
+  ): Mutated<TTools, TShared, P, Sit, TMutable, ConditionalPartition<P, N>> {
     const entries = this.#normalizePredicateArg(
       nameOrMap as string | Partial<Record<string, ActivationPredicate<TShared>>>,
       predicate,
     );
-    return this.#withPartitionMutation<Partition>((activation) => {
+    return this.#withPartitionMutation<ConditionalPartition<P, N>>((activation) => {
       for (const [n, p] of entries) {
         activation.set(n, {
           kind: 'activateWhen',
@@ -297,21 +370,25 @@ export class ToolSet<
   deactivateWhen<const N extends ToolIdsOfTuple<TTools>>(
     name: N,
     predicate: ActivationPredicate<TShared>,
-  ): ToolSet<TTools, TShared, ConditionalPartition<P, N>, Sit>;
+  ): Mutated<TTools, TShared, P, Sit, TMutable, ConditionalPartition<P, N>>;
   deactivateWhen<const N extends ToolIdsOfTuple<TTools>>(
     map: {
       readonly [K in N]?: ActivationPredicate<TShared>;
     },
-  ): ToolSet<TTools, TShared, ConditionalPartition<P, N>, Sit>;
-  deactivateWhen(
-    nameOrMap: unknown,
+  ): Mutated<TTools, TShared, P, Sit, TMutable, ConditionalPartition<P, N>>;
+  deactivateWhen<const N extends ToolIdsOfTuple<TTools>>(
+    nameOrMap:
+      | N
+      | {
+          readonly [K in N]?: ActivationPredicate<TShared>;
+        },
     predicate?: ActivationPredicate<TShared>,
-  ): ToolSet<TTools, TShared, any, Sit> {
+  ): Mutated<TTools, TShared, P, Sit, TMutable, ConditionalPartition<P, N>> {
     const entries = this.#normalizePredicateArg(
       nameOrMap as string | Partial<Record<string, ActivationPredicate<TShared>>>,
       predicate,
     );
-    return this.#withPartitionMutation<Partition>((activation) => {
+    return this.#withPartitionMutation<ConditionalPartition<P, N>>((activation) => {
       for (const [n, p] of entries) {
         activation.set(n, {
           kind: 'deactivateWhen',
@@ -375,7 +452,7 @@ export class ToolSet<
     const M extends {
       readonly [K in string]: SituationConfig<ToolIdsOfTuple<TTools>, TShared>;
     },
-  >(situations: M): ToolSet<TTools, TShared, P, InferSituationMap<M>> {
+  >(situations: M): Mutated<TTools, TShared, P, Sit, TMutable, P, InferSituationMap<M>> {
     const next = new Map<string, SituationRuntime<TShared>>();
 
     for (const [name, config] of Object.entries(situations) as Array<
@@ -434,19 +511,22 @@ export class ToolSet<
     }
 
     if (this.#mutable) {
+      // Same rationale as #withPartitionMutation: `this` keeps its existing
+      // (already widened) static type instead of claiming a freshly refined
+      // `InferSituationMap<M>`, so every alias stays statically consistent.
       this.#situations.clear();
       for (const [k, v] of next) {
         this.#situations.set(k, v);
       }
-      return this as unknown as ToolSet<TTools, TShared, P, InferSituationMap<M>>;
+      return this as unknown as Mutated<TTools, TShared, P, Sit, TMutable, P, InferSituationMap<M>>;
     }
 
-    return new ToolSet<TTools, TShared, P, InferSituationMap<M>>(
+    return new ToolSet<TTools, TShared, P, InferSituationMap<M>, false>(
       this.#index,
       cloneActivationMap(this.#activation),
       next,
       false,
-    );
+    ) as unknown as Mutated<TTools, TShared, P, Sit, TMutable, P, InferSituationMap<M>>;
   }
 
   /**
@@ -715,28 +795,98 @@ export class ToolSet<
     };
   }
 
-  clone(opts?: { mutable?: boolean }): ToolSet<TTools, TShared, P, Sit> {
-    return new ToolSet<TTools, TShared, P, Sit>(
+  /**
+   * Copy state into a fresh, independent instance.
+   *
+   * Flipping to `mutable: true` starts a *new* mutation lifetime, so — like
+   * `ToolSet.create({ mutable: true })` — the clone's partition/situations
+   * widen to {@link WidenedPartition}/{@link WidenedSituationMap} rather than
+   * inheriting the source's exact `P`/`Sit`: an exact type could otherwise be
+   * invalidated the moment the clone is mutated, while other clones or the
+   * original remain unaffected. Cloning without flipping mode (mode
+   * inherited, including an already-mutable source) or flipping to `false`
+   * keeps the source's `P`/`Sit` unchanged.
+   */
+  clone(opts?: { mutable?: undefined }): ToolSet<TTools, TShared, P, Sit, TMutable>;
+  clone(opts: {
+    mutable: true;
+  }): ToolSet<TTools, TShared, WidenedPartition<TTools>, WidenedSituationMap, true>;
+  clone(opts: { mutable: false }): ToolSet<TTools, TShared, P, Sit, false>;
+  clone(
+    opts?:
+      | {
+          mutable?: undefined;
+        }
+      | {
+          mutable: true;
+        }
+      | {
+          mutable: false;
+        },
+  ):
+    | ToolSet<TTools, TShared, P, Sit, TMutable>
+    | ToolSet<TTools, TShared, WidenedPartition<TTools>, WidenedSituationMap, true>
+    | ToolSet<TTools, TShared, P, Sit, false> {
+    const mutable = opts?.mutable ?? this.#mutable;
+    if (opts?.mutable === true && !this.#mutable) {
+      return new ToolSet<TTools, TShared, WidenedPartition<TTools>, WidenedSituationMap, true>(
+        this.#index,
+        cloneActivationMap(this.#activation),
+        cloneSituationsMap(this.#situations),
+        true,
+      );
+    }
+    return new ToolSet<TTools, TShared, P, Sit, boolean>(
       this.#index,
       cloneActivationMap(this.#activation),
       cloneSituationsMap(this.#situations),
-      opts?.mutable ?? this.#mutable,
-    );
+      mutable,
+    ) as ToolSet<TTools, TShared, P, Sit, TMutable>;
   }
 }
 
+/**
+ * Construct a {@link ToolSet}.
+ *
+ * `mutable: true` deliberately returns a widened partition/situations type
+ * (`WidenedPartition`/`WidenedSituationMap`) rather than the exact
+ * `InitialPartition`/`EmptySituations` used by the default immutable mode —
+ * see {@link Mutated} for why mutable instances need this from construction
+ * onward. Omitting `mutable` (or passing `false`) keeps today's exact,
+ * precisely-refined immutable partition tracking unchanged.
+ */
+export function createToolSet<
+  const T extends readonly Tool[],
+  TShared extends Record<string, unknown> = Record<string, unknown>,
+>(opts: {
+  tools: T;
+  mutable: true;
+}): ToolSet<T, TShared, WidenedPartition<T>, WidenedSituationMap, true>;
+export function createToolSet<
+  const T extends readonly Tool[],
+  TShared extends Record<string, unknown> = Record<string, unknown>,
+>(opts: {
+  tools: T;
+  mutable?: false;
+}): ToolSet<T, TShared, InitialPartition<T>, EmptySituations, false>;
 export function createToolSet<
   const T extends readonly Tool[],
   TShared extends Record<string, unknown> = Record<string, unknown>,
 >(opts: {
   tools: T;
   mutable?: boolean;
-}): ToolSet<T, TShared, InitialPartition<T>, EmptySituations> {
+}):
+  | ToolSet<T, TShared, WidenedPartition<T>, WidenedSituationMap, true>
+  | ToolSet<T, TShared, InitialPartition<T>, EmptySituations, false> {
+  if (opts.mutable) {
+    return ToolSet.create<T, TShared>({
+      tools: opts.tools,
+      mutable: true,
+    });
+  }
   return ToolSet.create<T, TShared>({
     tools: opts.tools,
-    ...(opts.mutable !== undefined && {
-      mutable: opts.mutable,
-    }),
+    mutable: false,
   });
 }
 
