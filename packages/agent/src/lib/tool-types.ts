@@ -109,9 +109,10 @@ export type ContextFromSchema<TCtx extends $ZodObject<$ZodShape>> =
       : zodInfer<TCtx> & Record<string, unknown>;
 
 /**
- * Extract tool name from a tool definition
+ * Extract tool name from a tool definition.
+ * Preserves literal names when present; falls back to `string`.
  */
-type InferToolName<T> = T extends {
+export type InferToolName<T> = T extends {
   function: {
     name: infer N extends string;
   };
@@ -418,12 +419,14 @@ export type ToModelOutputFunction<TInput, TOutput> = {
  * Base tool function interface with inputSchema
  * @template TInput - Zod schema for tool input
  * @template TCtx - Zod schema for tool context (optional; default = erased wide type)
+ * @template TName - Literal tool name (default `string` keeps wide assignability)
  */
 export interface BaseToolFunction<
   TInput extends $ZodObject<$ZodShape>,
   TCtx extends $ZodObject<$ZodShape> = $ZodObject<$ZodShape>,
+  TName extends string = string,
 > {
-  name: string;
+  name: TName;
   description?: string;
   inputSchema: TInput;
   /**
@@ -490,7 +493,7 @@ export interface ToolFunctionWithExecute<
   TContext extends Record<string, unknown> = Record<string, unknown>,
   TName extends string = string,
   TCtx extends $ZodObject<$ZodShape> = $ZodObject<$ZodShape>,
-> extends BaseToolFunction<TInput, TCtx> {
+> extends BaseToolFunction<TInput, TCtx, TName> {
   outputSchema?: TOutput;
   /**
    * Absent on regular tools. Declared as `undefined`-only so
@@ -540,7 +543,7 @@ export interface ToolFunctionWithGenerator<
   TContext extends Record<string, unknown> = Record<string, unknown>,
   TName extends string = string,
   TCtx extends $ZodObject<$ZodShape> = $ZodObject<$ZodShape>,
-> extends BaseToolFunction<TInput, TCtx> {
+> extends BaseToolFunction<TInput, TCtx, TName> {
   eventSchema: TEvent;
   outputSchema: TOutput;
   // Method syntax for bivariant param checking — see ToolFunctionWithExecute.
@@ -559,7 +562,8 @@ export interface ManualToolFunction<
   TInput extends $ZodObject<$ZodShape>,
   TOutput extends $ZodType = $ZodType<unknown>,
   TCtx extends $ZodObject<$ZodShape> = $ZodObject<$ZodShape>,
-> extends BaseToolFunction<TInput, TCtx> {
+  TName extends string = string,
+> extends BaseToolFunction<TInput, TCtx, TName> {
   outputSchema?: TOutput;
 }
 
@@ -581,7 +585,7 @@ export interface HITLToolFunction<
   TContext extends Record<string, unknown> = Record<string, unknown>,
   TName extends string = string,
   TCtx extends $ZodObject<$ZodShape> = $ZodObject<$ZodShape>,
-> extends BaseToolFunction<TInput, TCtx> {
+> extends BaseToolFunction<TInput, TCtx, TName> {
   /**
    * Required for HITL tools. Used to validate both the `onToolCalled` return
    * value (when non-null) and the caller-supplied response that comes back via
@@ -740,9 +744,10 @@ export type ToolWithExecute<
   TOutput extends $ZodType = $ZodType<unknown>,
   TContext extends Record<string, unknown> = Record<string, unknown>,
   TCtx extends $ZodObject<$ZodShape> = $ZodObject<$ZodShape>,
+  TName extends string = string,
 > = {
   type: ToolType.Function;
-  function: ToolFunctionWithExecute<TInput, TOutput, TContext, string, TCtx>;
+  function: ToolFunctionWithExecute<TInput, TOutput, TContext, TName, TCtx>;
 };
 
 /**
@@ -755,9 +760,10 @@ export type ToolWithGenerator<
   TOutput extends $ZodType = $ZodType<unknown>,
   TContext extends Record<string, unknown> = Record<string, unknown>,
   TCtx extends $ZodObject<$ZodShape> = $ZodObject<$ZodShape>,
+  TName extends string = string,
 > = {
   type: ToolType.Function;
-  function: ToolFunctionWithGenerator<TInput, TEvent, TOutput, TContext, string, TCtx>;
+  function: ToolFunctionWithGenerator<TInput, TEvent, TOutput, TContext, TName, TCtx>;
 };
 
 /**
@@ -768,9 +774,10 @@ export type ManualTool<
   TInput extends $ZodObject<$ZodShape> = $ZodObject<$ZodShape>,
   TOutput extends $ZodType = $ZodType<unknown>,
   TCtx extends $ZodObject<$ZodShape> = $ZodObject<$ZodShape>,
+  TName extends string = string,
 > = {
   type: ToolType.Function;
-  function: ManualToolFunction<TInput, TOutput, TCtx>;
+  function: ManualToolFunction<TInput, TOutput, TCtx, TName>;
 };
 
 /**
@@ -782,9 +789,10 @@ export type HITLTool<
   TOutput extends $ZodType = $ZodType<unknown>,
   TContext extends Record<string, unknown> = Record<string, unknown>,
   TCtx extends $ZodObject<$ZodShape> = $ZodObject<$ZodShape>,
+  TName extends string = string,
 > = {
   type: ToolType.Function;
-  function: HITLToolFunction<TInput, TOutput, TContext, string, TCtx>;
+  function: HITLToolFunction<TInput, TOutput, TContext, TName, TCtx>;
 };
 
 /**
@@ -847,6 +855,16 @@ export type ServerToolType = ServerToolConfig['type'];
 export interface ServerToolBase {
   readonly _brand: 'server-tool';
   readonly config: ServerToolConfig;
+  /**
+   * Stable tool-set identity used by `@openrouter/agent-tool-set` activation.
+   * Defaults to `server:${config.type}` when constructed via {@link serverTool}.
+   *
+   * Optional here for source compatibility with legacy hand-constructed
+   * `ServerToolBase` values that predate this field. `ServerTool<T, TId>`
+   * (the type returned by {@link serverTool}) still requires it as a
+   * literal `TId` via interface narrowing below.
+   */
+  readonly id?: string;
 }
 
 /**
@@ -858,14 +876,19 @@ export interface ServerToolBase {
  * (and hence to `Tool`) regardless of `T`.
  *
  * @template T The specific server-tool type literal (narrows `config`).
+ * @template TId Stable tool-set ID (defaults to `server:${T}`).
  */
-export interface ServerTool<T extends ServerToolType = ServerToolType> extends ServerToolBase {
+export interface ServerTool<
+  T extends ServerToolType = ServerToolType,
+  TId extends string = `server:${T}`,
+> extends ServerToolBase {
   readonly config: Extract<
     ServerToolConfig,
     {
       type: T;
     }
   >;
+  readonly id: TId;
 }
 
 /**
@@ -997,7 +1020,7 @@ export type InferToolEventsUnion<T extends readonly Tool[]> = {
  * `ClientTool` lacks. `'_brand' in tool` narrows the union to the server
  * branch structurally, so `tool._brand` is reachable without a cast.
  */
-export function isServerTool(tool: Tool): tool is ServerTool {
+export function isServerTool(tool: Tool): tool is ServerToolBase {
   if (typeof tool !== 'object' || tool === null) {
     return false;
   }
@@ -1295,10 +1318,18 @@ export interface APITool {
 /**
  * Tool preliminary result event emitted during generator tool execution
  * @template TEvent - The event type from the tool's eventSchema
+ * @template TName - The tool's name (literal when known)
  */
-export type ToolPreliminaryResultEvent<TEvent = unknown> = {
+export type ToolPreliminaryResultEvent<TEvent = unknown, TName extends string = string> = {
   type: 'tool.preliminary_result';
   toolCallId: string;
+  /**
+   * Name of the tool that produced this preliminary result.
+   * Optional for source compatibility with legacy hand-constructed events
+   * that predate this field; {@link CorrelatedToolPreliminaryResultEvent}
+   * re-requires it as a literal for a concrete tool.
+   */
+  toolName?: TName;
   result: TEvent;
   timestamp: number;
 };
@@ -1308,10 +1339,22 @@ export type ToolPreliminaryResultEvent<TEvent = unknown> = {
  * Contains the final result and any preliminary results that were emitted
  * @template TResult - The result type from the tool's outputSchema
  * @template TPreliminaryResults - The event type from generator tools' eventSchema
+ * @template TName - The tool's name (literal when known)
  */
-export type ToolResultEvent<TResult = unknown, TPreliminaryResults = unknown> = {
+export type ToolResultEvent<
+  TResult = unknown,
+  TPreliminaryResults = unknown,
+  TName extends string = string,
+> = {
   type: 'tool.result';
   toolCallId: string;
+  /**
+   * Name of the tool that produced this result.
+   * Optional for source compatibility with legacy hand-constructed events
+   * that predate this field; {@link CorrelatedToolResultEvent} re-requires
+   * it as a literal for a concrete tool.
+   */
+  toolName?: TName;
   /**
    * Origin of the tool: `'mcp'` for tools wrapped from a remote MCP server
    * (whose `result` is `unknown`), `'client'` for locally-defined tools. Lets
@@ -1323,6 +1366,133 @@ export type ToolResultEvent<TResult = unknown, TPreliminaryResults = unknown> = 
   timestamp: number;
   preliminaryResults?: TPreliminaryResults[];
 };
+
+/**
+ * Name-correlated preliminary result event for one concrete tool.
+ * Narrowing on `toolName` recovers this tool's event payload type.
+ *
+ * `toolName` is optional on the underlying {@link ToolPreliminaryResultEvent}
+ * base (for legacy source compatibility), so it's overridden back to a
+ * required literal here via `Omit<...> & {...}` — parameterizing the base
+ * type alone does not re-require an optional field.
+ */
+export type CorrelatedToolPreliminaryResultEvent<T extends Tool> = Omit<
+  ToolPreliminaryResultEvent<InferToolEvent<T>, InferToolName<T>>,
+  'toolName'
+> & {
+  toolName: InferToolName<T>;
+};
+
+/**
+ * Name-correlated final result event for one concrete tool.
+ * Narrowing on `toolName` recovers this tool's result (and preliminary) types.
+ *
+ * `toolName` is optional on the underlying {@link ToolResultEvent} base (for
+ * legacy source compatibility), so it's overridden back to a required
+ * literal here via `Omit<...> & {...}` — parameterizing the base type alone
+ * does not re-require an optional field.
+ *
+ * `result` unions in `{ error: string }` for concrete tools: at runtime,
+ * `ModelResult` broadcasts this exact shape under the same `tool.result`
+ * type and `toolName` for parse failures, thrown/rejected executions, and
+ * tool-reported execution errors (see `broadcastToolResult` call sites in
+ * `model-result.ts`). Without this, narrowing by `toolName` would let a
+ * consumer safely (but incorrectly) access success-only output fields on an
+ * error payload. The `_mcp: true` branch and the generic `readonly Tool[]`
+ * fallback branch are left as `unknown`, which already structurally permits
+ * `{ error: string }` — only the concrete-tool success branch needs the
+ * explicit union.
+ */
+export type CorrelatedToolResultEvent<T extends Tool> = Omit<
+  ToolResultEvent<
+    T extends {
+      readonly _mcp: true;
+    }
+      ? unknown
+      : [
+            Tool,
+          ] extends [
+            T,
+          ]
+        ? unknown
+        :
+            | (T extends
+                | ToolWithExecute<$ZodObject<$ZodShape>, infer O>
+                | ToolWithGenerator<$ZodObject<$ZodShape>, $ZodType<unknown>, infer O>
+                | HITLTool<$ZodObject<$ZodShape>, infer O>
+                ? zodInfer<O>
+                : InferToolOutput<T>)
+            | {
+                error: string;
+              },
+    T extends ToolWithGenerator<$ZodObject<$ZodShape>, infer E> ? zodInfer<E> : never,
+    InferToolName<T>
+  >,
+  'toolName'
+> & {
+  toolName: InferToolName<T>;
+  source: ToolSource<T>;
+};
+
+/**
+ * Widest backward-compatible shape for {@link CorrelatedToolEventUnion} when
+ * `T` is the generic `readonly Tool[]` (e.g. a tool handle from
+ * `@openrouter/mcp`, whose concrete tuple isn't known at the type level).
+ * Mirrors the pre-existing {@link ToolPreliminaryResultEvent} /
+ * {@link ToolResultEvent} default shapes.
+ */
+type WidestCorrelatedToolEvent = ToolPreliminaryResultEvent | ToolResultEvent;
+
+/**
+ * Discriminated union of name-correlated tool events across a tools tuple.
+ * Checking `event.toolName === 'my_tool'` narrows `result` to that tool's output.
+ *
+ * For the generic `readonly Tool[]` case, falls back to the widest
+ * backward-compatible shape instead of collapsing to `never`: the mapped-type
+ * check `T[K] extends ClientTool` is a non-distributive check on the indexed
+ * access `T[K]` (only a *naked* type parameter distributes over a union), so
+ * when `T[K]` resolves to the full `Tool` union (`ClientTool | ServerToolBase`)
+ * the check fails as a monolithic comparison rather than narrowing per-member.
+ */
+export type CorrelatedToolEventUnion<T extends readonly Tool[]> = readonly Tool[] extends T
+  ? WidestCorrelatedToolEvent
+  : {
+      [K in keyof T]: T[K] extends ClientTool
+        ? CorrelatedToolPreliminaryResultEvent<T[K]> | CorrelatedToolResultEvent<T[K]>
+        : never;
+    }[number];
+
+/**
+ * Widest backward-compatible shape for {@link CorrelatedToolStreamPreliminaryUnion}
+ * when `T` is the generic `readonly Tool[]`. Mirrors the pre-existing
+ * {@link ToolStreamEvent} preliminary-result shape.
+ */
+type WidestCorrelatedToolStreamPreliminary = {
+  type: 'preliminary_result';
+  toolCallId: string;
+  toolName: string;
+  result: unknown;
+};
+
+/**
+ * Discriminated union of name-correlated preliminary stream events
+ * (legacy `getToolStream` shape) across a tools tuple. Falls back to the
+ * widest backward-compatible shape for the generic `readonly Tool[]` case;
+ * see {@link CorrelatedToolEventUnion} for why the naive mapped check collapses.
+ */
+export type CorrelatedToolStreamPreliminaryUnion<T extends readonly Tool[]> =
+  readonly Tool[] extends T
+    ? WidestCorrelatedToolStreamPreliminary
+    : {
+        [K in keyof T]: T[K] extends ClientTool
+          ? {
+              type: 'preliminary_result';
+              toolCallId: string;
+              toolName: InferToolName<T[K]>;
+              result: InferToolEvent<T[K]>;
+            }
+          : never;
+      }[number];
 
 /**
  * Tool call output event carrying the fully-formed FunctionCallOutputItem.
@@ -1394,14 +1564,34 @@ export type TurnEndEvent = {
  * and turn delimiter events for multi-turn streaming
  * @template TEvent - The event type from generator tools
  * @template TResult - The result type from tool execution
+ * @template TName - Tool name (literal when known)
  */
-export type ResponseStreamEvent<TEvent = unknown, TResult = unknown> =
+export type ResponseStreamEvent<
+  TEvent = unknown,
+  TResult = unknown,
+  TName extends string = string,
+> =
   | StreamEvents
-  | ToolPreliminaryResultEvent<TEvent>
-  | ToolResultEvent<TResult, TEvent>
+  | ToolPreliminaryResultEvent<TEvent, TName>
+  | ToolResultEvent<TResult, TEvent, TName>
   | ToolCallOutputEvent
   | ToolAsyncStartedEvent
   | ToolAsyncSettledEvent<TResult>
+  | TurnStartEvent
+  | TurnEndEvent;
+
+/**
+ * Name-correlated stream events for a concrete tools tuple.
+ * Prefer this (or {@link ModelResult.getFullResponsesStream}) when callers need
+ * `event.toolName` narrowing; the default {@link ResponseStreamEvent} keeps a
+ * wide, backward-compatible shape.
+ */
+export type CorrelatedResponseStreamEvent<TTools extends readonly Tool[]> =
+  | StreamEvents
+  | CorrelatedToolEventUnion<TTools>
+  | ToolCallOutputEvent
+  | ToolAsyncStartedEvent
+  | ToolAsyncSettledEvent<InferToolOutputsUnion<TTools>>
   | TurnStartEvent
   | TurnEndEvent;
 
@@ -1426,18 +1616,22 @@ export function isToolAsyncSettledEvent<TResult = unknown>(
 /**
  * Type guard to check if an event is a tool preliminary result event
  */
-export function isToolPreliminaryResultEvent<TEvent = unknown>(
-  event: ResponseStreamEvent<TEvent>,
-): event is ToolPreliminaryResultEvent<TEvent> {
+export function isToolPreliminaryResultEvent<TEvent = unknown, TName extends string = string>(
+  event: ResponseStreamEvent<TEvent, unknown, TName>,
+): event is ToolPreliminaryResultEvent<TEvent, TName> {
   return event.type === 'tool.preliminary_result';
 }
 
 /**
  * Type guard to check if an event is a tool result event
  */
-export function isToolResultEvent<TResult = unknown, TPreliminaryResults = unknown>(
-  event: ResponseStreamEvent<TPreliminaryResults, TResult>,
-): event is ToolResultEvent<TResult, TPreliminaryResults> {
+export function isToolResultEvent<
+  TResult = unknown,
+  TPreliminaryResults = unknown,
+  TName extends string = string,
+>(
+  event: ResponseStreamEvent<TPreliminaryResults, TResult, TName>,
+): event is ToolResultEvent<TResult, TPreliminaryResults, TName> {
   return event.type === 'tool.result';
 }
 
@@ -1466,8 +1660,9 @@ export function isTurnEndEvent(event: ResponseStreamEvent): event is TurnEndEven
  * Tool stream event types for getToolStream
  * Includes both argument deltas and preliminary results
  * @template TEvent - The event type from generator tools
+ * @template TName - Tool name (literal when known)
  */
-export type ToolStreamEvent<TEvent = unknown> =
+export type ToolStreamEvent<TEvent = unknown, TName extends string = string> =
   | {
       type: 'delta';
       content: string;
@@ -1475,15 +1670,33 @@ export type ToolStreamEvent<TEvent = unknown> =
   | {
       type: 'preliminary_result';
       toolCallId: string;
+      /**
+       * Optional for source compatibility with legacy hand-constructed
+       * events; {@link CorrelatedToolStreamEvent} re-requires it as a
+       * literal for a concrete tool.
+       */
+      toolName?: TName;
       result: TEvent;
     };
+
+/**
+ * Name-correlated tool stream events for a concrete tools tuple.
+ * Checking `event.toolName` on a `preliminary_result` narrows `result`.
+ */
+export type CorrelatedToolStreamEvent<TTools extends readonly Tool[]> =
+  | {
+      type: 'delta';
+      content: string;
+    }
+  | CorrelatedToolStreamPreliminaryUnion<TTools>;
 
 /**
  * Chat stream event types for getFullChatStream
  * Includes content deltas, completion events, and tool preliminary results
  * @template TEvent - The event type from generator tools
+ * @template TName - Tool name (literal when known)
  */
-export type ChatStreamEvent<TEvent = unknown> =
+export type ChatStreamEvent<TEvent = unknown, TName extends string = string> =
   | {
       type: 'content.delta';
       delta: string;
@@ -1495,6 +1708,11 @@ export type ChatStreamEvent<TEvent = unknown> =
   | {
       type: 'tool.preliminary_result';
       toolCallId: string;
+      /**
+       * Optional for source compatibility with legacy hand-constructed
+       * events that predate this field.
+       */
+      toolName?: TName;
       result: TEvent;
     }
   | {

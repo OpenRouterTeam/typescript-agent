@@ -2,12 +2,14 @@ import type { OpenRouterCore } from '@openrouter/sdk/core';
 import type { RequestOptions } from '@openrouter/sdk/lib/sdks';
 import type { $ZodObject, $ZodShape, infer as zodInfer } from 'zod/v4/core';
 import type { CallModelInput } from '../lib/async-params.js';
+import { TOOL_SET_SNAPSHOT_METADATA_KEYS } from '../lib/async-params.js';
 import { resolveHooks } from '../lib/hooks-resolve.js';
 import type { GetResponseOptions } from '../lib/model-result.js';
 import { ModelResult } from '../lib/model-result.js';
 import { buildTaskToolApiDefinition, needsTaskTool } from '../lib/tool-check.js';
 import { convertToolsToAPIFormat, convertZodToJsonSchema } from '../lib/tool-executor.js';
 import type { Tool } from '../lib/tool-types.js';
+import { isServerTool } from '../lib/tool-types.js';
 
 // Re-export CallModelInput for convenience
 export type { CallModelInput } from '../lib/async-params.js';
@@ -96,6 +98,7 @@ export function callModel<
   // Destructure state management options along with tools and stopWhen
   const {
     tools,
+    activeTools,
     stopWhen,
     state,
     requireApproval,
@@ -116,8 +119,25 @@ export function callModel<
     ...apiRequest
   } = request;
 
+  // Narrow tools to the active subset (if provided) before API conversion and
+  // before they are registered for execution, so the model cannot call filtered
+  // tools and the executor does not carry orphaned definitions.
+  const activeSet = activeTools ? new Set(activeTools) : undefined;
+  const activeFilteredTools = activeSet
+    ? tools?.filter((t) => isServerTool(t) || activeSet.has(t.function.name))
+    : tools;
+
+  // Collapse a filtered-to-empty (or explicitly empty) tools list to
+  // `undefined` so a fully-deactivated tool set (a first-class output of
+  // `inferTools()`/`.resolve()`) omits the outbound `tools` key entirely
+  // instead of sending `tools: []` — several providers reject an empty
+  // array outright. `ModelResult` treats `undefined` as its no-tools state
+  // (see the `?.length` / truthiness checks throughout), so this also keeps
+  // the engine's tool-execution machinery correctly disabled.
+  const filteredTools = activeFilteredTools?.length ? activeFilteredTools : undefined;
+
   // Convert tools to API format - no cast needed now that convertToolsToAPIFormat accepts readonly
-  const apiTools = tools ? convertToolsToAPIFormat(tools) : undefined;
+  const apiTools = filteredTools ? convertToolsToAPIFormat(filteredTools) : undefined;
 
   // Append the single universal `task` tool when any long-running tool is
   // registered (and check-ins aren't disabled): ONE static wire definition
@@ -132,9 +152,23 @@ export function callModel<
   // Build the request with converted tools
   // Note: async functions are resolved later in ModelResult.executeToolsIfNeeded()
   // The request can have async fields (functions) or sync fields, and the tools are converted to API format
+  //
+  // Defense-in-depth: `apiRequest` is typed as "whatever wasn't one of the
+  // known client-only fields above", but TypeScript's excess-property
+  // checking does not run on spread arguments — so a caller who does
+  // `callModel(client, { ...toolSet.inferTools(), model, input })` (a
+  // documented, intended pattern for `tools`/`activeTools`) can silently
+  // carry `@openrouter/agent-tool-set` snapshot metadata (`enabled`,
+  // `disabled`, `statusByTool`) straight through to the outbound request
+  // with no compile-time or destructure-time signal. Strip any such keys
+  // here, at the single choke point every callModel() call passes through,
+  // regardless of which ToolSet method produced the spread object.
   const finalRequest: Record<string, unknown> = {
     ...apiRequest,
   };
+  for (const key of TOOL_SET_SNAPSHOT_METADATA_KEYS) {
+    delete finalRequest[key];
+  }
 
   if (apiTools !== undefined) {
     finalRequest['tools'] = apiTools;
@@ -158,7 +192,7 @@ export function callModel<
     client,
     request: finalRequest,
     options: callModelOptions,
-    tools,
+    tools: filteredTools,
     stopWhen,
     state,
     requireApproval,

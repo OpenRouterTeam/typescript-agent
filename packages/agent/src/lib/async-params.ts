@@ -18,6 +18,29 @@ import type {
 export type { Tool } from './tool-types.js';
 
 /**
+ * Keys that appear on `@openrouter/agent-tool-set`'s `ToolSet.inferTools()` /
+ * `resolve()` / `resolveSituation()` snapshots but are never valid outbound
+ * API request fields.
+ *
+ * The documented pattern is to spread `{ tools, activeTools }` (or
+ * `snapshot.callModel`) from one of those snapshots into `callModel`. If a
+ * caller instead spreads the *whole* snapshot — e.g.
+ * `callModel(client, { ...toolSet.inferTools(), model })` — this set is what
+ * keeps `enabled` / `disabled` / `statusByTool` (and the nested `callModel`
+ * wrapper itself, if a whole `ResolvedToolSnapshot` is spread) from silently
+ * riding along into the request body. Checked by both `callModel()` and
+ * {@link resolveAsyncFunctions}, independent of the exact shape any given
+ * tool-set snapshot method returns, so it stays robust even if the tool-set
+ * package adds more metadata under these names later.
+ */
+export const TOOL_SET_SNAPSHOT_METADATA_KEYS: ReadonlySet<string> = new Set([
+  'enabled',
+  'disabled',
+  'statusByTool',
+  'callModel',
+]);
+
+/**
  * Type guard to check if a value is a parameter function
  * Parameter functions take TurnContext and return a value or promise
  */
@@ -62,6 +85,17 @@ type BaseCallModelInput<
 } & {
   input: FieldOrAsyncFunction<Item[]> | string;
   tools?: TTools;
+  /**
+   * Optional filter restricting which tools are exposed to the model for this
+   * call. Tool names not in this list are removed before the request is sent
+   * and are also not callable by the model. Pairs with
+   * `@openrouter/agent-tool-set`'s `.inferTools()` output — spreading its
+   * `{ tools, activeTools }` (or a whole snapshot from `.inferTools()` /
+   * `.resolve()` / `.resolveSituation()`) into this object is safe:
+   * `callModel` strips any tool-set snapshot metadata (`enabled`, `disabled`,
+   * `statusByTool`) before it ever reaches the outbound API request.
+   */
+  activeTools?: readonly string[];
   stopWhen?: StopWhen<TTools>;
   /** Typed context data passed to tools via contextSchema. Includes optional `shared` key. */
   context?: ContextInput<ToolContextMapWithShared<TTools, TShared>>;
@@ -309,13 +343,19 @@ export async function resolveAsyncFunctions<TTools extends readonly Tool[] = rea
     'toolTimeoutMs', // Client-side per-tool deadline default
     'toolConcurrency', // Client-side tool concurrency limits
     'asyncTools', // Client-side async tool (background/deferred) behavior
+    'activeTools', // Applied client-side to filter tools before conversion
   ]);
 
   // Iterate over all keys in the input
   for (const [key, value] of Object.entries(input)) {
     // Skip client-only fields - they're handled separately and shouldn't be sent to the API
     // Note: tools are already in API format at this point (converted in callModel()), so we include them
-    if (clientOnlyFields.has(key)) {
+    //
+    // Also defensively drop `@openrouter/agent-tool-set` snapshot metadata
+    // (see TOOL_SET_SNAPSHOT_METADATA_KEYS) in case it reached this stage
+    // without being caught by callModel()'s own filtering — e.g. a caller
+    // spreading a raw ToolSet snapshot into a differently-sourced input.
+    if (clientOnlyFields.has(key) || TOOL_SET_SNAPSHOT_METADATA_KEYS.has(key)) {
       continue;
     }
 
