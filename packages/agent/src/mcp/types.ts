@@ -2,9 +2,9 @@ import type { Tool, ToolLoopKey } from '../lib/tool-types.js';
 import type { MCPAuth } from './auth/auth-types.js';
 import type { MCPCacheStore } from './cache/cache-store.js';
 import type { UnconvertibleSchemaMode } from './schema/json-schema-to-zod.js';
-import type { MCPTransportKind } from './transport-types.js';
+import type { MCPProtocolNegotiation, MCPTransportKind } from './transport-types.js';
 
-export type { MCPTransportKind };
+export type { MCPProtocolNegotiation, MCPTransportKind };
 
 /**
  * Response to a server-initiated elicitation request. `accept` must carry
@@ -99,6 +99,10 @@ export interface CreateMCPToolsOptions {
   autoRefreshOnListChanged?: boolean;
   /** Handler for server-initiated elicitation; auto-declines when omitted. */
   onElicitation?: ElicitationHandler;
+  /** Protocol-revision negotiation policy; defaults to `auto`. */
+  protocolNegotiation?: MCPProtocolNegotiation;
+  /** Ceiling on the `server/discover` probe, in ms; defaults to 30000. */
+  probeTimeoutMs?: number;
   /** Abort signal threaded into every underlying `callTool`. */
   signal?: AbortSignal;
 }

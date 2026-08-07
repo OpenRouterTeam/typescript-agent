@@ -83,7 +83,7 @@ describe('serializeServer', () => {
     expect(snap.sessionId).toBeUndefined();
   });
 
-  it('includes credentials + sessionId when cacheCredentials is true', async () => {
+  it('includes credentials but not the removed protocol session when cacheCredentials is true', async () => {
     const snap = await serializeServer({
       url: 'https://mcp.example.com/mcp',
       transport: 'streamableHttp',
@@ -99,7 +99,7 @@ describe('serializeServer', () => {
     expect(snap.auth?.headers).toEqual({
       Authorization: 'Bearer secret',
     });
-    expect(snap.sessionId).toBe('sess-1');
+    expect(snap.sessionId).toBeUndefined();
   });
 });
 

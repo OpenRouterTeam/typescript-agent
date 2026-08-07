@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { MCPCacheError } from '../../src/errors.js';
-import type { ConnectOptions, MCPConnection } from '../../src/mcp-connection.js';
+import { MCPCacheError } from '../../../src/mcp/errors.js';
+import type { ConnectOptions, MCPConnection } from '../../../src/mcp/mcp-connection.js';
 
 // Capture the options every `connect` call receives so we can assert on the auth
 // that rehydrate forwards into the transport.
@@ -25,7 +25,7 @@ let connectRejects: Error | undefined;
 // returning a rejected promise — the case a bare `.catch()` cannot intercept.
 let closeThrowsSync = false;
 
-vi.mock('../../src/mcp-connection.js', () => ({
+vi.mock('../../../src/mcp/mcp-connection.js', () => ({
   // Minimal stand-in for the real guard: these tests drive auth failures with a
   // `FakeUnauthorized` whose marker the walk below recognises.
   isAuthFailure: (err: unknown): boolean =>
@@ -71,9 +71,9 @@ vi.mock('../../src/mcp-connection.js', () => ({
   },
 }));
 
-const { rehydrateMCPTools } = await import('../../src/rehydrate.js');
-const { isSerializedMCPServer } = await import('../../src/cache/cache-types.js');
-type SerializedMCPServer = import('../../src/cache/cache-types.js').SerializedMCPServer;
+const { rehydrateMCPTools } = await import('../../../src/mcp/rehydrate.js');
+const { isSerializedMCPServer } = await import('../../../src/mcp/cache/cache-types.js');
+type SerializedMCPServer = import('../../../src/mcp/cache/cache-types.js').SerializedMCPServer;
 
 function snapshotWithHeaders(): SerializedMCPServer {
   const snap: SerializedMCPServer = {
@@ -568,7 +568,7 @@ describe('replay preserves snapshot age', () => {
   });
 
   it('does not restamp cachedAt when tool defs come from a snapshot', async () => {
-    const { InMemoryMCPCacheStore } = await import('../../src/cache/cache-store.js');
+    const { InMemoryMCPCacheStore } = await import('../../../src/mcp/cache/cache-store.js');
     const store = new InMemoryMCPCacheStore();
     const snap = snapshotWithHeaders();
     const originalCachedAt = snap.cachedAt - 60_000; // a minute-old snapshot
@@ -1146,7 +1146,7 @@ describe('replay preserves snapshot age', () => {
    * take the `freshConnect` path — the cache would never warm again.
    */
   it('restamps cachedAt once a replayed handle genuinely re-lists', async () => {
-    const { InMemoryMCPCacheStore } = await import('../../src/cache/cache-store.js');
+    const { InMemoryMCPCacheStore } = await import('../../../src/mcp/cache/cache-store.js');
     const store = new InMemoryMCPCacheStore();
     const snap = snapshotWithHeaders();
     const originalCachedAt = snap.cachedAt - 60_000;
@@ -1193,8 +1193,8 @@ describe('createMCPTools cache-hit option forwarding', () => {
   });
 
   it('forwards client-configured loopKeys into the rehydrated handle', async () => {
-    const { createMCPTools } = await import('../../src/create-mcp-tools.js');
-    const { InMemoryMCPCacheStore } = await import('../../src/cache/cache-store.js');
+    const { createMCPTools } = await import('../../../src/mcp/create-mcp-tools.js');
+    const { InMemoryMCPCacheStore } = await import('../../../src/mcp/cache/cache-store.js');
 
     const store = new InMemoryMCPCacheStore();
     store.set('warm', snapshotWithHeaders());

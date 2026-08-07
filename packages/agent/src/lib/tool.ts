@@ -1002,7 +1002,7 @@ tool.agent = agentToolBuilder;
 
 /**
  * Options for {@link serverTool}.
- * @template TId Stable tool-set identity used by `@openrouter/agent/tool-set`.
+ * @template TId Stable tool-set identity used by `@openrouter/agent-tool-set`.
  */
 export type ServerToolOptions<TId extends string = string> = {
   /**
@@ -1061,7 +1061,7 @@ export function serverTool<T extends ServerToolType, TId extends string = `serve
  * {@link McpBranded}). Non-mutating: returns a shallow copy carrying `_mcp`, so
  * the tool's runtime behavior and wire shape are unchanged — only its type (and
  * the runtime {@link isMcpTool} check) now identify it as MCP-originated. Used
- * by `@openrouter/agent/mcp` to mark wrapped remote tools.
+ * by `@openrouter/mcp` to mark wrapped remote tools.
  *
  * `options.loopKey` attaches a doom-loop identity to the wrapped tool —
  * the only injection point for MCP tools, whose remote definitions cannot

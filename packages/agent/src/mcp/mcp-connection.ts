@@ -1,10 +1,7 @@
-// SSEClientTransport is deprecated upstream (SEP-2596) but intentionally
-// supported here for legacy MCP servers that haven't migrated to Streamable HTTP.
-import {
+import type {
   Client,
   SSEClientTransport,
   StreamableHTTPClientTransport,
-  UnauthorizedError,
 } from '@modelcontextprotocol/client';
 import { resolveAuth } from './auth/auth-resolver.js';
 import type { MCPAuth } from './auth/auth-types.js';
@@ -12,6 +9,8 @@ import { isOAuthAuth } from './auth/auth-types.js';
 import { closeQuietly } from './close-quietly.js';
 import { makeElicitationRequestHandler } from './elicitation.js';
 import { MCPConnectionError } from './errors.js';
+import type { MCPSdk } from './mcp-sdk.js';
+import { loadMcpSdk } from './mcp-sdk.js';
 import type { MCPProtocolNegotiation, MCPTransportKind } from './transport-types.js';
 import type { ElicitationHandler } from './types.js';
 import { PACKAGE_VERSION } from './version.js';
@@ -109,9 +108,9 @@ export interface MCPConnection {
   close(): Promise<void>;
 }
 
-function buildStreamableHttp(options: ConnectOptions): StreamableHTTPClientTransport {
+function buildStreamableHttp(sdk: MCPSdk, options: ConnectOptions): StreamableHTTPClientTransport {
   const { headers, authProvider } = resolveAuth(options.auth);
-  return new StreamableHTTPClientTransport(options.url, {
+  return new sdk.StreamableHTTPClientTransport(options.url, {
     requestInit: {
       headers,
     },
@@ -127,9 +126,9 @@ function buildStreamableHttp(options: ConnectOptions): StreamableHTTPClientTrans
   });
 }
 
-function buildSse(options: ConnectOptions): SSEClientTransport {
+function buildSse(sdk: MCPSdk, options: ConnectOptions): SSEClientTransport {
   const { headers, authProvider } = resolveAuth(options.auth);
-  return new SSEClientTransport(options.url, {
+  return new sdk.SSEClientTransport(options.url, {
     requestInit: {
       headers,
     },
@@ -173,14 +172,18 @@ interface MutableListChanged {
  *
  * @internal
  */
-export function makeClientForTest(options: ConnectOptions, onListChanged: () => void): Client {
-  return makeClient(options, {
+export async function makeClientForTest(
+  options: ConnectOptions,
+  onListChanged: () => void,
+): Promise<Client> {
+  const sdk = await loadMcpSdk();
+  return makeClient(sdk, options, {
     handler: onListChanged,
   });
 }
 
-function makeClient(options: ConnectOptions, listChanged: MutableListChanged): Client {
-  const client = new Client(options.clientInfo ?? DEFAULT_CLIENT_INFO, {
+function makeClient(sdk: MCPSdk, options: ConnectOptions, listChanged: MutableListChanged): Client {
+  const client = new sdk.Client(options.clientInfo ?? DEFAULT_CLIENT_INFO, {
     capabilities: {
       elicitation: {},
     },
@@ -230,16 +233,19 @@ function makeClient(options: ConnectOptions, listChanged: MutableListChanged): C
  * retried once with `'legacy'` — see {@link connect} below, which owns that
  * policy; this function performs exactly one negotiation mode.
  */
-async function connectWithNegotiation(options: ConnectOptions): Promise<MCPConnection> {
+async function connectWithNegotiation(
+  sdk: MCPSdk,
+  options: ConnectOptions,
+): Promise<MCPConnection> {
   const preferred = options.transport ?? 'streamableHttp';
   const listChanged: MutableListChanged = {
     handler: undefined,
   };
 
   if (preferred === 'sse') {
-    const client = makeClient(options, listChanged);
+    const client = makeClient(sdk, options, listChanged);
     try {
-      await client.connect(buildSse(options), connectRequestOptions(options));
+      await client.connect(buildSse(sdk, options), connectRequestOptions(options));
     } catch (sseErr) {
       // Same transport-release reason as the Streamable HTTP path below.
       await closeQuietly(client);
@@ -259,9 +265,9 @@ async function connectWithNegotiation(options: ConnectOptions): Promise<MCPConne
   }
 
   // Streamable HTTP, with SSE fallback when the transport wasn't pinned.
-  const client = makeClient(options, listChanged);
+  const client = makeClient(sdk, options, listChanged);
   try {
-    const http = buildStreamableHttp(options);
+    const http = buildStreamableHttp(sdk, options);
     await client.connect(http, connectRequestOptions(options));
     return wrap({
       client,
@@ -280,7 +286,14 @@ async function connectWithNegotiation(options: ConnectOptions): Promise<MCPConne
     // `closeQuietly`, which tolerates any close outcome rather than depending on
     // what the SDK does internally.
     await closeQuietly(client);
-    if (options.transport === 'streamableHttp' || isAuthFailure(httpErr, options.auth)) {
+    if (
+      options.transport === 'streamableHttp' ||
+      isAuthFailure({
+        err: httpErr,
+        auth: options.auth,
+        UnauthorizedErrorType: sdk.UnauthorizedError,
+      })
+    ) {
       // Auth failures stop here rather than falling through. The SSE attempt
       // would carry the same `authProvider` into the SDK's auth path — a second
       // `redirectToAuthorization`, a second `saveCodeVerifier` overwriting the
@@ -305,9 +318,9 @@ async function connectWithNegotiation(options: ConnectOptions): Promise<MCPConne
     // Under `'auto'` this re-probes, so a probe-hostile server fails here too —
     // which is why `connect()` retries the whole thing under `'legacy'` when the
     // caller did not pin a negotiation mode.
-    const sseClient = makeClient(options, listChanged);
+    const sseClient = makeClient(sdk, options, listChanged);
     try {
-      await sseClient.connect(buildSse(options), connectRequestOptions(options));
+      await sseClient.connect(buildSse(sdk, options), connectRequestOptions(options));
       return wrap({
         client: sseClient,
         transport: 'sse',
@@ -416,14 +429,26 @@ function isAuthStatus(err: unknown): boolean {
  * reconnect layer with the same duplicated-OAuth hazard; deliberately not
  * re-exported from the package entrypoint.
  */
-export function isAuthFailure(err: unknown, auth: MCPAuth | undefined, depth = 0): boolean {
+interface AuthFailureArgs {
+  err: unknown;
+  auth: MCPAuth | undefined;
+  UnauthorizedErrorType: MCPSdk['UnauthorizedError'] | undefined;
+  depth?: number;
+}
+
+export function isAuthFailure({
+  err,
+  auth,
+  UnauthorizedErrorType,
+  depth = 0,
+}: AuthFailureArgs): boolean {
   if (depth >= 8) {
     return false;
   }
   // `UnauthorizedError` is unconditional: the SDK only throws it from the
   // provider-wrapped fetch and the authorization flow itself, so it inherently
   // means an OAuth provider is in play and its flow would be re-driven.
-  if (err instanceof UnauthorizedError) {
+  if (UnauthorizedErrorType !== undefined && err instanceof UnauthorizedErrorType) {
     return true;
   }
   // A bare 401 status counts only when the caller configured OAuth — the one
@@ -449,12 +474,27 @@ export function isAuthFailure(err: unknown, auth: MCPAuth | undefined, depth = 0
   };
   if (Array.isArray(errors)) {
     for (const nested of errors) {
-      if (isAuthFailure(nested, auth, depth + 1)) {
+      if (
+        isAuthFailure({
+          err: nested,
+          auth,
+          UnauthorizedErrorType,
+          depth: depth + 1,
+        })
+      ) {
         return true;
       }
     }
   }
-  return err.cause !== undefined && isAuthFailure(err.cause, auth, depth + 1);
+  return (
+    err.cause !== undefined &&
+    isAuthFailure({
+      err: err.cause,
+      auth,
+      UnauthorizedErrorType,
+      depth: depth + 1,
+    })
+  );
 }
 
 /**
@@ -507,11 +547,12 @@ export function isAuthFailure(err: unknown, auth: MCPAuth | undefined, depth = 0
  * ignoring a caller's `{ pin }` would defeat the point of pinning.
  */
 export async function connect(options: ConnectOptions): Promise<MCPConnection> {
+  const sdk = await loadMcpSdk();
   if (options.protocolNegotiation !== undefined) {
-    return connectWithNegotiation(options);
+    return connectWithNegotiation(sdk, options);
   }
   try {
-    return await connectWithNegotiation(options);
+    return await connectWithNegotiation(sdk, options);
   } catch (autoErr) {
     // A caller-initiated abort is not a server problem: retrying under
     // `'legacy'` would immediately re-abort (or worse, outlive the caller's
@@ -519,7 +560,13 @@ export async function connect(options: ConnectOptions): Promise<MCPConnection> {
     if (options.signal?.aborted === true) {
       throw autoErr;
     }
-    if (isAuthFailure(autoErr, options.auth)) {
+    if (
+      isAuthFailure({
+        err: autoErr,
+        auth: options.auth,
+        UnauthorizedErrorType: sdk.UnauthorizedError,
+      })
+    ) {
       throw autoErr;
     }
     // Not inspecting the error for *whether* the probe was at fault: that would
@@ -529,7 +576,7 @@ export async function connect(options: ConnectOptions): Promise<MCPConnection> {
     // a wasted dial — and if that check ever stops matching we merely retry,
     // which is the pre-existing behavior rather than a silent loss of function.
     try {
-      return await connectWithNegotiation({
+      return await connectWithNegotiation(sdk, {
         ...options,
         protocolNegotiation: 'legacy',
       });
