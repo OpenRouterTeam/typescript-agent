@@ -85,6 +85,20 @@ const hitl = tool({
   onToolCalled: async () => null,
 });
 
+// A tool whose `execute` throws, used below to prove that the correlated
+// `tool.result` type accurately includes the runtime `{ error: string }`
+// payload broadcast by `ModelResult` for rejected/errored executions.
+const boom = tool({
+  name: 'boom_tool',
+  inputSchema: z.object({}),
+  outputSchema: z.object({
+    ok: z.boolean(),
+  }),
+  execute: async () => {
+    throw new Error('explode');
+  },
+});
+
 // --- Literal names survive the factory --------------------------------------
 expectTypeOf(weather.function.name).toEqualTypeOf<'weather'>();
 expectTypeOf(progress.function.name).toEqualTypeOf<'progress_tool'>();
@@ -118,24 +132,57 @@ type Stream = CorrelatedResponseStreamEvent<Tools>;
 type ToolStream = CorrelatedToolStreamEvent<Tools>;
 
 // --- Narrowing tool.result by toolName --------------------------------------
+//
+// `result` on a correlated `tool.result` event is a union of the tool's
+// success output and `{ error: string }`, since `ModelResult` broadcasts the
+// latter under the same `type`/`toolName` for parse failures, thrown/rejected
+// executions, and tool-reported execution errors. Consumers narrow further
+// with an `'error' in result` (or similar) check.
 declare const correlated: Events;
 if (correlated.type === 'tool.result' && correlated.toolName === 'weather') {
-  expectTypeOf(correlated.result).toEqualTypeOf<{
-    tempC: number;
-  }>();
+  expectTypeOf(correlated.result).toEqualTypeOf<
+    | {
+        tempC: number;
+      }
+    | {
+        error: string;
+      }
+  >();
   expectTypeOf(correlated.toolName).toEqualTypeOf<'weather'>();
+  if ('error' in correlated.result) {
+    expectTypeOf(correlated.result).toEqualTypeOf<{
+      error: string;
+    }>();
+  } else {
+    expectTypeOf(correlated.result).toEqualTypeOf<{
+      tempC: number;
+    }>();
+  }
 }
 if (correlated.type === 'tool.result' && correlated.toolName === 'progress_tool') {
-  expectTypeOf(correlated.result).toEqualTypeOf<{
-    done: boolean;
-  }>();
+  expectTypeOf(correlated.result).toEqualTypeOf<
+    | {
+        done: boolean;
+      }
+    | {
+        error: string;
+      }
+  >();
 }
 if (correlated.type === 'tool.result' && correlated.toolName === 'hitl_tool') {
-  expectTypeOf(correlated.result).toEqualTypeOf<{
-    answer: string;
-  }>();
+  expectTypeOf(correlated.result).toEqualTypeOf<
+    | {
+        answer: string;
+      }
+    | {
+        error: string;
+      }
+  >();
 }
 if (correlated.type === 'tool.preliminary_result' && correlated.toolName === 'progress_tool') {
+  // Preliminary (in-progress) results are never used to broadcast parse,
+  // execution, or rejection errors — only the final `tool.result` is — so
+  // this stays the plain success-event shape.
   expectTypeOf(correlated.result).toEqualTypeOf<{
     stage: string;
   }>();
@@ -144,9 +191,14 @@ if (correlated.type === 'tool.preliminary_result' && correlated.toolName === 'pr
 // Stream method view uses the same correlated union for tool events
 declare const streamEvent: Stream;
 if (streamEvent.type === 'tool.result' && streamEvent.toolName === 'weather') {
-  expectTypeOf(streamEvent.result).toEqualTypeOf<{
-    tempC: number;
-  }>();
+  expectTypeOf(streamEvent.result).toEqualTypeOf<
+    | {
+        tempC: number;
+      }
+    | {
+        error: string;
+      }
+  >();
 }
 
 // Legacy getToolStream preliminary events carry toolName + correlated result
@@ -159,9 +211,56 @@ if (toolStreamEvent.type === 'preliminary_result' && toolStreamEvent.toolName ==
 
 // Per-tool correlated result helper
 expectTypeOf<CorrelatedToolResultEvent<typeof weather>['toolName']>().toEqualTypeOf<'weather'>();
-expectTypeOf<CorrelatedToolResultEvent<typeof weather>['result']>().toEqualTypeOf<{
-  tempC: number;
-}>();
+expectTypeOf<CorrelatedToolResultEvent<typeof weather>['result']>().toEqualTypeOf<
+  | {
+      tempC: number;
+    }
+  | {
+      error: string;
+    }
+>();
+
+// --- Error payloads are included for a throwing typed tool -------------------
+//
+// `boom`'s `execute` always throws. At runtime `ModelResult` broadcasts
+// `{ error: string }` under `tool.result` / `toolName: 'boom_tool'` for this
+// case (see the `tool-name-events.test.ts` runtime coverage). The correlated
+// type must accept that shape without widening away the success narrowing.
+expectTypeOf<CorrelatedToolResultEvent<typeof boom>['result']>().toEqualTypeOf<
+  | {
+      ok: boolean;
+    }
+  | {
+      error: string;
+    }
+>();
+
+declare const boomResult: CorrelatedToolResultEvent<typeof boom>;
+if ('error' in boomResult.result) {
+  expectTypeOf(boomResult.result).toEqualTypeOf<{
+    error: string;
+  }>();
+} else {
+  expectTypeOf(boomResult.result).toEqualTypeOf<{
+    ok: boolean;
+  }>();
+}
+
+// A literal error payload assigns to the correlated result event for a
+// concrete tool — this is exactly the runtime shape `broadcastToolResult`
+// produces for parse failures, thrown/rejected executions, and
+// tool-reported execution errors.
+const boomErrorEvent: CorrelatedToolResultEvent<typeof boom> = {
+  type: 'tool.result',
+  toolCallId: 'call_1',
+  toolName: 'boom_tool',
+  source: 'client',
+  result: {
+    error: 'explode',
+  },
+  timestamp: Date.now(),
+};
+void boomErrorEvent;
 
 // --- Generic `readonly Tool[]` must not collapse to `never` -----------------
 //
@@ -256,9 +355,14 @@ declare const narrowResult: Extract<
   }
 >;
 if (narrowResult.toolName === 'weather') {
-  expectTypeOf(narrowResult.result).toEqualTypeOf<{
-    tempC: number;
-  }>();
+  expectTypeOf(narrowResult.result).toEqualTypeOf<
+    | {
+        tempC: number;
+      }
+    | {
+        error: string;
+      }
+  >();
 }
 // --- Source compatibility: legacy hand-constructed shapes still compile ----
 //

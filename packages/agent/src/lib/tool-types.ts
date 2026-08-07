@@ -1391,6 +1391,17 @@ export type CorrelatedToolPreliminaryResultEvent<T extends Tool> = Omit<
  * legacy source compatibility), so it's overridden back to a required
  * literal here via `Omit<...> & {...}` — parameterizing the base type alone
  * does not re-require an optional field.
+ *
+ * `result` unions in `{ error: string }` for concrete tools: at runtime,
+ * `ModelResult` broadcasts this exact shape under the same `tool.result`
+ * type and `toolName` for parse failures, thrown/rejected executions, and
+ * tool-reported execution errors (see `broadcastToolResult` call sites in
+ * `model-result.ts`). Without this, narrowing by `toolName` would let a
+ * consumer safely (but incorrectly) access success-only output fields on an
+ * error payload. The `_mcp: true` branch and the generic `readonly Tool[]`
+ * fallback branch are left as `unknown`, which already structurally permits
+ * `{ error: string }` — only the concrete-tool success branch needs the
+ * explicit union.
  */
 export type CorrelatedToolResultEvent<T extends Tool> = Omit<
   ToolResultEvent<
@@ -1404,12 +1415,16 @@ export type CorrelatedToolResultEvent<T extends Tool> = Omit<
             T,
           ]
         ? unknown
-        : T extends
-              | ToolWithExecute<$ZodObject<$ZodShape>, infer O>
-              | ToolWithGenerator<$ZodObject<$ZodShape>, $ZodType<unknown>, infer O>
-              | HITLTool<$ZodObject<$ZodShape>, infer O>
-          ? zodInfer<O>
-          : InferToolOutput<T>,
+        :
+            | (T extends
+                | ToolWithExecute<$ZodObject<$ZodShape>, infer O>
+                | ToolWithGenerator<$ZodObject<$ZodShape>, $ZodType<unknown>, infer O>
+                | HITLTool<$ZodObject<$ZodShape>, infer O>
+                ? zodInfer<O>
+                : InferToolOutput<T>)
+            | {
+                error: string;
+              },
     T extends ToolWithGenerator<$ZodObject<$ZodShape>, infer E> ? zodInfer<E> : never,
     InferToolName<T>
   >,
