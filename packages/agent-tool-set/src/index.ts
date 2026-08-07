@@ -34,4 +34,6 @@ export type {
   ToolIdsOfTuple,
   ToolSetLike,
   ToolStatusEntry,
+  WidenedPartition,
+  WidenedSituationMap,
 } from './types.js';

@@ -142,6 +142,31 @@ export type InitialPartition<T extends readonly Tool[]> = {
   conditional: never;
 };
 
+/**
+ * Deliberately imprecise partition for mutable `ToolSet` instances.
+ *
+ * A mutable `ToolSet` mutates one shared runtime object in place, and any
+ * number of aliases can reference that same object. If mutators refined the
+ * partition type the way the immutable path does, two aliases of the same
+ * live object could statically claim different, contradictory exact
+ * partitions the instant one of them mutated — an unsound state (e.g. one
+ * alias's type promising `disabled: never` while the object it points to
+ * has, in fact, just been deactivated through another alias).
+ *
+ * Mutable instances therefore use this single widened partition,
+ * unconditionally and unchanging, for their entire lifetime: nothing is
+ * ever statically guaranteed enabled or disabled, and every id is treated
+ * as `conditional` (only knowable by calling `resolve()`). Every alias of a
+ * mutable instance carries the exact same (already maximally conservative)
+ * type, so no alias can ever make a compile-time claim the runtime object
+ * could contradict.
+ */
+export type WidenedPartition<T extends readonly Tool[]> = {
+  enabled: never;
+  disabled: never;
+  conditional: ToolIdsOfTuple<T>;
+};
+
 export type ActivatePartition<P extends Partition, Name extends string> = {
   enabled: P['enabled'] | Name;
   disabled: Exclude<P['disabled'], Name>;
@@ -214,6 +239,17 @@ export type SituationMap = Record<
 >;
 
 export type EmptySituations = Record<never, never>;
+
+/**
+ * Deliberately imprecise situation registry for mutable `ToolSet` instances.
+ *
+ * Mirrors {@link WidenedPartition}: since `defineSituations` on a mutable
+ * instance mutates the shared runtime situation registry in place, its type
+ * cannot statically promise a specific set of situation names without
+ * risking the same cross-alias contradiction. `string` keeps every
+ * situation name assignable while still requiring a real string key.
+ */
+export type WidenedSituationMap = Record<string, Partition>;
 
 export type SituationNames<S extends SituationMap> = keyof S & string;
 

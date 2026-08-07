@@ -12,6 +12,9 @@ import type {
   InferDisabledIds,
   InferEnabledIds,
   InferToolSet,
+  ToolSet,
+  WidenedPartition,
+  WidenedSituationMap,
 } from '../../src/index.js';
 import { createToolSet } from '../../src/index.js';
 
@@ -361,6 +364,183 @@ describe('clone', () => {
     const clone = mutable.clone();
     const after = clone.deactivate('a');
     expect(after).toBe(clone);
+  });
+
+  it('widens the partition/situation types when cloning to mutable', () => {
+    const immutable = createToolSet({
+      tools: [
+        a,
+        b,
+      ] as const,
+    }).deactivate('a');
+    expectTypeOf<InferEnabledIds<typeof immutable>>().toEqualTypeOf<'b'>();
+    expectTypeOf<InferDisabledIds<typeof immutable>>().toEqualTypeOf<'a'>();
+
+    const mutableCopy = immutable.clone({
+      mutable: true,
+    });
+    expectTypeOf(mutableCopy).toEqualTypeOf<
+      ToolSet<
+        readonly [
+          typeof a,
+          typeof b,
+        ],
+        Record<string, unknown>,
+        WidenedPartition<
+          readonly [
+            typeof a,
+            typeof b,
+          ]
+        >,
+        WidenedSituationMap,
+        true
+      >
+    >();
+    expectTypeOf<InferEnabledIds<typeof mutableCopy>>().toEqualTypeOf<never>();
+    expectTypeOf<InferDisabledIds<typeof mutableCopy>>().toEqualTypeOf<never>();
+    expectTypeOf<InferConditionalIds<typeof mutableCopy>>().toEqualTypeOf<'a' | 'b'>();
+  });
+
+  it('preserves the exact source partition type on clone() and clone({mutable: false})', () => {
+    const immutable = createToolSet({
+      tools: [
+        a,
+        b,
+      ] as const,
+    }).deactivate('a');
+
+    const defaultClone = immutable.clone();
+    expectTypeOf(defaultClone).toEqualTypeOf<typeof immutable>();
+    expectTypeOf<InferEnabledIds<typeof defaultClone>>().toEqualTypeOf<'b'>();
+    expectTypeOf<InferDisabledIds<typeof defaultClone>>().toEqualTypeOf<'a'>();
+
+    const explicitImmutableClone = immutable.clone({
+      mutable: false,
+    });
+    expectTypeOf(explicitImmutableClone).toEqualTypeOf<typeof immutable>();
+    expectTypeOf<InferEnabledIds<typeof explicitImmutableClone>>().toEqualTypeOf<'b'>();
+    expectTypeOf<InferDisabledIds<typeof explicitImmutableClone>>().toEqualTypeOf<'a'>();
+  });
+});
+
+describe('mutable aliasing soundness', () => {
+  it('gives createToolSet({mutable: true}) the widened partition/situation types', () => {
+    const mutable = createToolSet({
+      tools: [
+        a,
+        b,
+        c,
+      ] as const,
+      mutable: true,
+    });
+    expectTypeOf(mutable).toEqualTypeOf<
+      ToolSet<
+        readonly [
+          typeof a,
+          typeof b,
+          typeof c,
+        ],
+        Record<string, unknown>,
+        WidenedPartition<
+          readonly [
+            typeof a,
+            typeof b,
+            typeof c,
+          ]
+        >,
+        WidenedSituationMap,
+        true
+      >
+    >();
+    expectTypeOf<InferEnabledIds<typeof mutable>>().toEqualTypeOf<never>();
+    expectTypeOf<InferDisabledIds<typeof mutable>>().toEqualTypeOf<never>();
+    expectTypeOf<InferConditionalIds<typeof mutable>>().toEqualTypeOf<'a' | 'b' | 'c'>();
+  });
+
+  it('keeps every alias of a mutable instance at the same static type after divergent mutations', () => {
+    const base = createToolSet({
+      tools: [
+        a,
+        b,
+        c,
+      ] as const,
+      mutable: true,
+    });
+    // Two aliases of the very same underlying object.
+    const aliasOne = base;
+    const aliasTwo = base;
+
+    // Mutating through one alias must not statically diverge either alias's
+    // type from the other — both must remain the identical widened type,
+    // since they point at the same live object.
+    const afterActivate = aliasOne.activate('a');
+    const afterDeactivate = aliasTwo.deactivate('b');
+
+    expectTypeOf(afterActivate).toEqualTypeOf<typeof base>();
+    expectTypeOf(afterDeactivate).toEqualTypeOf<typeof base>();
+    expectTypeOf(afterActivate).toEqualTypeOf<typeof afterDeactivate>();
+
+    // activateWhen/deactivateWhen must also leave the widened type unchanged.
+    const afterActivateWhen = afterActivate.activateWhen('c', () => true);
+    const afterDeactivateWhen = afterDeactivate.deactivateWhen('c', () => false);
+    expectTypeOf(afterActivateWhen).toEqualTypeOf<typeof base>();
+    expectTypeOf(afterDeactivateWhen).toEqualTypeOf<typeof base>();
+
+    // Runtime: since it's the same mutable object, both aliases observe
+    // every mutation — including ones made "through" the other alias.
+    expect(afterActivate).toBe(base);
+    expect(afterDeactivate).toBe(base);
+    expect(afterActivateWhen).toBe(base);
+    expect(afterDeactivateWhen).toBe(base);
+  });
+
+  it('does not let a mutable alias make a contradictory exact static claim', () => {
+    const mutable = createToolSet({
+      tools: [
+        a,
+        b,
+      ] as const,
+      mutable: true,
+    });
+    const alias = mutable;
+
+    // If mutators refined the partition type the way the immutable path
+    // does, `alias` could statically claim 'a' | 'b' enabled while the
+    // shared object it points to had, in fact, just been deactivated
+    // through `mutable`. Confirm both stay conditional-only instead.
+    mutable.deactivate('a');
+    expectTypeOf<InferEnabledIds<typeof alias>>().toEqualTypeOf<never>();
+    expectTypeOf<InferDisabledIds<typeof alias>>().toEqualTypeOf<never>();
+    expectTypeOf<InferConditionalIds<typeof alias>>().toEqualTypeOf<'a' | 'b'>();
+
+    // Runtime state is, as ever, precisely observable via resolve().
+    expect(alias.resolve().activeTools).toEqual([
+      'b',
+    ]);
+  });
+
+  it('keeps the immutable chain exactly narrowed (no regression from the mutable-aliasing fix)', () => {
+    const base = createToolSet({
+      tools: [
+        a,
+        b,
+        c,
+      ] as const,
+    });
+    expectTypeOf<InferEnabledIds<typeof base>>().toEqualTypeOf<'a' | 'b' | 'c'>();
+
+    const afterDeactivate = base.deactivate('b');
+    expectTypeOf<InferEnabledIds<typeof afterDeactivate>>().toEqualTypeOf<'a' | 'c'>();
+    expectTypeOf<InferDisabledIds<typeof afterDeactivate>>().toEqualTypeOf<'b'>();
+
+    const afterActivateWhen = afterDeactivate.activateWhen('a', () => true);
+    expectTypeOf<InferEnabledIds<typeof afterActivateWhen>>().toEqualTypeOf<'c'>();
+    expectTypeOf<InferDisabledIds<typeof afterActivateWhen>>().toEqualTypeOf<'b'>();
+    expectTypeOf<InferConditionalIds<typeof afterActivateWhen>>().toEqualTypeOf<'a'>();
+
+    // Each immutable step is a genuinely distinct, more-refined instance.
+    expect(afterDeactivate).not.toBe(base);
+    expect(afterActivateWhen).not.toBe(afterDeactivate);
   });
 });
 
