@@ -1575,6 +1575,8 @@ export type ResponseStreamEvent<
   | ToolPreliminaryResultEvent<TEvent, TName>
   | ToolResultEvent<TResult, TEvent, TName>
   | ToolCallOutputEvent
+  | ToolAsyncStartedEvent
+  | ToolAsyncSettledEvent<TResult>
   | TurnStartEvent
   | TurnEndEvent;
 
@@ -1589,7 +1591,7 @@ export type CorrelatedResponseStreamEvent<TTools extends readonly Tool[]> =
   | CorrelatedToolEventUnion<TTools>
   | ToolCallOutputEvent
   | ToolAsyncStartedEvent
-  | ToolAsyncSettledEvent<TResult>
+  | ToolAsyncSettledEvent<InferToolOutputsUnion<TTools>>
   | TurnStartEvent
   | TurnEndEvent;
 
