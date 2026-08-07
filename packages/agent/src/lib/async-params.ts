@@ -18,7 +18,7 @@ import type {
 export type { Tool } from './tool-types.js';
 
 /**
- * Keys that appear on `@openrouter/agent-tool-set`'s `ToolSet.inferTools()` /
+ * Keys that appear on `@openrouter/agent/tool-set`'s `ToolSet.inferTools()` /
  * `resolve()` / `resolveSituation()` snapshots but are never valid outbound
  * API request fields.
  *
@@ -89,7 +89,7 @@ type BaseCallModelInput<
    * Optional filter restricting which tools are exposed to the model for this
    * call. Tool names not in this list are removed before the request is sent
    * and are also not callable by the model. Pairs with
-   * `@openrouter/agent-tool-set`'s `.inferTools()` output — spreading its
+   * `@openrouter/agent/tool-set`'s `.inferTools()` output — spreading its
    * `{ tools, activeTools }` (or a whole snapshot from `.inferTools()` /
    * `.resolve()` / `.resolveSituation()`) into this object is safe:
    * `callModel` strips any tool-set snapshot metadata (`enabled`, `disabled`,
@@ -351,7 +351,7 @@ export async function resolveAsyncFunctions<TTools extends readonly Tool[] = rea
     // Skip client-only fields - they're handled separately and shouldn't be sent to the API
     // Note: tools are already in API format at this point (converted in callModel()), so we include them
     //
-    // Also defensively drop `@openrouter/agent-tool-set` snapshot metadata
+    // Also defensively drop `@openrouter/agent/tool-set` snapshot metadata
     // (see TOOL_SET_SNAPSHOT_METADATA_KEYS) in case it reached this stage
     // without being caught by callModel()'s own filtering — e.g. a caller
     // spreading a raw ToolSet snapshot into a differently-sourced input.

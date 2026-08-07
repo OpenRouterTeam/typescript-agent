@@ -1,7 +1,12 @@
 {
   "extends": "../../tsconfig.base.json",
   "compilerOptions": {
-    "outDir": "esm"
+    "outDir": "esm",
+    "rootDir": "src",
+    // Resolve deps via published exports, not the repo-wide "source" condition:
+    // the optional peer "@modelcontextprotocol/sdk" (used by src/mcp) transitively
+    // exposes a "source" condition pointing at raw .ts files (eventsource).
+    "customConditions": []
   },
   "include": ["src"],
   "exclude": ["node_modules", "esm"]

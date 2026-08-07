@@ -3368,9 +3368,14 @@ export class ModelResult<
       }
 
       if (executed.type === 'parse_error') {
-        this.broadcastToolResult(toolCall.id, String(toolCall.name), isMcpTool(tool) ? 'mcp' : 'client', {
-          error: executed.errorMessage,
-        } as InferToolOutputsUnion<TTools>);
+        this.broadcastToolResult(
+          toolCall.id,
+          String(toolCall.name),
+          isMcpTool(tool) ? 'mcp' : 'client',
+          {
+            error: executed.errorMessage,
+          } as InferToolOutputsUnion<TTools>,
+        );
         return executed;
       }
       if (executed.type === 'hook_blocked') {
@@ -3439,9 +3444,14 @@ export class ModelResult<
     preliminaryResultsForCall: InferToolEventsUnion<TTools>[];
   } {
     const message = `Tool "${toolCall.name}" timed out after ${timeoutMs}ms`;
-    this.broadcastToolResult(toolCall.id, String(toolCall.name), isMcpTool(tool) ? 'mcp' : 'client', {
-      error: message,
-    } as InferToolOutputsUnion<TTools>);
+    this.broadcastToolResult(
+      toolCall.id,
+      String(toolCall.name),
+      isMcpTool(tool) ? 'mcp' : 'client',
+      {
+        error: message,
+      } as InferToolOutputsUnion<TTools>,
+    );
     return {
       type: 'execution' as const,
       toolCall,

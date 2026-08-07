@@ -43,3 +43,23 @@ reason = "api-shape-helpers is a leaf layer; it must not depend on anything abov
 from = "packages/agent/src/lib/*"
 to = "packages/agent/src/inner-loop/*"
 reason = "lib is a utility layer; it must not depend on the inner-loop entry point."
+
+[[boundaries]]
+from = "packages/agent/src/inner-loop/*"
+to = "packages/agent/src/mcp/*"
+reason = "The core agent loop must not load the optional MCP integration."
+
+[[boundaries]]
+from = "packages/agent/src/lib/*"
+to = "packages/agent/src/mcp/*"
+reason = "Core agent utilities must not load the optional MCP integration."
+
+[[boundaries]]
+from = "packages/agent/src/api-shape-helpers/*"
+to = "packages/agent/src/mcp/*"
+reason = "Leaf API-shape definitions must remain independent of optional MCP support."
+
+[[boundaries]]
+from = "packages/agent/src/mcp/*"
+to = "packages/agent/src/inner-loop/*"
+reason = "MCP wraps public tool primitives and must not depend on the model loop."
