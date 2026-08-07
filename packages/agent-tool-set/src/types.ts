@@ -65,21 +65,46 @@ export type ToolById<T extends readonly Tool[], Id extends string> = Extract<
   Tool
 >;
 
-/** Keep tuple order; drop members whose id is not in Active. */
+/**
+ * Distributive per-element filter used for the wide (non-tuple) case below.
+ * A "naked" type parameter (`El`) is required for the conditional to
+ * distribute over the `T[number]` union; wrapping it in an indexed access
+ * (e.g. checking `T[number]` directly inside the conditional) would collapse
+ * to a single non-distributive check instead.
+ */
+type KeepIfActive<El, Active extends string> = El extends Tool
+  ? ToolIdOf<El> extends Active
+    ? El
+    : never
+  : never;
+
+/**
+ * Keep tuple order; drop members whose id is not in Active.
+ *
+ * A genuine fixed-length tuple (`T['length']` is a literal number) is
+ * filtered by exact head/tail recursion, preserving order and concrete
+ * per-element types. A dynamic `readonly Tool[]` (e.g. an `@openrouter/mcp`
+ * tool array not typed as a literal tuple) has `number extends T['length']`,
+ * so it falls back to a distributive per-element filter instead of
+ * recursing — the tuple pattern never matches a general array, and without
+ * this branch the recursion always bottoms out at `readonly []`.
+ */
 export type FilterToolsByIds<
   T extends readonly Tool[],
   Active extends string,
-> = T extends readonly [
-  infer H extends Tool,
-  ...infer R extends readonly Tool[],
-]
-  ? ToolIdOf<H> extends Active
-    ? readonly [
-        H,
-        ...FilterToolsByIds<R, Active>,
+> = number extends T['length']
+  ? readonly KeepIfActive<T[number], Active>[]
+  : T extends readonly [
+        infer H extends Tool,
+        ...infer R extends readonly Tool[],
       ]
-    : FilterToolsByIds<R, Active>
-  : readonly [];
+    ? ToolIdOf<H> extends Active
+      ? readonly [
+          H,
+          ...FilterToolsByIds<R, Active>,
+        ]
+      : FilterToolsByIds<R, Active>
+    : readonly [];
 
 // ─── three-way compile-time partition ───────────────────────────────────────
 
