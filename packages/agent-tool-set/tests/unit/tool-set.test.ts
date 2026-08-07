@@ -462,6 +462,138 @@ describe('exhaustive statusByTool snapshot', () => {
       'b',
     ]);
   });
+
+  it('keeps prototype-sensitive IDs as real own properties of statusByTool', () => {
+    // __proto__, constructor, and prototype are all valid tool IDs (serverTool
+    // only rejects the empty string) — statusByTool must hold each as an own
+    // property rather than silently dropping it via the inherited setter.
+    const dunderProto = makeTool('__proto__');
+    const ctor = makeTool('constructor');
+    const proto = makeTool('prototype');
+
+    const ts = createToolSet({
+      tools: [
+        a,
+        dunderProto,
+        ctor,
+        proto,
+        b,
+      ] as const,
+    }).deactivate('constructor');
+
+    const { tools, activeTools, enabled, disabled, statusByTool } = ts.resolve();
+
+    // Every exotic ID is a real own key, discoverable via normal enumeration.
+    expect(Object.keys(statusByTool).sort()).toEqual([
+      '__proto__',
+      'a',
+      'b',
+      'constructor',
+      'prototype',
+    ]);
+    expect(Object.hasOwn(statusByTool, '__proto__')).toBe(true);
+    expect(Object.hasOwn(statusByTool, 'constructor')).toBe(true);
+    expect(Object.hasOwn(statusByTool, 'prototype')).toBe(true);
+
+    // The object's own prototype must be untouched (still Object.prototype-less,
+    // i.e. not reassigned by the `__proto__` write) and `constructor` must be
+    // the tool's status entry, not Object's constructor function.
+    expect(Object.getPrototypeOf(statusByTool)).toBe(null);
+    expect(statusByTool.constructor).toEqual({
+      enabled: false,
+      reason: 'deactivate',
+      directive: 'deactivate',
+    });
+    expect(statusByTool.prototype).toEqual({
+      enabled: true,
+      reason: 'default',
+    });
+    expect(statusByTool.__proto__).toEqual({
+      enabled: true,
+      reason: 'default',
+    });
+
+    // Ordinary IDs resolve correctly alongside the exotic ones.
+    expect(statusByTool.a).toEqual({
+      enabled: true,
+      reason: 'default',
+    });
+    expect(statusByTool.b).toEqual({
+      enabled: true,
+      reason: 'default',
+    });
+
+    // The rest of the exhaustive snapshot is sound too, not just statusByTool.
+    expect(enabled).toEqual([
+      'a',
+      '__proto__',
+      'prototype',
+      'b',
+    ]);
+    expect(disabled).toEqual([
+      'constructor',
+    ]);
+    expect(tools).toEqual([
+      a,
+      dunderProto,
+      proto,
+      b,
+    ]);
+    expect(activeTools).toEqual([
+      'a',
+      '__proto__',
+      'prototype',
+      'b',
+    ]);
+  });
+
+  it('resolves __proto__/constructor/prototype IDs individually via activate/deactivate/activateWhen', () => {
+    const dunderProto = makeTool('__proto__');
+    const ctor = makeTool('constructor');
+    const proto = makeTool('prototype');
+
+    const ts = createToolSet({
+      tools: [
+        dunderProto,
+        ctor,
+        proto,
+      ] as const,
+    })
+      .activate('__proto__')
+      .deactivate('prototype')
+      .activateWhen('constructor', () => false);
+
+    const { statusByTool, enabled, disabled } = ts.resolve();
+
+    expect(Object.hasOwn(statusByTool, '__proto__')).toBe(true);
+    expect(Object.hasOwn(statusByTool, 'constructor')).toBe(true);
+    expect(Object.hasOwn(statusByTool, 'prototype')).toBe(true);
+
+    expect(statusByTool.__proto__).toEqual({
+      enabled: true,
+      reason: 'activate',
+      directive: 'activate',
+    });
+    expect(statusByTool.constructor).toEqual({
+      enabled: false,
+      reason: 'activateWhen',
+      directive: 'activateWhen',
+      predicate: true,
+    });
+    expect(statusByTool.prototype).toEqual({
+      enabled: false,
+      reason: 'deactivate',
+      directive: 'deactivate',
+    });
+
+    expect(enabled.sort()).toEqual([
+      '__proto__',
+    ]);
+    expect(disabled.sort()).toEqual([
+      'constructor',
+      'prototype',
+    ]);
+  });
 });
 
 describe('compile-time partition inference', () => {
