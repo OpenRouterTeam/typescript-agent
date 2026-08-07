@@ -986,22 +986,48 @@ type Conditional = InferConditionalIds<typeof toolSet>;
 
 ## Subpath Exports
 
-For tree-shaking or targeted imports, the package provides granular subpath exports:
+The root export is the primary API. Feature subpaths isolate optional integrations,
+and advanced subpaths support targeted imports without exposing undeclared filesystem
+paths. All of the following are public, semver-governed entry points:
+
+| Entry point | Purpose |
+| --- | --- |
+| `@openrouter/agent` | Primary agent API and SDK-facing types. |
+| `@openrouter/agent/tool-set` | Declarative, state-aware tool activation. |
+| `@openrouter/agent/mcp` | Canonical optional MCP integration. |
+| `@openrouter/agent/mcp/create-mcp-tools` | Focused MCP factory import. |
+| `@openrouter/agent/mcp/types` | MCP option and handle types. |
+| `@openrouter/agent/mcp/schema` | MCP JSON Schema conversion. |
+| `@openrouter/agent/mcp/cache` | MCP cache contracts and in-memory store. |
+| `@openrouter/agent/call-model` | Model-loop entry point. |
+| `@openrouter/agent/openrouter` | OpenRouter client export. |
+| `@openrouter/agent/tool` | Tool creation helpers. |
+| `@openrouter/agent/tool-types` | Tool and correlated-event types. |
+| `@openrouter/agent/model-result` | Model result consumption. |
+| `@openrouter/agent/hooks-manager` | Lifecycle hook manager. |
+| `@openrouter/agent/async-params` | Async request-parameter resolution. |
+| `@openrouter/agent/stop-conditions` | Agent-loop stop conditions. |
+| `@openrouter/agent/doom-loop` | Repetition detection and escalation. |
+| `@openrouter/agent/anthropic-compat` | Anthropic message conversion. |
+| `@openrouter/agent/chat-compat` | Chat message conversion. |
+| `@openrouter/agent/claude-constants` | Claude compatibility constants. |
+| `@openrouter/agent/claude-type-guards` | Claude message type guards. |
+| `@openrouter/agent/conversation-state` | Serializable conversation state. |
+| `@openrouter/agent/next-turn-params` | Next-turn request helpers. |
+| `@openrouter/agent/stream-transformers` | Response stream transformation. |
+| `@openrouter/agent/tool-context` | Tool execution context. |
+| `@openrouter/agent/tool-event-broadcaster` | Real-time tool events. |
+| `@openrouter/agent/turn-context` | Turn-scoped context types. |
 
 ```typescript
 import { callModel } from '@openrouter/agent/call-model';
-import { tool } from '@openrouter/agent/tool';
-import { ModelResult } from '@openrouter/agent/model-result';
-import { HooksManager } from '@openrouter/agent/hooks-manager';
-import { stepCountIs, maxCost } from '@openrouter/agent/stop-conditions';
-import { DoomLoopMonitor, fingerprintToolCall } from '@openrouter/agent/doom-loop';
-import { toClaudeMessage } from '@openrouter/agent/anthropic-compat';
-import { toChatMessage } from '@openrouter/agent/chat-compat';
-import { ToolContextStore } from '@openrouter/agent/tool-context';
-import { ToolEventBroadcaster } from '@openrouter/agent/tool-event-broadcaster';
-import { createInitialState } from '@openrouter/agent/conversation-state';
 import { createToolSet } from '@openrouter/agent/tool-set';
+import { createMCPTools } from '@openrouter/agent/mcp';
 ```
+
+`@openrouter/mcp` and its matching subpaths remain migration facades for existing
+applications. Prefer the canonical `@openrouter/agent/mcp` paths in new code; the
+facade would only be removed in a future breaking release after migration notice.
 
 ## Development
 

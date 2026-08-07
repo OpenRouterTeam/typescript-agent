@@ -82,9 +82,11 @@ export type ToolById<T extends readonly Tool[], Id extends string> = Extract<
  * to a single non-distributive check instead.
  */
 type KeepIfActive<El, Active extends string> = El extends Tool
-  ? ToolIdOf<El> extends Active
+  ? string extends ToolIdOf<El>
     ? El
-    : never
+    : ToolIdOf<El> extends Active
+      ? El
+      : never
   : never;
 
 /**

@@ -17,4 +17,6 @@ const result = callModel(new OpenRouter(), {
 });
 ```
 
-Install `@modelcontextprotocol/sdk` alongside `@openrouter/agent` when using `/mcp`. Existing `@openrouter/mcp` imports continue to work, but new code should prefer `@openrouter/agent/mcp`.
+Install `@modelcontextprotocol/sdk` alongside `@openrouter/agent` when using `/mcp`. The SDK is loaded lazily, so importing the base agent or the MCP entry point does not require the peer; the first MCP connection attempt without it throws an actionable `MCPMissingPeerDependencyError`.
+
+Existing `@openrouter/mcp` imports continue to work as tooling-visible deprecated migration facades, but new code should prefer `@openrouter/agent/mcp`. The facade would only be removed in a future breaking release after migration notice.

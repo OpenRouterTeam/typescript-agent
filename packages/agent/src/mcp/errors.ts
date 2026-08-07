@@ -133,3 +133,21 @@ export class MCPConnectionError extends MCPError {
         : []);
   }
 }
+
+/**
+ * Raised when MCP support is used without its optional SDK peer installed.
+ */
+export class MCPMissingPeerDependencyError extends MCPConnectionError {
+  readonly packageName = '@modelcontextprotocol/sdk';
+
+  constructor(options?: {
+    cause?: unknown;
+  }) {
+    super(
+      'MCP support requires the optional peer "@modelcontextprotocol/sdk". ' +
+        'Install it alongside @openrouter/agent (for example: pnpm add @modelcontextprotocol/sdk).',
+      options,
+    );
+    this.name = 'MCPMissingPeerDependencyError';
+  }
+}

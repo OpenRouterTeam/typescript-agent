@@ -1,9 +1,10 @@
 # @openrouter/mcp
 
 > [!NOTE]
-> This package is a compatibility facade. New code should import the canonical
-> `@openrouter/agent/mcp` subpath. Existing `@openrouter/mcp` root and subpath
-> imports continue to work.
+> This package is a migration-only compatibility facade. New code should import
+> the canonical `@openrouter/agent/mcp` subpath. Existing `@openrouter/mcp` root
+> and subpath imports remain functional and would only be removed in a future
+> breaking release after migration notice.
 
 Expose the tools of a remote [Model Context Protocol](https://modelcontextprotocol.io) server
 (Streamable HTTP or SSE) as tools you can pass straight into
@@ -34,6 +35,19 @@ pnpm add @openrouter/mcp @openrouter/agent @modelcontextprotocol/sdk
 The agent package is marked `sideEffects: false`, and MCP code is exposed only
 through explicit `/mcp` exports. Root and `/tool-set` imports do not statically
 load MCP modules; the MCP SDK is not installed transitively for base agent users.
+The `/mcp` entry point also loads the optional SDK lazily: importing it is safe
+without the peer, while the first connection attempt throws an actionable
+`MCPMissingPeerDependencyError` when the SDK has not been installed.
+
+## Compatibility subpaths
+
+| Existing facade | Canonical replacement |
+| --- | --- |
+| `@openrouter/mcp` | `@openrouter/agent/mcp` |
+| `@openrouter/mcp/create-mcp-tools` | `@openrouter/agent/mcp/create-mcp-tools` |
+| `@openrouter/mcp/types` | `@openrouter/agent/mcp/types` |
+| `@openrouter/mcp/schema` | `@openrouter/agent/mcp/schema` |
+| `@openrouter/mcp/cache` | `@openrouter/agent/mcp/cache` |
 
 ## Quick start
 
