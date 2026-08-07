@@ -4,11 +4,11 @@
  * (non-tuple) `readonly Tool[]`.
  */
 
-import type { Tool } from '@openrouter/agent';
-import { tool } from '@openrouter/agent';
 import { expectTypeOf } from 'vitest';
 import { z } from 'zod/v4';
-import type { FilterToolsByIds } from '../../src/index.js';
+import { tool } from '../../src/lib/tool.js';
+import type { FilterToolsByIds } from '../../src/lib/tool-set-types.js';
+import type { Tool } from '../../src/lib/tool-types.js';
 
 const a = tool({
   name: 'a',
@@ -67,7 +67,7 @@ expectTypeOf<NarrowedBOnly>().toEqualTypeOf<
 // --- Dynamic `readonly Tool[]` must not collapse to `readonly []` ----------
 //
 // A tool handle whose concrete tuple isn't known at the type level (e.g. an
-// `@openrouter/mcp` tool array typed as `readonly Tool[]`) must still filter
+// `@openrouter/agent/mcp` tool array typed as `readonly Tool[]`) must still filter
 // to a usable, non-empty array shape instead of always bottoming out at the
 // tuple recursion's `readonly []` base case. `number extends T['length']`
 // detects this dynamic-array case (true for general arrays, false for

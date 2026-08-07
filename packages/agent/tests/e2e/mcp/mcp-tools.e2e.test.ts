@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { createMCPTools, InMemoryMCPCacheStore, rehydrateMCPTools } from '../../src/index.js';
+import {
+  createMCPTools,
+  InMemoryMCPCacheStore,
+  rehydrateMCPTools,
+} from '../../../src/mcp/index.js';
 
 // These tests require a reachable remote MCP server. Set MCP_TEST_URL (and
 // optionally MCP_TEST_TOKEN) to run them; otherwise they are skipped.

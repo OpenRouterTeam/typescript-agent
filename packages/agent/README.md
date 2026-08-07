@@ -56,6 +56,31 @@ const text = await result.getText();
 console.log(text);
 ```
 
+## Optional subpaths
+
+The base package stays focused: `@openrouter/agent` is marked `sideEffects: false`,
+and the root entry does not import either optional integration.
+
+- `@openrouter/agent/tool-set` adds declarative, state-aware tool activation with
+  no additional package installation.
+- `@openrouter/agent/mcp` adds remote MCP discovery, caching, rehydration, and
+  tool wrapping. Install its optional peer only when you use this subpath:
+
+```bash
+pnpm add @openrouter/agent @modelcontextprotocol/sdk
+```
+
+```ts
+import { createMCPTools } from '@openrouter/agent/mcp';
+import { createToolSet } from '@openrouter/agent/tool-set';
+```
+
+Because the MCP SDK is an optional peer rather than a regular dependency, base
+agent consumers do not install its transitive dependencies. The compiled MCP
+adapter is included in the agent tarball, but bundlers only reach it through the
+explicit `/mcp` exports. `@openrouter/mcp` remains available as a compatibility
+facade for existing applications.
+
 ## Features
 
 ### Multiple Response Consumption Patterns
@@ -68,13 +93,9 @@ const result = callModel(client, { model, input, tools });
 // Await the final text
 const text = await result.getText();
 
-// Await the full response with usage data (the FINAL round only)
+// Await the full response with usage data
 const response = await result.getResponse();
 console.log(response.usage); // { inputTokens, outputTokens, cost, ... }
-
-// Await aggregate usage across EVERY round of the tool loop
-const usage = await result.getUsage();
-console.log(usage); // { modelCalls, inputTokens, outputTokens, totalTokens, cachedTokens, reasoningTokens, cost? }
 
 // Stream text deltas
 for await (const delta of result.getTextStream()) {
@@ -113,47 +134,12 @@ What each stream emits:
 | `getReasoningStream()` | reasoning deltas |
 | `getToolStream()` | tool-call **argument deltas**; `preliminary_result` events for generator tools — *not* execution results |
 | `getToolCallsStream()` | parsed tool calls as they complete |
-| `getItemsStream()` | all output items (messages, function calls, …) — output items **only**, no usage/response metadata |
-| `getFullResponsesStream()` | every response event, including `tool.result` / `tool.call_output` execution events, and each round's `response.completed` (with that round's usage block) |
-
-#### Usage across a multi-round tool loop
-
-`getResponse()` resolves to the **final** round's response, so in a
-multi-round tool loop the tokens spent on the intermediate `tool_calls`
-generations are not in `response.usage`. `getItemsStream()` carries output
-items only and never surfaces `response.completed`, so usage is not reachable
-from that stream either.
-
-`getUsage()` closes the gap with aggregate totals across every model call the
-run made — the initial request, each tool-round follow-up, the empty-final
-retry, the `allowFinalResponse` final turn, and approval-resume requests:
-
-```typescript
-const result = callModel(client, { model, input, tools });
-
-for await (const item of result.getItemsStream()) {
-  render(item);
-}
-
-const usage = await result.getUsage();
-console.log(usage.modelCalls, usage.totalTokens, usage.cost);
-```
-
-It gates on run completion like `getResponse()` does, so the totals are final
-whether you await it directly, after `getResponse()`, or after draining any of
-the streaming getters. Unlike `getResponse()` it never rejects — a failed run
-still consumed tokens — and returns the totals accrued so far, with
-`modelCalls: 0` and zeroed tokens when no model call completed. `cost` is
-present only when the server reported cost accounting.
-
-Same `SessionUsageTotals` shape and numbers as the `SessionEnd` hook's
-`totalUsage`. For **per-call** granularity use the `PostModelCall` hook (one
-emit per model call, with `turnType`/`turnNumber`) or read each round's
-`response.completed` off `getFullResponsesStream()`.
+| `getItemsStream()` | all output items (messages, function calls, …) |
+| `getFullResponsesStream()` | every response event, including `tool.result` / `tool.call_output` execution events |
 
 ### Tool Types
 
-The `tool()` factory creates type-safe tools with full Zod schema inference. In addition to the legacy kinds below, the unified `run` interface with `lifecycle: 'sync' | 'background' | 'deferred'` covers [async tools](#async-tools) whose results arrive after the tool round, and `tool.agent()` creates [subagent tools](#agent-tools-subagents).
+The `tool()` factory creates type-safe tools with full Zod schema inference. Three tool types are supported:
 
 **Regular tools** — automatically executed by the agent loop:
 
@@ -193,26 +179,6 @@ const confirmTool = tool({
   name: 'confirm_action',
   inputSchema: z.object({ action: z.string() }),
   execute: false,
-});
-```
-
-**Forced tool choices** are one-shot for each resolved semantic value. After a
-forced choice produces a tool call, unchanged follow-up choices are relaxed to
-`auto` so the model can either call another tool or answer in text. A dynamic
-choice re-arms when it resolves to a different value (or after an unforced
-turn):
-
-```typescript
-callModel(client, {
-  model: 'openai/gpt-4o',
-  input: 'Plan, research, then submit.',
-  tools: [planTool, searchTool, submitTool] as const,
-  toolChoice: ({ numberOfTurns }) =>
-    numberOfTurns === 0
-      ? { type: 'function', name: 'plan' }
-      : numberOfTurns === 3
-        ? { type: 'function', name: 'submit' }
-        : 'auto',
 });
 ```
 
@@ -344,37 +310,11 @@ if (verdict) console.warn(verdict.message);
 
 Detection is **deterministic** — a verdict is a pure function of the
 transcript, so the same sequence of calls/text always fires at the same
-point. Repeated **rounds** build a per-tool streak: interleaved calls to
-*other* tools don't reset it, and N identical calls fanned out in parallel
-within ONE round count once (a streak measures the model re-issuing a call
-*after seeing its result*, which requires a round trip).
-
-Two kinds of evidence accumulate side by side, and the stronger one decides:
-
-- **Round-set streaks.** A round's identity for one tool is the **set** of
-  calls it made, so a fan-out of *distinct* arguments reissued verbatim
-  counts: `read(a), read(b), read(c)` every round accumulates. Ordering
-  within the round is irrelevant, and a round whose membership changes — in
-  either direction — resets this streak, since adding or dropping work is
-  progress for the round as a unit.
-- **Per-call streaks.** Each `(tool, arguments)` identity also counts its own
-  consecutive rounds, whatever its round-mates did. A call repeating inside
-  varying company (`[a,b]`, `[a,c]`, `[a,d]` — `a` is a 3-peat) is flagged
-  even though every round's set differs, and a repeat spanning an approval
-  pause keeps counting when the paused member drops from the resumed round.
-  For an exactly-repeating round both counts are equal, so nothing
-  double-fires.
-
-When a repeating fan-out crosses a rung, every call in the round gets the
-verdict (so `block` stops the whole fan-out, not just one member), and calls
-carrying the SAME evidence share byte-identical text — the `steer` rung
-dedupes on exact text, so one piece of evidence injects one correction. A
-round can carry two pieces of evidence at once (`[a]`, `[a,b]`, `[a,b]`: by
-round 3, `a` is a 3-peat call while `{a,b}` is a 2-peat set), in which case
-each renders its own message — at most two per tool per round, each stating
-a distinct fact. When the per-call count alone crosses a rung, only that
-call is refused and genuinely new round-mates run free. The streak crosses
-a graduated ladder — strongest crossed rung wins:
+point. Identical calls in consecutive **rounds** build a per-tool streak:
+interleaved calls to *other* tools don't reset it, and N identical calls
+fanned out in parallel within ONE round count once (a streak measures the
+model re-issuing a call *after seeing its result*, which requires a round
+trip). The streak crosses a graduated ladder — strongest crossed rung wins:
 
 | Action | Effect |
 |---|---|
@@ -424,11 +364,10 @@ rungs (a weaker threshold at or past an enabled stronger one) warn, and so
 does an `escalate` rung without an `escalation` config (or vice versa).
 
 **Tools declare what identifies a call** via `loopKey` on the tool
-definition — a computed function over the call's validated arguments, like
-every other tool hook, or `false` to exempt:
+definition — a **function or a variable**:
 
 ```typescript
-// Compute the identity — a web-search tool normalizes its query.
+// Function: compute the identity — a web-search tool normalizes its query.
 tool({
   name: 'web_search',
   inputSchema: z.object({ query: z.string() }),
@@ -436,16 +375,17 @@ tool({
   execute: async ({ query }) => search(query),
 });
 
-// Return the subset of fields that matter. A bash call is identified by
-// the command AND where it runs; other fields (e.g. verbose) don't count.
+// Variable (field list): declarative subset — data, not code, so it
+// survives serializable tool caches. A bash call is identified by the
+// command AND where it runs; other fields (e.g. verbose) don't count.
 tool({
   name: 'bash',
   inputSchema: z.object({ command: z.string(), cwd: z.string(), verbose: z.boolean() }),
-  loopKey: ({ command, cwd }) => ({ command, cwd }),
+  loopKey: ['command', 'cwd'],
   execute: async ({ command, cwd }) => run(command, cwd),
 });
 
-// false: statically exempt — repetition is this tool's job.
+// Variable (false): statically exempt — repetition is this tool's job.
 tool({
   name: 'check_status',
   inputSchema: z.object({ jobId: z.string() }),
@@ -458,24 +398,8 @@ A function-form `loopKey` may return `null` to exempt an individual call.
 Returning `undefined`, throwing, or returning unhashable material (bigint,
 circular, >64 levels deep) falls back to the full-arguments identity with a
 warning — detection never fails a run. Without any `loopKey`, the full
-validated arguments object is the identity. A field-name array
-(`loopKey: ['command', 'cwd']`) is also accepted — data rather than code,
-so it can be serialized into MCP tool caches and advertised over the wire
-via `_meta['openrouter/loopKey']`. MCP-wrapped tools accept a `loopKey`
-via `markMcp(tool, { loopKey })` or the `loopKeys` map on
-`createMCPTools`.
-
-> **Exempt tools that repeat by design — including repeating *fan-outs*.**
-> The detector compares arguments, not results, so a call whose arguments are
-> stable while its results change is indistinguishable from a loop. Since a
-> round's identity is now the whole *set* of a tool's calls, this covers
-> parallel shapes too: an agent that re-reads the same context files at the
-> start of every turn, or fans out a fixed set of pollers, accumulates a streak
-> and is refused at the default `block` rung from round 3 — and because every
-> call in the round gets the verdict, that is N synthesized error outputs per
-> round, not one. These shapes were invisible before this behavior existed, so
-> `loopKey: false` (or a `loopKey` returning `null`) is the opt-out for any
-> tool whose repetition is legitimate.
+validated arguments object is the identity. MCP-wrapped tools accept a
+`loopKey` via `markMcp(tool, { loopKey })` (prefer the field-list form).
 
 **Fingerprints are a cross-port contract**: key material is canonicalized
 per RFC 8785 (JCS) and hashed with SHA-256 over the UTF-8 bytes, so the
@@ -499,7 +423,7 @@ block to observe for a known-chatty tool, or escalate straight to stop.
 
 - **Varying-input loops.** The fingerprint is identity-based: a model that
   invents a fresh nonce/timestamp field each call evades the default
-  whole-arguments identity entirely. A `loopKey` that returns the meaningful
+  whole-arguments identity entirely. A `loopKey` that names the meaningful
   fields closes this per tool; the structural fix (outcome hashing — the
   progress-ledger detector from the design doc) is planned, not shipped.
 - **Paraphrased repetition.** Text detectors require exact repeated token
@@ -512,179 +436,6 @@ block to observe for a known-chatty tool, or escalate straight to stop.
 - **Manual/client-executed calls** pause the loop for the caller and are
   not recorded (only executed, blocked, and parse-error calls are
   evidence).
-- **Cross-tool round patterns.** Streaks are per tool: a loop alternating
-  BETWEEN tools with no per-tool repetition (`read(a)` one round, `grep(a)`
-  the next, forever) shows each tool a sparse pattern its own evidence
-  cannot condemn. Interleaved calls to other tools never *reset* a tool's
-  streak, so an every-other-round repeat still accumulates — slowly.
-
-### Async Tools
-
-One `tool()` shape covers every execution lifecycle. Write an ordinary `run` — an async function or an async generator — and say what kind it is with `lifecycle`:
-
-- **`'sync'`** (default): awaited in the round, exactly like `execute`.
-- **`'background'`**: the loop keeps going. Work settling within the grace window (`graceMs`, default 250ms) behaves like a plain sync call; otherwise the model immediately receives a pending placeholder and the return value is injected as a `tool_task_result` message when it settles.
-- **`'deferred'`**: `run` returns `ctx.defer(taskId)` to park the call on durable external work — the run pauses (`status: 'awaiting_async_tools'`) until the task is completed from any process. Returning a plain value resolves immediately.
-
-Generator `run` yields become the task's **log** (feeding check-ins, `tool.preliminary_result` events, and transcripts); the generator's **return** is the result, validated against `outputSchema`. Non-generator bodies log with `ctx.log()`.
-
-```typescript
-const renderVideo = tool({
-  name: 'render_video',
-  lifecycle: 'background',
-  inputSchema: z.object({ script: z.string() }),
-  outputSchema: z.object({ url: z.string() }),
-  ack: 'Rendering started.',
-  timeoutMs: 300_000,
-  run: async function* ({ script }, ctx) {
-    const job = await renderer.start(script, { signal: ctx?.signal });
-    ctx?.onMessage((msg) => job.reprioritize(msg));       // steering opt-in
-    for await (const p of job.progress()) yield { pct: p };
-    return job.result();
-  },
-});
-
-const legalReview = tool({
-  name: 'request_legal_review',
-  lifecycle: 'deferred',
-  inputSchema: z.object({ contractId: z.string() }),
-  outputSchema: z.object({ approved: z.boolean() }),
-  run: async ({ contractId }, ctx) => {
-    const ticket = await legal.open(contractId, { conversationId: ctx?.conversationId });
-    return ctx!.defer(ticket.id);
-  },
-});
-```
-
-Deferred completion is typed and lives on the tool — callable from any process holding the `StateAccessor`:
-
-```typescript
-// webhook handler — hours later, different process
-await legalReview.resolve(client, {
-  state: makeAccessor(conversationId),
-  taskId: ticketId,
-  output: { approved: true },        // ← typechecked against outputSchema
-  run: { model: 'openai/gpt-4o' },   // continue immediately (omit to record-only)
-});
-```
-
-`legalReview.fail(...)` / `legalReview.cancel(...)` complete the surface; double resolution throws `ToolTaskAlreadySettledError`. The low-level `resumeToolResults()` handles batches. When a run would end with background work in flight, `asyncTools.onRunEnd` decides: `'drain'` (default), `'detach'`, or `'cancel'`.
-
-> **Security:** `.resolve()` injects a value the model treats as a tool result. Authenticate the webhook before calling it — the SDK cannot do that for you. Outputs are validated against `outputSchema` at runtime as well as compile time.
-
-### Checking On Long-Running Tasks
-
-When any long-running tool is registered, the SDK appends **one universal `task` tool** to the request — a single static wire definition regardless of how many async tools exist (per-tool schemas are never augmented, so context cost stays constant). The pending placeholder tells the model to use it:
-
-```typescript
-task({ taskId: "task_7f3" })                          // status: state, elapsed, last log
-task({ taskId, view: "logs", tail: 5 })               // recent progress entries
-task({ taskId, view: "transcript" })                  // full detail (agents: child conversation)
-task({ taskId, action: "steer", message: "..." })     // send guidance to the running task
-task({ taskId, action: "result" })                    // final result if settled, else status
-task({ taskId, action: "cancel", reason: "..." })     // stop the task
-```
-
-Calls are engine-intercepted and dispatched to the **owning tool's** `check` config — the wire surface is universal, the handling stays tool-specific:
-
-```typescript
-const renderVideo = tool({
-  name: 'render_video',
-  lifecycle: 'background',
-  // ... as above ...
-  check: {                                     // optional — SDK default when absent
-    schema: z.object({ focus: z.string().optional() }),   // validates task({ params })
-    execute: async (params, turnContext) => {
-      // turnContext.toolCallStatus           → 'working' | 'completed' | ...
-      // turnContext.accumulatedYieldedEvents → every run yield so far
-      // turnContext.task                     → { statusView, tailLogs, transcript, send, cancel }
-      if (params.focus) turnContext.task?.send(params.focus);
-      return turnContext.task?.statusView();
-    },
-  },
-});
-```
-
-Without a custom `check`, the SDK default answers the three views (`status` / `logs` / `transcript`, truncated to `asyncTools.maxTranscriptChars`, default 20k). Task-tool calls are doom-loop-exempt, bypass per-tool concurrency/timeout gates, and never fire Pre/PostToolUse hooks — but a `PermissionRequest` hook denial recorded for the call IS honored, so a policy layer can veto `cancel`/`steer`. Disable entirely with `asyncTools: { checkins: false }` (placeholders then revert to "do not call this tool again"). The name `task` is reserved: `tool()` and `tool.agent()` reject it at definition time; a dynamically-built tool list that bypasses `tool()` and claims the name suppresses the built-in with a warning (and the engine routes `task` calls to that user tool instead of intercepting them).
-
-After a process restart, deferred tasks answer `status` from persisted state (including a bounded `lastLog`); full logs and transcripts are in-memory only and report an explanatory note instead.
-
-### Steering Running Tasks
-
-- **From code:** `result.sendToTask(taskId, message)` delivers into the run body's `ctx.onMessage` handler (queued until one registers). Deferred tasks throw — their work runs in an external system.
-- **From the model:** `task({ taskId, action: 'steer', message })` delivers directly, or expose custom `params` handled by `check.execute` with `turnContext.task.send(...)`.
-- **Agent tools** forward steering messages into the child conversation automatically (as user messages at the child's next turn boundary).
-
-### Agent Tools (Subagents)
-
-`tool.agent()` creates a tool whose work IS a child `callModel` conversation, running as a background task:
-
-```typescript
-const researcher = tool.agent({
-  name: 'research_topic',
-  description: 'Deep-research a topic in the background.',
-  inputSchema: z.object({ topic: z.string() }),
-  outputSchema: z.object({ text: z.string() }),
-  agent: ({ topic }) => ({
-    model: 'openai/gpt-4o',
-    input: `Research: ${topic}`,
-    tools: [searchTool, fetchTool] as const,
-    stopWhen: stepCountIs(15),
-  }),
-  // default result mapper — Dennis-style last_message outcome:
-  result: async (child) => ({ text: await child.getText() }),
-});
-```
-
-The parent keeps working while children run (several can run concurrently under the background pool). The child's conversation is the check-in **transcript**; each child turn is a **log** entry; `status` reports `turnsCompleted` and `currentActivity`. `cancelTask(taskId)` (or parent abort / `timeoutMs`) cancels the child; `sendToTask` steers it mid-run. Children run **in-memory** (no `StateAccessor`) and do not inherit the parent's hooks — pass child hooks explicitly in the `agent` spec if needed. A child that pauses (HITL/manual/approval/deferred tools inside it) fails the task with a clear error.
-
-### Strict Tool Schemas
-
-Every client tool kind, including `tool.agent()`, accepts `strict: true` to
-request provider-enforced schema adherence for generated tool-call arguments.
-The SDK faithfully converts the caller's `inputSchema`; it does not rewrite
-the runtime Zod contract.
-
-OpenAI-style strict function calling requires every declared object property
-to appear in JSON Schema's `required` list. Use `.nullable()` for a value that
-may be absent conceptually, because `.optional()` omits the property from
-`required`:
-
-```typescript
-const weatherTool = tool({
-  name: 'get_weather',
-  inputSchema: z.object({
-    location: z.string(),
-    // The key is required, but the model may return null.
-    units: z.enum(['celsius', 'fahrenheit']).nullable(),
-  }),
-  strict: true,
-  execute: async ({ location, units }) => getWeather(location, units),
-});
-```
-
-The SDK sends the generated schema unchanged. Providers validate it according
-to their own strict-mode dialect and the SDK propagates any API error. Use
-`.nullable()`, or set `strict: false` when omission is part of the tool's
-contract. Provider support and strict-schema restrictions can vary.
-
-### Per-Tool Timeouts & Concurrency
-
-Every tool kind accepts `timeoutMs` (per-execution deadline; the run-level `toolTimeoutMs` sets a default) and `maxConcurrency` (max simultaneous executions of that tool). On timeout the round stops waiting — the model receives `{ error, code: 'tool_timeout' }` and the tool's `ctx.signal` aborts; the timeout bounds the round's *wait*, not the tool body, so signal-ignoring bodies can't hang the run. `ctx.signal` also fires on run abort (`signal` option) and `ModelResult.cancel()`.
-
-Round-level parallelism (unbounded by default, matching previous behavior) is capped with `toolConcurrency`:
-
-```typescript
-const result = callModel(client, {
-  model: 'openai/gpt-4o',
-  input: 'fan out',
-  tools: [searchTool] as const,
-  toolTimeoutMs: 30_000,
-  toolConcurrency: { round: 4, background: 8 },  // or a bare number for { round: n }
-});
-```
-
-Execution order may change under a cap; output order never does (results stay in call order for prompt-cache stability).
 
 ### Tool Approval
 
@@ -793,7 +544,7 @@ const result = callModel(client, { model, input, tools, hooks });
 | `SessionStart` | Once per run, before the initial request. `config` summarizes the session (`hasTools`, `hasApproval`, `hasState`) | none (void) |
 | `SessionEnd` | Once per run, on every exit path — completion, approval pause, interruption, error, and the no-tools streaming paths. `reason` is `'complete' \| 'error' \| 'max_turns' \| 'user' \| 'doom_loop'`. When at least one model call completed, `totalUsage` aggregates tokens/cost across all of them (`modelCalls`, `inputTokens`, `outputTokens`, `totalTokens`, `cachedTokens`, `reasoningTokens`, and `cost` when the server reported it) | none (void) |
 | `PostModelCall` | Once per completed model response, on **every** request the loop makes — initial, each tool-round follow-up, the empty-final retry, the `allowFinalResponse` final turn, and approval-resume requests. Payload: `responseId` (the OpenRouter generation id), `model`, `durationMs` (dispatch → fully materialized response, including stream consumption), `turnType` (`'initial' \| 'resume' \| 'tool_round' \| 'final' \| 'retry'`), `turnNumber`, and `usage` (`inputTokens`, `outputTokens`, `totalTokens`, `cachedTokens`, `reasoningTokens`, `cost?`) when the server reported usage accounting. Purely observational — the telemetry primitive for tracing/benchmark consumers: one span per model call | none (void) |
-| `DoomLoopDetected` | Every time doom-loop detection crosses a ladder rung, once per `(tool, fingerprint)` per round — *identical* parallel duplicates in one round share the event, but a repeating fan-out of DISTINCT arguments emits one event per member, since each is its own `(tool, fingerprint)` (requires the `doomLoop` option). Payload: `detector` (`'tool-fingerprint' \| 'server-tool-fingerprint' \| 'text-repetition' \| 'text-streak'`), the resolved `action` (`'observe' \| 'steer' \| 'escalate' \| 'block' \| 'stop'`), the `streak`, the `fingerprint`, `toolName`/`toolInput` for tool verdicts, and the explanatory `message` | `overrideAction` replaces the engine's resolved action for this event (last handler wins); `block` on a text or server-tool verdict downgrades to `observe`; `escalate` without an `escalation` config or remaining budget downgrades to `observe` |
+| `DoomLoopDetected` | Every time doom-loop detection crosses a ladder rung, once per `(tool, fingerprint)` per round — parallel duplicates in one round share the event (requires the `doomLoop` option). Payload: `detector` (`'tool-fingerprint' \| 'server-tool-fingerprint' \| 'text-repetition' \| 'text-streak'`), the resolved `action` (`'observe' \| 'steer' \| 'escalate' \| 'block' \| 'stop'`), the `streak`, the `fingerprint`, `toolName`/`toolInput` for tool verdicts, and the explanatory `message` | `overrideAction` replaces the engine's resolved action for this event (last handler wins); `block` on a text or server-tool verdict downgrades to `observe`; `escalate` without an `escalation` config or remaining budget downgrades to `observe` |
 
 Notes on lifecycle pairing: `SessionEnd` only fires when a matching
 `SessionStart` succeeded, and at most once per run. Pending async hook work is
@@ -808,9 +559,6 @@ a materialized response emits no `PostModelCall`; a `response.incomplete`
 response (e.g. truncated at `max_output_tokens`) **does** emit — it carries a
 real generation id and consumed tokens. Note `usage.cost` is only present when
 the request had usage accounting enabled server-side.
-
-`SessionEnd.totalUsage` is push-based; for the same totals without registering
-a hook, await [`getUsage()`](#usage-across-a-multi-round-tool-loop).
 Every handler receives `(payload, context)` — `context` carries the
 `sessionId` (the single source of session identity; payloads do not repeat
 it), the `hookName`, and an `AbortSignal` for cooperative cancellation. The
@@ -1050,6 +798,192 @@ const chatMsg = toChatMessage(openRouterMessage);
 const orMessages2 = fromChatMessages(chatMessages);
 ```
 
+### Tool Sets
+
+Declarative, state-aware activation and deactivation for tools used with `@openrouter/agent`.
+
+Port of [`ai-tool-set`](https://github.com/zirkelc/ai-tool-set) (MIT © Chris Cook), adapted for this SDK's ordered `Tool[]` / `callModel` model. See [`THIRD_PARTY_NOTICES.md`](./THIRD_PARTY_NOTICES.md).
+
+**What it adds:**
+
+- **Stable tool-set IDs** for every addressable tool:
+  - client tools → `function.name`
+  - server tools → `server:${config.type}` by default (overridable via `serverTool(config, { id })`)
+- A **typed three-way partition** of those IDs: definitely enabled, definitely disabled, conditional.
+- **Exhaustive runtime snapshots** from `resolve()` / `resolveSituation()` — every ID appears in `statusByTool`.
+- **Named declarative situations** with compile-time exact tool tuples when the situation is fully static.
+- Integration with `callModel`'s `activeTools` option via the snapshot's spread-safe `.callModel` input.
+
+```ts
+import { OpenRouter, tool, serverTool, callModel } from '@openrouter/agent';
+import {
+  createToolSet,
+  type InferEnabledIds,
+  type InferDisabledIds,
+  type InferConditionalIds,
+  type InferAllIds,
+} from '@openrouter/agent/tool-set';
+import { z } from 'zod/v4';
+
+type AppContext = {
+  isAuthenticated: boolean;
+  isAdmin: boolean;
+};
+
+const listOrders = tool({
+  name: 'list_orders',
+  inputSchema: z.object({}),
+  execute: async () => ({ orders: [] }),
+});
+
+const cancelOrder = tool({
+  name: 'cancel_order',
+  inputSchema: z.object({ id: z.string() }),
+  execute: async () => ({ ok: true }),
+});
+
+const login = tool({
+  name: 'login',
+  inputSchema: z.object({}),
+  execute: async () => ({ token: '…' }),
+});
+
+const webSearch = serverTool({ type: 'web_search_2025_08_26' });
+// id defaults to 'server:web_search_2025_08_26'
+
+const allTools = [listOrders, cancelOrder, login, webSearch] as const;
+
+const toolSet = createToolSet<typeof allTools, AppContext>({ tools: allTools })
+  .deactivate('cancel_order')
+  .activateWhen('list_orders', ({ context }) => context?.isAuthenticated === true)
+  .defineSituations({
+    guest: {
+      enabled: ['login', 'server:web_search_2025_08_26'],
+      disabled: ['list_orders', 'cancel_order'],
+    },
+    authenticated: {
+      enabled: ['list_orders', 'server:web_search_2025_08_26'],
+      disabled: ['login'],
+      conditional: {
+        cancel_order: ({ context }) => context?.isAdmin === true,
+      },
+    },
+  });
+
+// Compile-time partition of the *base* set (before a situation overlay):
+type All = InferAllIds<typeof toolSet>;
+// 'list_orders' | 'cancel_order' | 'login' | 'server:web_search_2025_08_26'
+type Enabled = InferEnabledIds<typeof toolSet>; // excludes cancel_order + list_orders (conditional)
+type Disabled = InferDisabledIds<typeof toolSet>; // 'cancel_order'
+type Conditional = InferConditionalIds<typeof toolSet>; // 'list_orders'
+
+const client = new OpenRouter({ apiKey: process.env.OPENROUTER_API_KEY });
+
+// Named static situation → exact tool tuple at compile time
+const guest = toolSet.resolveSituation('guest');
+// guest.tools is exactly [login, webSearch]
+// guest.enabled / guest.disabled / guest.statusByTool are exhaustive
+
+const authenticated = toolSet.resolveSituation('authenticated', {
+  context: { isAuthenticated: true, isAdmin: false },
+});
+
+const result = callModel(client, {
+  model: 'openai/gpt-4o-mini',
+  input: 'List my orders.',
+  ...authenticated.callModel,
+});
+```
+
+**Identity**
+
+| Kind | Tool-set ID |
+| --- | --- |
+| Client `tool({ name: 'x' })` | `'x'` |
+| `serverTool({ type: 'web_search_2025_08_26' })` | `'server:web_search_2025_08_26'` |
+| `serverTool(config, { id: 'server:public_search' })` | `'server:public_search'` |
+
+Duplicate IDs throw at `createToolSet` construction. Activation methods accept only known IDs.
+
+**Compile-time vs runtime exactness**
+
+| Resolution style | Developer-time knowledge | Runtime knowledge |
+| --- | --- | --- |
+| Static `activate` / `deactivate` | Exact partition | Exact snapshot |
+| Named static situation (`enabled`/`disabled` only) | Exact filtered tool tuple | Exact snapshot |
+| `activateWhen` / `deactivateWhen` / situation `conditional` | Upper bound (`enabled ∪ conditional`) | Exact snapshot after predicates |
+| Mutable `ToolSet` | Partition types may widen | Exact snapshot |
+
+The type system cannot execute predicates. Conditional IDs therefore expand the compile-time upper bound of active tools; after `resolve`, the returned arrays and `statusByTool` are always exhaustive and exact.
+
+**API**
+
+`createToolSet<T, TShared?>({ tools, mutable? })` — Build a set from an ordered tool array. Optional `TShared` types the `context` argument on predicates. Defaults to immutable.
+
+`.tools` — Concrete tools tuple in construction order (client + server), regardless of activation.
+
+`.activate(id | id[])` / `.deactivate(id | id[])` — Static flip (last-call-wins). Accepts client names **and** server IDs. Updates the compile-time partition.
+
+`.activateWhen(id, predicate)` / `.activateWhen({ [id]: predicate })` — Conditional activation — defaults inactive, becomes active when predicate returns `true`. Moves the ID into the conditional partition.
+
+`.deactivateWhen(id, predicate)` / `.deactivateWhen({ [id]: predicate })` — Conditional deactivation — defaults active, becomes inactive when predicate returns `true`. Also moves the ID into the conditional partition.
+
+Predicate input: `{ state?: ConversationState; context?: TShared }`.
+
+`.defineSituations({ [name]: config })` — Declarative named situations. Each config may include:
+
+- `enabled?: readonly Id[]` — statically on
+- `disabled?: readonly Id[]` — statically off
+- `conditional?: { [id]: predicate | { mode?, predicate } }` — runtime rules
+
+Situation overlays the base partition for every ID it mentions; unmentioned IDs keep the base state. Unknown, duplicate, or conflicting IDs within one situation throw.
+
+`.resolve(input?)` → snapshot
+
+```ts
+{
+  tools: /* active tools, construction order, concrete types */;
+  activeTools: /* active *client* names for callModel */;
+  callModel: { tools, activeTools }; // safe to spread into callModel()
+  enabled: /* every active ID (client + server) */;
+  disabled: /* every inactive ID */;
+  statusByTool: {
+    [id]: {
+      enabled: boolean;
+      reason: 'default' | 'activate' | 'deactivate' | 'activateWhen' | 'deactivateWhen' | 'situation';
+      directive?: 'activate' | 'deactivate' | 'activateWhen' | 'deactivateWhen';
+      predicate?: boolean; // true when a runtime predicate decided the result
+    };
+  };
+}
+```
+
+`.resolveSituation(name, input?)` → snapshot — Same shape as `resolve`, with the named situation overlay applied first.
+
+`.inferTools(input?)` — Back-compat alias for `resolve`. Prefer `resolve` in new code.
+
+`.clone({ mutable? })` — Copy state, optionally flipping mode.
+
+Inference utilities:
+
+```ts
+type All = InferAllIds<typeof toolSet>;
+type Enabled = InferEnabledIds<typeof toolSet>;
+type Disabled = InferDisabledIds<typeof toolSet>;
+type Conditional = InferConditionalIds<typeof toolSet>;
+```
+
+`InferToolSet<TTools>` — Alias of the agent's `CorrelatedToolEventUnion<TTools>` — name-correlated preliminary/result stream events based on a tools tuple.
+
+**Notes**
+
+- Immutable by default (every mutator returns a new `ToolSet` with refined partition types).
+- `mutable: true` mutates in place. Partition type parameters may widen for soundness; runtime state is still exact.
+- Last-call-wins: each directive on a given ID replaces any prior one for that ID.
+- Server tools participate fully in activation once they have an ID. When active they appear in `tools` (and `enabled` / `statusByTool`) but **not** in `activeTools`, which remains the client-name list expected by `callModel`.
+- Keep a snapshot's `tools` and `activeTools` together by spreading `.callModel`; `callModel` cannot verify `activeTools` against an unrelated tools array.
+- `callModel` ignores names in `activeTools` that are not present in `tools`. Tool-set snapshots avoid stale names by deriving both arrays from the same set.
+
 ## Subpath Exports
 
 For tree-shaking or targeted imports, the package provides granular subpath exports:
@@ -1066,12 +1000,7 @@ import { toChatMessage } from '@openrouter/agent/chat-compat';
 import { ToolContextStore } from '@openrouter/agent/tool-context';
 import { ToolEventBroadcaster } from '@openrouter/agent/tool-event-broadcaster';
 import { createInitialState } from '@openrouter/agent/conversation-state';
-import { resumeToolResults } from '@openrouter/agent/resume-tool-results';
-import { Semaphore } from '@openrouter/agent/tool-concurrency';
-import { AsyncToolRegistry } from '@openrouter/agent/async-tool-registry';
-import { ToolTask } from '@openrouter/agent/tool-task';
-import { TaskToolInputSchema } from '@openrouter/agent/tool-check';
-import { AgentTranscriptSource } from '@openrouter/agent/agent-tool';
+import { createToolSet } from '@openrouter/agent/tool-set';
 ```
 
 ## Development

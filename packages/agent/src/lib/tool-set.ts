@@ -1,5 +1,4 @@
-import type { ServerToolBase, Tool } from '@openrouter/agent';
-import { isServerTool, TOOL_SET_SNAPSHOT } from '@openrouter/agent';
+import { TOOL_SET_SNAPSHOT } from './async-params.js';
 import type {
   ActivatePartition,
   ActivationInput,
@@ -27,7 +26,9 @@ import type {
   ToolStatusEntry,
   WidenedPartition,
   WidenedSituationMap,
-} from './types.js';
+} from './tool-set-types.js';
+import type { ServerToolBase, Tool } from './tool-types.js';
+import { isServerTool } from './tool-types.js';
 
 type ActivationEntry<TShared extends Record<string, unknown>> =
   | {

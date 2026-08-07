@@ -1,6 +1,6 @@
 # Third-Party Notices
 
-`@openrouter/agent-tool-set` is adapted from [`ai-tool-set` v1.0.0](https://github.com/zirkelc/ai-tool-set/tree/v1.0.0), which is licensed under the MIT License:
+`@openrouter/agent/tool-set` is adapted from [`ai-tool-set` v1.0.0](https://github.com/zirkelc/ai-tool-set/tree/v1.0.0), which is licensed under the MIT License:
 
 > MIT License
 >

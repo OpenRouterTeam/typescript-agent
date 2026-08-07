@@ -1,6 +1,6 @@
 import type { Client } from '@modelcontextprotocol/client';
 import { describe, expect, it } from 'vitest';
-import { buildResourceTools } from '../../src/resource-tools.js';
+import { buildResourceTools } from '../../../src/mcp/resource-tools.js';
 
 // Minimal page shapes returned by the fake client's list endpoints.
 interface ResourcePage {

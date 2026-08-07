@@ -4,6 +4,7 @@
   "include": [
     "src/**/*.ts",
     "tests/unit/context-schema-inference.test-d.ts",
+    "tests/unit/resolved-tools.test-d.ts",
     "tests/unit/tool-shared-name.test-d.ts"
   ],
   "exclude": ["node_modules", "esm"]

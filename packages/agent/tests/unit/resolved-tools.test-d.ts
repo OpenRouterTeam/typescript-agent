@@ -1,12 +1,12 @@
-import { tool } from '@openrouter/agent';
+import { tool } from '../../src/lib/tool.js';
 import { expectTypeOf } from 'vitest';
 import { z } from 'zod/v4';
 import type {
   ConditionalPartition,
   InitialPartition,
   ResolvedToolSnapshot,
-} from '../../src/index.js';
-import { createToolSet } from '../../src/index.js';
+} from '../../src/lib/tool-set-types.js';
+import { createToolSet } from '../../src/lib/tool-set.js';
 
 const a = tool({
   name: 'a',

@@ -857,7 +857,7 @@ export interface ServerToolBase {
   readonly _brand: 'server-tool';
   readonly config: ServerToolConfig;
   /**
-   * Stable tool-set identity used by `@openrouter/agent-tool-set` activation.
+   * Stable tool-set identity used by `@openrouter/agent/tool-set` activation.
    * Defaults to `server:${config.type}` when constructed via {@link serverTool}.
    *
    * Optional here for source compatibility with legacy hand-constructed
@@ -1438,7 +1438,7 @@ export type CorrelatedToolResultEvent<T extends Tool> = Omit<
 /**
  * Widest backward-compatible shape for {@link CorrelatedToolEventUnion} when
  * `T` is the generic `readonly Tool[]` (e.g. a tool handle from
- * `@openrouter/mcp`, whose concrete tuple isn't known at the type level).
+ * `@openrouter/agent/mcp`, whose concrete tuple isn't known at the type level).
  * Mirrors the pre-existing {@link ToolPreliminaryResultEvent} /
  * {@link ToolResultEvent} default shapes.
  */

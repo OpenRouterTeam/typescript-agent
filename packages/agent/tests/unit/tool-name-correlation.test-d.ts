@@ -292,7 +292,7 @@ void boomErrorEvent;
 // --- Generic `readonly Tool[]` must not collapse to `never` -----------------
 //
 // A tool handle whose concrete tuple isn't known at the type level (e.g. an
-// `@openrouter/mcp` tool array typed as `readonly Tool[]`) must still produce
+// `@openrouter/agent/mcp` tool array typed as `readonly Tool[]`) must still produce
 // a usable, backward-compatible event shape instead of `never`. The mapped
 // check `T[K] extends ClientTool` doesn't distribute over the indexed access
 // `T[K]` when `T` is the wide `readonly Tool[]`, so these types fall back to

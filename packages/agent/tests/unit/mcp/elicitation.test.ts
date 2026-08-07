@@ -1,6 +1,6 @@
 import type { ElicitRequest } from '@modelcontextprotocol/client';
 import { describe, expect, it } from 'vitest';
-import { makeElicitationRequestHandler } from '../../src/elicitation.js';
+import { makeElicitationRequestHandler } from '../../../src/mcp/elicitation.js';
 
 function formRequest(): ElicitRequest {
   return {
