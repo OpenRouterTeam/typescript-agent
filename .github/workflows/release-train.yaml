@@ -4,7 +4,7 @@ name: Release train
 # changesets/action maintains (see publish.yaml). Before this existed, that PR
 # waited for a human to merge it, so shipped features sat unreleased between
 # manual releases. The train bounds that latency: twice a week it finds the
-# Version Packages PR, gates it on Perry + CI via pr-gate.sh (the same gate the
+# Version Packages PR, gates it on CI via pr-gate.sh (the same gate the
 # SDK-bump flow uses), and squash-merges on green — which triggers publish.yaml
 # on push to main and cuts the actual npm release.
 #
