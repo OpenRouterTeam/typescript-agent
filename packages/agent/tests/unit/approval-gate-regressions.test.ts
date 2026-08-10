@@ -6,6 +6,12 @@ import { toolRequiresApproval } from '../../src/lib/conversation-state.js';
 import { HooksManager } from '../../src/lib/hooks-manager.js';
 import { stepCountIs } from '../../src/lib/stop-conditions.js';
 import { tool } from '../../src/lib/tool.js';
+import {
+  executeGeneratorTool,
+  executeHITLTool,
+  executeRegularTool,
+  prepareUnifiedInvocation,
+} from '../../src/lib/tool-executor.js';
 import type {
   ConversationState,
   StateAccessor,
@@ -294,6 +300,125 @@ describe('approval predicate argument parity with execute (#54)', () => {
 
     expect(requires).toBe(true);
     expect(predicate).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The gate's fail-open for schema-invalid arguments is only sound because
+// every engine execute path re-validates with the tool's inputSchema before
+// running the tool body. Lock that invariant in: if a future execute path
+// (or a refactor of an existing one) ever skips validateToolInput, these
+// tests fail — and the approval gate's fail-open must be revisited.
+// ---------------------------------------------------------------------------
+describe('every engine execute path validates before running the tool body', () => {
+  const inputSchema = z.object({
+    target: z.string(),
+  });
+  // Missing the required `target` — fails inputSchema validation.
+  const invalidArguments = {};
+
+  it('regular execute tools', async () => {
+    const execute = vi.fn(async () => ({}));
+    const regular = tool({
+      name: 'regular',
+      inputSchema,
+      execute,
+    });
+
+    const result = await executeRegularTool(
+      regular,
+      {
+        id: 'c1',
+        name: 'regular',
+        arguments: invalidArguments,
+      },
+      context,
+    );
+
+    expect(execute).not.toHaveBeenCalled();
+    expect(result.error).toBeDefined();
+  });
+
+  it('generator tools', async () => {
+    const execute = vi.fn(async function* () {
+      yield {
+        progress: 1,
+      };
+      return {
+        done: true,
+      };
+    });
+    const generator = tool({
+      name: 'generator',
+      inputSchema,
+      eventSchema: z.object({
+        progress: z.number(),
+      }),
+      outputSchema: z.object({
+        done: z.boolean(),
+      }),
+      execute,
+    });
+
+    const result = await executeGeneratorTool(
+      generator,
+      {
+        id: 'c2',
+        name: 'generator',
+        arguments: invalidArguments,
+      },
+      context,
+    );
+
+    expect(execute).not.toHaveBeenCalled();
+    expect(result.error).toBeDefined();
+  });
+
+  it('HITL onToolCalled tools', async () => {
+    const onToolCalled = vi.fn(async () => ({}));
+    const hitl = tool({
+      name: 'hitl',
+      inputSchema,
+      outputSchema: z.object({
+        ok: z.boolean(),
+      }),
+      onToolCalled,
+    });
+
+    const result = await executeHITLTool(
+      hitl,
+      {
+        id: 'c3',
+        name: 'hitl',
+        arguments: invalidArguments,
+      },
+      context,
+    );
+
+    expect(onToolCalled).not.toHaveBeenCalled();
+    expect(result?.error).toBeDefined();
+  });
+
+  it('unified run tools', async () => {
+    const run = vi.fn(async () => ({}));
+    const unified = tool({
+      name: 'unified',
+      inputSchema,
+      run,
+    });
+
+    const result = await prepareUnifiedInvocation(
+      unified,
+      {
+        id: 'c4',
+        name: 'unified',
+        arguments: invalidArguments,
+      },
+      context,
+    );
+
+    expect(run).not.toHaveBeenCalled();
+    expect('error' in result && result.error).toBeDefined();
   });
 });
 
