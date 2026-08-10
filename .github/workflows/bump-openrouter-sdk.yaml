@@ -198,7 +198,7 @@ jobs:
           fi
           exit 1
 
-      - name: Wait for Perry + CI, then merge or alert
+      - name: Wait for CI, then merge or alert
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
           PR: ${{ needs.bump.outputs.pr_number }}
