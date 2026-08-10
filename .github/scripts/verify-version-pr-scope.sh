@@ -5,8 +5,11 @@
 #
 # Two layers, both fail-closed:
 #   1. Path allowlist: consumed changesets (.changeset/*.md) and per-package
-#      package.json / CHANGELOG.md. No root package.json (private,
-#      unversioned), no lockfile (workspace:* deps don't touch it).
+#      package.json / CHANGELOG.md / src/version.ts. No root package.json
+#      (private, unversioned), no lockfile (workspace:* deps don't touch it).
+#      src/version.ts is the committed gen:version output (see publish.yaml's
+#      `pnpm run version` note) — a Version PR bumping @openrouter/mcp always
+#      carries it, so excluding it would fail every such train run.
 #   2. Content vet for package.json: paths alone are not enough — a smuggled
 #      `"postinstall"` script in packages/*/package.json passes a path check,
 #      survives `pnpm install --frozen-lockfile` (script-only edits don't
@@ -14,6 +17,9 @@
 #      npm OIDC id-token is in scope. So every changed line in a package.json
 #      must be a version bump or an internal @openrouter/* dependency range
 #      bump — exactly what `changeset version` emits (cf. Version PR #57).
+#      src/version.ts gets the same treatment: every changed line must match
+#      the fixed gen-version.mjs output shape (comments or the PACKAGE_VERSION
+#      constant), so a smuggled statement can't ride the auto-merge either.
 #
 # File list is paginated via the REST API: `gh pr view --json files` caps at
 # 100 entries and sorts .changeset/ first, so a padded PR could hide an
@@ -64,11 +70,18 @@ fi
 printf '%s\n' "$FILES_NDJSON" | python3 -c '
 import json, re, sys
 
-ALLOW = re.compile(r"^(\.changeset/[^/]+\.md|packages/[^/]+/(package\.json|CHANGELOG\.md))$")
+ALLOW = re.compile(r"^(\.changeset/[^/]+\.md|packages/[^/]+/(package\.json|CHANGELOG\.md|src/version\.ts))$")
 # The only lines `changeset version` changes in a package.json: the version
 # field, and internal dependency ranges when updateInternalDependencies fires.
 OK_LINE = re.compile(
     r"^[+-]\s*\"(version|@openrouter/[A-Za-z0-9._-]+)\":\s*\"[^\"]*\",?\s*$"
+)
+# gen-version.mjs emits a fixed 5-line file; a version bump only rewrites the
+# string literal in the constant. Allow comment lines, the blank line, and the
+# constant itself. \x27 is a single quote (this code lives inside a
+# shell-single-quoted string, so literal apostrophes are unusable here).
+OK_VERSION_TS_LINE = re.compile(
+    r"^[+-]\s*(//.*|/\*\*.*\*/|export const PACKAGE_VERSION = \x27[^\x27]+\x27;)?\s*$"
 )
 
 bad = []
@@ -81,16 +94,17 @@ for raw in sys.stdin:
     if not ALLOW.match(name):
         bad.append(f"path outside allowlist: {name}")
         continue
-    if name.endswith("package.json"):
+    if name.endswith("package.json") or name.endswith("src/version.ts"):
+        ok_line = OK_VERSION_TS_LINE if name.endswith(".ts") else OK_LINE
         patch = f.get("patch")
         if patch is None:
             # No inline patch (file too large / binary flag) — cannot vet.
-            bad.append(f"unvettable package.json diff: {name}")
+            bad.append(f"unvettable diff: {name}")
             continue
         for line in patch.splitlines():
             if line.startswith(("+++", "---")) or not line.startswith(("+", "-")):
                 continue
-            if not OK_LINE.match(line):
+            if not ok_line.match(line):
                 bad.append(f"non-version change in {name}: {line[:100]}")
                 break
 
