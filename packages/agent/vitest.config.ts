@@ -11,6 +11,17 @@ export default defineConfig({
       enabled: true,
       provider: 'v8',
       include: ['src/**/*.ts'],
+      exclude: ['src/**/*.test.ts'],
+      reporter: ['text', 'json-summary', 'html'],
+      // Coverage ratchet: thresholds are pinned at current levels. Any PR
+      // that lowers coverage fails the unit-test job. When you raise
+      // coverage, raise these floors in the same PR.
+      thresholds: {
+        statements: 82,
+        branches: 74,
+        functions: 88,
+        lines: 82,
+      },
     },
     globals: true,
     environment: 'node',

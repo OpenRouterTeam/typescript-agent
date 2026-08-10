@@ -63,7 +63,7 @@
     "gen:version": "node scripts/gen-version.mjs",
     "build": "node scripts/gen-version.mjs && tsc",
     "test": "vitest --run --project unit",
-    "test:e2e": "vitest --run --project e2e",
+    "test:e2e": "vitest --run --project e2e --coverage.enabled=false",
     "test:watch": "vitest --watch --project unit",
     "typecheck": "tsc --noEmit",
     "compile": "node scripts/gen-version.mjs && tsc"

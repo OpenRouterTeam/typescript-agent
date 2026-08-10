@@ -142,7 +142,7 @@
     "lint:fix": "biome check --write src tests",
     "build": "tsc",
     "test": "vitest --run --project unit",
-    "test:e2e": "vitest --run --project e2e",
+    "test:e2e": "vitest --run --project e2e --coverage.enabled=false",
     "test:watch": "vitest --watch --project unit",
     "typecheck": "tsc --noEmit -p tsconfig.typecheck.json",
     "compile": "tsc"

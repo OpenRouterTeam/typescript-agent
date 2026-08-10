@@ -500,7 +500,6 @@ describe('tool.agent — child conversation as a background task', () => {
     const childGate = new Promise<void>((resolve) => {
       releaseChild = resolve;
     });
-    let steered = false;
 
     routeByModel({
       parent: () => {
@@ -571,7 +570,6 @@ describe('tool.agent — child conversation as a background task', () => {
         throw new Error('agent task not started');
       }
       expect(result.sendToTask(task.taskId, 'focus on array semantics')).toBe(true);
-      steered = true;
       releaseChild?.();
     });
     await textPromise;
