@@ -312,12 +312,23 @@ export async function toolRequiresApproval<TTools extends readonly Tool[]>(
   // `execute` runs with `dangerous: true`).
   //
   // Parse with the same schema the executor uses so the predicate decides on
-  // exactly the values `execute` will receive. Fail CLOSED: if the arguments
-  // don't satisfy the schema there is no trustworthy value to judge, so
-  // require approval rather than guessing.
+  // exactly the values `execute` will receive.
   if (typeof requireApproval === 'function') {
     const parsed = z4.safeParse(tool.function.inputSchema, toolCall.arguments);
-    if (!parsed.success || !isRecord(parsed.data)) {
+    if (!parsed.success) {
+      // Arguments that don't satisfy the schema can never execute: every
+      // execute path runs the same schema through validateToolInput first
+      // and converts the failure into a tool error output the model can
+      // recover from. Gating them would pause the run so a human can approve
+      // a call that can only fail (or throw outright when no state accessor
+      // is configured), so let them through the gate to the executor's
+      // normal validation error.
+      return false;
+    }
+    if (!isRecord(parsed.data)) {
+      // Valid per the schema but not an object — the predicate contract is
+      // Record<string, unknown>, so there is no trustworthy value to judge.
+      // Fail closed.
       return true;
     }
     return requireApproval(parsed.data, context);

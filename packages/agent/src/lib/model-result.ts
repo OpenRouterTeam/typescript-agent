@@ -645,6 +645,14 @@ export class ModelResult<
   // normal tool round consults this to synthesize rejected outputs instead of
   // executing the calls.
   private readonly hookDeniedCalls = new Map<string, string>();
+  // The response most recently passed through handleApprovalCheck on this
+  // run. The same response object can reach the gate more than once — the
+  // pre-loop check plus the first loop iteration, or the pre-loop check plus
+  // the post-loop allowFinalResponse gate when a stop condition fires before
+  // any follow-up request. Re-gating would re-emit PermissionRequest hooks
+  // (duplicate prompts/audit records) and re-run requireApproval predicates
+  // for calls already resolved, so the gate runs at most once per response.
+  private lastApprovalGatedResponse: models.OpenResponsesResult | null = null;
   // Telemetry for the PostModelCall hook: the initial/resume request is
   // dispatched in initStream but its response is materialized later (stream
   // consumption), so the dispatch time and turn labeling are parked here
@@ -2839,6 +2847,17 @@ export class ModelResult<
     if (!this.options.tools) {
       return false;
     }
+
+    // Each response is gated at most once per run (see the field doc). A
+    // repeat visit for the same response object means the calls were already
+    // partitioned, the hooks already fired, and any hook 'deny' results are
+    // already recorded in hookDeniedCalls — and it did not pause (a pause
+    // returns out of the run). Skipping is therefore both safe and required
+    // to avoid duplicate permission prompts.
+    if (currentResponse === this.lastApprovalGatedResponse) {
+      return false;
+    }
+    this.lastApprovalGatedResponse = currentResponse;
 
     const turnContext: TurnContext = {
       numberOfTurns: currentRound,

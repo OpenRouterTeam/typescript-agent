@@ -174,7 +174,7 @@ describe('approval predicate argument parity with execute (#54)', () => {
     expect(requires).toBe(true);
   });
 
-  it('fails closed (requires approval) when arguments do not satisfy the inputSchema', async () => {
+  it('does not gate calls whose arguments fail schema validation', async () => {
     const predicate = vi.fn(() => false);
 
     const strict = tool({
@@ -186,9 +186,13 @@ describe('approval predicate argument parity with execute (#54)', () => {
       execute: async () => ({}),
     });
 
-    // `target` is missing entirely — the schema parse fails. Rather than
-    // handing the predicate a value `execute` would never see, the gate must
-    // fail closed and require approval.
+    // `target` is missing entirely — the schema parse fails. Such a call can
+    // never execute (the executor runs the same schema through
+    // validateToolInput and turns the failure into a tool error output), so
+    // gating it would pause the run for a human to approve a call that can
+    // only fail — or throw outright when no state accessor is configured.
+    // The gate lets it through to the executor's normal validation error and
+    // never invokes the predicate on a value `execute` would not see.
     const invalidCall = {
       id: '3',
       name: 'strict_action',
@@ -199,6 +203,54 @@ describe('approval predicate argument parity with execute (#54)', () => {
       invalidCall,
       [
         strict,
+      ],
+      context,
+    );
+
+    expect(requires).toBe(false);
+    expect(predicate).not.toHaveBeenCalled();
+  });
+
+  it('still fails closed when the schema parses to a non-object value', async () => {
+    const predicate = vi.fn(() => false);
+
+    // inputSchema is typed $ZodObject, but nothing enforces that at runtime —
+    // a schema whose parse succeeds with a non-record payload would break the
+    // predicate's Record<string, unknown> contract, so the gate fails closed.
+    const weird = tool({
+      name: 'weird_action',
+      inputSchema: z.object({
+        target: z.string(),
+      }),
+      requireApproval: predicate,
+      execute: async () => ({}),
+    });
+    (
+      weird.function as {
+        inputSchema: unknown;
+      }
+    ).inputSchema = z
+      .object({
+        target: z.string(),
+      })
+      .transform(() => [
+        'not',
+        'a',
+        'record',
+      ]);
+
+    const call = {
+      id: '4',
+      name: 'weird_action',
+      arguments: {
+        target: 'x',
+      },
+    };
+
+    const requires = await toolRequiresApproval(
+      call,
+      [
+        weird,
       ],
       context,
     );
@@ -590,5 +642,209 @@ describe('allowFinalResponse path enforces the approval gate (#54)', () => {
     );
     expect(outputs).toHaveLength(1);
     expect(JSON.stringify(outputs[0]?.output)).toContain('blocked by policy');
+  });
+
+  it('surfaces schema-invalid arguments as a tool error instead of pausing or throwing', async () => {
+    const execute = vi.fn(async () => ({
+      ok: true,
+    }));
+
+    const strict = tool({
+      name: 'strict',
+      inputSchema: z.object({
+        target: z.string(),
+      }),
+      outputSchema: z.object({
+        ok: z.boolean(),
+      }),
+      requireApproval: (params) => params.target.length > 3,
+      execute,
+    });
+
+    const tools = [
+      strict,
+    ] as const;
+
+    // The model emits `{}` — `target` is missing, so the arguments can never
+    // satisfy the schema. The gate must let the call through to the executor,
+    // which turns the validation failure into a tool error output the model
+    // can recover from. Gating it instead would pause the run for a human to
+    // approve a call that can only fail — and with no state accessor
+    // configured (as here), handleApprovalCheck would throw outright.
+    mockBetaResponsesSend
+      .mockResolvedValueOnce({
+        ok: true,
+        value: makeResponse('resp_turn_0', [
+          makeFunctionCallItem('call_strict', 'strict', '{}'),
+        ]),
+      })
+      .mockResolvedValue({
+        ok: true,
+        value: makeResponse('resp_final', [
+          {
+            id: 'msg_final',
+            type: 'message',
+            role: 'assistant',
+            status: 'completed',
+            content: [
+              {
+                type: 'output_text',
+                text: 'Recovered.',
+                annotations: [],
+              },
+            ],
+          },
+        ]),
+      });
+
+    const { accessor, get } = createMemoryAccessor<typeof tools>();
+
+    const result = new ModelResult<typeof tools>({
+      request: {
+        model: 'test-model',
+        input: 'do the strict thing',
+        tools: [
+          {
+            type: 'function',
+            name: 'strict',
+            description: null,
+            strict: null,
+            parameters: {},
+          },
+        ],
+      },
+      client: {} as OpenRouterCore,
+      tools,
+      state: accessor,
+    });
+
+    const text = await result.getText();
+
+    // No throw, no pause: the run completes normally.
+    expect(text).toBe('Recovered.');
+    const saved = get();
+    expect(saved?.status).toBe('complete');
+
+    // The tool body never ran — validation failed first — and the failure was
+    // recorded as the call's output so the model could see it and recover.
+    expect(execute).not.toHaveBeenCalled();
+    const outputs = (saved?.messages ?? []).filter(
+      (m): m is models.FunctionCallOutputItem =>
+        typeof m === 'object' &&
+        m !== null &&
+        'type' in m &&
+        m.type === 'function_call_output' &&
+        'callId' in m &&
+        m.callId === 'call_strict',
+    );
+    expect(outputs).toHaveLength(1);
+    expect(JSON.stringify(outputs[0]?.output)).toContain('target');
+
+    // One round trip for the initial request, one for the follow-up carrying
+    // the validation error.
+    expect(mockBetaResponsesSend).toHaveBeenCalledTimes(2);
+  });
+
+  it('gates the initial response only once when the stop condition fires on the first iteration', async () => {
+    const dangerExecute = vi.fn(async () => ({
+      ok: true,
+    }));
+
+    const danger = tool({
+      name: 'danger',
+      inputSchema: z.object({
+        target: z.string(),
+      }),
+      outputSchema: z.object({
+        ok: z.boolean(),
+      }),
+      requireApproval: true,
+      execute: dangerExecute,
+    });
+
+    const tools = [
+      danger,
+    ] as const;
+
+    // The hook promotes the gated call past the gate.
+    const hooks = new HooksManager();
+    const permissionHandler = vi.fn(() => ({
+      decision: 'allow' as const,
+    }));
+    hooks.on('PermissionRequest', {
+      handler: permissionHandler,
+    });
+
+    // The initial response carries the gated call and stepCountIs(0) stops
+    // the loop on the FIRST iteration, so the post-loop allowFinalResponse
+    // path re-extracts the exact calls the pre-loop gate already checked.
+    // Re-gating them would re-emit the PermissionRequest hook — a duplicate
+    // prompt/audit record for a single tool call.
+    mockBetaResponsesSend
+      .mockResolvedValueOnce({
+        ok: true,
+        value: makeResponse('resp_turn_0', [
+          makeFunctionCallItem(
+            'call_danger',
+            'danger',
+            JSON.stringify({
+              target: 'prod',
+            }),
+          ),
+        ]),
+      })
+      .mockResolvedValue({
+        ok: true,
+        value: makeResponse('resp_final', [
+          {
+            id: 'msg_final',
+            type: 'message',
+            role: 'assistant',
+            status: 'completed',
+            content: [
+              {
+                type: 'output_text',
+                text: 'Done.',
+                annotations: [],
+              },
+            ],
+          },
+        ]),
+      });
+
+    const { accessor } = createMemoryAccessor<typeof tools>();
+
+    const result = new ModelResult<typeof tools>({
+      request: {
+        model: 'test-model',
+        input: 'do the thing',
+        tools: [
+          {
+            type: 'function',
+            name: 'danger',
+            description: null,
+            strict: null,
+            parameters: {},
+          },
+        ],
+      },
+      client: {} as OpenRouterCore,
+      tools,
+      hooks,
+      state: accessor,
+      stopWhen: stepCountIs(0),
+      allowFinalResponse: true,
+    });
+
+    const text = await result.getText();
+
+    // Exactly one PermissionRequest emit for the single gated call — not one
+    // per gate visit.
+    expect(permissionHandler).toHaveBeenCalledTimes(1);
+
+    // The hook allowed the call, so it executes exactly once on the
+    // allowFinalResponse path and the final text is still produced.
+    expect(dangerExecute).toHaveBeenCalledTimes(1);
+    expect(text).toBe('Done.');
   });
 });
