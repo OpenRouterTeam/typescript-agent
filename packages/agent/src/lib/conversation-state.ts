@@ -12,7 +12,7 @@ import type {
   TurnContext,
   UnsentToolResult,
 } from './tool-types.js';
-import { isClientTool } from './tool-types.js';
+import { isAutoResolvableTool, isClientTool } from './tool-types.js';
 
 import { normalizeInputToArray } from './turn-context.js';
 
@@ -316,14 +316,22 @@ export async function toolRequiresApproval<TTools extends readonly Tool[]>(
   if (typeof requireApproval === 'function') {
     const parsed = z4.safeParse(tool.function.inputSchema, toolCall.arguments);
     if (!parsed.success) {
-      // Arguments that don't satisfy the schema can never execute: every
-      // execute path runs the same schema through validateToolInput first
-      // and converts the failure into a tool error output the model can
-      // recover from. Gating them would pause the run so a human can approve
-      // a call that can only fail (or throw outright when no state accessor
-      // is configured), so let them through the gate to the executor's
-      // normal validation error.
-      return false;
+      if (isAutoResolvableTool(tool)) {
+        // Engine-executed tools validate before running: every execute path
+        // (regular, generator, HITL onToolCalled, unified run) runs the same
+        // schema through validateToolInput first and converts the failure
+        // into a tool error output the model can recover from. Arguments
+        // that don't satisfy the schema can never execute, so gating them
+        // would pause the run so a human can approve a call that can only
+        // fail (or throw outright when no state accessor is configured) —
+        // let them through the gate to the executor's validation error.
+        return false;
+      }
+      // Manual tools (no execute / onToolCalled / run) are surfaced to the
+      // host application via pendingToolCalls and executed WITHOUT any
+      // engine-side validation, so the "can never execute" argument does not
+      // hold — fail closed rather than wave a malformed call past the gate.
+      return true;
     }
     if (!isRecord(parsed.data)) {
       // Valid per the schema but not an object — the predicate contract is

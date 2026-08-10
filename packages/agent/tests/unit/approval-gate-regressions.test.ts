@@ -258,6 +258,43 @@ describe('approval predicate argument parity with execute (#54)', () => {
     expect(requires).toBe(true);
     expect(predicate).not.toHaveBeenCalled();
   });
+
+  it('still fails closed on schema-invalid arguments for manual (caller-executed) tools', async () => {
+    const predicate = vi.fn(() => false);
+
+    // A manual tool: no execute / onToolCalled / run. The engine never
+    // validates or executes it — the call is surfaced on pendingToolCalls
+    // for the host application to run as-is — so the "invalid arguments can
+    // never execute" reasoning does not apply, and the gate must fail closed
+    // rather than wave a malformed call past the approval check.
+    const manualTool = {
+      type: 'function',
+      function: {
+        name: 'manual_action',
+        inputSchema: z.object({
+          target: z.string(),
+        }),
+        requireApproval: predicate,
+      },
+    } as const;
+
+    const invalidCall = {
+      id: '5',
+      name: 'manual_action',
+      arguments: {},
+    };
+
+    const requires = await toolRequiresApproval(
+      invalidCall,
+      [
+        manualTool,
+      ],
+      context,
+    );
+
+    expect(requires).toBe(true);
+    expect(predicate).not.toHaveBeenCalled();
+  });
 });
 
 // ---------------------------------------------------------------------------
