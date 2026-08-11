@@ -258,6 +258,9 @@ function extractServerToolIdentity(item: ServerToolResultItem): Record<string, u
 // buggy handler fails fast with a visible warning.
 const MAX_FORCE_RESUME_OVERRIDES = 3;
 
+/** Maximum time a UI consumer waits for asynchronous fragment rendering. */
+const DEFAULT_UI_DRAIN_TIMEOUT_MS = 30_000;
+
 /**
  * Sentinel marking a tool-call id that appeared MORE THAN ONCE in one batch.
  * Ids are model-emitted and nothing upstream enforces uniqueness; a colliding
@@ -626,7 +629,9 @@ export class ModelResult<
   private turnBroadcaster: ToolEventBroadcaster<
     ResponseStreamEvent<InferToolEventsUnion<TTools>, InferToolOutputsUnion<TTools>>
   > | null = null;
+  private uiBroadcaster: ToolEventBroadcaster<ToolUiFragmentEvent> | null = null;
   private pendingUiFragments = new Set<Promise<void>>();
+  private uiBroadcasterCompletionPromise: Promise<void> | null = null;
   private turnBroadcasterCompletionPromise: Promise<void> | null = null;
   private initialStreamPipeStarted = false;
   private initialPipePromise: Promise<void> | null = null;
@@ -1031,13 +1036,10 @@ export class ModelResult<
     const consumer = broadcaster.createConsumer();
     if (!this.turnBroadcasterCompletionPromise) {
       this.turnBroadcasterCompletionPromise = this.executeToolsIfNeeded().finally(async () => {
-        // Wait for every event producer before closing the shared broadcaster.
-        // UI rendering is best-effort and bounded; the drain is a no-op when
-        // no fragments are pending.
+        // Preserve turn.end, but never couple non-UI stream completion to UI rendering.
         if (this.initialPipePromise) {
           await this.initialPipePromise;
         }
-        await this.drainUiFragments();
         broadcaster.complete();
       });
     }
@@ -4352,6 +4354,9 @@ export class ModelResult<
       error?: Error;
     };
   }): void {
+    if (!this.uiBroadcaster) {
+      return;
+    }
     const rendering = this.broadcastUiFragment(value);
     this.pendingUiFragments.add(rendering);
     rendering.finally(() => this.pendingUiFragments.delete(rendering));
@@ -4361,7 +4366,7 @@ export class ModelResult<
     if (this.pendingUiFragments.size === 0) {
       return;
     }
-    const timeoutMs = this.options.asyncTools?.drainTimeoutMs ?? 30_000;
+    const timeoutMs = DEFAULT_UI_DRAIN_TIMEOUT_MS;
     let timer: ReturnType<typeof setTimeout> | undefined;
     const deadline = new Promise<true>((resolve) => {
       timer = setTimeout(() => resolve(true), timeoutMs);
@@ -4429,7 +4434,7 @@ export class ModelResult<
       if (!fragment) {
         return;
       }
-      this.turnBroadcaster?.push({
+      this.uiBroadcaster?.push({
         type: 'tool.ui_fragment' as const,
         toolCallId: value.toolCall.id,
         toolName: value.toolCall.name,
@@ -6883,7 +6888,18 @@ export class ModelResult<
         return;
       }
 
+      if (!this.uiBroadcaster) {
+        this.uiBroadcaster = new ToolEventBroadcaster();
+      }
+      const uiBroadcaster = this.uiBroadcaster;
+      const uiConsumer = uiBroadcaster.createConsumer();
       const { consumer, executionPromise } = this.startTurnBroadcasterExecution();
+      if (!this.uiBroadcasterCompletionPromise) {
+        this.uiBroadcasterCompletionPromise = executionPromise.finally(async () => {
+          await this.drainUiFragments();
+          uiBroadcaster.complete();
+        });
+      }
 
       for await (const event of consumer) {
         const uiEvent = translateUiEvent(event);
@@ -6891,8 +6907,14 @@ export class ModelResult<
           yield uiEvent;
         }
       }
+      for await (const event of uiConsumer) {
+        const uiEvent = translateUiEvent(event);
+        if (uiEvent) {
+          yield uiEvent;
+        }
+      }
 
-      await executionPromise;
+      await this.uiBroadcasterCompletionPromise;
     }.call(this);
   }
 

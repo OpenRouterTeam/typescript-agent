@@ -391,14 +391,15 @@ describe('getUiStream (no-tools fast path)', () => {
 });
 
 describe('toUiOutput round lifecycle', () => {
-  it('does not block the run when rendering never settles', async () => {
+  it('does not render or block the run without a UI consumer', async () => {
     mockBetaResponsesSend.mockReset();
     mockToolRound('hanging_ui');
+    const toUiOutput = vi.fn(() => new Promise<never>(() => undefined));
     const hanging = tool({
       name: 'hanging_ui',
       inputSchema: z.object({}),
       execute: () => 'ok',
-      toUiOutput: () => new Promise(() => undefined),
+      toUiOutput,
     });
     const result = callModel(
       {
@@ -413,54 +414,66 @@ describe('toUiOutput round lifecycle', () => {
       },
     );
 
-    await expect(
-      Promise.race([
-        result.getText(),
-        new Promise((_, reject) => setTimeout(() => reject(new Error('run stalled')), 100)),
-      ]),
-    ).resolves.toBe('done');
+    await expect(result.getText()).resolves.toBe('done');
+    expect(toUiOutput).not.toHaveBeenCalled();
     expect(mockBetaResponsesSend).toHaveBeenCalledTimes(2);
   });
 
-  it('bounds UI-stream close with the configured drain deadline', async () => {
-    mockBetaResponsesSend.mockReset();
-    mockToolRound('hanging_ui');
-    const hanging = tool({
-      name: 'hanging_ui',
-      inputSchema: z.object({}),
-      execute: () => 'ok',
-      toUiOutput: () => new Promise(() => undefined),
-    });
-    const result = callModel(
-      {
-        _options: {},
-      } as OpenRouterCore,
-      {
-        model: 'test-model',
-        input: 'test',
-        tools: [
-          hanging,
-        ] as const,
-        asyncTools: {
-          drainTimeoutMs: 10,
+  it('finishes text immediately and closes hanging UI at its own deadline', async () => {
+    vi.useFakeTimers();
+    try {
+      mockBetaResponsesSend.mockReset();
+      mockToolRound('hanging_ui');
+      const hanging = tool({
+        name: 'hanging_ui',
+        inputSchema: z.object({}),
+        execute: () => 'ok',
+        toUiOutput: () => new Promise(() => undefined),
+      });
+      const result = callModel(
+        {
+          _options: {},
+        } as OpenRouterCore,
+        {
+          model: 'test-model',
+          input: 'test',
+          tools: [
+            hanging,
+          ] as const,
+          asyncTools: {
+            drainTimeoutMs: 1,
+          },
         },
-      },
-    );
+      );
 
-    const events = [];
-    for await (const event of result.getUiStream()) {
-      events.push(event);
-    }
-
-    expect(events).toEqual([]);
-    expect(mockBetaResponsesSend).toHaveBeenCalledTimes(2);
-    expect(
-      (
-        result as unknown as {
-          pendingUiFragments: Set<Promise<void>>;
+      async function consumeUiStream() {
+        for await (const _event of result.getUiStream()) {
+          // No fragment is produced by the hanging renderer.
         }
-      ).pendingUiFragments,
-    ).toHaveLength(0);
+      }
+      const uiDone = consumeUiStream();
+      await expect(result.getText()).resolves.toBe('done');
+
+      let closed = false;
+      void uiDone.then(() => {
+        closed = true;
+      });
+      await vi.advanceTimersByTimeAsync(29_999);
+      expect(closed).toBe(false);
+      await vi.advanceTimersByTimeAsync(1);
+      await uiDone;
+
+      expect(mockBetaResponsesSend).toHaveBeenCalledTimes(2);
+      expect(
+        (
+          result as unknown as {
+            pendingUiFragments: Set<Promise<void>>;
+          }
+        ).pendingUiFragments,
+      ).toHaveLength(0);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('delivers async UI when UI, text, and item streams are consumed concurrently', async () => {
@@ -524,6 +537,49 @@ describe('toUiOutput round lifecycle', () => {
       dialect: 'openui-lang/0.5',
       source: 'root = Text("concurrent")',
     });
+  });
+
+  it('delivers the same fragment to concurrent UI consumers', async () => {
+    mockBetaResponsesSend.mockReset();
+    mockToolRound('shared_ui');
+    const sharedUi = tool({
+      name: 'shared_ui',
+      inputSchema: z.object({}),
+      execute: () => 'ok',
+      toUiOutput: () => ui.Text('shared'),
+    });
+    const result = callModel(
+      {
+        _options: {},
+      } as OpenRouterCore,
+      {
+        model: 'test-model',
+        input: 'test',
+        tools: [
+          sharedUi,
+        ] as const,
+      },
+    );
+    const collect = async (stream: AsyncIterable<unknown>) => {
+      const events = [];
+      for await (const event of stream) {
+        events.push(event);
+      }
+      return events;
+    };
+
+    const [first, second] = await Promise.all([
+      collect(result.getUiStream()),
+      collect(result.getUiStream()),
+    ]);
+
+    expect(first).toEqual(second);
+    expect(first).toContainEqual(
+      expect.objectContaining({
+        type: 'fragment',
+        toolName: 'shared_ui',
+      }),
+    );
   });
 
   it('advances the model while retaining ordinary async rendering until UI drain', async () => {
@@ -750,7 +806,7 @@ describe('late async tool UI settlement', () => {
 
 describe('broadcastUiFragment', () => {
   type Internal = {
-    turnBroadcaster: {
+    uiBroadcaster: {
       push: (event: unknown) => void;
     } | null;
     pendingUiFragments: Set<Promise<void>>;
@@ -783,7 +839,7 @@ describe('broadcastUiFragment', () => {
       client: {} as OpenRouterCore,
     });
     const internal = modelResult as unknown as Internal;
-    internal.turnBroadcaster = {
+    internal.uiBroadcaster = {
       push: (event: unknown) => {
         pushed.push(event);
       },
