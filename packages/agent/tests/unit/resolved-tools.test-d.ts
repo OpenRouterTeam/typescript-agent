@@ -1,12 +1,12 @@
-import { tool } from '../../src/lib/tool.js';
 import { expectTypeOf } from 'vitest';
 import { z } from 'zod/v4';
+import { tool } from '../../src/lib/tool.js';
+import { createToolSet } from '../../src/lib/tool-set.js';
 import type {
   ConditionalPartition,
   InitialPartition,
   ResolvedToolSnapshot,
 } from '../../src/lib/tool-set-types.js';
-import { createToolSet } from '../../src/lib/tool-set.js';
 
 const a = tool({
   name: 'a',
