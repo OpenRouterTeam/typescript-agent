@@ -115,6 +115,10 @@ function extractUsage(response: unknown): UsageSummary {
  * `generate` so the per-variant field mapping does not count toward that
  * function's complexity, which the structural gate caps.
  */
+function countDiagnostics(event: UiStreamEvent): number {
+  return event.type === 'document' ? event.diagnostics.length : 0;
+}
+
 function toPlaygroundEvent(event: UiStreamEvent, at: number, statements: number): PlaygroundEvent {
   if (event.type === 'document') {
     return {
@@ -174,9 +178,8 @@ export async function* generate(
         }
         statements += 1;
         chars += event.source.length;
-      } else if (event.type === 'document') {
-        diagnostics += event.diagnostics.length;
       }
+      diagnostics += countDiagnostics(event);
       yield toPlaygroundEvent(event, Date.now() - start, statements);
     }
 
