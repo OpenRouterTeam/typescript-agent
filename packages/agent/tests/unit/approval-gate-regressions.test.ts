@@ -180,6 +180,92 @@ describe('approval predicate argument parity with execute (#54)', () => {
     expect(requires).toBe(true);
   });
 
+  it('applies schema defaults for call-level checks without mutating the executable call', async () => {
+    const defaulted = tool({
+      name: 'call_level_defaulted_action',
+      inputSchema: z.object({
+        destructive: z.boolean().default(true),
+      }),
+      execute: async () => ({}),
+    });
+    const toolCall = {
+      id: 'call-level-default',
+      name: 'call_level_defaulted_action',
+      arguments: {},
+    };
+    const callLevelCheck = vi.fn(() => true);
+
+    const requires = await toolRequiresApproval(
+      toolCall,
+      [
+        defaulted,
+      ],
+      context,
+      callLevelCheck,
+    );
+
+    expect(callLevelCheck).toHaveBeenCalledWith(
+      {
+        ...toolCall,
+        arguments: {
+          destructive: true,
+        },
+      },
+      context,
+    );
+    expect(toolCall.arguments).toEqual({});
+    expect(requires).toBe(true);
+  });
+
+  it('parses original wire arguments once for the predicate and once for execution', async () => {
+    let transformCalls = 0;
+    const predicate = vi.fn(() => false);
+    const execute = vi.fn(async () => ({}));
+    const transformed = tool({
+      name: 'transformed_action',
+      inputSchema: z.object({
+        value: z.string().transform((value) => `${value}:${++transformCalls}`),
+      }),
+      requireApproval: predicate,
+      execute,
+    });
+    const toolCall = {
+      id: 'non-idempotent-transform',
+      name: 'transformed_action',
+      arguments: {
+        value: 'wire',
+      },
+    };
+
+    expect(
+      await toolRequiresApproval(
+        toolCall,
+        [
+          transformed,
+        ],
+        context,
+      ),
+    ).toBe(false);
+    await executeRegularTool(transformed, toolCall, context);
+
+    expect(predicate).toHaveBeenCalledWith(
+      {
+        value: 'wire:1',
+      },
+      context,
+    );
+    expect(execute).toHaveBeenCalledWith(
+      {
+        value: 'wire:2',
+      },
+      expect.anything(),
+    );
+    expect(transformCalls).toBe(2);
+    expect(toolCall.arguments).toEqual({
+      value: 'wire',
+    });
+  });
+
   it('does not gate calls whose arguments fail schema validation', async () => {
     const predicate = vi.fn(() => false);
 

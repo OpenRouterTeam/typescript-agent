@@ -277,12 +277,6 @@ export async function toolRequiresApproval<TTools extends readonly Tool[]>(
     context: TurnContext,
   ) => boolean | Promise<boolean>,
 ): Promise<boolean> {
-  // Call-level check takes precedence
-  if (callLevelCheck) {
-    return callLevelCheck(toolCall, context);
-  }
-
-  // Fall back to tool-level setting (server tools never require approval)
   const tool = tools.find(
     (
       t,
@@ -293,6 +287,29 @@ export async function toolRequiresApproval<TTools extends readonly Tool[]>(
       }
     > => isClientTool(t) && t.function.name === toolCall.name,
   );
+  // Call-level checks take precedence. When the call maps to a client tool,
+  // give the callback a normalized copy while preserving the original wire
+  // arguments for execution to parse independently.
+  if (callLevelCheck) {
+    if (!tool) {
+      return callLevelCheck(toolCall, context);
+    }
+
+    const parsed = z4.safeParse(tool.function.inputSchema, toolCall.arguments);
+    if (!parsed.success) {
+      return !isAutoResolvableTool(tool);
+    }
+
+    return callLevelCheck(
+      {
+        ...toolCall,
+        arguments: parsed.data,
+      } as ParsedToolCall<TTools[number]>,
+      context,
+    );
+  }
+
+  // Fall back to the tool-level setting (server tools never require approval).
   if (!tool) {
     return false;
   }
