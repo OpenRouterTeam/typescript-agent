@@ -58,6 +58,18 @@ const progress = tool({
   },
 });
 
+const unified = tool({
+  name: 'unified_tool',
+  lifecycle: 'background',
+  inputSchema: z.object({}),
+  outputSchema: z.object({
+    taskId: z.string(),
+  }),
+  run: async () => ({
+    taskId: 'task_1',
+  }),
+});
+
 const manual = tool({
   name: 'manual_tool',
   inputSchema: z.object({
@@ -102,12 +114,14 @@ const boom = tool({
 // --- Literal names survive the factory --------------------------------------
 expectTypeOf(weather.function.name).toEqualTypeOf<'weather'>();
 expectTypeOf(progress.function.name).toEqualTypeOf<'progress_tool'>();
+expectTypeOf(unified.function.name).toEqualTypeOf<'unified_tool'>();
 expectTypeOf(manual.function.name).toEqualTypeOf<'manual_tool'>();
 expectTypeOf(shared.function.name).toEqualTypeOf<'shared_tool'>();
 expectTypeOf(hitl.function.name).toEqualTypeOf<'hitl_tool'>();
 
 expectTypeOf<InferToolName<typeof weather>>().toEqualTypeOf<'weather'>();
 expectTypeOf<InferToolName<typeof progress>>().toEqualTypeOf<'progress_tool'>();
+expectTypeOf<InferToolName<typeof unified>>().toEqualTypeOf<'unified_tool'>();
 expectTypeOf<InferToolName<typeof manual>>().toEqualTypeOf<'manual_tool'>();
 expectTypeOf<InferToolName<typeof shared>>().toEqualTypeOf<'shared_tool'>();
 expectTypeOf<InferToolName<typeof hitl>>().toEqualTypeOf<'hitl_tool'>();
@@ -115,6 +129,7 @@ expectTypeOf<InferToolName<typeof hitl>>().toEqualTypeOf<'hitl_tool'>();
 // Wide defaults still assign to Tool
 expectTypeOf(weather).toExtend<Tool>();
 expectTypeOf(progress).toExtend<Tool>();
+expectTypeOf(unified).toExtend<Tool>();
 expectTypeOf(manual).toExtend<Tool>();
 expectTypeOf(shared).toExtend<Tool>();
 expectTypeOf(hitl).toExtend<Tool>();
@@ -123,6 +138,7 @@ expectTypeOf<ToolWithExecute>().toExtend<Tool>();
 type Tools = readonly [
   typeof weather,
   typeof progress,
+  typeof unified,
   typeof manual,
   typeof hitl,
 ];
@@ -163,6 +179,16 @@ if (correlated.type === 'tool.result' && correlated.toolName === 'progress_tool'
   expectTypeOf(correlated.result).toEqualTypeOf<
     | {
         done: boolean;
+      }
+    | {
+        error: string;
+      }
+  >();
+}
+if (correlated.type === 'tool.result' && correlated.toolName === 'unified_tool') {
+  expectTypeOf(correlated.result).toEqualTypeOf<
+    | {
+        taskId: string;
       }
     | {
         error: string;
@@ -480,7 +506,7 @@ void _resultMissingName;
 
 // Correlated tuple-typed unions still discriminate on a required literal `toolName`.
 expectTypeOf<CorrelatedToolEventUnion<Tools>['toolName']>().toEqualTypeOf<
-  'weather' | 'progress_tool' | 'manual_tool' | 'hitl_tool'
+  'weather' | 'progress_tool' | 'unified_tool' | 'manual_tool' | 'hitl_tool'
 >();
 expectTypeOf<Stream['toolName' & keyof Stream]>().not.toEqualTypeOf<string | undefined>();
 expectTypeOf<ToolStream['toolName' & keyof ToolStream]>().not.toEqualTypeOf<string | undefined>();

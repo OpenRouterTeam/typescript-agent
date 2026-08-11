@@ -410,7 +410,7 @@ export function tool<
   config: RunToolConfigWithOutput<TInput, TOutput, TEvent, TCtx, TName> & {
     lifecycle: 'deferred';
   },
-): BuiltDeferredTool<TInput, TOutput, TEvent, TCtx>;
+): BuiltDeferredTool<TInput, TOutput, TEvent, TCtx, TName>;
 
 // Overload for unified run tools with outputSchema (any lifecycle).
 export function tool<
@@ -421,7 +421,7 @@ export function tool<
   TName extends string = string,
 >(
   config: RunToolConfigWithOutput<TInput, TOutput, TEvent, TCtx, TName>,
-): UnifiedTool<TInput, TOutput, TEvent, Record<string, unknown>, TCtx>;
+): UnifiedTool<TInput, TOutput, TEvent, Record<string, unknown>, TCtx, TName>;
 
 // Overload for SYNC unified run tools without outputSchema (output inferred
 // from run's return — including a generator's TReturn).
@@ -433,7 +433,7 @@ export function tool<
   TName extends string = string,
 >(
   config: SyncRunToolConfigWithoutOutput<TInput, TReturn, TEvent, TCtx, TName>,
-): UnifiedTool<TInput, $ZodType<TReturn>, TEvent, Record<string, unknown>, TCtx>;
+): UnifiedTool<TInput, $ZodType<TReturn>, TEvent, Record<string, unknown>, TCtx, TName>;
 
 // Overload for generator tools (when eventSchema is provided).
 // TContext on the *returned* tool stays the wide default so specific tools remain
@@ -847,7 +847,8 @@ export type BuiltDeferredTool<
   TOutput extends $ZodType,
   TEvent extends $ZodType = $ZodType<never>,
   TCtx extends $ZodObject<$ZodShape> = $ZodObject<$ZodShape>,
-> = UnifiedTool<TInput, TOutput, TEvent, Record<string, unknown>, TCtx> &
+  TName extends string = string,
+> = UnifiedTool<TInput, TOutput, TEvent, Record<string, unknown>, TCtx, TName> &
   DeferredToolMethods<zodInfer<TOutput>>;
 
 /** Copy shared config fields onto a function object when present. */

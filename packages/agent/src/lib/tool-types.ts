@@ -683,7 +683,7 @@ export interface UnifiedToolFunction<
   TContext extends Record<string, unknown> = Record<string, unknown>,
   TName extends string = string,
   TCtx extends $ZodObject<$ZodShape> = $ZodObject<$ZodShape>,
-> extends BaseToolFunction<TInput, TCtx> {
+> extends BaseToolFunction<TInput, TCtx, TName> {
   /** Discriminator against every legacy kind. */
   readonly lifecycle: ToolLifecycle;
   /**
@@ -805,9 +805,10 @@ export type UnifiedTool<
   TEvent extends $ZodType = $ZodType<unknown>,
   TContext extends Record<string, unknown> = Record<string, unknown>,
   TCtx extends $ZodObject<$ZodShape> = $ZodObject<$ZodShape>,
+  TName extends string = string,
 > = {
   type: ToolType.Function;
-  function: UnifiedToolFunction<TInput, TOutput, TEvent, TContext, string, TCtx>;
+  function: UnifiedToolFunction<TInput, TOutput, TEvent, TContext, TName, TCtx>;
 };
 
 /**

@@ -33,11 +33,13 @@ export type ClientToolName<T> = T extends {
  * default, and concrete `ServerTool<T, TId>` values keep their literal `TId`.
  */
 export type ServerToolIdOf<T> = T extends {
-  readonly id: infer Id extends string;
+  readonly id?: infer Id;
 }
-  ? string extends Id
-    ? string
-    : Id
+  ? Extract<Id, string> extends infer StringId extends string
+    ? string extends StringId
+      ? string
+      : StringId
+    : never
   : T extends {
         readonly config: {
           type: infer K extends string;
