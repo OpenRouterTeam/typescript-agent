@@ -666,6 +666,7 @@ export class ModelResult<
   private readonly completedApprovalGates = new Set<string>();
   private readonly approvalResponseOccurrences = new WeakMap<object, number>();
   private nextApprovalResponseOccurrence = 0;
+  private nextApprovalGateFallback = 0;
   // Telemetry for the PostModelCall hook: the initial/resume request is
   // dispatched in initStream but its response is materialized later (stream
   // consumption), so the dispatch time and turn labeling are parked here
@@ -2659,7 +2660,12 @@ export class ModelResult<
     phase: 'initial' | 'mutated',
     responseKey: string,
   ): string {
-    return `${phase}:${responseKey}:${toolCall.id}:${canonicalizeKeyMaterial(toolCall.arguments)}`;
+    const scope = `${phase}:${responseKey}:${toolCall.id}`;
+    try {
+      return `${scope}:${canonicalizeKeyMaterial(toolCall.arguments)}`;
+    } catch {
+      return `${scope}:uncanonicalizable:${this.nextApprovalGateFallback++}`;
+    }
   }
 
   /** Re-check only approval sources whose answer can depend on input. */
@@ -2722,22 +2728,14 @@ export class ModelResult<
     await this.emitPreparedFailure(toolCall, reason);
   }
 
-  private async normalizePreparedMutation(effective: ParsedToolCall<Tool>): Promise<
-    | {
-        status: 'ready' | 'blocked';
-      }
-    | {
-        status: 'normalized';
-        toolCall: ParsedToolCall<Tool>;
-      }
-  > {
+  private async validatePreparedMutation(
+    effective: ParsedToolCall<Tool>,
+  ): Promise<'ready' | 'blocked'> {
     const tool = this.options.tools?.find(
       (candidate) => isClientTool(candidate) && candidate.function.name === effective.name,
     );
     if (!tool || !isClientTool(tool)) {
-      return {
-        status: 'ready',
-      };
+      return 'ready';
     }
     const parsed = z4.safeParse(tool.function.inputSchema, effective.arguments);
     if (!parsed.success || !isRecord(parsed.data)) {
@@ -2745,24 +2743,9 @@ export class ModelResult<
         effective,
         `PreToolUse produced invalid input for "${effective.name}"`,
       );
-      return {
-        status: 'blocked',
-      };
+      return 'blocked';
     }
-
-    const normalized = {
-      ...effective,
-      arguments: parsed.data,
-    } as ParsedToolCall<Tool>;
-    this.preparedToolCalls.set(effective.id, {
-      type: 'ready',
-      toolCall: normalized,
-      mutated: true,
-    });
-    return {
-      status: 'normalized',
-      toolCall: normalized,
-    };
+    return 'ready';
   }
 
   private async prepareAfterInitialApproval(
@@ -2776,26 +2759,24 @@ export class ModelResult<
       return prepared?.type === 'blocked' ? 'blocked' : 'ready';
     }
 
-    const mutation = await this.normalizePreparedMutation(effective);
-    if (mutation.status !== 'normalized') {
-      return mutation.status;
+    if ((await this.validatePreparedMutation(effective)) === 'blocked') {
+      return 'blocked';
     }
-    const normalized = mutation.toolCall;
-    const key = this.approvalGateKey(normalized, 'mutated', responseKey);
+    const key = this.approvalGateKey(effective, 'mutated', responseKey);
     if (this.completedApprovalGates.has(key)) {
       return 'ready';
     }
     this.completedApprovalGates.add(key);
-    if (!(await this.mutatedInputRequiresApproval(normalized, context))) {
+    if (!(await this.mutatedInputRequiresApproval(effective, context))) {
       return 'ready';
     }
 
-    const { decision, reason } = await this.emitPermissionRequest(normalized);
+    const { decision, reason } = await this.emitPermissionRequest(effective);
     if (decision === 'allow') {
       return 'ready';
     }
     if (decision === 'deny') {
-      await this.blockPreparedToolCall(normalized, reason ?? 'Denied by PermissionRequest hook');
+      await this.blockPreparedToolCall(effective, reason ?? 'Denied by PermissionRequest hook');
       return 'blocked';
     }
     return 'pending';

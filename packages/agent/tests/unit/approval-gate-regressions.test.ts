@@ -529,6 +529,111 @@ describe('approval uses the post-PreToolUse arguments that execute would receive
     );
   });
 
+  it('does not abort approval bookkeeping for circular hook mutations', async () => {
+    const circular: Record<string, unknown> = {};
+    circular['self'] = circular;
+    const predicate = vi.fn(() => false);
+    const execute = vi.fn(async () => ({
+      ok: true,
+    }));
+    const guarded = tool({
+      name: 'circular_mutation',
+      inputSchema: z.object({
+        self: z.unknown(),
+      }),
+      outputSchema: z.object({
+        ok: z.boolean(),
+      }),
+      requireApproval: predicate,
+      execute,
+    });
+    const tools = [
+      guarded,
+    ] as const;
+    const hooks = new HooksManager();
+    hooks.on('PreToolUse', {
+      handler: () => ({
+        mutatedInput: circular,
+      }),
+    });
+    mockBetaResponsesSend
+      .mockResolvedValueOnce({
+        ok: true,
+        value: makeResponse('resp_circular_mutation', [
+          makeFunctionCallItem('call_circular_mutation', 'circular_mutation', '{}'),
+        ]),
+      })
+      .mockResolvedValue({
+        ok: true,
+        value: makeResponse('resp_circular_done', []),
+      });
+
+    await expect(
+      new ModelResult<typeof tools>({
+        request: {
+          model: 'test-model',
+          input: 'run',
+          tools: [],
+        },
+        client: {} as OpenRouterCore,
+        tools,
+        hooks,
+      }).getResponse(),
+    ).resolves.toBeDefined();
+    expect(predicate).toHaveBeenCalledWith(circular, {
+      numberOfTurns: 0,
+    });
+    expect(execute).not.toHaveBeenCalled();
+  });
+
+  it('lets normal validation handle deeply nested model input when keying cannot', async () => {
+    let deep: Record<string, unknown> = {};
+    for (let index = 0; index < 200; index++) {
+      deep = {
+        child: deep,
+      };
+    }
+    const execute = vi.fn(async () => ({
+      ok: true,
+    }));
+    const strict = tool({
+      name: 'deep_invalid',
+      inputSchema: z.object({
+        target: z.string(),
+      }),
+      outputSchema: z.object({
+        ok: z.boolean(),
+      }),
+      requireApproval: () => false,
+      execute,
+    });
+    const tools = [
+      strict,
+    ] as const;
+    mockBetaResponsesSend.mockResolvedValueOnce({
+      ok: true,
+      value: makeResponse('resp_deep_invalid', [
+        makeFunctionCallItem('call_deep_invalid', 'deep_invalid', JSON.stringify(deep)),
+      ]),
+    });
+    const { accessor, get } = createMemoryAccessor<typeof tools>();
+
+    await expect(
+      new ModelResult<typeof tools>({
+        request: {
+          model: 'test-model',
+          input: 'run',
+          tools: [],
+        },
+        client: {} as OpenRouterCore,
+        tools,
+        state: accessor,
+      }).getResponse(),
+    ).resolves.toBeDefined();
+    expect(get()?.status).toBe('awaiting_approval');
+    expect(execute).not.toHaveBeenCalled();
+  });
+
   it('gates identical post-hook calls independently across responses', async () => {
     const predicate = vi.fn((params: { dangerous: boolean }) => params.dangerous);
     const execute = vi.fn(async () => ({
@@ -621,6 +726,144 @@ describe('approval uses the post-PreToolUse arguments that execute would receive
     expect(predicate.mock.calls.filter(([params]) => params.dangerous === true)).toHaveLength(2);
     expect(permissionRequest).toHaveBeenCalledTimes(2);
     expect(execute).toHaveBeenCalledTimes(2);
+  });
+
+  it('keeps hook-mutated arguments raw across approval and execution transforms', async () => {
+    const predicate = vi.fn((params: { value: string }) => params.value === 'hook:normalized');
+    const execute = vi.fn(async (input: { value: string }) => ({
+      value: input.value,
+    }));
+    const guarded = tool({
+      name: 'transformed_mutation',
+      inputSchema: z.object({
+        value: z.string().transform((value) => `${value}:normalized`),
+      }),
+      outputSchema: z.object({
+        value: z.string(),
+      }),
+      requireApproval: predicate,
+      execute,
+    });
+    const tools = [
+      guarded,
+    ] as const;
+    const hooks = new HooksManager();
+    hooks.on('PreToolUse', {
+      handler: () => ({
+        mutatedInput: {
+          value: 'hook',
+        },
+      }),
+    });
+    mockBetaResponsesSend.mockResolvedValueOnce({
+      ok: true,
+      value: makeResponse('resp_transformed_mutation', [
+        makeFunctionCallItem(
+          'call_transformed_mutation',
+          'transformed_mutation',
+          JSON.stringify({
+            value: 'wire',
+          }),
+        ),
+      ]),
+    });
+    const { accessor, get } = createMemoryAccessor<typeof tools>();
+
+    await new ModelResult<typeof tools>({
+      request: {
+        model: 'test-model',
+        input: 'run',
+        tools: [],
+      },
+      client: {} as OpenRouterCore,
+      tools,
+      hooks,
+      state: accessor,
+    }).getResponse();
+
+    expect(predicate).toHaveBeenLastCalledWith(
+      {
+        value: 'hook:normalized',
+      },
+      {
+        numberOfTurns: 0,
+      },
+    );
+    expect(execute).not.toHaveBeenCalled();
+    expect(get()?.pendingToolCalls).toEqual([
+      {
+        id: 'call_transformed_mutation',
+        name: 'transformed_mutation',
+        arguments: {
+          value: 'hook',
+        },
+        preToolUseApplied: true,
+      },
+    ]);
+  });
+
+  it('executes a type-changing hook mutation from raw input exactly once', async () => {
+    const execute = vi.fn(async (input: { value: number }) => ({
+      value: input.value,
+    }));
+    const transformed = tool({
+      name: 'type_changing_mutation',
+      inputSchema: z.object({
+        value: z.string().transform((value) => value.length),
+      }),
+      outputSchema: z.object({
+        value: z.number(),
+      }),
+      requireApproval: () => false,
+      execute,
+    });
+    const tools = [
+      transformed,
+    ] as const;
+    const hooks = new HooksManager();
+    hooks.on('PreToolUse', {
+      handler: () => ({
+        mutatedInput: {
+          value: 'hook',
+        },
+      }),
+    });
+    mockBetaResponsesSend
+      .mockResolvedValueOnce({
+        ok: true,
+        value: makeResponse('resp_type_changing_mutation', [
+          makeFunctionCallItem(
+            'call_type_changing_mutation',
+            'type_changing_mutation',
+            JSON.stringify({
+              value: 'wire',
+            }),
+          ),
+        ]),
+      })
+      .mockResolvedValue({
+        ok: true,
+        value: makeResponse('resp_type_changing_done', []),
+      });
+
+    await new ModelResult<typeof tools>({
+      request: {
+        model: 'test-model',
+        input: 'run',
+        tools: [],
+      },
+      client: {} as OpenRouterCore,
+      tools,
+      hooks,
+    }).getResponse();
+
+    expect(execute).toHaveBeenCalledOnce();
+    expect(execute).toHaveBeenCalledWith(
+      {
+        value: 4,
+      },
+      expect.anything(),
+    );
   });
 
   it('gates schema-invalid model arguments before running PreToolUse', async () => {
