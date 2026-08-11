@@ -12,7 +12,7 @@ import type {
   LifecycleHookContext,
 } from './hooks-types.js';
 import type { InferSchemaInput, InferSchemaOutput, Schema } from './schema.js';
-import { isZodSchema, safeValidateSchema } from './schema.js';
+import { isZodSchema, safeValidateSchema, validateSchemaSync } from './schema.js';
 
 //#region Types
 
@@ -363,13 +363,13 @@ export function getInternalRegistrar(manager: HooksManager): InternalRegistrar {
 }
 
 /**
- * Detect a `z.void()` schema (zod v4 core). Result validation is skipped for
+ * Detect a void-result schema. Result validation is skipped for
  * void-result hooks so side-effect-only handlers can return arbitrary values
  * without tripping validation -- for built-ins and custom hooks alike.
  *
- * Implementation note: `schema._zod.def.type` is zod v4's designated
- * introspection surface for library authors (every zod `$ZodType` carries a
- * `_zod: $ZodTypeInternals` with a stable `def.type` discriminator). A string
+ * Zod: `schema._zod.def.type` is zod v4's designated introspection surface
+ * for library authors (every zod `$ZodType` carries a `_zod:
+ * `$ZodTypeInternals` with a stable `def.type` discriminator). A string
  * check is deliberately preferred over `instanceof $ZodVoid`, which breaks
  * across duplicated zod module instances (dual-package hazard) and mixed
  * zod/v4 vs zod/v4-mini usage. Behavior is pinned by tests in
@@ -377,10 +377,23 @@ export function getInternalRegistrar(manager: HooksManager): InternalRegistrar {
  * that restructures the internals fails loudly instead of silently
  * re-enabling result validation on void hooks.
  *
+ * Standard Schema: no introspection surface exists, so we probe — a
+ * synchronous validator that accepts `undefined` (v.void(), v.undefined(),
+ * v.optional(...)) is treated as void. Async validators can't be probed
+ * here and fall back to enforced result validation.
+ *
  * Exported for the pinning tests only; NOT re-exported from the package
  * index and NOT part of the public API.
  */
 export function isVoidSchema(schema: Schema): boolean {
+  if (!isZodSchema(schema)) {
+    try {
+      validateSchemaSync(schema, undefined);
+      return true;
+    } catch {
+      return false;
+    }
+  }
   const def = (
     schema as {
       _zod?: {

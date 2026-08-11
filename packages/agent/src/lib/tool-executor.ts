@@ -102,11 +102,14 @@ export function convertSchemaToJsonSchema(
   schema: Schema,
   jsonSchema?: Record<string, unknown>,
 ): Record<string, unknown> {
-  if (isZodSchema(schema)) {
-    return convertZodToJsonSchema(schema);
-  }
+  // Explicit caller intent always wins — including for Zod, where
+  // z4.toJSONSchema throws on unrepresentable constructs (z.custom(),
+  // some transforms) and a hand-written schema is the only way through.
   if (jsonSchema) {
     return sanitizeJsonSchema(jsonSchema);
+  }
+  if (isZodSchema(schema)) {
+    return convertZodToJsonSchema(schema);
   }
   const standardJsonSchema = tryStandardJsonSchema(schema, 'draft-07');
   if (standardJsonSchema) {
@@ -594,7 +597,7 @@ function unifiedExecutionResult({
   toolCall: ParsedToolCall<Tool>;
   source: 'client' | 'mcp';
   result: unknown;
-  error?: unknown;
+  error?: Error;
 }): ToolExecutionResult<Tool> {
   return {
     toolCallId: toolCall.id,
@@ -602,7 +605,7 @@ function unifiedExecutionResult({
     source,
     result,
     ...(error !== undefined && {
-      error: error instanceof Error ? error : new Error(String(error)),
+      error,
     }),
   };
 }
@@ -679,7 +682,9 @@ export async function prepareUnifiedInvocation(
       toolCall,
       source,
       result: null,
-      error,
+      // A catch value can be `undefined` (`throw undefined`, `Promise.reject()`)
+      // — normalize eagerly so the failure always surfaces as an error.
+      error: error instanceof Error ? error : new Error(String(error)),
     });
   }
 
@@ -780,7 +785,7 @@ export async function prepareUnifiedInvocation(
       toolCall,
       source,
       result: null,
-      error,
+      error: error instanceof Error ? error : new Error(String(error)),
     });
   }
 }

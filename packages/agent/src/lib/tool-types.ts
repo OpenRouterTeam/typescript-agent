@@ -426,9 +426,11 @@ export interface BaseToolFunction<
   description?: string;
   inputSchema: TInput;
   /**
-   * JSON Schema sent to the model for non-Zod validators. Standard Schema v1
-   * standardizes validation and inference, but not JSON Schema generation.
-   * Zod schemas continue to use z.toJSONSchema and ignore this field.
+   * JSON Schema sent to the model. Explicit caller intent always wins: when
+   * supplied, this overrides both Zod's z.toJSONSchema fast path and the
+   * StandardJSONSchemaV1 trait. Compile-time required for validation-only
+   * non-Zod input schemas (Standard Schema v1 standardizes validation and
+   * inference, but not JSON Schema generation).
    */
   inputJsonSchema?: Record<string, unknown>;
   /**

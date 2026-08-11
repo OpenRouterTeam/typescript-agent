@@ -126,7 +126,7 @@ function validatePartialAgainstSchema(
     }) as Record<string, unknown>;
     return Object.fromEntries(
       Object.keys(partial)
-        .filter((key) => key in validated)
+        .filter((key) => Object.hasOwn(validated, key))
         .map((key) => [
           key,
           validated[key],
@@ -136,7 +136,7 @@ function validatePartialAgainstSchema(
 
   const shape = schema._zod.def.shape;
   const filteredPartial = Object.fromEntries(
-    Object.entries(partial).filter(([key]) => key in shape),
+    Object.entries(partial).filter(([key]) => Object.hasOwn(shape, key)),
   );
   for (const [key, value] of Object.entries(filteredPartial)) {
     const keySchema = shape[key];

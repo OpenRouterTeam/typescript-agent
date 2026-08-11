@@ -9,6 +9,7 @@ import {
   convertToolsToAPIFormat,
   executeGeneratorTool,
   executeRegularTool,
+  executeTool,
   formatToolExecutionError,
 } from '../../src/lib/tool-executor.js';
 import type { ParsedToolCall, Tool, TurnContext } from '../../src/lib/tool-types.js';
@@ -565,5 +566,103 @@ describe('Standard Schema tool support', () => {
     expect(ctx.local).toEqual({
       count: 10,
     });
+  });
+
+  it('filters prototype-named keys from context updates', () => {
+    const zodStore = new ToolContextStore({
+      zod: {
+        token: 'a',
+      },
+    });
+    const zodCtx = buildToolExecuteContext<
+      'zod',
+      {
+        token: string;
+      }
+    >(
+      context,
+      zodStore,
+      'zod',
+      z.object({
+        token: z.string(),
+      }),
+    );
+    zodCtx.setContext({
+      constructor: 'sneaky',
+      token: 'b',
+    } as unknown as {
+      token: string;
+    });
+    expect(zodCtx.local).toEqual({
+      token: 'b',
+    });
+
+    const standardStore = new ToolContextStore({
+      standard: {
+        token: 'a',
+      },
+    });
+    const standardCtx = buildToolExecuteContext<
+      'standard',
+      {
+        token: string;
+      }
+    >(
+      context,
+      standardStore,
+      'standard',
+      v.object({
+        token: v.string(),
+      }),
+    );
+    standardCtx.setContext({
+      toString: 'sneaky',
+      token: 'b',
+    } as unknown as {
+      token: string;
+    });
+    expect(standardCtx.local).toEqual({
+      token: 'b',
+    });
+  });
+
+  it('prefers an explicit inputJsonSchema for Zod tools too', () => {
+    const zodTool = tool({
+      name: 'zod_explicit',
+      inputSchema: z.object({
+        value: z.string(),
+      }),
+      inputJsonSchema: {
+        type: 'object',
+        title: 'explicit',
+      },
+      execute: () => null,
+    });
+
+    const [apiTool] = convertToolsToAPIFormat([
+      zodTool,
+    ]);
+    expect(apiTool).toMatchObject({
+      parameters: {
+        title: 'explicit',
+      },
+    });
+  });
+
+  it('reports a unified tool failure with no error value as an error', async () => {
+    const failing = tool({
+      name: 'failing_unified',
+      inputSchema: z.object({}),
+      outputSchema: z.object({
+        ok: z.boolean(),
+      }),
+      run: () => {
+        // biome-ignore lint: intentionally throwing no value
+        throw undefined;
+      },
+    });
+
+    const result = await executeTool(failing, call('failing_unified', {}), context);
+    expect(result && 'error' in result && result.error).toBeInstanceOf(Error);
   });
 });
