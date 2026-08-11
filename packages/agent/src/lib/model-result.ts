@@ -4361,27 +4361,37 @@ export class ModelResult<
     if (this.pendingUiFragments.size === 0) {
       return;
     }
-    const pending = [
-      ...this.pendingUiFragments,
-    ];
     const timeoutMs = this.options.asyncTools?.drainTimeoutMs ?? 30_000;
     let timer: ReturnType<typeof setTimeout> | undefined;
+    const deadline = new Promise<true>((resolve) => {
+      timer = setTimeout(() => resolve(true), timeoutMs);
+      if (typeof timer === 'object' && 'unref' in timer && typeof timer.unref === 'function') {
+        timer.unref();
+      }
+    });
     try {
-      await Promise.race([
-        Promise.all(pending),
-        new Promise<void>((resolve) => {
-          timer = setTimeout(resolve, timeoutMs);
-          if (typeof timer === 'object' && 'unref' in timer && typeof timer.unref === 'function') {
-            timer.unref();
+      while (this.pendingUiFragments.size > 0) {
+        const pending = [
+          ...this.pendingUiFragments,
+        ];
+        try {
+          const timedOut = await Promise.race([
+            Promise.all(pending).then(() => false),
+            deadline,
+          ]);
+          if (timedOut) {
+            this.pendingUiFragments.clear();
+            return;
           }
-        }),
-      ]);
+        } finally {
+          for (const rendering of pending) {
+            this.pendingUiFragments.delete(rendering);
+          }
+        }
+      }
     } finally {
       if (timer !== undefined) {
         clearTimeout(timer);
-      }
-      for (const rendering of pending) {
-        this.pendingUiFragments.delete(rendering);
       }
     }
   }

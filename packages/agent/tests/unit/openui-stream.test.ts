@@ -454,6 +454,13 @@ describe('toUiOutput round lifecycle', () => {
 
     expect(events).toEqual([]);
     expect(mockBetaResponsesSend).toHaveBeenCalledTimes(2);
+    expect(
+      (
+        result as unknown as {
+          pendingUiFragments: Set<Promise<void>>;
+        }
+      ).pendingUiFragments,
+    ).toHaveLength(0);
   });
 
   it('advances the model while retaining ordinary async rendering until UI drain', async () => {
@@ -688,67 +695,88 @@ describe('broadcastUiFragment', () => {
     };
   }
 
-  it('releases timed-out renders without removing renders added during the drain', async () => {
-    vi.useFakeTimers();
-    try {
-      const { internal, pushed } = makeHarness();
-      let releaseLater: (() => void) | undefined;
-      const hanging = tool({
-        name: 'hanging_ui',
-        inputSchema: z.object({
-          days: z.number(),
-        }),
-        execute: async () => 'old',
-        toUiOutput: () => new Promise(() => undefined),
-      });
-      const later = tool({
-        name: 'later_ui',
-        inputSchema: z.object({
-          days: z.number(),
-        }),
-        execute: async () => 'new',
-        toUiOutput: async () => {
-          await new Promise<void>((resolve) => {
-            releaseLater = resolve;
-          });
-          return ui.Text('later');
-        },
-      });
+  it('delivers renders added during the production drain before closing the UI stream', async () => {
+    mockBetaResponsesSend.mockReset();
+    mockToolRound('initial_ui');
+    let releaseInitial: (() => void) | undefined;
+    let releaseLater: (() => void) | undefined;
+    const initial = tool({
+      name: 'initial_ui',
+      inputSchema: z.object({}),
+      execute: () => 'initial',
+      toUiOutput: async () => {
+        await new Promise<void>((resolve) => {
+          releaseInitial = resolve;
+        });
+        return ui.Text('initial');
+      },
+    });
+    const later = tool({
+      name: 'later_ui',
+      inputSchema: z.object({}),
+      execute: () => 'later',
+      toUiOutput: async () => {
+        await new Promise<void>((resolve) => {
+          releaseLater = resolve;
+        });
+        return ui.Text('later');
+      },
+    });
+    const result = callModel(
+      {
+        _options: {},
+      } as OpenRouterCore,
+      {
+        model: 'test-model',
+        input: 'test',
+        tools: [
+          initial,
+        ] as const,
+      },
+    );
+    const internal = result as unknown as Internal;
+    let notifyDrainStarted: (() => void) | undefined;
+    const drainStarted = new Promise<void>((resolve) => {
+      notifyDrainStarted = resolve;
+    });
+    const drainUiFragments = internal.drainUiFragments.bind(internal);
+    internal.drainUiFragments = async () => {
+      notifyDrainStarted?.();
+      await drainUiFragments();
+    };
 
-      internal.dispatchUiFragment(
-        makeCall(hanging, {
-          result: 'old',
-        }),
-      );
-      const firstDrain = internal.drainUiFragments();
-      internal.dispatchUiFragment(
-        makeCall(later, {
-          result: 'new',
-        }),
-      );
-
-      await vi.advanceTimersByTimeAsync(30_000);
-      await firstDrain;
-      expect(internal.pendingUiFragments).toHaveLength(1);
-
-      let secondDrainFinished = false;
-      const secondDrain = internal.drainUiFragments().then(() => {
-        secondDrainFinished = true;
-      });
-      await vi.advanceTimersByTimeAsync(0);
-      expect(secondDrainFinished).toBe(false);
-
-      releaseLater?.();
-      await secondDrain;
-      expect(internal.pendingUiFragments).toHaveLength(0);
-      expect(pushed).toContainEqual(
-        expect.objectContaining({
-          toolName: 'later_ui',
-        }),
-      );
-    } finally {
-      vi.useRealTimers();
+    const events: unknown[] = [];
+    async function consumeUiStream() {
+      for await (const event of result.getUiStream()) {
+        events.push(event);
+      }
     }
+    const consuming = consumeUiStream();
+
+    await drainStarted;
+    expect(mockBetaResponsesSend).toHaveBeenCalledTimes(2);
+    internal.dispatchUiFragment(
+      makeCall(later, {
+        result: 'later',
+      }),
+    );
+    releaseInitial?.();
+    await vi.waitFor(() =>
+      expect(events).toContainEqual(
+        expect.objectContaining({
+          toolName: 'initial_ui',
+        }),
+      ),
+    );
+    releaseLater?.();
+    await consuming;
+
+    expect(internal.pendingUiFragments).toHaveLength(0);
+    expect(events).toContainEqual(
+      expect.objectContaining({
+        toolName: 'later_ui',
+      }),
+    );
   });
 
   it('pushes a tool.ui_fragment event for a successful execution', async () => {
