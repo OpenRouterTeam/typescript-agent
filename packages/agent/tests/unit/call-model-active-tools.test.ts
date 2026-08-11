@@ -184,6 +184,31 @@ describe('callModel activeTools filter', () => {
     ]);
   });
 
+  it('does not advertise the task helper when its background tool is filtered out', async () => {
+    const backgroundTool = tool({
+      name: 'background',
+      lifecycle: 'background',
+      inputSchema: z.object({}),
+      execute: async () => ({
+        ok: true,
+      }),
+    });
+
+    const names = await captureOutboundTools({
+      tools: [
+        backgroundTool,
+        toolA,
+      ],
+      activeTools: [
+        'a',
+      ],
+    });
+
+    expect(names).toEqual([
+      'a',
+    ]);
+  });
+
   it('omits the tools key entirely (not an empty array) when activeTools filters out every tool', async () => {
     const captured: {
       names: string[] | null;

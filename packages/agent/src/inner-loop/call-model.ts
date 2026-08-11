@@ -145,7 +145,7 @@ export function callModel<
   // context cost stays constant regardless of the tool count. Appended
   // here (not per-request in ModelResult) so `resolvedRequest.tools` stays
   // stable across turns. Calls to it are engine-intercepted.
-  if (apiTools && tools && asyncTools?.checkins !== false && needsTaskTool(tools)) {
+  if (apiTools && filteredTools && asyncTools?.checkins !== false && needsTaskTool(filteredTools)) {
     apiTools.push(buildTaskToolApiDefinition(convertZodToJsonSchema));
   }
 

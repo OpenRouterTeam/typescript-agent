@@ -3093,8 +3093,8 @@ export class ModelResult<
       if (task.status === 'completed') {
         this.broadcastToolResult(
           task.callId,
-          task.name,
-          this.toolSourceByName(task.name),
+          String(task.name),
+          this.toolSourceByName(String(task.name)),
           task.result as InferToolOutputsUnion<TTools>,
         );
       }
@@ -3368,9 +3368,14 @@ export class ModelResult<
       }
 
       if (executed.type === 'parse_error') {
-        this.broadcastToolResult(toolCall.id, String(toolCall.name), isMcpTool(tool) ? 'mcp' : 'client', {
-          error: executed.errorMessage,
-        } as InferToolOutputsUnion<TTools>);
+        this.broadcastToolResult(
+          toolCall.id,
+          String(toolCall.name),
+          isMcpTool(tool) ? 'mcp' : 'client',
+          {
+            error: executed.errorMessage,
+          } as InferToolOutputsUnion<TTools>,
+        );
         return executed;
       }
       if (executed.type === 'hook_blocked') {
@@ -3439,9 +3444,14 @@ export class ModelResult<
     preliminaryResultsForCall: InferToolEventsUnion<TTools>[];
   } {
     const message = `Tool "${toolCall.name}" timed out after ${timeoutMs}ms`;
-    this.broadcastToolResult(toolCall.id, String(toolCall.name), isMcpTool(tool) ? 'mcp' : 'client', {
-      error: message,
-    } as InferToolOutputsUnion<TTools>);
+    this.broadcastToolResult(
+      toolCall.id,
+      String(toolCall.name),
+      isMcpTool(tool) ? 'mcp' : 'client',
+      {
+        error: message,
+      } as InferToolOutputsUnion<TTools>,
+    );
     return {
       type: 'execution' as const,
       toolCall,
@@ -3573,8 +3583,8 @@ export class ModelResult<
         // `runToolWithHooks` is the single point of emission for PostToolUseFailure.
         this.broadcastToolResult(
           originalToolCall.id,
-          originalToolCall.name,
-          this.toolSourceByName(originalToolCall.name),
+          String(originalToolCall.name),
+          this.toolSourceByName(String(originalToolCall.name)),
           {
             error: errorMessage,
           } as InferToolOutputsUnion<TTools>,
@@ -4923,6 +4933,7 @@ export class ModelResult<
       toolTimeoutMs: _ttm,
       toolConcurrency: _tc,
       asyncTools: _at,
+      activeTools: _activeTools,
       ...rest
     } = this.options.request;
     // Defense-in-depth: also drop `@openrouter/agent-tool-set` snapshot
