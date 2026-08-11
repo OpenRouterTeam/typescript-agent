@@ -753,6 +753,82 @@ describe('toUiOutput round lifecycle', () => {
     expect(slowRenderer).toHaveBeenCalledOnce();
   });
 
+  it('yields a tool fragment before the later model round completes', async () => {
+    mockBetaResponsesSend.mockReset();
+    let finishRound: ((value: { ok: true; value: models.OpenResponsesResult }) => void) | undefined;
+    const laterRound = new Promise<{
+      ok: true;
+      value: models.OpenResponsesResult;
+    }>((resolve) => {
+      finishRound = resolve;
+    });
+    mockBetaResponsesSend
+      .mockResolvedValueOnce({
+        ok: true,
+        value: response('r1', [
+          {
+            type: 'function_call',
+            id: 'fc1',
+            callId: 'c1',
+            name: 'progressive_ui',
+            arguments: '{}',
+            status: 'completed',
+          },
+        ]),
+      })
+      .mockReturnValueOnce(laterRound);
+    const progressiveUi = tool({
+      name: 'progressive_ui',
+      inputSchema: z.object({}),
+      execute: () => 'ready',
+      toUiOutput: () => ui.Text('progressive'),
+    });
+    const result = callModel(
+      {
+        _options: {},
+      } as OpenRouterCore,
+      {
+        model: 'test-model',
+        input: 'test',
+        tools: [
+          progressiveUi,
+        ] as const,
+      },
+    );
+    const stream = result.getUiStream();
+    let firstEvent: IteratorResult<unknown> | undefined;
+    const pendingFirst = stream.next().then((event) => {
+      firstEvent = event;
+      return event;
+    });
+
+    await vi.waitFor(() => expect(mockBetaResponsesSend).toHaveBeenCalledTimes(2));
+    await vi.waitFor(() => expect(firstEvent).toBeDefined());
+    expect(await pendingFirst).toMatchObject({
+      done: false,
+      value: {
+        type: 'fragment',
+        toolName: 'progressive_ui',
+      },
+    });
+
+    finishRound?.({
+      ok: true,
+      value: response('r2', [
+        {
+          type: 'message',
+          id: 'm1',
+          role: 'assistant',
+          status: 'completed',
+          content: [],
+        },
+      ]),
+    });
+    while (!(await stream.next()).done) {
+      // Drain the completed round so no execution work escapes the test.
+    }
+  });
+
   it('advances the model while retaining ordinary async rendering until UI drain', async () => {
     mockBetaResponsesSend.mockReset();
     mockToolRound('async_ui');

@@ -261,6 +261,82 @@ const MAX_FORCE_RESUME_OVERRIDES = 3;
 /** Maximum time a UI consumer waits for asynchronous fragment rendering. */
 const DEFAULT_UI_DRAIN_TIMEOUT_MS = 30_000;
 
+type IteratorOutcome<T> =
+  | {
+      source: 0 | 1;
+      result: IteratorResult<T>;
+    }
+  | {
+      source: 0 | 1;
+      error: unknown;
+    };
+
+async function* mergeAsyncIterators<T>(
+  iterators: readonly [
+    AsyncIterator<T>,
+    AsyncIterator<T>,
+  ],
+): AsyncGenerator<T> {
+  const active = [
+    true,
+    true,
+  ];
+  const pending: Array<Promise<IteratorOutcome<T>> | null> = [
+    null,
+    null,
+  ];
+  let preferred: 0 | 1 = 0;
+  const next = async (source: 0 | 1): Promise<IteratorOutcome<T>> => {
+    try {
+      return {
+        source,
+        result: await iterators[source].next(),
+      };
+    } catch (error) {
+      return {
+        source,
+        error,
+      };
+    }
+  };
+
+  try {
+    while (active[0] || active[1]) {
+      for (const source of [
+        0,
+        1,
+      ] as const) {
+        if (active[source] && !pending[source]) {
+          pending[source] = next(source);
+        }
+      }
+      const other: 0 | 1 = preferred === 0 ? 1 : 0;
+      const outcome: IteratorOutcome<T> = await Promise.race(
+        [
+          pending[preferred],
+          pending[other],
+        ].filter((promise): promise is Promise<IteratorOutcome<T>> => promise !== null),
+      );
+      pending[outcome.source] = null;
+      if ('error' in outcome) {
+        throw outcome.error;
+      }
+      if (outcome.result.done) {
+        active[outcome.source] = false;
+        preferred = outcome.source === 0 ? 1 : 0;
+        continue;
+      }
+      preferred = outcome.source === 0 ? 1 : 0;
+      yield outcome.result.value;
+    }
+  } finally {
+    await Promise.allSettled(iterators.map((iterator) => iterator.return?.()));
+    await Promise.all(
+      pending.filter((promise): promise is Promise<IteratorOutcome<T>> => !!promise),
+    );
+  }
+}
+
 /**
  * Sentinel marking a tool-call id that appeared MORE THAN ONCE in one batch.
  * Ids are model-emitted and nothing upstream enforces uniqueness; a colliding
@@ -6905,13 +6981,10 @@ export class ModelResult<
           });
         }
 
-        for await (const event of consumer) {
-          const uiEvent = translateUiEvent(event);
-          if (uiEvent) {
-            yield uiEvent;
-          }
-        }
-        for await (const event of uiConsumer) {
+        for await (const event of mergeAsyncIterators([
+          consumer,
+          uiConsumer,
+        ])) {
           const uiEvent = translateUiEvent(event);
           if (uiEvent) {
             yield uiEvent;

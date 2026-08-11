@@ -45,9 +45,9 @@ export class ToolEventBroadcaster<T> {
     queueMicrotask(() => this.cleanup());
   }
 
-  /** Release buffered events once no consumer can read them. */
+  /** Release completed history once no consumer can read it. */
   private cleanup(): void {
-    if (this.consumers.size === 0) {
+    if (this.isComplete && this.consumers.size === 0) {
       this.buffer = [];
     }
   }
@@ -133,6 +133,7 @@ export class ToolEventBroadcaster<T> {
         const consumer = self.consumers.get(consumerId);
         if (consumer) {
           consumer.cancelled = true;
+          consumer.waitingPromise?.resolve();
           self.consumers.delete(consumerId);
           self.cleanup();
         }
@@ -146,6 +147,7 @@ export class ToolEventBroadcaster<T> {
         const consumer = self.consumers.get(consumerId);
         if (consumer) {
           consumer.cancelled = true;
+          consumer.waitingPromise?.resolve();
           self.consumers.delete(consumerId);
           self.cleanup();
         }
