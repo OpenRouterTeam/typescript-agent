@@ -15,6 +15,11 @@ export class ToolEventBroadcaster<T> {
   private isComplete = false;
   private completionError: Error | null = null;
 
+  /** Number of consumers currently subscribed to this broadcaster. */
+  get activeConsumerCount(): number {
+    return this.consumers.size;
+  }
+
   /**
    * Push a new event to all consumers.
    * Events are buffered so late-joining consumers can catch up.
@@ -40,13 +45,9 @@ export class ToolEventBroadcaster<T> {
     queueMicrotask(() => this.cleanup());
   }
 
-  /**
-   * Clean up resources after all consumers have finished.
-   * Called automatically after complete(), but can be called manually.
-   */
+  /** Release buffered events once no consumer can read them. */
   private cleanup(): void {
-    // Only cleanup if complete and all consumers are done
-    if (this.isComplete && this.consumers.size === 0) {
+    if (this.consumers.size === 0) {
       this.buffer = [];
     }
   }

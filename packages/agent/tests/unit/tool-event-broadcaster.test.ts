@@ -42,6 +42,7 @@ describe('ToolEventBroadcaster', () => {
       const broadcaster = new ToolEventBroadcaster<number>();
       const consumer = broadcaster.createConsumer();
 
+      expect(broadcaster.activeConsumerCount).toBe(1);
       broadcaster.push(1);
       broadcaster.push(2);
 
@@ -53,6 +54,7 @@ describe('ToolEventBroadcaster', () => {
       // Cancel consumer
       await consumer.return!();
 
+      expect(broadcaster.activeConsumerCount).toBe(0);
       // Should be done now
       const after = await consumer.next();
       expect(after.done).toBe(true);

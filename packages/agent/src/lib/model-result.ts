@@ -4354,7 +4354,7 @@ export class ModelResult<
       error?: Error;
     };
   }): void {
-    if (!this.uiBroadcaster) {
+    if (!this.uiBroadcaster?.activeConsumerCount) {
       return;
     }
     const rendering = this.broadcastUiFragment(value);
@@ -4434,7 +4434,10 @@ export class ModelResult<
       if (!fragment) {
         return;
       }
-      this.uiBroadcaster?.push({
+      if (!this.uiBroadcaster?.activeConsumerCount) {
+        return;
+      }
+      this.uiBroadcaster.push({
         type: 'tool.ui_fragment' as const,
         toolCallId: value.toolCall.id,
         toolName: value.toolCall.name,
@@ -6893,28 +6896,35 @@ export class ModelResult<
       }
       const uiBroadcaster = this.uiBroadcaster;
       const uiConsumer = uiBroadcaster.createConsumer();
-      const { consumer, executionPromise } = this.startTurnBroadcasterExecution();
-      if (!this.uiBroadcasterCompletionPromise) {
-        this.uiBroadcasterCompletionPromise = executionPromise.finally(async () => {
-          await this.drainUiFragments();
-          uiBroadcaster.complete();
-        });
-      }
+      try {
+        const { consumer, executionPromise } = this.startTurnBroadcasterExecution();
+        if (!this.uiBroadcasterCompletionPromise) {
+          this.uiBroadcasterCompletionPromise = executionPromise.finally(async () => {
+            await this.drainUiFragments();
+            uiBroadcaster.complete();
+          });
+        }
 
-      for await (const event of consumer) {
-        const uiEvent = translateUiEvent(event);
-        if (uiEvent) {
-          yield uiEvent;
+        for await (const event of consumer) {
+          const uiEvent = translateUiEvent(event);
+          if (uiEvent) {
+            yield uiEvent;
+          }
+        }
+        for await (const event of uiConsumer) {
+          const uiEvent = translateUiEvent(event);
+          if (uiEvent) {
+            yield uiEvent;
+          }
+        }
+
+        await this.uiBroadcasterCompletionPromise;
+      } finally {
+        await uiConsumer.return?.();
+        if (uiBroadcaster.activeConsumerCount === 0) {
+          this.pendingUiFragments.clear();
         }
       }
-      for await (const event of uiConsumer) {
-        const uiEvent = translateUiEvent(event);
-        if (uiEvent) {
-          yield uiEvent;
-        }
-      }
-
-      await this.uiBroadcasterCompletionPromise;
     }.call(this);
   }
 

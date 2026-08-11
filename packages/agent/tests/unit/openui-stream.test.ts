@@ -582,6 +582,177 @@ describe('toUiOutput round lifecycle', () => {
     );
   });
 
+  it('unsubscribes after an early break and skips later rendering', async () => {
+    mockBetaResponsesSend.mockReset();
+    mockToolRound('first_ui');
+    const firstUi = tool({
+      name: 'first_ui',
+      inputSchema: z.object({}),
+      execute: () => 'first',
+      toUiOutput: () => ui.Text('first'),
+    });
+    const laterRenderer = vi.fn(() => ui.Text('later'));
+    const laterUi = tool({
+      name: 'later_ui',
+      inputSchema: z.object({}),
+      execute: () => 'later',
+      toUiOutput: laterRenderer,
+    });
+    const result = callModel(
+      {
+        _options: {},
+      } as OpenRouterCore,
+      {
+        model: 'test-model',
+        input: 'test',
+        tools: [
+          firstUi,
+        ] as const,
+      },
+    );
+
+    for await (const event of result.getUiStream()) {
+      expect(event).toMatchObject({
+        type: 'fragment',
+        toolName: 'first_ui',
+      });
+      break;
+    }
+
+    const internal = result as unknown as {
+      uiBroadcaster: {
+        activeConsumerCount: number;
+      };
+      pendingUiFragments: Set<Promise<void>>;
+      dispatchUiFragment: (value: {
+        toolCall: ParsedToolCall<Tool>;
+        tool: Tool;
+        result: {
+          result: unknown;
+        };
+      }) => void;
+    };
+    expect(internal.uiBroadcaster.activeConsumerCount).toBe(0);
+    internal.dispatchUiFragment({
+      toolCall: {
+        id: 'c2',
+        name: 'later_ui',
+        arguments: {},
+      } as unknown as ParsedToolCall<Tool>,
+      tool: laterUi,
+      result: {
+        result: 'later',
+      },
+    });
+
+    expect(laterRenderer).not.toHaveBeenCalled();
+    expect(internal.pendingUiFragments).toHaveLength(0);
+  });
+
+  it('keeps rendering for a remaining UI consumer after another exits', async () => {
+    mockBetaResponsesSend.mockReset();
+    mockBetaResponsesSend
+      .mockResolvedValueOnce({
+        ok: true,
+        value: response('r1', [
+          {
+            type: 'function_call',
+            id: 'fc1',
+            callId: 'c1',
+            name: 'fast_ui',
+            arguments: '{}',
+            status: 'completed',
+          },
+          {
+            type: 'function_call',
+            id: 'fc2',
+            callId: 'c2',
+            name: 'slow_ui',
+            arguments: '{}',
+            status: 'completed',
+          },
+        ]),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        value: response('r2', [
+          {
+            type: 'message',
+            id: 'm1',
+            role: 'assistant',
+            status: 'completed',
+            content: [],
+          },
+        ]),
+      });
+    let releaseSlow: (() => void) | undefined;
+    const slowGate = new Promise<void>((resolve) => {
+      releaseSlow = resolve;
+    });
+    const fastUi = tool({
+      name: 'fast_ui',
+      inputSchema: z.object({}),
+      execute: () => 'fast',
+      toUiOutput: () => ui.Text('fast'),
+    });
+    const slowRenderer = vi.fn(async () => {
+      await slowGate;
+      return ui.Text('slow');
+    });
+    const slowUi = tool({
+      name: 'slow_ui',
+      inputSchema: z.object({}),
+      execute: () => 'slow',
+      toUiOutput: slowRenderer,
+    });
+    const result = callModel(
+      {
+        _options: {},
+      } as OpenRouterCore,
+      {
+        model: 'test-model',
+        input: 'test',
+        tools: [
+          fastUi,
+          slowUi,
+        ] as const,
+      },
+    );
+    const first = result.getUiStream();
+    const remaining = result.getUiStream();
+
+    const [firstEvent, remainingFirstEvent] = await Promise.all([
+      first.next(),
+      remaining.next(),
+    ]);
+    expect(firstEvent.value).toMatchObject({
+      type: 'fragment',
+      toolName: 'fast_ui',
+    });
+    expect(remainingFirstEvent.value).toEqual(firstEvent.value);
+    await first.return();
+    expect(
+      (
+        result as unknown as {
+          uiBroadcaster: {
+            activeConsumerCount: number;
+          };
+        }
+      ).uiBroadcaster.activeConsumerCount,
+    ).toBe(1);
+
+    releaseSlow?.();
+    await expect(remaining.next()).resolves.toMatchObject({
+      done: false,
+      value: {
+        type: 'fragment',
+        toolName: 'slow_ui',
+      },
+    });
+    await remaining.return();
+    expect(slowRenderer).toHaveBeenCalledOnce();
+  });
+
   it('advances the model while retaining ordinary async rendering until UI drain', async () => {
     mockBetaResponsesSend.mockReset();
     mockToolRound('async_ui');
@@ -807,6 +978,7 @@ describe('late async tool UI settlement', () => {
 describe('broadcastUiFragment', () => {
   type Internal = {
     uiBroadcaster: {
+      activeConsumerCount: number;
       push: (event: unknown) => void;
     } | null;
     pendingUiFragments: Set<Promise<void>>;
@@ -840,6 +1012,7 @@ describe('broadcastUiFragment', () => {
     });
     const internal = modelResult as unknown as Internal;
     internal.uiBroadcaster = {
+      activeConsumerCount: 1,
       push: (event: unknown) => {
         pushed.push(event);
       },
