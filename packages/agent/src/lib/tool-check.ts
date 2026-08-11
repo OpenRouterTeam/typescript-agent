@@ -1,5 +1,5 @@
 import * as z4 from 'zod/v4';
-import type { $ZodObject, $ZodShape, $ZodType } from 'zod/v4/core';
+import type { ObjectSchema, Schema } from './schema.js';
 import type {
   APITool,
   PendingAsyncTool,
@@ -71,7 +71,7 @@ let taskToolParameters: Record<string, unknown> | undefined;
  * conversion runs once per process (memoized on first call).
  */
 export function buildTaskToolApiDefinition(
-  convertZod: (schema: $ZodType) => Record<string, unknown>,
+  convertZod: (schema: Schema) => Record<string, unknown>,
 ): APITool {
   taskToolParameters ??= convertZod(TaskToolInputSchema);
   return {
@@ -135,7 +135,7 @@ export function buildTaskToolStub(): Tool {
     type: ToolType.Function,
     function: {
       name: TASK_TOOL_NAME,
-      inputSchema: TaskToolInputSchema as unknown as $ZodObject<$ZodShape>,
+      inputSchema: TaskToolInputSchema as unknown as ObjectSchema,
       execute: false as never,
     } as never,
   };
@@ -143,7 +143,7 @@ export function buildTaskToolStub(): Tool {
 
 /** Resolve a tool's check config to `{ schema, execute }` with defaults. */
 export function resolveCheckConfig(check: ToolCheckConfig | undefined): {
-  schema: $ZodObject<$ZodShape> | undefined;
+  schema: ObjectSchema | undefined;
   execute:
     | ((params: Record<string, unknown>, turnContext: TurnContext) => unknown | Promise<unknown>)
     | undefined;

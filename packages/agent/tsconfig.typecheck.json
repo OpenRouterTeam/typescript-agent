@@ -1,6 +1,10 @@
 {
   "extends": "./tsconfig.json",
   "compilerOptions": { "noEmit": true, "rootDir": "." },
-  "include": ["src/**/*.ts", "tests/unit/context-schema-inference.test-d.ts"],
+  "include": [
+    "src/**/*.ts",
+    "tests/unit/context-schema-inference.test-d.ts",
+    "tests/unit/standard-schema-inference.test-d.ts"
+  ],
   "exclude": ["node_modules", "esm"]
 }

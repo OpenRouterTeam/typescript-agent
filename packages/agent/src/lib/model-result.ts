@@ -3,7 +3,6 @@ import { betaResponsesSend } from '@openrouter/sdk/funcs/betaResponsesSend';
 import type { EventStream } from '@openrouter/sdk/lib/event-streams';
 import type { RequestOptions } from '@openrouter/sdk/lib/sdks';
 import type * as models from '@openrouter/sdk/models';
-import type { $ZodObject, $ZodShape } from 'zod/v4/core';
 import type { CallModelInput, ResolvedCallModelInput } from './async-params.js';
 import { hasAsyncFunctions, resolveAsyncFunctions } from './async-params.js';
 import type { SettledToolTask, TaskToolInput, ToolSemaphore, ToolTaskMode } from './async-tools.js';
@@ -54,6 +53,7 @@ import {
   executeNextTurnParamsFunctions,
 } from './next-turn-params.js';
 import { ReusableReadableStream } from './reusable-stream.js';
+import type { ObjectSchema } from './schema.js';
 import { isStopConditionMet } from './stop-conditions.js';
 import type { ItemInProgress, StreamableOutputItem } from './stream-transformers.js';
 import {
@@ -439,7 +439,7 @@ export interface GetResponseOptions<
   /** Typed context data passed to tools via contextSchema. `shared` key for shared context. */
   context?: ContextInput<ToolContextMapWithShared<TTools, TShared>>;
   /** Zod schema for shared context validation */
-  sharedContextSchema?: $ZodObject<$ZodShape>;
+  sharedContextSchema?: ObjectSchema;
 
   /**
    * Call-level approval check - overrides tool-level requireApproval setting
@@ -4140,7 +4140,10 @@ export class ModelResult<
 
     let input: TaskToolInput;
     try {
-      input = validateToolInput(TaskToolInputSchema, toolCall.arguments ?? {}) as TaskToolInput;
+      input = (await validateToolInput(
+        TaskToolInputSchema,
+        toolCall.arguments ?? {},
+      )) as TaskToolInput;
     } catch (error) {
       return answer(null, error instanceof Error ? error : new Error(String(error)));
     }
@@ -4251,7 +4254,7 @@ export class ModelResult<
     // its check.schema when both are present.
     let customParams: Record<string, unknown> = input.params ?? {};
     if (schema && input.params !== undefined) {
-      customParams = validateToolInput(schema, input.params) as Record<string, unknown>;
+      customParams = (await validateToolInput(schema, input.params)) as Record<string, unknown>;
     }
 
     if (liveTask) {

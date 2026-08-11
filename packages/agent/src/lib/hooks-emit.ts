@@ -1,4 +1,3 @@
-import type { $ZodType } from 'zod/v4/core';
 import { safeParse } from 'zod/v4/core';
 import { matchesTool } from './hooks-matchers.js';
 import type {
@@ -9,6 +8,8 @@ import type {
   LifecycleHookContext,
 } from './hooks-types.js';
 import { DEFAULT_ASYNC_TIMEOUT, HOOK_BEHAVIOR, isAsyncOutput } from './hooks-types.js';
+import type { Schema } from './schema.js';
+import { isZodSchema, safeValidateSchema } from './schema.js';
 
 export interface ExecuteChainOptions {
   readonly hookName: string;
@@ -23,7 +24,7 @@ export interface ExecuteChainOptions {
    * Void-typed hooks typically pass `undefined` here; results in that case are
    * not validated.
    */
-  readonly resultSchema?: $ZodType | undefined;
+  readonly resultSchema?: Schema | undefined;
   /**
    * Invoked when a handler's fire-and-forget `work` exceeds its
    * `asyncTimeout`. The manager uses this to abort the emit's signal so
@@ -127,7 +128,9 @@ export async function executeHandlerChain<P, R>(
 
     try {
       const returnValue = await entry.handler(currentPayload, context);
-      const outcome = classifyHandlerReturn<R>(returnValue, i, options);
+      const outcome = isZodSchema(options.resultSchema)
+        ? classifyZodHandlerReturn<R>(returnValue, i, options)
+        : await classifyHandlerReturn<R>(returnValue, i, options);
 
       if (outcome.kind === 'async') {
         // Fire-and-forget: track the (optional) work promise for drain/timeout.
@@ -224,6 +227,47 @@ type HandlerReturnOutcome<R> =
       result: R;
     };
 
+function classifyZodHandlerReturn<R>(
+  returnValue: unknown,
+  index: number,
+  options: ExecuteChainOptions,
+): HandlerReturnOutcome<R> {
+  if (isAsyncOutput(returnValue)) {
+    return {
+      kind: 'async',
+      trackedWork: trackAsyncWork(returnValue, options.hookName, options.onAsyncTimeout),
+    };
+  }
+  if (returnValue === undefined || returnValue === null) {
+    return {
+      kind: 'skip',
+    };
+  }
+  if (!options.resultSchema || !isZodSchema(options.resultSchema)) {
+    return {
+      kind: 'result',
+      result: returnValue as R,
+    };
+  }
+  const validation = safeParse(options.resultSchema, returnValue);
+  if (!validation.success) {
+    const err = new Error(
+      `[HooksManager] Handler ${index} for hook "${options.hookName}" returned an invalid result: ${validation.error.message}`,
+    );
+    if (options.throwOnHandlerError) {
+      throw err;
+    }
+    console.warn(err.message);
+    return {
+      kind: 'skip',
+    };
+  }
+  return {
+    kind: 'result',
+    result: validation.data as R,
+  };
+}
+
 /**
  * Classify a handler's return value into one of three outcomes:
  *
@@ -236,11 +280,11 @@ type HandlerReturnOutcome<R> =
  *   with .transform() / .default() / .catch() / .coerce -- so downstream
  *   callers see transformed values. Validation failure in strict mode throws.
  */
-function classifyHandlerReturn<R>(
+async function classifyHandlerReturn<R>(
   returnValue: unknown,
   index: number,
   options: ExecuteChainOptions,
-): HandlerReturnOutcome<R> {
+): Promise<HandlerReturnOutcome<R>> {
   if (isAsyncOutput(returnValue)) {
     return {
       kind: 'async',
@@ -258,7 +302,7 @@ function classifyHandlerReturn<R>(
       result: returnValue as R,
     };
   }
-  const validation = safeParse(options.resultSchema, returnValue);
+  const validation = await safeValidateSchema(options.resultSchema, returnValue);
   if (!validation.success) {
     const err = new Error(
       `[HooksManager] Handler ${index} for hook "${options.hookName}" returned an invalid result: ${validation.error.message}`,

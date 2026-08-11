@@ -149,6 +149,10 @@
   },
   "dependencies": {
     "@openrouter/sdk": "^0.13.7",
+    "@standard-schema/spec": "^1.1.0",
     "zod": "^4.0.0"
+  },
+  "devDependencies": {
+    "valibot": "^1.4.2"
   }
 }

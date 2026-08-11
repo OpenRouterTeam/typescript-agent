@@ -153,7 +153,28 @@ emit per model call, with `turnType`/`turnNumber`) or read each round's
 
 ### Tool Types
 
-The `tool()` factory creates type-safe tools with full Zod schema inference. In addition to the legacy kinds below, the unified `run` interface with `lifecycle: 'sync' | 'background' | 'deferred'` covers [async tools](#async-tools) whose results arrive after the tool round, and `tool.agent()` creates [subagent tools](#agent-tools-subagents).
+The `tool()` factory creates type-safe tools from Zod v4 or any [Standard Schema v1](https://standardschema.dev) validator, including Valibot, ArkType, and Effect Schema. In addition to the legacy kinds below, the unified `run` interface with `lifecycle: 'sync' | 'background' | 'deferred'` covers [async tools](#async-tools) whose results arrive after the tool round, and `tool.agent()` creates [subagent tools](#agent-tools-subagents).
+
+Zod remains the zero-config path: the agent uses Zod's validator and JSON Schema converter directly. Standard Schema defines validation and type inference, but not JSON Schema conversion, so non-Zod input validators must also provide the raw JSON Schema sent to the model:
+
+```typescript
+import * as v from 'valibot';
+
+const searchTool = tool({
+  name: 'search',
+  inputSchema: v.object({ query: v.string() }),
+  inputJsonSchema: {
+    type: 'object',
+    properties: { query: { type: 'string' } },
+    required: ['query'],
+    additionalProperties: false,
+  },
+  outputSchema: v.object({ results: v.array(v.string()) }),
+  execute: async ({ query }) => ({ results: await search(query) }),
+});
+```
+
+`inputJsonSchema` is only needed for `inputSchema`: output, event, and context schemas are validated locally and never sent to the model. The agent sanitizes both generated and supplied JSON Schema before the SDK boundary, including removing `~`-prefixed metadata keys. Standard Schema validators may validate synchronously or asynchronously; synchronous context mutation methods (`ctx.setContext()` and `ctx.setSharedContext()`) require a synchronous validator.
 
 **Regular tools** — automatically executed by the agent loop:
 
@@ -913,7 +934,7 @@ logged and skipped by default, thrown in strict mode.
 
 ### Tool Context
 
-Provide typed context data to tools without passing it through the model:
+Provide typed context data to tools without passing it through the model. `contextSchema` accepts Zod or any synchronous Standard Schema validator:
 
 ```typescript
 const dbTool = tool({
