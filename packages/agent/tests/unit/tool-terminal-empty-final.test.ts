@@ -292,7 +292,9 @@ describe('tool-terminal empty final response (PR-2)', () => {
         ] as const,
         strictFinalResponse: true,
       }).getText(),
-    ).rejects.toThrow('Invalid final response: empty or invalid output');
+    ).rejects.toThrow(
+      /^Invalid final response: empty or invalid output — output array is empty \(length 0\) for response "resp_empty"/,
+    );
 
     // No retry when strict
     expect(mockBetaResponsesSend).toHaveBeenCalledTimes(2);
@@ -309,7 +311,9 @@ describe('tool-terminal empty final response (PR-2)', () => {
         model: 'test-model',
         input: 'Hello',
       }).getText(),
-    ).rejects.toThrow('Invalid final response: empty or invalid output');
+    ).rejects.toThrow(
+      /^Invalid final response: empty or invalid output — output array is empty \(length 0\) for response "resp_empty"\. The model returned no output items/,
+    );
 
     expect(mockBetaResponsesSend).toHaveBeenCalledTimes(1);
   });

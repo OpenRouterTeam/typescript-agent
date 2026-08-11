@@ -159,7 +159,7 @@ export async function* generate(
         instructions: request.system,
       }),
       plugins: [
-        openui(library) as never,
+        openui(library),
       ],
     });
 

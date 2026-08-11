@@ -67,9 +67,9 @@ jobs:
       inputs.mode == 'publish' && inputs.dry-run)
     steps:
       # No credentials persisted: install/build/test below execute dependency
-      # lifecycle scripts and test code, which must not be able to read a
-      # long-lived cross-repo PAT out of .git/config. Git push credentials are
-      # injected by the "Configure git push credentials" step *after* those,
+      # lifecycle scripts and test code, which must not be able to read the
+      # cross-repo App token out of .git/config. Push credentials are injected
+      # by the "Configure git push credentials" step *after* those,
       # immediately before the only steps that push.
       - uses: actions/checkout@v6
         with:
@@ -113,40 +113,110 @@ jobs:
 
       - run: pnpm run test
 
+      # Short-lived GitHub App installation token replacing the old GH_TOKEN
+      # PAT (which the OpenRouter enterprise now rejects for lifetime > 366
+      # days — the failure that silently stalled releases in Aug 2026). Same
+      # pattern as the port repos' openrouter-port-bot. Expires after 1 hour
+      # and is auto-revoked at job end, so the exfiltration surface the PAT
+      # reviews worried about shrinks to a job-scoped credential.
+      #
+      # Two tokens, deliberately: the release itself must never depend on the
+      # HOP dispatch targets. This one is scoped to THIS repo only and gates
+      # the publish path (fails loudly if the App/installation is missing).
+      # The cross-repo dispatch token below is minted separately, best-effort,
+      # matching the HOP steps' own "must not fail the release" contract.
+      #
+      # Known constraint: App tokens cannot push changes under
+      # .github/workflows/ without the App also granting `workflows: write`
+      # (the push is rejected with "refusing to allow a GitHub App to create
+      # or update workflow"). The Version PR and SDK-bump branches never
+      # touch workflow files today; if one ever must, grant that permission
+      # on the App rather than working around the rejected push.
+      # Skipped only on the mode=publish dry-run leg: that leg publishes
+      # nothing, pushes nothing, and dispatches nothing, so a broken App
+      # setup must not block it — it's the diagnostic escape hatch you'd
+      # reach for while fixing exactly that. NOT skipped on mode=version +
+      # dry-run: the changesets step ignores dry-run entirely (see the job
+      # `if` comment) and runs for real, so it needs the real token.
+      - name: Mint release-bot token
+        id: app-token
+        if: ${{ !(inputs.dry-run && inputs.mode == 'publish') }}
+        continue-on-error: true
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ vars.RELEASE_BOT_APP_ID }}
+          private-key: ${{ secrets.RELEASE_BOT_PRIVATE_KEY }}
+          owner: OpenRouterTeam
+          repositories: typescript-agent
+
+      # Same mint-failure paging as the train: this workflow runs on every
+      # push to main with nobody watching, so a broken App credential must
+      # page rather than just turn the run red. Alert, then stop the job —
+      # nothing downstream can succeed without the token.
+      - name: Alert if token minting failed
+        if: ${{ !(inputs.dry-run && inputs.mode == 'publish') && steps.app-token.outcome != 'success' }}
+        env:
+          SLACK_BOT_TOKEN: ${{ secrets.CI_RELEASE_ALERT_SLACK_BOT_TOKEN }}
+          SLACK_CHANNEL_ID: ${{ secrets.CI_RELEASE_ALERT_SLACK_CHANNEL_ID }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          TEXT=":rotating_light: Release publish: could not mint the release-bot App token (RELEASE_BOT_APP_ID/RELEASE_BOT_PRIVATE_KEY missing or App uninstalled?). Releases are stalled until this is fixed. <${RUN_URL}|run>"
+          echo "::error::App token minting failed — releases are stalled."
+          if [ -n "${SLACK_BOT_TOKEN:-}" ] && [ -n "${SLACK_CHANNEL_ID:-}" ]; then
+            curl -fsS -X POST https://slack.com/api/chat.postMessage \
+              -H "Authorization: Bearer ${SLACK_BOT_TOKEN}" \
+              -H "Content-type: application/json; charset=utf-8" \
+              --data "$(python3 -c "import json,sys; print(json.dumps({'channel':sys.argv[1],'unfurl_links':False,'text':sys.argv[2]}))" "$SLACK_CHANNEL_ID" "$TEXT")" \
+              >/dev/null || echo "::warning::Slack post failed"
+          else
+            echo "(slack not configured; would have posted) $TEXT"
+          fi
+          exit 1
+
       # Deliberately after install/build/test (see the checkout comment).
       # changesets/action pushes changeset-release/main (and release tags on
       # the publish leg) with plain `git push`, which uses the remote's
-      # embedded credentials. It must be the PAT, not the Actions
+      # embedded credentials. It must be the App token, not the Actions
       # GITHUB_TOKEN: GITHUB_TOKEN-attributed pushes never trigger workflows,
       # so Version PR updates would get no CI / perry/review and the release
       # train (release-train.yaml) could merge on checks from the first
-      # revision.
-      - name: Configure git push credentials (PAT)
+      # revision. App-token pushes trigger workflows normally.
+      - name: Configure git push credentials (App token)
+        if: ${{ !(inputs.dry-run && inputs.mode == 'publish') }}
         run: |
           git remote set-url origin \
-            "https://x-access-token:${{ secrets.GH_TOKEN }}@github.com/${{ github.repository }}.git"
+            "https://x-access-token:${{ steps.app-token.outputs.token }}@github.com/${{ github.repository }}.git"
 
       - name: Version PR or Publish (changesets)
         id: changesets
         if: >
           github.event_name == 'push' ||
           (github.event_name == 'workflow_dispatch' && inputs.mode == 'version')
-        # SHA-pinned (= v1.9.0): this step receives the cross-repo PAT and
-        # runs with it in .git/config, so a floating tag would let a
-        # compromised action release exfiltrate it. Bump deliberately.
+        # SHA-pinned (= v1.9.0): this step receives the cross-repo App token
+        # and runs with it in .git/config, so a floating tag would let a
+        # compromised action release exfiltrate it (bounded to the token's
+        # 1-hour lifetime, but still). Bump deliberately.
         uses: changesets/action@a45c4d594aa4e2c509dc14a9f2b3b67ba3780d0d
         with:
           title: 'chore: version packages'
           commit: 'chore: version packages'
-          version: pnpm exec changeset version
+          # `pnpm run version`, not `changeset version` directly: the bump has
+          # to be followed by `turbo run gen:version` so committed generated
+          # files (packages/mcp/src/version.ts) are regenerated in the same
+          # commit. Otherwise the Version PR ships a package.json at the new
+          # version and a version.ts at the old one, and version.test.ts fails
+          # on it — turbo's `test` task uses `dependsOn: ["^build"]`, which
+          # builds upstream deps only, so nothing regenerates it at test time.
+          version: pnpm run version
           publish: pnpm exec changeset publish --no-git-checks
         env:
-          # PAT, not the Actions GITHUB_TOKEN: PRs created with GITHUB_TOKEN
-          # never trigger other workflows, so the Version Packages PR would get
-          # no CI and no perry/review — and the release-train workflow
-          # (release-train.yaml) gates its auto-merge on exactly those checks.
-          # Same reasoning as the checkout token in bump-openrouter-sdk.yaml.
-          GITHUB_TOKEN: ${{ secrets.GH_TOKEN }}
+          # App token, not the Actions GITHUB_TOKEN: PRs created with
+          # GITHUB_TOKEN never trigger other workflows, so the Version Packages
+          # PR would get no CI and no perry/review — and the release-train
+          # workflow (release-train.yaml) gates its auto-merge on exactly those
+          # checks. Same reasoning as in bump-openrouter-sdk.yaml.
+          GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
           # No NODE_AUTH_TOKEN / NPM_TOKEN: auth comes from OIDC trusted
           # publishing. changesets/action logs "No NPM_TOKEN found, but OIDC is
           # available" and leaves .npmrc alone; npm then exchanges the Actions
@@ -180,9 +250,11 @@ jobs:
         run: git push origin --tags
 
       # Nothing below pushes via git (the HOP dispatches use `gh api` with
-      # GH_TOKEN from env), so drop the PAT from .git/config the moment the
+      # the App token from env), so drop it from .git/config the moment the
       # last push consumer is done. `always()`: scrub even when a publish
-      # step failed, since later/rerun steps still see the workspace.
+      # step failed, since later/rerun steps still see the workspace. The
+      # token also expires on its own within the hour; this just narrows the
+      # in-job window.
       - name: Scrub git push credentials
         if: always()
         run: |
@@ -201,6 +273,11 @@ jobs:
         if: github.event_name == 'workflow_dispatch' && inputs.mode == 'publish' && inputs.dry-run
         run: pnpm -r publish --dry-run --access public --no-git-checks
 
+      # Cross-repo token for the HOP B/C dispatches only. Minted separately
+      # from the publish token and best-effort (continue-on-error): the
+      # packages are already on npm when the dispatches run, so a repo missing
+      # from the App installation must degrade to a skipped notification with
+      # a warning — exactly like a failed dispatch — never a red release.
       # HOP B trigger: when @openrouter/agent is actually published, tell the
       # monorepo (openrouter-web) to bump its pinned @openrouter/agent for
       # server tools. Two publish paths produce a real publish:
@@ -234,19 +311,114 @@ jobs:
             echo "No new @openrouter/agent publish detected — no dispatch"
           fi
 
-      - name: Dispatch monorepo bump
-        if: ${{ !inputs.dry-run && steps.published.outputs.version != '' }}
+      # Minted AFTER publish detection and gated on it: publish.yaml runs on
+      # every push to main, and most runs release nothing — minting (and
+      # potentially paging about) dispatch tokens on those runs would be
+      # noise. These steps only run when a version actually shipped.
+      #
+      # One narrowly-scoped token PER dispatch target, each best-effort.
+      # Not one shared mint: an explicit multi-repo list is all-or-nothing
+      # (one uninstalled port repo kills the unrelated monorepo notification
+      # too), and an owner-wide mint hands the job a token for every repo the
+      # App is installed on. Per-target mints get both properties — a missing
+      # target degrades only its own notification, and each token can touch
+      # exactly one repo.
+      - name: Mint dispatch token (openrouter-web)
+        id: web-token
+        if: ${{ !cancelled() && !inputs.dry-run && steps.published.outputs.version != '' }}
+        continue-on-error: true
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ vars.RELEASE_BOT_APP_ID }}
+          private-key: ${{ secrets.RELEASE_BOT_PRIVATE_KEY }}
+          owner: OpenRouterTeam
+          repositories: openrouter-web
+
+      - name: Mint dispatch token (python-agent)
+        id: py-token
+        if: ${{ !cancelled() && !inputs.dry-run && steps.published.outputs.version != '' }}
+        continue-on-error: true
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ vars.RELEASE_BOT_APP_ID }}
+          private-key: ${{ secrets.RELEASE_BOT_PRIVATE_KEY }}
+          owner: OpenRouterTeam
+          repositories: python-agent
+
+      - name: Mint dispatch token (go-agent)
+        id: go-token
+        if: ${{ !cancelled() && !inputs.dry-run && steps.published.outputs.version != '' }}
+        continue-on-error: true
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ vars.RELEASE_BOT_APP_ID }}
+          private-key: ${{ secrets.RELEASE_BOT_PRIVATE_KEY }}
+          owner: OpenRouterTeam
+          repositories: go-agent
+
+      # Degraded ≠ silent: annotations alone are invisible on a green
+      # scheduled run, so also page the release-alert channel (no-op until
+      # the CI_RELEASE_ALERT_* secrets exist, like the train's alerts).
+      - name: Warn about unavailable dispatch tokens
+        if: ${{ !cancelled() && !inputs.dry-run && steps.published.outputs.version != '' && (steps.web-token.outcome == 'failure' || steps.py-token.outcome == 'failure' || steps.go-token.outcome == 'failure') }}
         env:
-          # Cross-repo PAT; needs contents:write on
-          # OpenRouterTeam/openrouter-web so the repository_dispatch is accepted.
-          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+          SLACK_BOT_TOKEN: ${{ secrets.CI_RELEASE_ALERT_SLACK_BOT_TOKEN }}
+          SLACK_CHANNEL_ID: ${{ secrets.CI_RELEASE_ALERT_SLACK_CHANNEL_ID }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           set -euo pipefail
-          gh api repos/OpenRouterTeam/openrouter-web/dispatches \
-            -f event_type=openrouter-agent-published \
-            -F "client_payload[version]=${{ steps.published.outputs.version }}" \
-            -F "client_payload[source_run_url]=${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
-          echo "Dispatched openrouter-agent-published (version ${{ steps.published.outputs.version }}) to openrouter-web"
+          MISSING=""
+          [ "${{ steps.web-token.outcome }}" = "failure" ] && { echo "::warning::No dispatch token for openrouter-web — its HOP B notification will be skipped."; MISSING="$MISSING openrouter-web"; }
+          [ "${{ steps.py-token.outcome }}" = "failure" ] && { echo "::warning::No dispatch token for python-agent — its HOP C notification will be skipped."; MISSING="$MISSING python-agent"; }
+          [ "${{ steps.go-token.outcome }}" = "failure" ] && { echo "::warning::No dispatch token for go-agent — its HOP C notification will be skipped."; MISSING="$MISSING go-agent"; }
+          TEXT=":warning: Release publish: could not mint dispatch token(s) for${MISSING} (App not installed there?). Their release notifications were skipped — trigger downstream flows manually. <${RUN_URL}|run>"
+          if [ -n "${SLACK_BOT_TOKEN:-}" ] && [ -n "${SLACK_CHANNEL_ID:-}" ]; then
+            curl -fsS -X POST https://slack.com/api/chat.postMessage \
+              -H "Authorization: Bearer ${SLACK_BOT_TOKEN}" \
+              -H "Content-type: application/json; charset=utf-8" \
+              --data "$(python3 -c "import json,sys; print(json.dumps({'channel':sys.argv[1],'unfurl_links':False,'text':sys.argv[2]}))" "$SLACK_CHANNEL_ID" "$TEXT")" \
+              >/dev/null || echo "::warning::Slack post failed"
+          else
+            echo "(slack not configured; would have posted) $TEXT"
+          fi
+
+      # continue-on-error for the same reason as HOP C: the packages are on
+      # npm by now, and a missing openrouter-web installation surfaces as a
+      # skipped mint / 404 — degrade with a warning, never a red release.
+      - name: Dispatch monorepo bump
+        if: ${{ !inputs.dry-run && steps.published.outputs.version != '' && steps.web-token.outcome == 'success' }}
+        continue-on-error: true
+        env:
+          # openrouter-web-scoped App token; its contents:write is what makes
+          # the repository_dispatch accepted.
+          GH_TOKEN: ${{ steps.web-token.outputs.token }}
+          SLACK_BOT_TOKEN: ${{ secrets.CI_RELEASE_ALERT_SLACK_BOT_TOKEN }}
+          SLACK_CHANNEL_ID: ${{ secrets.CI_RELEASE_ALERT_SLACK_CHANNEL_ID }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          # if/else rather than a bare call: under continue-on-error a bare
+          # failure leaves a green job with no annotation — the warning +
+          # Slack page are what make the dropped notification visible (same
+          # pattern as the per-repo loop in the HOP C step).
+          if gh api repos/OpenRouterTeam/openrouter-web/dispatches \
+               -f event_type=openrouter-agent-published \
+               -F "client_payload[version]=${{ steps.published.outputs.version }}" \
+               -F "client_payload[source_run_url]=${RUN_URL}"; then
+            echo "Dispatched openrouter-agent-published (version ${{ steps.published.outputs.version }}) to openrouter-web"
+          else
+            echo "::warning::Failed to dispatch openrouter-agent-published to openrouter-web. Bump its pinned @openrouter/agent manually or re-dispatch from its own workflow."
+            TEXT=":warning: Release publish: @openrouter/agent ${{ steps.published.outputs.version }} shipped but the openrouter-web bump dispatch failed — bump it manually. <${RUN_URL}|run>"
+            if [ -n "${SLACK_BOT_TOKEN:-}" ] && [ -n "${SLACK_CHANNEL_ID:-}" ]; then
+              curl -fsS -X POST https://slack.com/api/chat.postMessage \
+                -H "Authorization: Bearer ${SLACK_BOT_TOKEN}" \
+                -H "Content-type: application/json; charset=utf-8" \
+                --data "$(python3 -c "import json,sys; print(json.dumps({'channel':sys.argv[1],'unfurl_links':False,'text':sys.argv[2]}))" "$SLACK_CHANNEL_ID" "$TEXT")" \
+                >/dev/null || echo "::warning::Slack post failed"
+            else
+              echo "(slack not configured; would have posted) $TEXT"
+            fi
+          fi
 
       # HOP C trigger: tell the Python and Go ports of @openrouter/agent that a
       # new version shipped, so each opens a PR porting the delta. Those repos run
@@ -275,9 +447,12 @@ jobs:
         if: ${{ !cancelled() && !inputs.dry-run && steps.published.outputs.version != '' }}
         continue-on-error: true
         env:
-          # Same cross-repo PAT as HOP B; additionally needs contents:write on
-          # OpenRouterTeam/python-agent and OpenRouterTeam/go-agent.
-          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+          # The tag lookup reads THIS repo, so it uses the typescript-agent-
+          # scoped publish token; each dispatch uses its own target-scoped
+          # token (empty when that repo's mint failed → skipped with warning).
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          PY_TOKEN: ${{ steps.py-token.outputs.token }}
+          GO_TOKEN: ${{ steps.go-token.outputs.token }}
           VERSION: ${{ steps.published.outputs.version }}
           SOURCE_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
@@ -297,18 +472,35 @@ jobs:
           # this repo ever goes private and the fallback would fire every time.
           # gh authenticates from GH_TOKEN in env, independent of .git/config.
           ENCODED_TAG="$(jq -rn --arg t "$TAG" '$t|@uri')"
-          if gh api "repos/${{ github.repository }}/git/ref/tags/${ENCODED_TAG}" >/dev/null 2>&1; then
+          # Distinguish "tag missing" (404) from auth/API failures (401 if the
+          # 1h App token expired on a very slow run, 5xx, network): both fall
+          # back to the commit SHA — same tree — but a triage-misleading
+          # "tag not on origin" message on a token failure would send someone
+          # hunting the wrong problem.
+          HTTP_STATUS="$(gh api "repos/${{ github.repository }}/git/ref/tags/${ENCODED_TAG}" >/dev/null 2>&1; echo $?)"
+          if [ "$HTTP_STATUS" = "0" ]; then
             REF="$TAG"
           else
             REF="${{ github.sha }}"
-            echo "::warning::${TAG} is not on origin; dispatching ref=${REF} instead."
+            if gh api rate_limit >/dev/null 2>&1; then
+              echo "::warning::${TAG} is not on origin; dispatching ref=${REF} instead."
+            else
+              echo "::warning::Could not query the tag (token expired or API failure — not necessarily a missing tag); dispatching ref=${REF} instead."
+            fi
           fi
 
-          for REPO in python-agent go-agent; do
+          for ENTRY in "python-agent:${PY_TOKEN}" "go-agent:${GO_TOKEN}"; do
+            REPO="${ENTRY%%:*}"
+            TOKEN="${ENTRY#*:}"
+            if [ -z "$TOKEN" ]; then
+              echo "::warning::No token for OpenRouterTeam/${REPO} (mint skipped/failed) — not dispatching. Trigger its Upstreamer Port workflow manually with ref=${REF}, or wait for its weekly cron."
+              FAILED="$FAILED ${REPO}"
+              continue
+            fi
             # -f (--raw-field) everywhere: -F treats values starting with `@`
             # (like TAG) as filenames to read, which would error out before the
             # request is even sent.
-            if gh api "repos/OpenRouterTeam/${REPO}/dispatches" \
+            if GH_TOKEN="$TOKEN" gh api "repos/OpenRouterTeam/${REPO}/dispatches" \
                  -f event_type=openrouter-agent-published \
                  -f "client_payload[version]=${VERSION}" \
                  -f "client_payload[ref]=${REF}" \

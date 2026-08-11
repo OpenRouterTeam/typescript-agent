@@ -61,9 +61,7 @@ const result = callModel(client, {
     weather,
   ],
   plugins: [
-    // `as never` until the SDK regen adds `openui` to its plugin union; the
-    // wire shape is already accepted by the API.
-    openui(library) as never,
+    openui(library),
   ],
 });
 

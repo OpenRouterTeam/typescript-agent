@@ -271,6 +271,8 @@ describe('fragment builder', () => {
       uiBuiltin('Run', uiRef('load')),
     ]);
     expect(node.source).toBe('root = Card("Tabs", [$tab, @Run(load)])');
+    expect(ui.Action([]).source).toBe('root = Action([])');
+    expect(ui.Query('weather', {}).source).toBe('root = Query("weather", {})');
   });
 
   it('accepts plain objects and arrays as args', () => {
@@ -334,6 +336,21 @@ describe('openui() plugin helper', () => {
       'title',
       'children',
     ]);
+
+    const defaults = openui(
+      createLibrary([
+        defineComponent({
+          name: 'Defaults',
+          props: z.object({
+            label: z.string().default('hello'),
+          }),
+        }),
+      ]),
+    );
+    expect(defaults.library[0]?.props).toMatchObject({
+      type: 'object',
+    });
+    expect(defaults.library[0]?.props).not.toHaveProperty('required');
 
     const divider = plugin.library[2];
     expect(divider?.props).toBeUndefined();

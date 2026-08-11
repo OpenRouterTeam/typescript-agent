@@ -1,5 +1,351 @@
 # @openrouter/agent
 
+## 0.9.0
+
+### Minor Changes
+
+- [#90](https://github.com/OpenRouterTeam/typescript-agent/pull/90) [`e8d7d6d`](https://github.com/OpenRouterTeam/typescript-agent/commit/e8d7d6dc194dd6029a180a1f23a9935c01c57e6f) Thanks [@LukasParke](https://github.com/LukasParke)! - Async tool support: a unified `run()` tool interface with lifecycles, model-side task check-ins, steering, subagent tools (`tool.agent()`), per-tool cancellation & timeouts, and tool concurrency controls.
+
+  **One tool interface.** Every tool is declared the same way: a `run` handler (async function or async generator) plus `lifecycle: 'sync' (default) | 'background' | 'deferred'`. Generator yields become the task's log (feeding check-ins, `tool.preliminary_result` events, and transcripts); the generator's return is the result, validated against `outputSchema`. Non-generator bodies log via `ctx.log()`. The released `execute` / `execute: false` / `onToolCalled` forms are unchanged.
+
+  - `'background'` — the loop keeps going. Work settling within the grace window (`graceMs`, default 250ms) behaves like a sync call; otherwise the model receives a pending placeholder immediately (satisfying the provider requirement that every `function_call` in follow-up history has a paired output) and the result is injected as a `tool_task_result` user message when it settles. `asyncTools.onRunEnd: 'drain' (default) | 'detach' | 'cancel'` governs run end.
+  - `'deferred'` — `run` returns `ctx.defer(taskId)` to park the call on durable external work; the run pauses with the new `ConversationStatus` `'awaiting_async_tools'`. The built tool carries typed `.resolve()` / `.fail()` / `.cancel()` completion methods (output checked against `outputSchema` at compile time and runtime), callable from any process holding the `StateAccessor`; `resumeToolResults()` is the low-level batch entry point. Double resolution throws `ToolTaskAlreadySettledError`.
+
+  **Model-side task interactions.** When any long-running tool is registered, the SDK appends ONE universal `task` tool — a single static wire definition no matter how many async tools exist (per-tool schemas are never augmented; context cost stays constant). The model addresses tasks by `taskId`: `action: 'check' (default) | 'steer' | 'result' | 'cancel'`, with `view: 'status' | 'logs' | 'transcript'` for checks. Calls are engine-intercepted and dispatched to the OWNING tool's `check: { schema, execute }` config when declared (custom `params` validated against `check.schema`), else the SDK default views — universal interface, tool-specific handling. Check handlers receive `turnContext.toolCallStatus`, `turnContext.accumulatedYieldedEvents`, and a `turnContext.task` handle (`statusView` / `tailLogs` / `transcript` / `send` / `cancel`). Task-tool calls are doom-loop-exempt and bypass concurrency/timeout gates. Opt out with `asyncTools: { checkins: false }`. After a process restart, deferred tasks answer `status` from persisted state (including a bounded `lastLog` — a new additive `PendingAsyncTool` field).
+
+  **Steering.** Running tasks have an inbox: `run` bodies opt in via `ctx.onMessage(handler)`; deliver from code with `ModelResult.sendToTask(taskId, message)` or from the model via a custom check param forwarded with `turnContext.task.send(...)`. New `ModelResult.queueUserMessage(text)` injects a user message at the next safe turn boundary.
+
+  **Subagent tools.** `tool.agent()` creates a tool whose work IS a child `callModel` conversation, running as a background task: the parent loop keeps going, each child turn becomes a log entry, the child conversation is the check-in transcript (`status` adds `turnsCompleted` / `currentActivity`), the `result` mapper (default: `{ text: await child.getText() }`) shapes the delivered output, `cancelTask` / parent abort / `timeoutMs` cancel the child, and steering messages are injected into the child as user messages. Children run in-memory and do not inherit parent hooks (pass child hooks in the `agent` spec explicitly).
+
+  **Cancellation & timeouts.** Tool contexts carry `ctx.signal` (fires on run abort, per-tool `timeoutMs` / run-level `toolTimeoutMs`, `cancelTask`, `ModelResult.cancel()`), plus `ctx.callId` / `ctx.conversationId`. Timeouts bound the round's wait, not the tool body (`{ error, code: 'tool_timeout' }`). **Behavior change:** `ModelResult.cancel()` now also aborts in-flight tool work (previously stream-only).
+
+  **Concurrency.** `toolConcurrency: number | { round?, background? }` (round unbounded by default; background pool default 16) plus per-tool `maxConcurrency`. Output order stays call order.
+
+  **Events.** New `tool.async_started` / `tool.async_settled` (with `delivery: 'injected' | 'pending_resume' | 'dropped'`); progress reuses `tool.preliminary_result`; `tool.result` fires exactly once per call with the final value. `ModelResult.getAsyncTasks()` inspects live tasks. Doom-loop detection treats a late-result delivery as forward progress.
+
+  State fields (`pendingAsyncTools` with `lastLog`, `settledAsyncCallIds`) are additive within ConversationState version 1. New subpath exports: `resume-tool-results`, `tool-concurrency`, `async-tool-registry`, `tool-task`, `tool-check`, `agent-tool`. The reserved tool name `task` is rejected by `tool()` and, when supplied dynamically, suppresses the built-in with a warning.
+
+  Note: `tool.background()` and `tool.deferred()` existed only on this PR's branch and were never published; they are replaced by `lifecycle`. No released consumer is affected.
+
+  ### API example
+
+  ```typescript
+  import { callModel, tool } from "@openrouter/agent";
+  import { z } from "zod";
+
+  // Background: ordinary run; the loop keeps going while it works.
+  const renderVideo = tool({
+    name: "render_video",
+    lifecycle: "background",
+    inputSchema: z.object({ script: z.string() }),
+    outputSchema: z.object({ url: z.string() }),
+    ack: "Rendering started.",
+    timeoutMs: 300_000,
+    check: {
+      schema: z.object({ focus: z.string().optional() }), // validates task({ params })
+      execute: async (params, turnContext) => {
+        if (params.focus) turnContext.task?.send(params.focus);
+        return turnContext.task?.statusView();
+      },
+    },
+    run: async function* ({ script }, ctx) {
+      const job = await renderer.start(script, { signal: ctx?.signal });
+      ctx?.onMessage((msg) => job.reprioritize(msg));
+      for await (const p of job.progress()) yield { pct: p }; // → task log + events
+      return job.result(); // → delivered result
+    },
+  });
+
+  // Deferred: durable external work, resumed from any process.
+  const legalReview = tool({
+    name: "request_legal_review",
+    lifecycle: "deferred",
+    inputSchema: z.object({ contractId: z.string() }),
+    outputSchema: z.object({ approved: z.boolean() }),
+    run: async ({ contractId }, ctx) =>
+      ctx!.defer(
+        (await legal.open(contractId, { conversationId: ctx?.conversationId }))
+          .id
+      ),
+  });
+
+  // Subagent: a child conversation as a background tool.
+  const researcher = tool.agent({
+    name: "research_topic",
+    inputSchema: z.object({ topic: z.string() }),
+    outputSchema: z.object({ text: z.string() }),
+    agent: ({ topic }) => ({
+      model: "openai/gpt-4o",
+      input: `Research: ${topic}`,
+      tools: [searchTool] as const,
+    }),
+  });
+
+  const result = callModel(client, {
+    model: "openai/gpt-4o",
+    input: "Render the explainer, get it approved, and research the market",
+    tools: [renderVideo, legalReview, researcher] as const,
+    state,
+    toolConcurrency: { round: 4 },
+  });
+
+  // The model interacts with running tasks through ONE universal tool:
+  //   task({ taskId: "task_7f3" })                          → status view
+  //   task({ taskId, view: "logs", tail: 5 })               → recent progress
+  //   task({ taskId, view: "transcript" })                  → agent child conversation
+  //   task({ taskId, action: "steer", message: "shorter" }) → steers the job
+  //   task({ taskId, action: "cancel" })                    → stops it
+
+  // Developer-side observability & control:
+  result.getAsyncTasks();
+  result.sendToTask(taskId, "prioritize accuracy");
+  result.cancelTask(taskId);
+
+  // Webhook handler — different process, days later. Typed by outputSchema.
+  await legalReview.resolve(client, {
+    state: makeAccessor(conversationId),
+    taskId: ticketId,
+    output: { approved: true },
+    run: { model: "openai/gpt-4o" },
+  });
+  ```
+
+- [#73](https://github.com/OpenRouterTeam/typescript-agent/pull/73) [`78c562e`](https://github.com/OpenRouterTeam/typescript-agent/commit/78c562ef53da0edd84dfbcc6d6ee38a095d72b37) Thanks [@LukasParke](https://github.com/LukasParke)! - Doom-loop detection for the tool-execution loop (opt-in via `doomLoop` on `callModel`).
+
+  Catches runs that stop making progress while continuing to spend: the model re-issuing the same tool call with identical arguments in consecutive rounds (including repeated empty `{}` calls and repeated invalid-JSON calls), repeating identical server-tool requests (`web_search_call` etc., detected post-execution at the step checkpoint), or emitting the same text tokens over and over. Detection is deterministic — a verdict is a pure function of the transcript — and responds through a configurable graduated ladder: `observe` (emit the new `DoomLoopDetected` hook) → `steer` (inject corrective guidance; queued guidance persists across pauses) → `block` (refuse the call with an explanatory tool error, before execution) → `stop` (halt before any further model request; unresolved calls in the final turn get synthesized halt-error outputs so persisted history stays well-formed; `SessionEnd.reason: 'doom_loop'`).
+
+  Streaks are round-scoped: N identical calls fanned out in parallel within one round count once (a streak measures the model re-issuing a call after seeing its result). Tools declare call identity via `loopKey` on the tool definition — a computed function over the call's validated arguments (e.g. `({ command, cwd }) => ({ command, cwd })`; returning `null` exempts a call), or `false` (statically exempt); absent means the full validated arguments. MCP-wrapped tools accept `loopKey` via `markMcp(tool, { loopKey })`. Fingerprints are a cross-port contract: RFC 8785 (JCS) canonicalization + SHA-256 over UTF-8 via WebCrypto, with conformance vectors in `tests/vectors/doom-loop-fingerprints.json` for the Python/Go ports. Unhashable key material (bigint, circular, >64 deep) falls back to the full-arguments identity — detection never fails a run.
+
+  Detector state persists inside `ConversationState.doomLoop`: streaks survive serialize → resume, a `stop` verdict survives decision-only resumes (approve/reject) and clears on a fresh conversational turn, and queued steer guidance is delivered on resume. Ladder configs warn on dead rungs and on `block` with `stop: false` (unbounded block/re-issue). Documented, test-locked limits: varying-input (nonce) loops evade the default identity without a `loopKey`; paraphrased text repetition is not detected; manual/client-executed calls are not recorded. New `@openrouter/agent/doom-loop` subpath exports the primitives; `ModelResult.getDoomLoopVerdict()` reports a stopping verdict.
+
+- [#73](https://github.com/OpenRouterTeam/typescript-agent/pull/73) [`78c562e`](https://github.com/OpenRouterTeam/typescript-agent/commit/78c562ef53da0edd84dfbcc6d6ee38a095d72b37) Thanks [@LukasParke](https://github.com/LukasParke)! - Doom-loop escalation recovery: a new `escalate` ladder rung between `steer` and `block` that unblocks a stuck run by throwing more intelligence at the next turn instead of refusing or halting.
+
+  Configure via `doomLoop.escalation`: `model` runs the NEXT turn on a stronger model (one-turn override, automatic revert), and/or `advisor` forces an `openrouter:advisor` consult (the advisor server tool is appended with `forwardTranscript: true` and loop-diagnosing instructions, and `toolChoice` is pinned to it via `allowed_tools`/`required` so the stuck model must ask for guidance first; an object form passes through as advisor parameters). A user notice naming the detected loop accompanies the escalated turn.
+
+  Escalations are real spend on a run already suspected of wasting it, so they are budgeted: `maxEscalations` (default 2) caps recoveries per conversation, budget is consumed when a recovery is _applied_ (not at verdict time), `escalationsUsed` persists in `ConversationState.doomLoop` so resumes cannot reset it, and concurrent detector verdicts in one window escalate once. Exhausted or unconfigured escalations fall through to the weaker rungs; resolve-time warnings flag an `escalate` rung without a mechanism (and vice versa). The `DoomLoopDetected` hook's `action`/`overrideAction` enums gain `'escalate'` — an override without config/budget downgrades to `observe`, never silently to a stronger action.
+
+- [#89](https://github.com/OpenRouterTeam/typescript-agent/pull/89) [`75271c3`](https://github.com/OpenRouterTeam/typescript-agent/commit/75271c31fdd5ec620f23d75908664b99428d753a) Thanks [@LukasParke](https://github.com/LukasParke)! - Fix doom-loop detection missing a repeated same-tool fan-out.
+
+  Streaks compared a tool's _last_ fingerprint, so `read(a), read(b), read(c)`
+  reissued verbatim had a different last call every round and each round's first
+  call reset the streak to 1. Eight identical rounds of a three-call fan-out
+  produced zero detections, while single-call rounds tripped at round 2 — and
+  distinct-argument fan-out is the dominant shape in parallel-tool-calling agents.
+
+  A round's identity for one tool is now the _set_ of fingerprints it was called
+  with, compared across rounds. The engine declares a round's complete set before
+  any of its calls is scored, so ordering within the round does not matter, a
+  changed member resets the streak, and neither a strict subset nor a superset is
+  a repeat — a round that adds new work is progress, not repetition. Every call in
+  a repeating round reports that round's streak, so at the block rung a repeating
+  fan-out stops spending rather than only its last call being refused.
+
+  **Per-call streaks** accumulate alongside the round-set streak, and the
+  stronger evidence decides. Each `(tool, arguments)` identity counts its own
+  consecutive rounds, whatever its round-mates did — so a call repeating inside
+  varying company (`[a,b]`, `[a,c]`, `[a,d]`: `a` is a 3-peat) is flagged even
+  though every round's set differs, a repeat keeps counting when a paused HITL
+  member drops from the resumed round, and undeclared paths (server-tool records,
+  direct callers) get order-independent per-call detection without a declaration.
+  When the per-call count alone crosses a rung, only that call is refused and its
+  verdict quotes its own identity; genuinely new round-mates run free. For an
+  exactly-repeating round both counts are equal, so nothing double-fires. A
+  partial repeat (`[a,b,c]` then `[a,b]`) flags the re-issued calls at the
+  observe rung rather than being invisible; a superset round (`[a,b]`, `[a,b]`,
+  `[a,b,c]`) flags the repeated members while the new call always executes.
+
+  A call that a round's declaration could not include (unhashable key material)
+  cannot inherit or move the round's counters; its own verbatim repetition still
+  accumulates per-call evidence like any other repeat.
+
+  **Resumed runs**: a multi-call round's fingerprint set and per-call counts are
+  persisted alongside its streak (new optional `roundFingerprints` and
+  `callStreaks` on `DoomLoopStreak` — additive; pre-existing blobs restore with
+  their old single-call semantics). A repeating
+  fan-out therefore keeps its evidence across save/resume boundaries: approval
+  pauses no longer reset a fan-out sitting at the block rung, and per-turn-resume
+  topologies (one `callModel` per user turn, state persisted between) accumulate
+  across turns instead of re-baselining on every one. Because the streak travels
+  with the exact set that earned it, a resumed round containing only a subset of
+  that set is a different round and starts at 1 — a lesser call can never inherit
+  a fan-out's evidence. Single-call streaks behave exactly as before.
+
+  **New API**: `DoomLoopMonitor.declareRound(round, calls)` — declares a round's
+  complete call set before any of it is scored. `DoomLoopMonitor` is exported, so
+  this is a new public method, additive only. Callers using `callModel` need not
+  touch it (the engine calls it); direct `DoomLoopMonitor` users and SDK ports
+  should, so a repeating fan-out is flagged as one unit (shared verdict, shared
+  steer message) rather than only via each member's individual per-call count.
+
+  Single-call round timing, in-round duplicate collapsing, verdict payloads, and
+  the number of times a tool's `loopKey` is invoked (once per checked call) are
+  unchanged. The persisted shape gains two optional fields (`roundFingerprints`
+  and `callStreaks`, both above); everything existing is untouched and old blobs
+  restore cleanly with their old semantics.
+
+  **Newly reachable false positive.** The detector compares arguments, not
+  results, so repetition shapes that were previously invisible now accumulate and
+  are refused at the default `block` rung from round 3. Two variants:
+
+  - A stable _set_ of parallel arguments every round — an agent re-reading the
+    same context files each turn, or a fixed fan-out of pollers — blocks with one
+    synthesized error per call in the round.
+  - A single call re-issued verbatim while its round-mates CHANGE — re-reading an
+    anchor file (README, config, schema) while exploring new files each turn
+    (`[a]`, `[a,b]`, `[a,b,c]`: `a` blocks from round 3 even though every round
+    adds work). The per-call detector counts the call's own consecutive rounds,
+    so the round being "progress" does not exempt a member that itself repeats:
+    a file already read is in context, and re-reading it is spend without
+    progress.
+
+  Exempt such tools with `loopKey: false` (or a `loopKey` returning `null` for
+  the call). These classes were invisible to the detector before, so no existing
+  exemption covered them; the graduated ladder gives every shape a free round and
+  an `observe` warning before anything is refused.
+
+  For `callModel` users, nothing to change — `doomLoop` is configured exactly as
+  before, and the engine declares each round for you. What changed is when it
+  fires:
+
+  ```ts
+  import { callModel } from "@openrouter/agent";
+
+  const result = callModel(client, {
+    model: "z-ai/glm-5.2",
+    input: "Summarize these files.",
+    tools: [readTool],
+    // Unchanged config; the ladder default is observe@2, block@3, stop@6.
+    doomLoop: true,
+  });
+
+  // Say the model reissues the SAME three-call fan-out every round:
+  //   round 1: read(a), read(b), read(c)
+  //   round 2: read(a), read(b), read(c)   <- identical set
+  //
+  // was: no detection, ever. Each round's first call reset the streak, so
+  //      a fan-out could spin indefinitely while single calls tripped at
+  //      round 2.
+  // now: round 2 is streak 2 (observe), round 3 is streak 3 (block) — and
+  //      EVERY call of the round is refused at the block rung, not just one,
+  //      so the fan-out stops spending.
+  //
+  // A round that ADDS work resets the ROUND streak, but each repeated call
+  // keeps its own count — the model re-read a, b, c a third time:
+  //   round 3: read(a), read(b), read(c), read(d)
+  //            -> a, b, c blocked (3rd consecutive round each); d executes.
+  //
+  // `loopKey` still runs exactly once per checked call. Persisted state gains
+  // two optional fields so fan-out and per-call evidence survive save/resume;
+  // old state restores cleanly.
+  ```
+
+  Driving `DoomLoopMonitor` directly (or porting it) is the case that needs the
+  new call — declare a round's whole batch before recording any of it.
+  `resolveDoomLoopOption` and `ResolvedDoomLoopConfig` are now exported too:
+  `DoomLoopMonitor` was previously exported without its config resolver, so it
+  could not actually be constructed from the public API.
+
+  ```ts
+  import { DoomLoopMonitor, resolveDoomLoopOption } from "@openrouter/agent";
+
+  const monitor = new DoomLoopMonitor(resolveDoomLoopOption(true));
+
+  for (const [round, batch] of batches.entries()) {
+    // NEW: declare the round's complete set BEFORE recording any of its calls,
+    // so a repeating fan-out is scored as one unit. (Per-call repetition is
+    // detected either way; the declaration adds whole-round identity.)
+    await monitor.declareRound(
+      round,
+      batch.map((call) => ({
+        toolName: call.name,
+        keyMaterial: call.arguments,
+      }))
+    );
+
+    for (const call of batch) {
+      const { verdict } = await monitor.recordToolCall(
+        call.name,
+        call.arguments,
+        round
+      );
+      if (verdict?.action === "block") refuse(call, verdict.message);
+    }
+  }
+  ```
+
+- [#97](https://github.com/OpenRouterTeam/typescript-agent/pull/97) [`a629cf1`](https://github.com/OpenRouterTeam/typescript-agent/commit/a629cf10d8eaf01adeaf04eaedc9061ad55e5db0) Thanks [@LukasParke](https://github.com/LukasParke)! - New `ModelResult.getUsage()` accessor: aggregate token/cost usage across every model call a run made.
+
+  ```ts
+  const result = callModel(client, { model, input, tools });
+
+  for await (const item of result.getItemsStream()) {
+    render(item);
+  }
+
+  // new: aggregate totals across EVERY round of the tool loop
+  const usage = await result.getUsage();
+  console.log(usage.modelCalls, usage.totalTokens, usage.cost);
+
+  // was (and still is): the FINAL round's response only
+  const response = await result.getResponse();
+  console.log(response.usage?.totalTokens);
+  ```
+
+  `getResponse()` resolves to the _final_ round's response, so in a multi-round tool loop the tokens spent on the intermediate `tool_calls` generations were unreachable — and `getItemsStream()` carries output items only, never surfacing the `response.completed` events that hold each round's usage block. Callers streaming items therefore had no way to account for a run's real token spend without registering a hook.
+
+  `await result.getUsage()` returns the same `SessionUsageTotals` shape as the `SessionEnd` hook's `totalUsage` (`modelCalls`, `inputTokens`, `outputTokens`, `totalTokens`, `cachedTokens`, `reasoningTokens`, and `cost` when the server reported it), summed over the initial request, each tool-round follow-up, the empty-final retry, the `allowFinalResponse` final turn, and approval-resume requests. It gates on run completion like `getResponse()` does, so totals are final whether awaited directly, after `getResponse()`, or after draining any streaming getter — including `getItemsStream()` (on an approval-resumed run, reading usage never advances the tool loop; await `getResponse()`/`getText()` first for final totals there). Unlike `getResponse()` it never rejects (a failed run still consumed tokens), returning the totals accrued so far.
+
+  The usage aggregate is now accumulated independently of the hook system, so it is correct for callers who configured no hooks at all; previously it only advanced as a side effect of `PostModelCall` emission. `SessionEnd.totalUsage` and `getUsage()` read from one snapshot helper and cannot drift.
+
+- [#73](https://github.com/OpenRouterTeam/typescript-agent/pull/73) [`78c562e`](https://github.com/OpenRouterTeam/typescript-agent/commit/78c562ef53da0edd84dfbcc6d6ee38a095d72b37) Thanks [@LukasParke](https://github.com/LukasParke)! - Run-level cancellation and per-request timeout composition.
+
+  New `signal` option on `callModel`: aborting it stops the tool-execution loop at the next turn boundary AND aborts the in-flight API request/stream, so a stalled provider fails fast with the abort reason instead of hanging until an outer caller/test timeout. A pre-aborted signal fails before any network dispatch.
+
+  `RequestOptions.timeoutMs` (the third `callModel` argument) now reliably bounds _each_ request the loop makes even when a signal is present: the underlying SDK skips its own `timeoutMs` wiring whenever a request carries a signal, so the engine composes `{run signal, caller signal, per-request timeout}` via `AbortSignal.any` per dispatch — each request gets a fresh timeout budget (not one shared per-run timer), and whichever bound fires first wins.
+
+- [#99](https://github.com/OpenRouterTeam/typescript-agent/pull/99) [`3028554`](https://github.com/OpenRouterTeam/typescript-agent/commit/3028554bc2aec3e3e415670043777f9898d13681) Thanks [@devin-ai-integration](https://github.com/apps/devin-ai-integration)! - Add `strict` to all client function-tool definitions, including `tool.agent()`, and pass it through serialization instead of hardcoding `strict: null`, so providers can enforce structured-outputs-style schema adherence on tool-call arguments.
+
+  The SDK forwards the caller's generated schema unchanged and propagates provider validation errors. OpenAI-style strict schemas require every object property to be listed in `required`; use Zod `.nullable()` for conceptually optional values because `.optional()` allows the key to be omitted.
+
+  ```ts
+  import { tool } from "@openrouter/agent";
+  import { z } from "zod/v4";
+
+  const searchTool = tool({
+    name: "search",
+    inputSchema: z.object({ query: z.string() }),
+    strict: true, // was: silently dropped (serialized as strict: null)
+    // now: serialized as strict: true on the wire tool definition
+    execute: async ({ query }) => runSearch(query),
+  });
+  ```
+
+### Patch Changes
+
+- [#95](https://github.com/OpenRouterTeam/typescript-agent/pull/95) [`5a7ed03`](https://github.com/OpenRouterTeam/typescript-agent/commit/5a7ed03e5acf47e640ec027dbd3c713f115a054a) Thanks [@LukasParke](https://github.com/LukasParke)! - Clarify the `validateFinalResponse` error messages so an empty final turn can't be misread as "validation rejected my tool call" (issue [#45](https://github.com/OpenRouterTeam/typescript-agent/issues/45)).
+
+  `Invalid final response: empty or invalid output` now names the actual defect: `output array is empty (length 0) for response "<id>"` — with the response id and a pointer to the `strictFinalResponse`/`allowFinalResponse` options — versus `output is not an array (got <type>)` when the payload is malformed. `Invalid final response: missing required fields` now lists which fields were absent (`id`, `output`, or both).
+
+  Diagnostics only — no behavior change. Validation remains a pure array-length check, so tool-call-only output still passes (it always did; that was the misdiagnosis in [#45](https://github.com/OpenRouterTeam/typescript-agent/issues/45)). Both historical message prefixes are unchanged, so any matcher on them keeps working.
+
+- [#91](https://github.com/OpenRouterTeam/typescript-agent/pull/91) [`231fb65`](https://github.com/OpenRouterTeam/typescript-agent/commit/231fb6578e13c0a7578e54b78392f4cff57221c9) Thanks [@w0nche0l](https://github.com/w0nche0l)! - Thread the executed tool call into the hook execute context. `context.toolCall` is part of the tool-facing contract, but only the non-streaming orchestrator populated it — the streaming `ModelResult` loop builds its turn context with just `numberOfTurns`, so `execute` / `onToolCalled` hooks saw `toolCall: undefined` on the streaming path. `buildExecuteCtx` now fills the gap from the executed call: a caller-provided `turnContext.toolCall` still wins (the orchestrator's carries `status`), and otherwise the executed `ParsedToolCall` is converted back to a wire-shaped `FunctionCallItem`. The `onResponseReceived` path intentionally threads nothing — only the `function_call_output` item is in scope there.
+
+- [#100](https://github.com/OpenRouterTeam/typescript-agent/pull/100) [`0efdbb0`](https://github.com/OpenRouterTeam/typescript-agent/commit/0efdbb0cbade947f5ad58a678e97b01f9ead07c9) Thanks [@devin-ai-integration](https://github.com/apps/devin-ai-integration)! - Relax an unchanged forced `toolChoice` (`required`, a specific tool, or `allowed_tools` with `mode: 'required'`) to `auto` after it produces a tool call, including follow-ups resumed after approval, HITL, client-tool, or async-tool pauses. Dynamically resolved choices re-arm when their semantic value changes. This lets the model synthesize a final text answer instead of being forced to call tools until the step budget runs out (DEV-785).
+
+  ```ts
+  const result = callModel(client, {
+    model: "openai/gpt-4o",
+    input: "Plan, research, then submit.",
+    tools: [planTool, searchTool, submitTool] as const,
+    toolChoice: ({ numberOfTurns }) =>
+      numberOfTurns === 0
+        ? { type: "function", name: "plan" }
+        : numberOfTurns === 3
+        ? { type: "function", name: "submit" }
+        : "auto",
+  });
+  ```
+
 ## 0.8.0
 
 ### Minor Changes

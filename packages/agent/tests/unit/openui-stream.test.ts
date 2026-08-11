@@ -5,8 +5,10 @@
  * getUiStream()'s no-tools fast path.
  */
 import type { OpenRouterCore } from '@openrouter/sdk/core';
-import { describe, expect, it } from 'vitest';
+import type * as models from '@openrouter/sdk/models';
+import { describe, expect, it, vi } from 'vitest';
 import { z } from 'zod/v4';
+import { callModel } from '../../src/inner-loop/call-model.js';
 import { ModelResult } from '../../src/lib/model-result.js';
 import { fragment } from '../../src/lib/openui/fragment.js';
 import { createLibrary, defineComponent } from '../../src/lib/openui/library.js';
@@ -15,6 +17,12 @@ import { ReusableReadableStream } from '../../src/lib/reusable-stream.js';
 import { tool } from '../../src/lib/tool.js';
 import type { ParsedToolCall, Tool } from '../../src/lib/tool-types.js';
 import { isToolUiFragmentEvent } from '../../src/lib/tool-types.js';
+
+const mockBetaResponsesSend = vi.hoisted(() => vi.fn());
+
+vi.mock('@openrouter/sdk/funcs/betaResponsesSend', () => ({
+  betaResponsesSend: mockBetaResponsesSend,
+}));
 
 const library = createLibrary([
   defineComponent({
@@ -325,6 +333,131 @@ describe('getUiStream (no-tools fast path)', () => {
       events.push(event);
     }
     expect(events).toEqual([]);
+  });
+});
+
+describe('async tool settlement', () => {
+  it('emits UI after background work settles past its grace window', async () => {
+    mockBetaResponsesSend.mockReset();
+    let release: ((value: { summary: string }) => void) | undefined;
+    const gate = new Promise<{
+      summary: string;
+    }>((resolve) => {
+      release = resolve;
+    });
+    const weather = tool({
+      name: 'weather',
+      lifecycle: 'background',
+      graceMs: 0,
+      inputSchema: z.object({
+        city: z.string(),
+      }),
+      outputSchema: z.object({
+        summary: z.string(),
+      }),
+      run: () => gate,
+      toUiOutput: ({ input, output }) => ui.Card(`${input.city}: ${output.summary}`),
+    });
+    const response = (id: string, output: models.OpenResponsesResult['output']) =>
+      ({
+        id,
+        object: 'response',
+        createdAt: 0,
+        model: 'test-model',
+        status: 'completed',
+        output,
+        error: null,
+        incompleteDetails: null,
+        tools: [],
+        toolChoice: 'auto',
+        parallelToolCalls: false,
+      }) as models.OpenResponsesResult;
+    mockBetaResponsesSend
+      .mockResolvedValueOnce({
+        ok: true,
+        value: response('r1', [
+          {
+            type: 'function_call',
+            id: 'fc1',
+            callId: 'c1',
+            name: 'weather',
+            arguments: '{"city":"Lisbon"}',
+            status: 'completed',
+          },
+        ]),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        value: response('r2', [
+          {
+            type: 'message',
+            id: 'm1',
+            role: 'assistant',
+            status: 'completed',
+            content: [
+              {
+                type: 'output_text',
+                text: 'waiting',
+                annotations: [],
+              },
+            ],
+          },
+        ]),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        value: response('r3', [
+          {
+            type: 'message',
+            id: 'm2',
+            role: 'assistant',
+            status: 'completed',
+            content: [
+              {
+                type: 'output_text',
+                text: 'done',
+                annotations: [],
+              },
+            ],
+          },
+        ]),
+      });
+
+    const result = callModel(
+      {
+        _options: {},
+      } as OpenRouterCore,
+      {
+        model: 'test-model',
+        input: 'weather',
+        tools: [
+          weather,
+        ] as const,
+        asyncTools: {
+          onRunEnd: 'drain',
+        },
+      },
+    );
+    const events: unknown[] = [];
+    async function consumeUiStream() {
+      for await (const event of result.getUiStream()) {
+        events.push(event);
+      }
+    }
+    const consuming = consumeUiStream();
+    await vi.waitFor(() => expect(mockBetaResponsesSend).toHaveBeenCalledTimes(2));
+    release?.({
+      summary: 'Clear',
+    });
+    await consuming;
+
+    expect(events).toContainEqual({
+      type: 'fragment',
+      toolCallId: 'c1',
+      toolName: 'weather',
+      dialect: 'openui-lang/0.5',
+      source: 'root = Card("Lisbon: Clear")',
+    });
   });
 });
 

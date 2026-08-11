@@ -1,7 +1,15 @@
 #!/usr/bin/env bash
 #
-# pr-gate.sh — poll a bump PR until Perry + CI reach a terminal state, then
+# pr-gate.sh — poll a bump PR until CI reaches a terminal state, then
 # squash-merge it (when AUTO_MERGE=true) or alert and leave it red.
+#
+# The gate is CI: every check on the PR (lint, tests, etc.) must be green,
+# none pending, and no CHANGES_REQUESTED review decision. A check posted by
+# an AI reviewer (perry/review, Devin Review, ...) counts like any other
+# check WHEN it appears — a red one blocks the merge — but no reviewer is
+# *required* to show up: this repo's PRs are gated on CI, and a required
+# reviewer that never runs (perry/review has never posted here) would stall
+# every train run at "waiting for perry/review".
 #
 # This is the self-gating auto-merge: GitHub-native `gh pr merge --auto` cannot
 # be relied on because the repo has no required status checks, so we poll the
@@ -58,8 +66,14 @@ fi
 GATE_LABEL="${GATE_LABEL:-@openrouter/sdk bump}"
 
 INTERVAL="${INTERVAL:-30}"
-TIMEOUT="${TIMEOUT:-1800}"      # 30 min overall
-PERRY_TIMEOUT="${PERRY_TIMEOUT:-480}" # 8 min for perry/review to appear at all
+TIMEOUT="${TIMEOUT:-1800}"      # 30 min per vetted head (resets on head adoption)
+# Hard wall-clock ceiling that NEVER resets, unlike TIMEOUT: the head-adoption
+# path restarts TIMEOUT per fresh head, so repeated changesets/action refreshes
+# could otherwise keep the loop alive past the 1-hour lifetime of the App
+# installation token the caller minted — after which every gh call 401s and
+# the failure mode turns confusing. Default 50 min leaves headroom to alert
+# cleanly while the token still works.
+MAX_WALL="${MAX_WALL:-3000}"
 SETTLE="${SETTLE:-45}"
 
 AI_REVIEWERS='perry/review|Devin Review|Graphite / AI Reviews|codex|claude'
@@ -139,18 +153,13 @@ FAIL = {"FAILURE","ERROR","CANCELLED","TIMED_OUT","ACTION_REQUIRED","STARTUP_FAI
 PENDING = {"PENDING","IN_PROGRESS","QUEUED","EXPECTED","WAITING"}
 PASS_REVIEW = {"SUCCESS","NEUTRAL","SKIPPED"}
 
-reasons = []
 ci_pending = False
-perry_present = False
-perry_terminal = False
 
 for c in checks:
     name, state = c["name"], c["state"]
     if ai.search(name):
-        if name == "perry/review":
-            perry_present = True
-            if state not in PENDING:
-                perry_terminal = True
+        # AI reviewer checks are not required to exist, but a red one that
+        # did run still blocks — it is a red check on the PR like any other.
         if state not in PASS_REVIEW and state not in PENDING:
             print(f"FAIL_REVIEWER", file=sys.stderr)
             print(f"reviewer {name}={state}")
@@ -171,25 +180,35 @@ if meta.get("reviewDecision") == "CHANGES_REQUESTED":
 # Not failing. Decide PASS vs PENDING.
 if ci_pending:
     print("PENDING", file=sys.stderr); print("CI still running"); sys.exit(0)
-if not (perry_present and perry_terminal):
-    print("PENDING", file=sys.stderr); print("waiting for perry/review"); sys.exit(0)
 if meta.get("mergeable") != "MERGEABLE":
     print("PENDING", file=sys.stderr); print(f"mergeable={meta.get('mergeable')}"); sys.exit(0)
 print("PASS", file=sys.stderr); print("all green")
 PY
 }
 
-echo "Gating PR #${PR} on ${REPO} (timeout ${TIMEOUT}s, interval ${INTERVAL}s)"
+echo "Gating PR #${PR} on ${REPO} (timeout ${TIMEOUT}s, max wall ${MAX_WALL}s, interval ${INTERVAL}s)"
 START=$(date +%s)
-# perry/review's "never appeared" clock. Reset whenever a new head is adopted
-# mid-gate: the fresh head's checks (perry included) start from scratch, so
-# measuring them against the run's original start time would misreport a
-# routine changesets/action refresh late in the poll as a token misconfig.
-PERRY_START=$START
+WALL_START=$START # never reset — see MAX_WALL above
 LAST_REASON=""
 
 while :; do
-  NOW=$(date +%s); ELAPSED=$((NOW - START)); PERRY_ELAPSED=$((NOW - PERRY_START))
+  NOW=$(date +%s); ELAPSED=$((NOW - START))
+
+  # Deadlines at the TOP of the loop, before any branch can `continue` past
+  # them: the settle re-check path loops back whenever the verdict flips away
+  # from PASS, so bottom-of-loop checks would let a PR oscillating green/
+  # not-green spin past both deadlines until the job's own 6-hour limit —
+  # long after the job's App token expired.
+  if [ "$ELAPSED" -ge "$TIMEOUT" ]; then
+    slack ":warning: ${GATE_LABEL} <${PR_URL}|PR #${PR}> did not settle within ${TIMEOUT}s (last: ${LAST_REASON:-none}). Not merging. <${RUN_URL:-$PR_URL}|run>"
+    echo "::error::Gate timed out after ${TIMEOUT}s (last: ${LAST_REASON:-none})"
+    exit 1
+  fi
+  if [ $((NOW - WALL_START)) -ge "$MAX_WALL" ]; then
+    slack ":warning: ${GATE_LABEL} <${PR_URL}|PR #${PR}> hit the ${MAX_WALL}s wall-clock ceiling (repeated head refreshes?) — stopping before the job credential expires. Re-run to continue gating. <${RUN_URL:-$PR_URL}|run>"
+    echo "::error::Gate hit the ${MAX_WALL}s wall-clock ceiling (last: ${LAST_REASON:-none})"
+    exit 1
+  fi
 
   check_hold "during the gate"
 
@@ -248,14 +267,13 @@ while :; do
           if [ -n "$NEW_VETTED" ]; then
             echo "PR #${PR} head moved ${EXPECTED_HEAD:0:7} → ${NEW_VETTED:0:7}; new diff passes the scope check — adopting vetted head and re-polling."
             EXPECTED_HEAD="$NEW_VETTED"
-            # Fresh head, fresh checks — restart both clocks. Leaving the
+            # Fresh head, fresh checks — restart the clock. Leaving the
             # overall deadline on the run's original start would misreport a
             # refresh late in the window as "did not settle" when the new
             # head's CI never had a chance to finish. Adoption requires
             # passing the scope re-vet, so this cannot extend a run
             # unboundedly on hostile pushes — those exit 1 above instead.
-            PERRY_START=$(date +%s)
-            START=$PERRY_START
+            START=$(date +%s)
             LAST_REASON=""
             continue
           fi
@@ -276,7 +294,7 @@ while :; do
         # where nobody is watching the run and the PR would sit unmerged
         # until the next scheduled attempt.
         if gh pr merge "$PR" -R "$REPO" --squash --delete-branch "${MATCH_ARGS[@]}"; then
-          slack ":white_check_mark: ${GATE_LABEL} <${PR_URL}|PR #${PR}> passed Perry + CI and was auto-merged."
+          slack ":white_check_mark: ${GATE_LABEL} <${PR_URL}|PR #${PR}> passed CI and was auto-merged."
         else
           slack ":x: ${GATE_LABEL} <${PR_URL}|PR #${PR}>: checks passed but the merge itself failed (branch protection? conflict?). Left open for a human. <${RUN_URL:-$PR_URL}|run>"
           echo "::error::gh pr merge failed for PR #${PR}"
@@ -288,21 +306,7 @@ while :; do
       fi
       exit 0
       ;;
-    PENDING)
-      # If perry/review never even shows up, the PR was likely opened with a
-      # token that doesn't trigger it — surface that rather than hang forever.
-      if [ "$REASON" = "waiting for perry/review" ] && [ "$PERRY_ELAPSED" -ge "$PERRY_TIMEOUT" ]; then
-        slack ":warning: ${GATE_LABEL} <${PR_URL}|PR #${PR}>: perry/review never appeared after ${PERRY_TIMEOUT}s (token/app misconfig?). Not merging. <${RUN_URL:-$PR_URL}|run>"
-        echo "::error::perry/review did not appear within ${PERRY_TIMEOUT}s"
-        exit 1
-      fi
-      ;;
   esac
 
-  if [ "$ELAPSED" -ge "$TIMEOUT" ]; then
-    slack ":warning: ${GATE_LABEL} <${PR_URL}|PR #${PR}> did not settle within ${TIMEOUT}s (last: ${REASON}). Not merging. <${RUN_URL:-$PR_URL}|run>"
-    echo "::error::Gate timed out after ${TIMEOUT}s (last: ${REASON})"
-    exit 1
-  fi
   sleep "$INTERVAL"
 done

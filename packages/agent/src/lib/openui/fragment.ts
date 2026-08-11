@@ -12,7 +12,7 @@ import * as z4 from 'zod/v4';
 import type { UiExpr, UiFragment, UiLiteralValue } from './document.js';
 import { OPENUI_LANG_DIALECT, OPENUI_ROOT_REF, serializeExpr } from './document.js';
 import type { UiLibrary } from './library.js';
-import { componentProps } from './library.js';
+import { componentProps, OPENUI_BUILTIN_COMPONENTS } from './library.js';
 
 const FRAGMENT_EXPR: unique symbol = Symbol.for('openrouter.openui.fragment-expr');
 
@@ -109,7 +109,10 @@ export function uiBuiltin(fn: string, ...args: FragmentArg[]): FragmentNode {
 }
 
 /** One constructor per component: builds a validated fragment node. */
-export type FragmentBuilder<N extends string> = Record<N, (...args: FragmentArg[]) => FragmentNode>;
+export type FragmentBuilder<N extends string> = Record<
+  N | (typeof OPENUI_BUILTIN_COMPONENTS)[number],
+  (...args: FragmentArg[]) => FragmentNode
+>;
 
 /**
  * Compile a typed fragment builder from a library.
@@ -152,7 +155,14 @@ export function fragment<N extends string>(library: UiLibrary<N>): FragmentBuild
       });
     };
   }
-  // Keys are exactly the library's component names; TS can't see that through
-  // the Map iteration, so cast at the boundary.
+  for (const name of OPENUI_BUILTIN_COMPONENTS) {
+    builder[name] ??= (...args: FragmentArg[]) =>
+      makeNode(library.dialect, {
+        kind: 'call',
+        fn: name,
+        builtin: false,
+        args: args.map(toExpr),
+      });
+  }
   return builder as FragmentBuilder<N>;
 }

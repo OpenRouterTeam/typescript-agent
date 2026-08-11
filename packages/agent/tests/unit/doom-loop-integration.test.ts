@@ -21,6 +21,7 @@ vi.mock('@openrouter/sdk/funcs/betaResponsesSend', () => ({
 }));
 
 import { callModel } from '../../src/inner-loop/call-model.js';
+import { resolveLoopKeyMaterial } from '../../src/lib/doom-loop.js';
 import { HooksManager } from '../../src/lib/hooks-manager.js';
 import type { DoomLoopDetectedPayload } from '../../src/lib/hooks-schemas.js';
 import { tool } from '../../src/lib/tool.js';
@@ -107,6 +108,52 @@ function textTurn(text: string): models.OpenResponsesResult {
   ]);
 }
 
+/** A turn fanning one tool out over several argument sets in parallel. */
+function fanOutTurn(name: string, argsList: readonly unknown[]): models.OpenResponsesResult {
+  return baseResponse(
+    argsList.map((args) => {
+      callCounter++;
+      return {
+        type: 'function_call',
+        id: `fc_${callCounter}`,
+        callId: `call_${callCounter}`,
+        name,
+        arguments: JSON.stringify(args),
+        status: 'completed',
+      };
+    }),
+  );
+}
+
+/** A turn with two parallel tool calls, for mixed-batch scenarios. */
+function twoToolCallTurn(
+  first: [
+    string,
+    unknown,
+  ],
+  second: [
+    string,
+    unknown,
+  ],
+): models.OpenResponsesResult {
+  return baseResponse(
+    [
+      first,
+      second,
+    ].map(([name, args]) => {
+      callCounter++;
+      return {
+        type: 'function_call',
+        id: `fc_${callCounter}`,
+        callId: `call_${callCounter}`,
+        name,
+        arguments: JSON.stringify(args),
+        status: 'completed',
+      };
+    }),
+  );
+}
+
 /** Queue scripted turns; the "LLM" plays them back in order. */
 function scriptModelTurns(...turns: models.OpenResponsesResult[]) {
   for (const turn of turns) {
@@ -186,6 +233,219 @@ beforeEach(() => {
 // ---------------------------------------------------------------------------
 // Scenario 1: identical tool calls, turn after turn
 // ---------------------------------------------------------------------------
+
+describe('simulated LLM repeating a distinct-argument fan-out', () => {
+  it('escalates observe -> block through callModel and stops the whole fan-out', async () => {
+    /*
+     * End to end through the engine, not the monitor: exercises the
+     * `beginDoomLoopRound` declaration filter chain that must mirror every
+     * record-skip path (see the INVARIANT comment there). A regression in
+     * that mirroring degrades fan-out detection silently; only a scripted
+     * multi-round fan-out through `callModel` catches it loudly.
+     */
+    const executed: string[] = [];
+    const readTool = tool({
+      name: 'read',
+      inputSchema: z.object({
+        path: z.string(),
+      }),
+      outputSchema: z.object({
+        content: z.string(),
+      }),
+      execute: async ({ path }) => {
+        executed.push(path);
+        return {
+          content: `contents of ${path}`,
+        };
+      },
+    });
+
+    const detections: DoomLoopDetectedPayload[] = [];
+    const hooks = new HooksManager();
+    hooks.on('DoomLoopDetected', {
+      handler: (payload) => {
+        detections.push(payload);
+      },
+    });
+
+    /* The same 3-call fan-out, four rounds running, then recovery. */
+    const paths = [
+      {
+        path: 'a',
+      },
+      {
+        path: 'b',
+      },
+      {
+        path: 'c',
+      },
+    ];
+    scriptModelTurns(
+      fanOutTurn('read', paths),
+      fanOutTurn('read', paths),
+      fanOutTurn('read', paths),
+      fanOutTurn('read', paths),
+      textTurn('recovered'),
+    );
+
+    const text = await callModel(client, {
+      model: 'test-model',
+      input: 'Summarize these files.',
+      tools: [
+        readTool,
+      ] as const,
+      doomLoop: true,
+      hooks,
+    }).getText();
+
+    /* The run recovers once the model changes course. */
+    expect(text).toBe('recovered');
+
+    /*
+     * Round 2 observes all three calls; rounds 3-4 block all three. The
+     * block rung stops the WHOLE fan-out spending: only rounds 1-2 execute.
+     */
+    expect(
+      detections.map((d) => [
+        d.action,
+        d.streak,
+      ]),
+    ).toEqual([
+      [
+        'observe',
+        2,
+      ],
+      [
+        'observe',
+        2,
+      ],
+      [
+        'observe',
+        2,
+      ],
+      [
+        'block',
+        3,
+      ],
+      [
+        'block',
+        3,
+      ],
+      [
+        'block',
+        3,
+      ],
+      [
+        'block',
+        4,
+      ],
+      [
+        'block',
+        4,
+      ],
+      [
+        'block',
+        4,
+      ],
+    ]);
+    expect(executed).toEqual([
+      'a',
+      'b',
+      'c',
+      'a',
+      'b',
+      'c',
+    ]);
+
+    /*
+     * The verdicts must come from the ROUND detector, not merely per-call
+     * counts. For an exactly-repeating fan-out both detectors produce the
+     * same actions and streaks, so a corrupted declaration (a phantom member,
+     * or a member wrongly filtered out) is invisible to the assertions above
+     * — the per-call counts mask it. The message form is the discriminator:
+     * round verdicts name the set ("same set of 3 parallel calls"), per-call
+     * verdicts name a single repeated call. Asserting the round form pins the
+     * `beginDoomLoopRound` declaration end to end.
+     */
+    for (const detection of detections) {
+      expect(detection.message).toContain('same set of 3 parallel calls');
+    }
+  });
+});
+
+describe('simulated LLM emitting duplicate call ids', () => {
+  it('a repeat sharing its id with a varying sibling is still detected', async () => {
+    /*
+     * Call ids are model-emitted; nothing upstream enforces uniqueness. The
+     * loop-key cache is keyed by id, and last-write-wins aliasing meant the
+     * first call's checkpoint read the SECOND call's key material — its true
+     * fingerprint was never recorded, so `(id=X, read a), (id=X, read b_i)`
+     * each round evaded the per-call detector for `a` entirely (measured:
+     * zero detections in four rounds). A colliding id now poisons its cache
+     * entry and both calls fall through to per-call resolution.
+     */
+    const readTool = tool({
+      name: 'read',
+      inputSchema: z.object({
+        path: z.string(),
+      }),
+      outputSchema: z.object({
+        content: z.string(),
+      }),
+      execute: async ({ path }) => ({
+        content: path,
+      }),
+    });
+    const detections: DoomLoopDetectedPayload[] = [];
+    const hooks = new HooksManager();
+    hooks.on('DoomLoopDetected', {
+      handler: (payload) => {
+        detections.push(payload);
+      },
+    });
+
+    /* Every round: repeated `a` and a fresh `b<i>`, BOTH with callId X. */
+    const dupIdTurn = (round: number): models.OpenResponsesResult =>
+      baseResponse(
+        [
+          {
+            path: 'a',
+          },
+          {
+            path: `b${round}`,
+          },
+        ].map((args, index) => {
+          callCounter++;
+          return {
+            type: 'function_call',
+            id: `fc_${callCounter}_${index}`,
+            callId: 'call_X',
+            name: 'read',
+            arguments: JSON.stringify(args),
+            status: 'completed',
+          };
+        }),
+      );
+    scriptModelTurns(dupIdTurn(0), dupIdTurn(1), dupIdTurn(2), dupIdTurn(3), textTurn('done'));
+
+    await callModel(client, {
+      model: 'test-model',
+      input: 'go',
+      tools: [
+        readTool,
+      ] as const,
+      doomLoop: true,
+      hooks,
+    })
+      .getText()
+      .catch(() => undefined);
+
+    /* The repeated `a` accumulates despite the id collision. */
+    const actions = detections.map((detection) => detection.action);
+    expect(actions).toContain('observe');
+    expect(actions).toContain('block');
+  });
+});
 
 describe('simulated LLM repeating the same tool call', () => {
   it('observes at 2, blocks at 3 with an explanatory tool error, and lets the model recover', async () => {
@@ -876,6 +1136,60 @@ describe('tool-declared loopKey', () => {
       warn.mockRestore();
     }
   });
+
+  it('resolveLoopKeyMaterial can throw, so its callers must guard it', async () => {
+    /*
+     * `resolveLoopKeyMaterial` catches a throwing `loopKey`, but it can still
+     * throw on its own: the field-list form does `field in args` and
+     * `args[field]`, so a getter or proxy trap on the arguments object escapes
+     * it uncaught. Pinned here because `beginDoomLoopRound` resolves the WHOLE
+     * batch up front — an unguarded throw there fails the round and the run
+     * over one odd call, instead of costing detection for that call alone,
+     * which would break the invariant that detection only ever affects a run
+     * through a ladder action.
+     *
+     * NOT reachable through `callModel` today: tool arguments come from
+     * `JSON.parse` (stream-transformers.ts), so they are always plain objects,
+     * and `PreToolUse` argument mutation happens after the round is declared.
+     * It IS reachable for direct callers — `resolveLoopKeyMaterial` and
+     * `DoomLoopMonitor` are both exported — and for SDK ports that construct
+     * key material differently. Both call sites are guarded regardless; this
+     * test pins the throw itself so a future refactor cannot quietly remove
+     * the need for those guards.
+     */
+    const throwingGetter = {} as Record<string, unknown>;
+    Object.defineProperty(throwingGetter, 'command', {
+      enumerable: true,
+      get() {
+        throw new Error('getter boom');
+      },
+    });
+    expect(() =>
+      resolveLoopKeyMaterial(
+        [
+          'command',
+        ],
+        throwingGetter,
+      ),
+    ).toThrow('getter boom');
+
+    const hostileProxy = new Proxy(
+      {},
+      {
+        has() {
+          throw new Error('has boom');
+        },
+      },
+    ) as Record<string, unknown>;
+    expect(() =>
+      resolveLoopKeyMaterial(
+        [
+          'command',
+        ],
+        hostileProxy,
+      ),
+    ).toThrow('has boom');
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -1068,5 +1382,129 @@ describe('doom-loop state persistence', () => {
     // Plain JSON: survives stringify/parse byte-identically.
     const roundTripped = JSON.parse(JSON.stringify(state)) as ConversationState<readonly Tool[]>;
     expect(roundTripped.doomLoop).toEqual(state.doomLoop);
+  });
+
+  it('invokes a tool-supplied loopKey exactly once per call', async () => {
+    /*
+     * `loopKey` is user code: it may count, log, or return a fresh value each
+     * time. Declaring a round's identity up front resolves it once for the
+     * batch, and the per-call checkpoint must reuse that resolution rather
+     * than invoking the callback a second time — otherwise a callback with
+     * side effects sees double the activity, and a non-repeatable one makes
+     * the declared and recorded identities disagree.
+     */
+    const loopKeySpy = vi.fn(({ query }: { query: string }) => query.trim().toLowerCase());
+    const countedSearch = tool({
+      name: 'web_search',
+      inputSchema: z.object({
+        query: z.string(),
+      }),
+      outputSchema: z.object({
+        results: z.array(z.string()),
+      }),
+      loopKey: loopKeySpy,
+      execute: async ({ query }) => ({
+        results: [
+          `result for ${query}`,
+        ],
+      }),
+    });
+
+    scriptModelTurns(
+      toolCallTurn('web_search', {
+        query: 'first',
+      }),
+      toolCallTurn('web_search', {
+        query: 'second',
+      }),
+      textTurn('Done.'),
+    );
+
+    await callModel(client, {
+      model: 'test-model',
+      input: 'Search twice.',
+      tools: [
+        countedSearch,
+      ] as const,
+      doomLoop: true,
+    }).getText();
+
+    /* Two calls issued, so exactly two invocations — not four. */
+    expect(loopKeySpy).toHaveBeenCalledTimes(2);
+  });
+
+  it('never invokes loopKey for a manual call the detector will not check', async () => {
+    /*
+     * A manual tool (no `execute`, no `onToolCalled`) is handed to the caller
+     * to resolve externally and is never recorded as loop evidence. Declaring
+     * a round must therefore skip it: `loopKey` is user code, and running it
+     * for a call the detector never evaluates is activity the caller cannot
+     * account for. Every execution path skips these with the same
+     * `isAutoResolvableTool` predicate the declaration now uses.
+     */
+    const manualLoopKey = vi.fn(({ query }: { query: string }) => query);
+    const manualTool = tool({
+      name: 'ask_human',
+      inputSchema: z.object({
+        query: z.string(),
+      }),
+      outputSchema: z.object({
+        answer: z.string(),
+      }),
+      loopKey: manualLoopKey,
+    });
+    const executableLoopKey = vi.fn(({ query }: { query: string }) => query);
+    const executableTool = tool({
+      name: 'web_search',
+      inputSchema: z.object({
+        query: z.string(),
+      }),
+      outputSchema: z.object({
+        results: z.array(z.string()),
+      }),
+      loopKey: executableLoopKey,
+      execute: async ({ query }) => ({
+        results: [
+          query,
+        ],
+      }),
+    });
+
+    /*
+     * MIXED batch: an all-manual round never reaches the doom-loop round at
+     * all (`hasExecutableToolCalls` guards it), so the manual call has to ride
+     * alongside an executable one for the declaration to be reached.
+     */
+    scriptModelTurns(
+      twoToolCallTurn(
+        [
+          'web_search',
+          {
+            query: 'go',
+          },
+        ],
+        [
+          'ask_human',
+          {
+            query: 'what now?',
+          },
+        ],
+      ),
+    );
+
+    await callModel(client, {
+      model: 'test-model',
+      input: 'Search, and ask me something.',
+      tools: [
+        executableTool,
+        manualTool,
+      ] as const,
+      doomLoop: true,
+    }).getText();
+
+    /* The executable call is checked, so its loopKey runs exactly once. */
+    expect(executableLoopKey).toHaveBeenCalledTimes(1);
+    /* The manual call is never recorded, so its loopKey must not run at all. */
+    expect(manualLoopKey).not.toHaveBeenCalled();
   });
 });

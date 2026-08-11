@@ -5,7 +5,8 @@ import type { CallModelInput } from '../lib/async-params.js';
 import { resolveHooks } from '../lib/hooks-resolve.js';
 import type { GetResponseOptions } from '../lib/model-result.js';
 import { ModelResult } from '../lib/model-result.js';
-import { convertToolsToAPIFormat } from '../lib/tool-executor.js';
+import { buildTaskToolApiDefinition, needsTaskTool } from '../lib/tool-check.js';
+import { convertToolsToAPIFormat, convertZodToJsonSchema } from '../lib/tool-executor.js';
 import type { Tool } from '../lib/tool-types.js';
 
 // Re-export CallModelInput for convenience
@@ -109,11 +110,24 @@ export function callModel<
     hooks,
     doomLoop,
     signal,
+    toolTimeoutMs,
+    toolConcurrency,
+    asyncTools,
     ...apiRequest
   } = request;
 
   // Convert tools to API format - no cast needed now that convertToolsToAPIFormat accepts readonly
   const apiTools = tools ? convertToolsToAPIFormat(tools) : undefined;
+
+  // Append the single universal `task` tool when any long-running tool is
+  // registered (and check-ins aren't disabled): ONE static wire definition
+  // for check/steer/result/cancel across every async tool — per-tool
+  // context cost stays constant regardless of the tool count. Appended
+  // here (not per-request in ModelResult) so `resolvedRequest.tools` stays
+  // stable across turns. Calls to it are engine-intercepted.
+  if (apiTools && tools && asyncTools?.checkins !== false && needsTaskTool(tools)) {
+    apiTools.push(buildTaskToolApiDefinition(convertZodToJsonSchema));
+  }
 
   // Build the request with converted tools
   // Note: async functions are resolved later in ModelResult.executeToolsIfNeeded()
@@ -159,6 +173,9 @@ export function callModel<
     hooks: hooks !== undefined ? resolveHooks(hooks) : undefined,
     doomLoop,
     signal,
+    toolTimeoutMs,
+    toolConcurrency,
+    asyncTools,
   };
   for (const key of Object.keys(engineOptions)) {
     if (engineOptions[key] === undefined) {

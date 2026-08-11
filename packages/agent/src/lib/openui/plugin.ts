@@ -72,7 +72,7 @@ function buildPlugin(library: UiLibrary): OpenUiPlugin {
         component.description = def.description;
       }
       if (def.props !== undefined) {
-        component.props = convertZodToJsonSchema(def.props);
+        component.props = convertZodToJsonSchema(def.props, 'input');
       }
       return component;
     }),

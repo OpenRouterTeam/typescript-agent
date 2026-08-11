@@ -193,7 +193,7 @@ describe('fingerprints (cross-port vectors)', () => {
 });
 
 // ---------------------------------------------------------------------------
-// loopKey resolution (function | field list | false | absent)
+// loopKey resolution (function | false | absent)
 // ---------------------------------------------------------------------------
 
 describe('resolveLoopKeyMaterial', () => {

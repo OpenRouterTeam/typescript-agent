@@ -1,6 +1,6 @@
 {
   "name": "@openrouter/agent",
-  "version": "0.8.0",
+  "version": "0.9.0",
   "author": "OpenRouter",
   "description": "Agent toolkit for building AI applications with OpenRouter — tool orchestration, streaming, multi-turn conversations, and format compatibility.",
   "keywords": [
@@ -96,7 +96,31 @@
       "types": "./esm/openrouter.d.ts",
       "default": "./esm/openrouter.js"
     },
-    "./package.json": "./package.json"
+    "./package.json": "./package.json",
+    "./tool-concurrency": {
+      "types": "./esm/lib/tool-concurrency.d.ts",
+      "default": "./esm/lib/tool-concurrency.js"
+    },
+    "./async-tool-registry": {
+      "types": "./esm/lib/async-tool-registry.d.ts",
+      "default": "./esm/lib/async-tool-registry.js"
+    },
+    "./resume-tool-results": {
+      "types": "./esm/inner-loop/resume-tool-results.d.ts",
+      "default": "./esm/inner-loop/resume-tool-results.js"
+    },
+    "./tool-task": {
+      "types": "./esm/lib/tool-task.d.ts",
+      "default": "./esm/lib/tool-task.js"
+    },
+    "./tool-check": {
+      "types": "./esm/lib/tool-check.d.ts",
+      "default": "./esm/lib/tool-check.js"
+    },
+    "./agent-tool": {
+      "types": "./esm/lib/agent-tool.d.ts",
+      "default": "./esm/lib/agent-tool.js"
+    }
   },
   "sideEffects": false,
   "repository": {
@@ -118,7 +142,7 @@
     "lint:fix": "biome check --write src tests",
     "build": "tsc",
     "test": "vitest --run --project unit",
-    "test:e2e": "vitest --run --project e2e",
+    "test:e2e": "vitest --run --project e2e --coverage.enabled=false",
     "test:watch": "vitest --watch --project unit",
     "typecheck": "tsc --noEmit -p tsconfig.typecheck.json",
     "compile": "tsc"

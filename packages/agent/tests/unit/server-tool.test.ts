@@ -96,6 +96,106 @@ describe('convertToolsToAPIFormat', () => {
     });
   });
 
+  it('serializes strict: true from the tool definition', () => {
+    const strictTool = tool({
+      name: 'echo',
+      inputSchema: z.object({
+        msg: z.string(),
+      }),
+      strict: true,
+      execute: ({ msg }) => msg,
+    });
+    const api = convertToolsToAPIFormat([
+      strictTool,
+    ]);
+    expect(api[0]).toMatchObject({
+      type: 'function',
+      name: 'echo',
+      strict: true,
+    });
+  });
+
+  it('serializes strict: true from a unified run tool', () => {
+    const strictRunTool = tool({
+      name: 'run-echo',
+      inputSchema: z.object({
+        msg: z.string(),
+      }),
+      strict: true,
+      lifecycle: 'sync',
+      run: ({ msg }) => msg,
+    });
+    const api = convertToolsToAPIFormat([
+      strictRunTool,
+    ]);
+    expect(api[0]).toMatchObject({
+      type: 'function',
+      name: 'run-echo',
+      strict: true,
+    });
+  });
+
+  it('serializes strict: true from an agent tool', () => {
+    const strictAgentTool = tool.agent({
+      name: 'research',
+      inputSchema: z.object({
+        topic: z.string(),
+      }),
+      outputSchema: z.object({
+        text: z.string(),
+      }),
+      strict: true,
+      agent: ({ topic }) => ({
+        model: 'test-model',
+        input: topic,
+      }),
+    });
+    const api = convertToolsToAPIFormat([
+      strictAgentTool,
+    ]);
+    expect(api[0]).toMatchObject({
+      type: 'function',
+      name: 'research',
+      strict: true,
+    });
+  });
+
+  it('serializes strict: false as false instead of null', () => {
+    const nonStrictTool = tool({
+      name: 'echo',
+      inputSchema: z.object({
+        msg: z.string(),
+      }),
+      strict: false,
+      execute: ({ msg }) => msg,
+    });
+    const api = convertToolsToAPIFormat([
+      nonStrictTool,
+    ]);
+    expect(api[0]).toMatchObject({
+      type: 'function',
+      strict: false,
+    });
+    expect(api[0]?.strict).not.toBeNull();
+  });
+
+  it('defaults strict to null when not declared', () => {
+    const plainTool = tool({
+      name: 'echo',
+      inputSchema: z.object({
+        msg: z.string(),
+      }),
+      execute: ({ msg }) => msg,
+    });
+    const api = convertToolsToAPIFormat([
+      plainTool,
+    ]);
+    expect(api[0]).toMatchObject({
+      type: 'function',
+      strict: null,
+    });
+  });
+
   it('mixes client + server tools in one array', () => {
     const clientTool = tool({
       name: 'echo',

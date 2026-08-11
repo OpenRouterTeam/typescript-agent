@@ -29,6 +29,24 @@ export class ReusableReadableStream<T> {
   }
 
   /**
+   * Synchronously scan the retained buffer from the end, returning the
+   * last item matching `predicate`. Sees only what has been buffered so
+   * far — call once `isComplete` to cover the whole stream. Unlike a
+   * consumer replay, this costs no per-item microtask hop, so teardown
+   * paths can locate the completion event without re-walking a large
+   * buffer asynchronously.
+   */
+  findLastBuffered(predicate: (item: T) => boolean): T | undefined {
+    for (let i = this.buffer.length - 1; i >= 0; i--) {
+      const item = this.buffer[i]!;
+      if (predicate(item)) {
+        return item;
+      }
+    }
+    return undefined;
+  }
+
+  /**
    * Create a new consumer that can independently iterate over the stream.
    * Multiple consumers can be created and will all receive the same data.
    */

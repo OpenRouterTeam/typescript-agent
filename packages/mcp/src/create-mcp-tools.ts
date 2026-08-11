@@ -49,6 +49,9 @@ const FORWARDED_REHYDRATE_KEYS = [
   'loopKeys',
   'autoRefreshOnListChanged',
   'cacheCredentials',
+  'protocolNegotiation',
+  'probeTimeoutMs',
+  'staleness',
 ] as const satisfies readonly (keyof CreateMCPToolsOptions & keyof RehydrateMCPToolsOptions)[];
 
 /** Copy the defined forwarded options from `createMCPTools` into a rehydrate base. */
@@ -72,7 +75,21 @@ async function tryCacheHit(
   store: MCPCacheStore,
   cacheKey: string,
 ): Promise<MCPToolsHandle | undefined> {
-  const snapshot = await store.get(cacheKey);
+  // A failed read is a miss, not a failure. The cache exists to skip a
+  // listTools() round trip; a store blip on the lookup must not reject a call
+  // that a plain miss would have served via a fresh connect. This mirrors the
+  // write side, which is best-effort everywhere — without it, "a store outage
+  // leaves you with a working handle" only held if the outage arrived after
+  // the read. Wrapped in try/catch rather than `.catch()`: `MCPCacheStore.get`
+  // may return synchronously, and a synchronous throw would bypass a
+  // promise-level handler — the exact hole `closeQuietly` exists to plug on
+  // the teardown side.
+  let snapshot: Awaited<ReturnType<MCPCacheStore['get']>> | undefined;
+  try {
+    snapshot = await store.get(cacheKey);
+  } catch {
+    snapshot = undefined;
+  }
   if (snapshot === null || snapshot === undefined || !isSerializedMCPServer(snapshot)) {
     return undefined;
   }
