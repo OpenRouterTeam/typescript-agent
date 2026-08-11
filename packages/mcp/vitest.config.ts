@@ -11,7 +11,6 @@ export default defineConfig({
       enabled: true,
       provider: 'v8',
       include: ['src/**/*.ts'],
-      exclude: ['src/close-quietly.ts', 'src/version.ts'],
       reporter: ['text', 'json-summary', 'html'],
       // Coverage ratchet: thresholds are pinned at current levels. Any PR
       // that lowers coverage fails the unit-test job. When you raise
