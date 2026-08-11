@@ -47,10 +47,10 @@ import { PACKAGE_VERSION } from './version.js';
  */
 const DEFAULT_PROBE_TIMEOUT_MS = 30_000;
 
-// Self-reported to every MCP server we connect to as `clientInfo`. The version
-// is generated from package.json (scripts/gen-version.mjs) so it cannot drift.
+// Self-reported to every MCP server we connect to as `clientInfo`. Both the
+// implementation and generated version belong to the agent package.
 const DEFAULT_CLIENT_INFO = {
-  name: '@openrouter/mcp',
+  name: '@openrouter/agent',
   version: PACKAGE_VERSION,
 };
 

@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import agentPackage from '../../../package.json' with { type: 'json' };
 import { MCPConnectionError } from '../../../src/mcp/errors.js';
 
 // These tests exercise the real `connect()` — the transport selection and the
@@ -585,10 +586,11 @@ describe('connect clientInfo', () => {
 
     expect(state.clientInfos).toEqual([
       {
-        name: '@openrouter/mcp',
+        name: agentPackage.name,
         version: PACKAGE_VERSION,
       },
     ]);
+    expect(PACKAGE_VERSION).toBe(agentPackage.version);
     await conn.close();
   });
 
@@ -622,11 +624,11 @@ describe('connect clientInfo', () => {
     // not see a different client than the one that just probed it.
     expect(state.clientInfos).toEqual([
       {
-        name: '@openrouter/mcp',
+        name: agentPackage.name,
         version: PACKAGE_VERSION,
       },
       {
-        name: '@openrouter/mcp',
+        name: agentPackage.name,
         version: PACKAGE_VERSION,
       },
     ]);
