@@ -10,10 +10,13 @@ import { callModel, OpenRouter, serverTool, tool } from '@openrouter/agent';
 import { createToolSet } from '@openrouter/agent-tool-set';
 import { z } from 'zod/v4';
 
-const listOrders = tool({
+type AppContext = { accountId: string };
+
+// Curried form preserves the literal name for correlated tool event types.
+const listOrders = tool<AppContext>()({
   name: 'list_orders',
   inputSchema: z.object({}),
-  execute: async () => ({ orders: [] }),
+  execute: async (_params, ctx) => ({ accountId: ctx?.shared.accountId, orders: [] }),
 });
 // override the default `server:${type}` id
 const search = serverTool({ type: 'web_search_2025_08_26' }, { id: 'public_search' });

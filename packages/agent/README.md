@@ -939,19 +939,40 @@ const result = callModel(client, {
 
 ### Shared Context
 
-Share mutable state across all tools in a conversation:
+Share mutable state across all tools in a conversation. When typing
+`ctx.shared` explicitly, use the curried `tool<SharedContext>()({...})` form:
 
 ```typescript
+type SharedContext = {
+  processedIds: string[];
+};
+
+const processItem = tool<SharedContext>()({
+  name: 'process_item',
+  inputSchema: z.object({ id: z.string() }),
+  execute: async ({ id }, ctx) => {
+    ctx?.setSharedContext({ processedIds: [...ctx.shared.processedIds, id] });
+    return { processed: id };
+  },
+});
+
 const result = callModel(client, {
   model: 'openai/gpt-4o',
   input: 'Process these items',
-  tools: [toolA, toolB] as const,
+  tools: [processItem] as const,
   sharedContextSchema: z.object({ processedIds: z.array(z.string()) }),
   context: {
     shared: { processedIds: [] },
   },
 });
 ```
+
+The direct `tool<SharedContext>({...})` syntax remains supported for backward
+compatibility, but its returned tool name is typed as `string`. TypeScript
+cannot partially infer trailing generics after an explicit `TShared`, so the
+curried form is required when event types must correlate on a literal tool name.
+Calls without an explicit shared-context type, such as `tool({...})`, continue
+to infer literal names normally.
 
 ### Conversation State Management
 

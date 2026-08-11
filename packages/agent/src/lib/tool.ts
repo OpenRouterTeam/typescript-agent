@@ -375,9 +375,11 @@ type RegularToolConfig<
  * - **Regular tool**: When `execute` is a function (no `eventSchema`)
  * - **Manual tool**: When `execute: false` is set
  *
- * Shared context typing: Pass a type parameter to type `ctx.shared`
- * in the execute callback. Runtime validation happens at callModel
- * via `sharedContextSchema`.
+ * Shared context typing: Use `tool<TShared>()({...})` to type `ctx.shared`
+ * and preserve the tool's literal name. The backward-compatible direct form
+ * `tool<TShared>({...})` is also supported, but its returned name is `string`
+ * because TypeScript cannot infer trailing type parameters after an explicit
+ * `TShared`. Runtime validation happens at callModel via `sharedContextSchema`.
  *
  * @example Regular tool with typed shared context:
  * ```typescript
