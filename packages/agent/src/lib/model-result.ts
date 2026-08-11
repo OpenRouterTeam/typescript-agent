@@ -661,8 +661,9 @@ export class ModelResult<
         output: models.FunctionCallOutputItem;
       }
   >();
-  // Approval is idempotent per response occurrence, call id, argument state,
-  // and phase. This distinguishes a newly emitted call that reuses an id.
+  // Approval is idempotent per response occurrence, call identity, arguments,
+  // duplicate occurrence, and phase. This distinguishes both reused ids and
+  // identical duplicate calls within one response.
   private readonly completedApprovalGates = new Set<string>();
   private readonly approvalResponseOccurrences = new WeakMap<object, number>();
   private nextApprovalResponseOccurrence = 0;
@@ -2655,30 +2656,50 @@ export class ModelResult<
     return `${response.id}:${occurrence}`;
   }
 
-  private approvalGateKey(
-    toolCall: ParsedToolCall<Tool>,
-    phase: 'initial' | 'mutated',
-    responseKey: string,
-  ): string {
+  private approvalCallIdentity(toolCall: ParsedToolCall<Tool>): string {
     try {
       return JSON.stringify([
-        phase,
-        responseKey,
         toolCall.id,
-        {
-          canonical: canonicalizeKeyMaterial(toolCall.arguments),
-        },
+        toolCall.name,
+        canonicalizeKeyMaterial(toolCall.arguments),
       ]);
     } catch {
       return JSON.stringify([
-        phase,
-        responseKey,
         toolCall.id,
+        toolCall.name,
         {
           uncanonicalizable: this.nextApprovalGateFallback++,
         },
       ]);
     }
+  }
+
+  private approvalGateKey(
+    toolCall: ParsedToolCall<Tool>,
+    phase: 'initial' | 'mutated',
+    responseKey: string,
+    occurrence: number,
+  ): string {
+    return JSON.stringify([
+      phase,
+      responseKey,
+      this.approvalCallIdentity(toolCall),
+      occurrence,
+    ]);
+  }
+
+  private approvalCallOccurrences(
+    toolCalls: ParsedToolCall<Tool>[],
+  ): Map<ParsedToolCall<Tool>, number> {
+    const counts = new Map<string, number>();
+    const occurrences = new Map<ParsedToolCall<Tool>, number>();
+    for (const toolCall of toolCalls) {
+      const identity = this.approvalCallIdentity(toolCall);
+      const occurrence = counts.get(identity) ?? 0;
+      counts.set(identity, occurrence + 1);
+      occurrences.set(toolCall, occurrence);
+    }
+    return occurrences;
   }
 
   /** Re-check only approval sources whose answer can depend on input. */
@@ -2765,6 +2786,7 @@ export class ModelResult<
     toolCall: ParsedToolCall<Tool>,
     context: TurnContext,
     responseKey: string,
+    occurrence: number,
   ): Promise<'ready' | 'blocked' | 'pending'> {
     const effective = await this.prepareToolCallForApproval(toolCall);
     const prepared = this.preparedToolCalls.get(toolCall.id);
@@ -2775,7 +2797,7 @@ export class ModelResult<
     if ((await this.validatePreparedMutation(effective)) === 'blocked') {
       return 'blocked';
     }
-    const key = this.approvalGateKey(effective, 'mutated', responseKey);
+    const key = this.approvalGateKey(effective, 'mutated', responseKey, occurrence);
     if (this.completedApprovalGates.has(key)) {
       return 'ready';
     }
@@ -3012,6 +3034,7 @@ export class ModelResult<
   private async classifyInitialApprovalCalls(
     toolCalls: ParsedToolCall<Tool>[],
     responseKey: string,
+    occurrences: Map<ParsedToolCall<Tool>, number>,
   ): Promise<{
     unseenCalls: ParsedToolCall<Tool>[];
     blockedCalls: ParsedToolCall<Tool>[];
@@ -3020,12 +3043,19 @@ export class ModelResult<
     const blockedCalls: ParsedToolCall<Tool>[] = [];
     const unseenKeys = toolCalls.filter(
       (toolCall) =>
-        !this.completedApprovalGates.has(this.approvalGateKey(toolCall, 'initial', responseKey)),
+        !this.completedApprovalGates.has(
+          this.approvalGateKey(toolCall, 'initial', responseKey, occurrences.get(toolCall) ?? 0),
+        ),
     );
     await this.beginDoomLoopRound(unseenKeys);
 
     for (const toolCall of toolCalls) {
-      const key = this.approvalGateKey(toolCall, 'initial', responseKey);
+      const key = this.approvalGateKey(
+        toolCall,
+        'initial',
+        responseKey,
+        occurrences.get(toolCall) ?? 0,
+      );
       if (this.completedApprovalGates.has(key)) {
         continue;
       }
@@ -3079,6 +3109,7 @@ export class ModelResult<
     autoExecute: ParsedToolCall<TTools[number]>[],
     turnContext: TurnContext,
     responseKey: string,
+    occurrences: Map<ParsedToolCall<Tool>, number>,
   ): Promise<{
     denied: {
       tc: ParsedToolCall<TTools[number]>;
@@ -3125,7 +3156,12 @@ export class ModelResult<
         continue;
       }
       if (
-        (await this.prepareAfterInitialApproval(toolCall, turnContext, responseKey)) === 'pending'
+        (await this.prepareAfterInitialApproval(
+          toolCall,
+          turnContext,
+          responseKey,
+          occurrences.get(toolCall) ?? 0,
+        )) === 'pending'
       ) {
         const prepared = this.preparedToolCalls.get(toolCall.id);
         if (prepared?.type === 'ready') {
@@ -3151,7 +3187,7 @@ export class ModelResult<
    * @throws Error if approval is required but no state accessor is configured
    */
   private async handleApprovalCheck(
-    toolCalls: ParsedToolCall<Tool>[],
+    suppliedToolCalls: ParsedToolCall<Tool>[],
     currentRound: number,
     currentResponse: models.OpenResponsesResult,
   ): Promise<boolean> {
@@ -3163,10 +3199,16 @@ export class ModelResult<
       numberOfTurns: currentRound,
     };
     const responseKey = this.approvalResponseKey(currentResponse);
+    // Always enumerate the complete response. A caller-provided subset or a
+    // later output reorder must not change duplicate occurrence identities.
+    const responseToolCalls = extractToolCallsFromResponse(currentResponse);
+    const toolCalls = responseToolCalls.length > 0 ? responseToolCalls : suppliedToolCalls;
+    const occurrences = this.approvalCallOccurrences(toolCalls);
 
     const { unseenCalls, blockedCalls } = await this.classifyInitialApprovalCalls(
       toolCalls,
       responseKey,
+      occurrences,
     );
 
     if (unseenCalls.length === 0 && blockedCalls.length === 0) {
@@ -3185,6 +3227,7 @@ export class ModelResult<
       autoExecute,
       turnContext,
       responseKey,
+      occurrences,
     );
 
     if (stillPending.length === 0) {
@@ -5876,6 +5919,7 @@ export class ModelResult<
           toolCall as ParsedToolCall<Tool>,
           turnContext,
           `persisted:${this.currentState.previousResponseId ?? 'unknown'}`,
+          0,
         );
         if (prepared === 'pending') {
           const ready = this.preparedToolCalls.get(callId);

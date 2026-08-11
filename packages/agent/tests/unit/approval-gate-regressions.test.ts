@@ -1719,6 +1719,166 @@ describe('allowFinalResponse path enforces the approval gate (#54)', () => {
     expect(mockBetaResponsesSend).toHaveBeenCalledTimes(1);
   });
 
+  it('gates duplicate identical calls separately but only once across repeated response visits', async () => {
+    const dangerExecute = vi.fn(async () => ({
+      ok: true,
+    }));
+    const danger = tool({
+      name: 'danger',
+      inputSchema: z.object({
+        target: z.string(),
+      }),
+      outputSchema: z.object({
+        ok: z.boolean(),
+      }),
+      requireApproval: true,
+      execute: dangerExecute,
+    });
+    const tools = [
+      danger,
+    ] as const;
+    const hooks = new HooksManager();
+    const permissionHandler = vi.fn(() => ({
+      decision: 'allow' as const,
+    }));
+    hooks.on('PermissionRequest', {
+      handler: permissionHandler,
+    });
+
+    mockBetaResponsesSend
+      .mockResolvedValueOnce({
+        ok: true,
+        value: makeResponse('resp_duplicates', [
+          makeFunctionCallItem(
+            'call_duplicate',
+            'danger',
+            JSON.stringify({
+              target: 'prod',
+            }),
+          ),
+          makeFunctionCallItem(
+            'call_duplicate',
+            'danger',
+            JSON.stringify({
+              target: 'prod',
+            }),
+          ),
+        ]),
+      })
+      .mockResolvedValue({
+        ok: true,
+        value: makeResponse('resp_final', [
+          {
+            id: 'msg_final',
+            type: 'message',
+            role: 'assistant',
+            status: 'completed',
+            content: [
+              {
+                type: 'output_text',
+                text: 'Done.',
+                annotations: [],
+              },
+            ],
+          },
+        ]),
+      });
+
+    const { accessor } = createMemoryAccessor<typeof tools>();
+    const result = new ModelResult<typeof tools>({
+      request: {
+        model: 'test-model',
+        input: 'do both things',
+        tools: [
+          {
+            type: 'function',
+            name: 'danger',
+            description: null,
+            strict: null,
+            parameters: {},
+          },
+        ],
+      },
+      client: {} as OpenRouterCore,
+      tools,
+      hooks,
+      state: accessor,
+      stopWhen: stepCountIs(0),
+      allowFinalResponse: true,
+    });
+
+    await result.getText();
+
+    expect(permissionHandler).toHaveBeenCalledTimes(2);
+    expect(dangerExecute).toHaveBeenCalledTimes(2);
+  });
+
+  it('derives duplicate occurrences from the full response when passed a subset', async () => {
+    const danger = tool({
+      name: 'danger',
+      inputSchema: z.object({
+        target: z.string(),
+      }),
+      requireApproval: true,
+      execute: async () => ({}),
+    });
+    const tools = [
+      danger,
+    ] as const;
+    const hooks = new HooksManager();
+    const permissionHandler = vi.fn(() => ({
+      decision: 'allow' as const,
+    }));
+    hooks.on('PermissionRequest', {
+      handler: permissionHandler,
+    });
+    const response = makeResponse('resp_grows', [
+      makeFunctionCallItem(
+        'call_duplicate',
+        'danger',
+        JSON.stringify({
+          target: 'prod',
+        }),
+      ),
+    ]);
+    const result = new ModelResult<typeof tools>({
+      request: {
+        model: 'test-model',
+        input: 'do the thing',
+      },
+      client: {} as OpenRouterCore,
+      tools,
+      hooks,
+    });
+    const handleApprovalCheck = (
+      result as unknown as {
+        handleApprovalCheck: (
+          calls: Array<{
+            id: string;
+            name: string;
+            arguments: unknown;
+          }>,
+          round: number,
+          response: models.OpenResponsesResult,
+        ) => Promise<boolean>;
+      }
+    ).handleApprovalCheck.bind(result);
+
+    await handleApprovalCheck([], 0, response);
+    response.output.push(
+      makeFunctionCallItem(
+        'call_duplicate',
+        'danger',
+        JSON.stringify({
+          target: 'prod',
+        }),
+      ),
+    );
+    await handleApprovalCheck([], 0, response);
+
+    expect(permissionHandler).toHaveBeenCalledTimes(2);
+  });
+
   it('gates the initial response only once when the stop condition fires on the first iteration', async () => {
     const dangerExecute = vi.fn(async () => ({
       ok: true,
