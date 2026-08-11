@@ -504,20 +504,14 @@ export function tool<
   config: RegularToolConfigWithoutOutput<TInput, TReturn, TCtx, TName>,
 ): ToolWithExecute<TInput, $ZodType<TReturn>, Record<string, unknown>, TCtx, TName>;
 
-// Backward-compatible uncurried explicit-TShared overload. Its name remains
-// wide because TypeScript cannot partially infer generics after TShared;
-// use tool<TShared>()({...}) when literal-name inference is needed.
-export function tool<
-  TShared extends Record<string, unknown>,
-  TName extends string = string,
-  TCtx extends $ZodObject<$ZodShape> = $ZodObject<$ZodShape>,
->(
-  config: ToolConfigWithSharedContext<TShared, TCtx> & {
-    name: TName;
-  },
+// Backward-compatible direct explicit-TShared overload. TypeScript cannot
+// infer another type parameter after an explicit TShared, so literal-name
+// inference uses the curried overload above.
+export function tool<TShared extends Record<string, unknown>>(
+  config: ToolConfigWithSharedContext<TShared>,
 ): Tool & {
   function: {
-    name: TName;
+    name: string;
   };
 };
 

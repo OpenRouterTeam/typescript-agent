@@ -33,13 +33,15 @@ export type ClientToolName<T> = T extends {
  * Only tools with no structural `id` at all fall back to the synthesized
  * default, and concrete `ServerTool<T, TId>` values keep their literal `TId`.
  */
-export type ServerToolIdOf<T> = T extends {
-  readonly id?: infer Id;
-}
-  ? Extract<Id, string> extends infer StringId extends string
-    ? string extends StringId
-      ? string
-      : StringId
+export type ServerToolIdOf<T> = 'id' extends keyof T
+  ? T extends {
+      readonly id?: infer Id;
+    }
+    ? Extract<Id, string> extends infer StringId extends string
+      ? string extends StringId
+        ? string
+        : StringId
+      : never
     : never
   : T extends {
         readonly config: {

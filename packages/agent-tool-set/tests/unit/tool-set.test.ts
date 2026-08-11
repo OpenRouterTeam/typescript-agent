@@ -1000,6 +1000,41 @@ describe('server tools', () => {
     expect(() => ts.activate('web_search_2025_08_26' as 'a')).toThrow(/Unknown tool/);
   });
 
+  describe('hand-written server tool without an id', () => {
+    const handWritten = {
+      _brand: 'server-tool',
+      config: {
+        type: 'web_search_2025_08_26',
+      },
+    } as const;
+    const id = 'server:web_search_2025_08_26';
+
+    it('uses the synthesized ID for activation, status, and filtering', () => {
+      const ts = createToolSet({
+        tools: [
+          a,
+          handWritten,
+        ] as const,
+      }).deactivate(id);
+
+      const resolved = ts.resolve();
+      expect(resolved.enabled).toEqual([
+        'a',
+      ]);
+      expect(resolved.disabled).toEqual([
+        id,
+      ]);
+      expect(resolved.statusByTool[id]).toEqual({
+        enabled: false,
+        reason: 'deactivate',
+        directive: 'deactivate',
+      });
+      expect(resolved.tools).toEqual([
+        a,
+      ]);
+    });
+  });
+
   describe('custom-ID server tool erased to ServerToolBase', () => {
     // Reproduces the reviewed scenario: a custom-ID server tool value whose
     // static type has been widened to the exported `ServerToolBase`
