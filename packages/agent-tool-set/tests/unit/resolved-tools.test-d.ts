@@ -75,8 +75,12 @@ type GenericActiveA = ResolvedToolSnapshot<
   ConditionalA,
   'a'
 >;
-expectTypeOf<GenericActiveA['tools']>().toEqualTypeOf<readonly (typeof a)[]>();
-expectTypeOf<GenericActiveA['callModel']['tools']>().toEqualTypeOf<readonly (typeof a)[]>();
+declare const genericActiveA: GenericActiveA;
+expectTypeOf(genericActiveA.tools).toEqualTypeOf<readonly PossibleTool[]>();
+expectTypeOf(genericActiveA.callModel.tools).toEqualTypeOf<readonly PossibleTool[]>();
+expectTypeOf<GenericActiveA['tools'][number]>().toEqualTypeOf<PossibleTool>();
+expectTypeOf(genericActiveA.tools[0]).toEqualTypeOf<PossibleTool | undefined>();
+expectTypeOf<GenericActiveA['enabled'][number]>().toEqualTypeOf<'a' | 'b'>();
 
 const mutableSnapshot = createToolSet({
   tools: [

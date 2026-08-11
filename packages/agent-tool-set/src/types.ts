@@ -115,6 +115,11 @@ export type FilterToolsByIds<
       : FilterToolsByIds<R, Active>
     : readonly [];
 
+/** IDs that are statically enabled or selected from the conditional partition. */
+type ResolvedActiveIds<P extends Partition, TActive extends string> =
+  | P['enabled']
+  | Extract<TActive, P['conditional']>;
+
 /**
  * Exact tuple for static partitions; possible active members for partitions
  * whose runtime predicates can change tuple membership.
@@ -122,14 +127,17 @@ export type FilterToolsByIds<
 export type ResolvedTools<
   TTools extends readonly Tool[],
   P extends Partition,
-  TActive extends string = P['enabled'] | P['conditional'],
+  TActive extends P['conditional'] = P['conditional'],
 > = [
   P['conditional'],
 ] extends [
   never,
 ]
-  ? FilterToolsByIds<TTools, TActive & ToolIdsOfTuple<TTools>>
-  : readonly FilterToolsByIds<TTools, TActive & ToolIdsOfTuple<TTools>>[number][];
+  ? FilterToolsByIds<TTools, P['enabled'] & ToolIdsOfTuple<TTools>>
+  : readonly FilterToolsByIds<
+      TTools,
+      ResolvedActiveIds<P, TActive> & ToolIdsOfTuple<TTools>
+    >[number][];
 
 // ─── three-way compile-time partition ───────────────────────────────────────
 
@@ -352,12 +360,11 @@ export type StatusByToolMap<TIds extends string> = {
 /**
  * What resolve() / resolveSituation() returns.
  *
- * For static-only partitions (`conditional = never`), TActive is exactly
- * `P['enabled']` and the snapshot is fully known at compile time.
- * When conditional ≠ never, TActive is the sound upper bound
- * `P['enabled'] | P['conditional']`; tools become a readonly array of the
- * possible active member union because predicates can change length and
- * positions at runtime. Runtime arrays/status are exact.
+ * For static-only partitions (`conditional = never`), the snapshot is fully
+ * known at compile time. When conditional ≠ never, TActive selects possible
+ * members from `P['conditional']`; `P['enabled']` is always included. Tools
+ * become a readonly array of that possible member union because predicates
+ * can change length and positions at runtime. Runtime arrays/status are exact.
  *
  * `disabled` is declared as the complement of the *definitely-enabled* set
  * (`P['enabled']`), not of `TActive`. A conditional id's predicate can
@@ -370,19 +377,25 @@ export type StatusByToolMap<TIds extends string> = {
 export type ResolvedToolSnapshot<
   TTools extends readonly Tool[],
   P extends Partition,
-  TActive extends string = P['enabled'] | P['conditional'],
+  TActive extends P['conditional'] = P['conditional'],
 > = {
   /** Active tools only, construction order preserved, concrete member types kept. */
   readonly tools: ResolvedTools<TTools, P, TActive>;
   /** Active client names only (`callModel.activeTools` wire format). Server ids omitted. */
-  readonly activeTools: readonly Extract<TActive, ClientToolNamesOfTuple<TTools>>[];
+  readonly activeTools: readonly Extract<
+    ResolvedActiveIds<P, TActive>,
+    ClientToolNamesOfTuple<TTools>
+  >[];
   /** Spread-safe input for `callModel`; snapshot metadata is intentionally excluded. */
   readonly callModel: {
     readonly tools: ResolvedTools<TTools, P, TActive>;
-    readonly activeTools: readonly Extract<TActive, ClientToolNamesOfTuple<TTools>>[];
+    readonly activeTools: readonly Extract<
+      ResolvedActiveIds<P, TActive>,
+      ClientToolNamesOfTuple<TTools>
+    >[];
   };
   /** IDs that resolved active (client + server). */
-  readonly enabled: readonly (TActive & ToolIdsOfTuple<TTools>)[];
+  readonly enabled: readonly (ResolvedActiveIds<P, TActive> & ToolIdsOfTuple<TTools>)[];
   /**
    * IDs that resolved inactive (client + server). Sound upper bound: the
    * complement of the definitely-enabled set, so conditional ids whose

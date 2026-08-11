@@ -554,27 +554,11 @@ export class ToolSet<
    * When the partition is purely static, the active tool tuple is exact at
    * compile time. Conditional ids expand the compile-time upper bound.
    */
-  resolve(input?: ActivationInput<TShared>): ResolvedToolSnapshot<
-    TTools,
-    P,
-    [
-      P['conditional'],
-    ] extends [
-      never,
-    ]
-      ? P['enabled']
-      : P['enabled'] | P['conditional']
-  > {
+  resolve(input?: ActivationInput<TShared>): ResolvedToolSnapshot<TTools, P, P['conditional']> {
     return this.#resolveWithActivation(this.#activation, input) as unknown as ResolvedToolSnapshot<
       TTools,
       P,
-      [
-        P['conditional'],
-      ] extends [
-        never,
-      ]
-        ? P['enabled']
-        : P['enabled'] | P['conditional']
+      P['conditional']
     >;
   }
 
@@ -631,15 +615,7 @@ export class ToolSet<
   ): ResolvedToolSnapshot<
     TTools,
     ApplySituationPartition<P, Sit[Name]>,
-    [
-      ApplySituationPartition<P, Sit[Name]>['conditional'],
-    ] extends [
-      never,
-    ]
-      ? ApplySituationPartition<P, Sit[Name]>['enabled']
-      :
-          | ApplySituationPartition<P, Sit[Name]>['enabled']
-          | ApplySituationPartition<P, Sit[Name]>['conditional']
+    ApplySituationPartition<P, Sit[Name]>['conditional']
   > {
     const situation = this.#situations.get(name);
     if (!situation) {
@@ -672,15 +648,7 @@ export class ToolSet<
     return this.#resolveWithActivation(activation, input) as unknown as ResolvedToolSnapshot<
       TTools,
       ApplySituationPartition<P, Sit[Name]>,
-      [
-        ApplySituationPartition<P, Sit[Name]>['conditional'],
-      ] extends [
-        never,
-      ]
-        ? ApplySituationPartition<P, Sit[Name]>['enabled']
-        :
-            | ApplySituationPartition<P, Sit[Name]>['enabled']
-            | ApplySituationPartition<P, Sit[Name]>['conditional']
+      ApplySituationPartition<P, Sit[Name]>['conditional']
     >;
   }
 
