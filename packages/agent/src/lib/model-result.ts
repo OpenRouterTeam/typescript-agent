@@ -3,6 +3,8 @@ import { betaResponsesSend } from '@openrouter/sdk/funcs/betaResponsesSend';
 import type { EventStream } from '@openrouter/sdk/lib/event-streams';
 import type { RequestOptions } from '@openrouter/sdk/lib/sdks';
 import type * as models from '@openrouter/sdk/models';
+import type { StandardSchemaV1 } from '@standard-schema/spec';
+import type { $ZodObject, $ZodShape } from 'zod/v4/core';
 import type { CallModelInput, ResolvedCallModelInput } from './async-params.js';
 import { hasAsyncFunctions, resolveAsyncFunctions } from './async-params.js';
 import type { SettledToolTask, TaskToolInput, ToolSemaphore, ToolTaskMode } from './async-tools.js';
@@ -53,7 +55,6 @@ import {
   executeNextTurnParamsFunctions,
 } from './next-turn-params.js';
 import { ReusableReadableStream } from './reusable-stream.js';
-import type { ObjectSchema } from './schema.js';
 import { isStopConditionMet } from './stop-conditions.js';
 import type { ItemInProgress, StreamableOutputItem } from './stream-transformers.js';
 import {
@@ -438,8 +439,8 @@ export interface GetResponseOptions<
   state?: StateAccessor<TTools>;
   /** Typed context data passed to tools via contextSchema. `shared` key for shared context. */
   context?: ContextInput<ToolContextMapWithShared<TTools, TShared>>;
-  /** Schema (Zod or Standard Schema v1) for shared context validation */
-  sharedContextSchema?: ObjectSchema;
+  /** Zod schema for shared context validation */
+  sharedContextSchema?: $ZodObject<$ZodShape> | StandardSchemaV1<unknown, Record<string, unknown>>;
 
   /**
    * Call-level approval check - overrides tool-level requireApproval setting
