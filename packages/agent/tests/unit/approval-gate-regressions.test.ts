@@ -634,57 +634,6 @@ describe('approval uses the post-PreToolUse arguments that execute would receive
     expect(execute).not.toHaveBeenCalled();
   });
 
-  it('gates delimiter-colliding canonical and fallback call IDs independently', () => {
-    let deep: Record<string, unknown> = {};
-    for (let index = 0; index < 200; index++) {
-      deep = {
-        child: deep,
-      };
-    }
-    const result = new ModelResult({
-      request: {
-        model: 'test-model',
-        input: 'run both',
-      },
-      client: {} as OpenRouterCore,
-    });
-    const approvalGateKey = (
-      result as unknown as {
-        approvalGateKey: (
-          toolCall: {
-            id: string;
-            name: string;
-            arguments: unknown;
-          },
-          phase: 'initial' | 'mutated',
-          responseKey: string,
-        ) => string;
-      }
-    ).approvalGateKey.bind(result);
-    const completed = new Set<string>();
-    const gate = (id: string, args: unknown) => {
-      const key = approvalGateKey(
-        {
-          id,
-          name: 'guarded',
-          arguments: args,
-        },
-        'initial',
-        'response:0',
-      );
-      if (completed.has(key)) {
-        return false;
-      }
-      completed.add(key);
-      return true;
-    };
-
-    expect(gate('a:uncanonicalizable', 0)).toBe(true);
-    expect(gate('a:uncanonicalizable', 0)).toBe(false);
-    expect(gate('a', deep)).toBe(true);
-    expect(gate('a', deep)).toBe(true);
-  });
-
   it('gates identical post-hook calls independently across responses', async () => {
     const predicate = vi.fn((params: { dangerous: boolean }) => params.dangerous);
     const execute = vi.fn(async () => ({
@@ -1811,6 +1760,68 @@ describe('allowFinalResponse path enforces the approval gate (#54)', () => {
 
     expect(permissionHandler).toHaveBeenCalledTimes(2);
     expect(dangerExecute).toHaveBeenCalledTimes(2);
+  });
+
+  it('reuses opaque identities for uncanonicalizable response call occurrences', async () => {
+    let deep: Record<string, unknown> = {};
+    for (let index = 0; index < 200; index++) {
+      deep = {
+        child: deep,
+      };
+    }
+    const danger = tool({
+      name: 'danger',
+      inputSchema: z.object({
+        child: z.unknown(),
+      }),
+      requireApproval: true,
+      execute: async () => ({}),
+    });
+    const tools = [
+      danger,
+    ] as const;
+    const hooks = new HooksManager();
+    const permissionHandler = vi.fn(() => ({
+      decision: 'allow' as const,
+    }));
+    hooks.on('PermissionRequest', {
+      handler: permissionHandler,
+    });
+    const firstResponse = makeResponse('resp_deep_duplicates', [
+      makeFunctionCallItem('call_deep', 'danger', JSON.stringify(deep)),
+      makeFunctionCallItem('call_deep', 'danger', JSON.stringify(deep)),
+    ]);
+    const laterResponse = makeResponse('resp_deep_later', [
+      makeFunctionCallItem('call_deep', 'danger', JSON.stringify(deep)),
+    ]);
+    const result = new ModelResult<typeof tools>({
+      request: {
+        model: 'test-model',
+        input: 'do the thing',
+      },
+      client: {} as OpenRouterCore,
+      tools,
+      hooks,
+    });
+    const handleApprovalCheck = (
+      result as unknown as {
+        handleApprovalCheck: (
+          calls: Array<{
+            id: string;
+            name: string;
+            arguments: unknown;
+          }>,
+          round: number,
+          response: models.OpenResponsesResult,
+        ) => Promise<boolean>;
+      }
+    ).handleApprovalCheck.bind(result);
+
+    await handleApprovalCheck([], 0, firstResponse);
+    await handleApprovalCheck([], 0, firstResponse);
+    await handleApprovalCheck([], 0, laterResponse);
+
+    expect(permissionHandler).toHaveBeenCalledTimes(3);
   });
 
   it('derives duplicate occurrences from the full response when passed a subset', async () => {
