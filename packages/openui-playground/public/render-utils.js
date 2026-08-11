@@ -14,3 +14,8 @@ export function resolveMember(base, path) {
 export function escapeHtml(value) {
   return value.replace(/[&<>"']/g, (character) => `&#${character.charCodeAt(0)};`);
 }
+
+/** @param {{ line: unknown, message: string, source: string }} diagnostic */
+export function renderDiagnostic({ line, message, source }) {
+  return `<div class="diag">L${escapeHtml(String(line))}: ${escapeHtml(message)} — ${escapeHtml(source)}</div>`;
+}

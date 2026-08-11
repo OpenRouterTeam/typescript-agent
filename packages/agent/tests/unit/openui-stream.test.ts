@@ -463,6 +463,69 @@ describe('toUiOutput round lifecycle', () => {
     ).toHaveLength(0);
   });
 
+  it('delivers async UI when UI, text, and item streams are consumed concurrently', async () => {
+    mockBetaResponsesSend.mockReset();
+    mockToolRound('concurrent_ui');
+    let release: (() => void) | undefined;
+    const rendering = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const concurrentUi = tool({
+      name: 'concurrent_ui',
+      inputSchema: z.object({}),
+      execute: () => 'ok',
+      toUiOutput: async () => {
+        await rendering;
+        return ui.Text('concurrent');
+      },
+    });
+    const result = callModel(
+      {
+        _options: {},
+      } as OpenRouterCore,
+      {
+        model: 'test-model',
+        input: 'test',
+        tools: [
+          concurrentUi,
+        ] as const,
+      },
+    );
+    const text: string[] = [];
+    const items: unknown[] = [];
+    const events: unknown[] = [];
+    async function collect<T>(stream: AsyncIterable<T>, values: T[]) {
+      for await (const value of stream) {
+        values.push(value);
+      }
+    }
+    const consumeText = collect(result.getTextStream(), text);
+    const consumeItems = collect(result.getItemsStream(), items);
+    const consumeUi = collect(result.getUiStream(), events);
+
+    await vi.waitFor(() => expect(mockBetaResponsesSend).toHaveBeenCalledTimes(2));
+    release?.();
+    await Promise.all([
+      consumeText,
+      consumeItems,
+      consumeUi,
+    ]);
+
+    expect(text).toEqual([]);
+    expect(items).toContainEqual(
+      expect.objectContaining({
+        type: 'function_call_output',
+      }),
+    );
+    expect(events).toContainEqual({
+      type: 'fragment',
+      toolCallId: 'c1',
+      toolName: 'concurrent_ui',
+      dialect: 'openui-lang/0.5',
+      source: 'root = Text("concurrent")',
+    });
+  });
+
   it('advances the model while retaining ordinary async rendering until UI drain', async () => {
     mockBetaResponsesSend.mockReset();
     mockToolRound('async_ui');
@@ -626,6 +689,62 @@ describe('async tool settlement', () => {
       dialect: 'openui-lang/0.5',
       source: 'root = Card("Lisbon: Clear")',
     });
+  });
+});
+
+describe('late async tool UI settlement', () => {
+  it('skips rendering when deferred settlement has no retained input', async () => {
+    const toUiOutput = vi.fn(() => ui.Text('never'));
+    const deferred = tool({
+      name: 'deferred_ui',
+      lifecycle: 'deferred',
+      inputSchema: z.object({
+        city: z.string(),
+      }),
+      outputSchema: z.object({
+        summary: z.string(),
+      }),
+      run: () => ({
+        taskId: 'task_1',
+      }),
+      toUiOutput,
+    });
+    const result = new ModelResult({
+      request: {
+        model: 'test-model',
+        input: 'test',
+        tools: [
+          deferred,
+        ],
+      },
+      client: {} as OpenRouterCore,
+    });
+    const internal = result as unknown as {
+      asyncToolRegistry: {
+        takeSettled: () => Array<Record<string, unknown>>;
+      };
+      flushAsyncToolDeliveries: () => Promise<boolean>;
+      injectAppendPromptMessage: () => Promise<void>;
+    };
+    internal.asyncToolRegistry = {
+      takeSettled: () => [
+        {
+          callId: 'c1',
+          taskId: 'task_1',
+          name: 'deferred_ui',
+          status: 'completed',
+          result: {
+            summary: 'Clear',
+          },
+          durationMs: 1,
+        },
+      ],
+    };
+    internal.injectAppendPromptMessage = async () => undefined;
+
+    await internal.flushAsyncToolDeliveries();
+
+    expect(toUiOutput).not.toHaveBeenCalled();
   });
 });
 

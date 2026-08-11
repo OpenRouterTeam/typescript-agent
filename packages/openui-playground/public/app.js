@@ -7,7 +7,7 @@
  * client resolves refs/state and materializes DOM without its own parser.
  */
 
-import { escapeHtml, resolveMember } from './render-utils.js';
+import { escapeHtml, renderDiagnostic, resolveMember } from './render-utils.js';
 
 const $ = (id) => document.getElementById(id);
 
@@ -602,10 +602,7 @@ function handleEvent(event) {
           // offending line and `message` carries parser text built from it
           // (ParseFailure.message), or arrives verbatim off the wire in native
           // mode. Escaping only `source` left an injection through `message`.
-          .map(
-            (d) =>
-              `<div class="diag">L${escapeHtml(String(d.line))}: ${escapeHtml(d.message)} — ${escapeHtml(d.source)}</div>`,
-          )
+          .map(renderDiagnostic)
           .join('');
       } else {
         $('diagnostics').innerHTML =

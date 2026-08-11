@@ -627,6 +627,7 @@ export class ModelResult<
     ResponseStreamEvent<InferToolEventsUnion<TTools>, InferToolOutputsUnion<TTools>>
   > | null = null;
   private pendingUiFragments = new Set<Promise<void>>();
+  private turnBroadcasterCompletionPromise: Promise<void> | null = null;
   private initialStreamPipeStarted = false;
   private initialPipePromise: Promise<void> | null = null;
 
@@ -1019,7 +1020,7 @@ export class ModelResult<
    * Set up the turn broadcaster with tool execution and return the consumer.
    * Used by stream methods that need to iterate over all turns.
    */
-  private startTurnBroadcasterExecution(options?: { drainUiFragments?: boolean }): {
+  private startTurnBroadcasterExecution(): {
     consumer: AsyncIterableIterator<
       ResponseStreamEvent<InferToolEventsUnion<TTools>, InferToolOutputsUnion<TTools>>
     >;
@@ -1028,22 +1029,21 @@ export class ModelResult<
     const broadcaster = this.ensureTurnBroadcaster();
     this.startInitialStreamPipe();
     const consumer = broadcaster.createConsumer();
-    const executionPromise = this.executeToolsIfNeeded().finally(async () => {
-      // Wait for the initial stream pipe to finish pushing all events
-      // (including turn.end) before marking the broadcaster as complete.
-      // Without this, turn.end can be silently dropped if the pipe hasn't
-      // finished when executeToolsIfNeeded completes.
-      if (this.initialPipePromise) {
-        await this.initialPipePromise;
-      }
-      if (options?.drainUiFragments) {
+    if (!this.turnBroadcasterCompletionPromise) {
+      this.turnBroadcasterCompletionPromise = this.executeToolsIfNeeded().finally(async () => {
+        // Wait for every event producer before closing the shared broadcaster.
+        // UI rendering is best-effort and bounded; the drain is a no-op when
+        // no fragments are pending.
+        if (this.initialPipePromise) {
+          await this.initialPipePromise;
+        }
         await this.drainUiFragments();
-      }
-      broadcaster.complete();
-    });
+        broadcaster.complete();
+      });
+    }
     return {
       consumer,
-      executionPromise,
+      executionPromise: this.turnBroadcasterCompletionPromise,
     };
   }
 
@@ -3098,12 +3098,12 @@ export class ModelResult<
         const tool = this.options.tools?.find(
           (candidate) => isClientTool(candidate) && candidate.function.name === task.name,
         );
-        if (tool) {
+        if (tool && task.input !== undefined) {
           this.dispatchUiFragment({
             toolCall: {
               id: task.callId,
               name: task.name,
-              arguments: task.input ?? {},
+              arguments: task.input,
             } as ParsedToolCall<Tool>,
             tool,
             result: {
@@ -6883,9 +6883,7 @@ export class ModelResult<
         return;
       }
 
-      const { consumer, executionPromise } = this.startTurnBroadcasterExecution({
-        drainUiFragments: true,
-      });
+      const { consumer, executionPromise } = this.startTurnBroadcasterExecution();
 
       for await (const event of consumer) {
         const uiEvent = translateUiEvent(event);
