@@ -702,16 +702,33 @@ export async function prepareUnifiedInvocation(
   // (TaskLogEntry.kind 'text'), so a tool that declares a structured
   // eventSchema can still log a plain sentence.
   //
+  // Non-Zod event schemas are validated asynchronously: the sink is sync,
+  // but an async Standard Schema validator must not throw out of the tool
+  // body (the parallel yield path awaits validation). Invalid async entries
+  // are dropped with a warning; valid ones are forwarded once validated.
+  //
   // Object.create (not spread): the engine's runExtras exposes `taskId` as
   // a LIVE getter backed by the run binding — a spread would snapshot its
   // current value (undefined; the ToolTask doesn't exist yet).
   const runExtras = Object.assign(Object.create(extras?.runExtras ?? null), {
     log: (entry: unknown) => {
-      const validated =
-        fn.eventSchema && typeof entry !== 'string'
-          ? validateSchemaSync(fn.eventSchema, entry)
-          : entry;
-      onYield(validated);
+      if (!fn.eventSchema || typeof entry === 'string') {
+        onYield(entry);
+        return;
+      }
+      if (isZodSchema(fn.eventSchema)) {
+        onYield(validateSchemaSync(fn.eventSchema, entry));
+        return;
+      }
+      void safeValidateSchema(fn.eventSchema, entry).then((validation) => {
+        if (validation.success) {
+          onYield(validation.data);
+        } else {
+          console.warn(
+            `[tool] ${fn.name}: dropping invalid log entry: ${validation.error.message}`,
+          );
+        }
+      });
     },
   }) as NonNullable<ToolExecutionExtras['runExtras']>;
   if (contextStore && tool.function.contextSchema) {

@@ -707,4 +707,69 @@ describe('Standard Schema tool support', () => {
     const result = await executeTool(failing, call('failing_unified', {}), context);
     expect(result && 'error' in result && result.error).toBeInstanceOf(Error);
   });
+
+  it('validates logged events asynchronously for async event validators', async () => {
+    const asyncEventSchema: StandardSchemaV1<
+      unknown,
+      {
+        progress: number;
+      }
+    > = {
+      '~standard': {
+        version: 1,
+        vendor: 'test',
+        validate: async (value) => {
+          const progress = (
+            value as {
+              progress?: unknown;
+            }
+          ).progress;
+          return typeof progress === 'number'
+            ? {
+                value: {
+                  progress,
+                },
+              }
+            : {
+                issues: [
+                  {
+                    message: 'Expected progress',
+                  },
+                ],
+              };
+        },
+        types: undefined,
+      },
+    };
+    const logging = tool({
+      name: 'logging_unified',
+      inputSchema: z.object({}),
+      eventSchema: asyncEventSchema,
+      outputSchema: z.object({
+        ok: z.boolean(),
+      }),
+      run: (_params, ctx) => {
+        ctx?.log({
+          progress: 1,
+        });
+        return {
+          ok: true,
+        };
+      },
+    });
+
+    const preliminary: unknown[] = [];
+    const result = await executeTool(logging, call('logging_unified', {}), context, (_id, event) =>
+      preliminary.push(event),
+    );
+    // The log sink validates async validators out-of-band; flush it.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(result && 'error' in result && result.error).toBeFalsy();
+    expect(preliminary).toEqual([
+      {
+        progress: 1,
+      },
+    ]);
+  });
 });
