@@ -19,6 +19,7 @@ export {
   type FragmentBuilder,
   type FragmentNode,
   fragment,
+  type UiBuiltinOptions,
   uiBuiltin,
   uiRef,
   uiState,

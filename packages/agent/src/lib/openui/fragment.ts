@@ -96,9 +96,31 @@ export function uiState(name: string, dialect?: string): FragmentNode {
   });
 }
 
+/** Options for stamping a standalone built-in with a custom dialect. */
+export interface UiBuiltinOptions {
+  dialect?: string;
+}
+
 /** A built-in function step (`uiBuiltin('Run', uiRef('save'))` → `@Run(save)`). */
-export function uiBuiltin(fn: string, ...args: FragmentArg[]): FragmentNode {
-  return makeNode(OPENUI_LANG_DIALECT, {
+export function uiBuiltin(fn: string, ...args: FragmentArg[]): FragmentNode;
+export function uiBuiltin(
+  options: UiBuiltinOptions,
+  fn: string,
+  ...args: FragmentArg[]
+): FragmentNode;
+export function uiBuiltin(
+  fnOrOptions: string | UiBuiltinOptions,
+  ...fnAndArgs:
+    | [
+        string,
+        ...FragmentArg[],
+      ]
+    | FragmentArg[]
+): FragmentNode {
+  const hasOptions = typeof fnOrOptions !== 'string';
+  const fn = hasOptions ? (fnAndArgs[0] as string) : fnOrOptions;
+  const args = hasOptions ? fnAndArgs.slice(1) : fnAndArgs;
+  return makeNode(hasOptions ? (fnOrOptions.dialect ?? OPENUI_LANG_DIALECT) : OPENUI_LANG_DIALECT, {
     kind: 'call',
     fn: assertIdent('uiBuiltin', fn),
     builtin: true,

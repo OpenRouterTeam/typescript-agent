@@ -210,6 +210,7 @@ export type {
   OpenUiPlugin,
   OpenUiWireComponent,
   PropSignature,
+  UiBuiltinOptions,
   UiDocumentEvent,
   UiExpr,
   UiFragment,

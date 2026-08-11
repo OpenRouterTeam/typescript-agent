@@ -143,6 +143,8 @@ import {
 export const DEFAULT_FINAL_RESPONSE_DIRECTIVE =
   'You have reached the tool-use limit, and tools are no longer available. Do not attempt to call any more tools. Using the information you already have, write your final answer now.';
 
+const UI_FRAGMENT_RENDER_TIMEOUT_MS = 50;
+
 /**
  * Typeguard for plain-object records (non-null, non-array).
  */
@@ -3095,7 +3097,7 @@ export class ModelResult<
           (candidate) => isClientTool(candidate) && candidate.function.name === task.name,
         );
         if (tool) {
-          await this.broadcastUiFragment({
+          await this.awaitUiFragment({
             toolCall: {
               id: task.callId,
               name: task.name,
@@ -3675,11 +3677,9 @@ export class ModelResult<
         timestamp: Date.now(),
       } satisfies ToolCallOutputEvent);
 
-      uiFragmentPromises.push(this.broadcastUiFragment(value));
+      uiFragmentPromises.push(this.awaitUiFragment(value));
     }
 
-    // broadcastUiFragment never rejects (errors degrade to a console.warn),
-    // so a plain all() is safe here.
     await Promise.all(uiFragmentPromises);
 
     return {
@@ -3840,7 +3840,7 @@ export class ModelResult<
             },
           };
           const outputForModel = await this.computeToolOutputForModel(settledValue);
-          await this.broadcastUiFragment(settledValue);
+          await this.awaitUiFragment(settledValue);
           return {
             output: {
               type: 'function_call_output' as const,
@@ -4343,6 +4343,27 @@ export class ModelResult<
       send: (message: unknown) => task.send(message),
       cancel: (reason?: string) => registry?.cancelTask(task.taskId, reason) ?? false,
     };
+  }
+
+  private awaitUiFragment(value: {
+    toolCall: ParsedToolCall<Tool>;
+    tool: Tool;
+    result: {
+      result: unknown;
+      error?: Error;
+    };
+  }): Promise<void> {
+    const rendering = this.broadcastUiFragment(value);
+    return new Promise((resolve) => {
+      const timer = setTimeout(resolve, UI_FRAGMENT_RENDER_TIMEOUT_MS);
+      if (typeof timer === 'object' && 'unref' in timer && typeof timer.unref === 'function') {
+        timer.unref();
+      }
+      rendering.then(() => {
+        clearTimeout(timer);
+        resolve();
+      });
+    });
   }
 
   /**

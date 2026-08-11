@@ -40,6 +40,56 @@ const library = createLibrary([
 ]);
 const ui = fragment(library);
 
+const response = (id: string, output: models.OpenResponsesResult['output']) =>
+  ({
+    id,
+    object: 'response',
+    createdAt: 0,
+    model: 'test-model',
+    status: 'completed',
+    output,
+    error: null,
+    incompleteDetails: null,
+    tools: [],
+    toolChoice: 'auto',
+    parallelToolCalls: false,
+  }) as models.OpenResponsesResult;
+
+function mockToolRound(toolName: string): void {
+  mockBetaResponsesSend
+    .mockResolvedValueOnce({
+      ok: true,
+      value: response('r1', [
+        {
+          type: 'function_call',
+          id: 'fc1',
+          callId: 'c1',
+          name: toolName,
+          arguments: '{}',
+          status: 'completed',
+        },
+      ]),
+    })
+    .mockResolvedValueOnce({
+      ok: true,
+      value: response('r2', [
+        {
+          type: 'message',
+          id: 'm1',
+          role: 'assistant',
+          status: 'completed',
+          content: [
+            {
+              type: 'output_text',
+              text: 'done',
+              annotations: [],
+            },
+          ],
+        },
+      ]),
+    });
+}
+
 describe('tool() carries toUiOutput', () => {
   it('regular tool', () => {
     const t = tool({
@@ -336,6 +386,75 @@ describe('getUiStream (no-tools fast path)', () => {
   });
 });
 
+describe('toUiOutput round lifecycle', () => {
+  it('does not block the run when rendering never settles', async () => {
+    mockBetaResponsesSend.mockReset();
+    mockToolRound('hanging_ui');
+    const hanging = tool({
+      name: 'hanging_ui',
+      inputSchema: z.object({}),
+      execute: () => 'ok',
+      toUiOutput: () => new Promise(() => undefined),
+    });
+    const result = callModel(
+      {
+        _options: {},
+      } as OpenRouterCore,
+      {
+        model: 'test-model',
+        input: 'test',
+        tools: [
+          hanging,
+        ] as const,
+      },
+    );
+
+    await expect(
+      Promise.race([
+        result.getText(),
+        new Promise((_, reject) => setTimeout(() => reject(new Error('run stalled')), 100)),
+      ]),
+    ).resolves.toBe('done');
+    expect(mockBetaResponsesSend).toHaveBeenCalledTimes(2);
+  });
+
+  it('delivers a normally-fast fragment before the UI stream closes', async () => {
+    mockBetaResponsesSend.mockReset();
+    mockToolRound('fast_ui');
+    const fast = tool({
+      name: 'fast_ui',
+      inputSchema: z.object({}),
+      execute: () => 'ok',
+      toUiOutput: () => ui.Text('ready'),
+    });
+    const result = callModel(
+      {
+        _options: {},
+      } as OpenRouterCore,
+      {
+        model: 'test-model',
+        input: 'test',
+        tools: [
+          fast,
+        ] as const,
+      },
+    );
+    const events = [];
+
+    for await (const event of result.getUiStream()) {
+      events.push(event);
+    }
+
+    expect(events).toContainEqual({
+      type: 'fragment',
+      toolCallId: 'c1',
+      toolName: 'fast_ui',
+      dialect: 'openui-lang/0.5',
+      source: 'root = Text("ready")',
+    });
+  });
+});
+
 describe('async tool settlement', () => {
   it('emits UI after background work settles past its grace window', async () => {
     mockBetaResponsesSend.mockReset();
@@ -358,20 +477,6 @@ describe('async tool settlement', () => {
       run: () => gate,
       toUiOutput: ({ input, output }) => ui.Card(`${input.city}: ${output.summary}`),
     });
-    const response = (id: string, output: models.OpenResponsesResult['output']) =>
-      ({
-        id,
-        object: 'response',
-        createdAt: 0,
-        model: 'test-model',
-        status: 'completed',
-        output,
-        error: null,
-        incompleteDetails: null,
-        tools: [],
-        toolChoice: 'auto',
-        parallelToolCalls: false,
-      }) as models.OpenResponsesResult;
     mockBetaResponsesSend
       .mockResolvedValueOnce({
         ok: true,

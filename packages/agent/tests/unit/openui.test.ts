@@ -290,6 +290,22 @@ describe('fragment builder', () => {
     expect(ui.Query('weather', {}).source).toBe('root = Query("weather", {})');
   });
 
+  it('stamps standalone builtins with a custom library dialect', () => {
+    const custom = createLibrary([], {
+      dialect: 'openui-lang/0.6',
+    });
+    const node = uiBuiltin(
+      {
+        dialect: custom.dialect,
+      },
+      'Run',
+      uiRef('save', custom.dialect),
+    );
+
+    expect(node.dialect).toBe(custom.dialect);
+    expect(node.source).toBe('root = @Run(save)');
+  });
+
   it('accepts plain objects and arrays as args', () => {
     const node = ui.Text('ok');
     const wrapped = ui.Card('W', [
