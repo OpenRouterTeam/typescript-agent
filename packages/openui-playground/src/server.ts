@@ -14,13 +14,14 @@
 import { readFile } from 'node:fs/promises';
 import type { ServerResponse } from 'node:http';
 import { createServer } from 'node:http';
-import { dirname, extname, join, normalize, sep } from 'node:path';
+import { dirname, extname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { OpenRouter } from '@openrouter/agent';
 import { demoLibrary } from './demo-library.js';
 import type { GenerateRequest, PlaygroundEvent } from './generate.js';
 import { generate } from './generate.js';
 import { libraryPrompt } from './lang/prompt.js';
+import { resolveStaticPath } from './static.js';
 
 const PORT = Number(process.env['PORT'] ?? 5170);
 const DEFAULT_MODEL = process.env['OPENUI_PLAYGROUND_MODEL'] ?? 'anthropic/claude-sonnet-5';
@@ -90,11 +91,8 @@ function parseGenerateRequest(body: unknown): GenerateRequest | null {
 }
 
 async function serveStatic(res: ServerResponse, urlPath: string): Promise<void> {
-  const rel = urlPath === '/' ? 'index.html' : urlPath.slice(1);
-  const file = normalize(join(PUBLIC_DIR, rel));
-  // Trailing separator so `public.bak`/`public-anything` siblings can't
-  // satisfy a bare prefix check.
-  if (!file.startsWith(PUBLIC_DIR + sep)) {
+  const file = resolveStaticPath(PUBLIC_DIR, urlPath);
+  if (!file) {
     sendJson(res, 404, {
       error: 'not found',
     });

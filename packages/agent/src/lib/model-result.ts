@@ -143,8 +143,6 @@ import {
 export const DEFAULT_FINAL_RESPONSE_DIRECTIVE =
   'You have reached the tool-use limit, and tools are no longer available. Do not attempt to call any more tools. Using the information you already have, write your final answer now.';
 
-const UI_FRAGMENT_RENDER_TIMEOUT_MS = 50;
-
 /**
  * Typeguard for plain-object records (non-null, non-array).
  */
@@ -628,6 +626,7 @@ export class ModelResult<
   private turnBroadcaster: ToolEventBroadcaster<
     ResponseStreamEvent<InferToolEventsUnion<TTools>, InferToolOutputsUnion<TTools>>
   > | null = null;
+  private pendingUiFragments = new Set<Promise<void>>();
   private initialStreamPipeStarted = false;
   private initialPipePromise: Promise<void> | null = null;
 
@@ -1020,7 +1019,7 @@ export class ModelResult<
    * Set up the turn broadcaster with tool execution and return the consumer.
    * Used by stream methods that need to iterate over all turns.
    */
-  private startTurnBroadcasterExecution(): {
+  private startTurnBroadcasterExecution(options?: { drainUiFragments?: boolean }): {
     consumer: AsyncIterableIterator<
       ResponseStreamEvent<InferToolEventsUnion<TTools>, InferToolOutputsUnion<TTools>>
     >;
@@ -1036,6 +1035,9 @@ export class ModelResult<
       // finished when executeToolsIfNeeded completes.
       if (this.initialPipePromise) {
         await this.initialPipePromise;
+      }
+      if (options?.drainUiFragments) {
+        await this.drainUiFragments();
       }
       broadcaster.complete();
     });
@@ -3097,7 +3099,7 @@ export class ModelResult<
           (candidate) => isClientTool(candidate) && candidate.function.name === task.name,
         );
         if (tool) {
-          await this.awaitUiFragment({
+          this.dispatchUiFragment({
             toolCall: {
               id: task.callId,
               name: task.name,
@@ -3550,7 +3552,6 @@ export class ModelResult<
     const toolResults: models.FunctionCallOutputItem[] = [];
     const pausedCalls: ParsedToolCall<Tool>[] = [];
     const deferredTasks: PendingAsyncTool[] = [];
-    const uiFragmentPromises: Promise<void>[] = [];
 
     // Start ALL async invocations before consuming any outcome: the work
     // (and its grace window) begins in handleAsyncInvocation, so awaiting
@@ -3677,10 +3678,8 @@ export class ModelResult<
         timestamp: Date.now(),
       } satisfies ToolCallOutputEvent);
 
-      uiFragmentPromises.push(this.awaitUiFragment(value));
+      this.dispatchUiFragment(value);
     }
-
-    await Promise.all(uiFragmentPromises);
 
     return {
       toolResults,
@@ -3840,7 +3839,7 @@ export class ModelResult<
             },
           };
           const outputForModel = await this.computeToolOutputForModel(settledValue);
-          await this.awaitUiFragment(settledValue);
+          this.dispatchUiFragment(settledValue);
           return {
             output: {
               type: 'function_call_output' as const,
@@ -4345,25 +4344,39 @@ export class ModelResult<
     };
   }
 
-  private awaitUiFragment(value: {
+  private dispatchUiFragment(value: {
     toolCall: ParsedToolCall<Tool>;
     tool: Tool;
     result: {
       result: unknown;
       error?: Error;
     };
-  }): Promise<void> {
+  }): void {
     const rendering = this.broadcastUiFragment(value);
-    return new Promise((resolve) => {
-      const timer = setTimeout(resolve, UI_FRAGMENT_RENDER_TIMEOUT_MS);
-      if (typeof timer === 'object' && 'unref' in timer && typeof timer.unref === 'function') {
-        timer.unref();
-      }
-      rendering.then(() => {
-        clearTimeout(timer);
-        resolve();
-      });
-    });
+    this.pendingUiFragments.add(rendering);
+    rendering.finally(() => this.pendingUiFragments.delete(rendering));
+  }
+
+  private async drainUiFragments(): Promise<void> {
+    if (this.pendingUiFragments.size === 0) {
+      return;
+    }
+    const timeoutMs = this.options.asyncTools?.drainTimeoutMs ?? 30_000;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    await Promise.race([
+      Promise.all([
+        ...this.pendingUiFragments,
+      ]),
+      new Promise<void>((resolve) => {
+        timer = setTimeout(resolve, timeoutMs);
+        if (typeof timer === 'object' && 'unref' in timer && typeof timer.unref === 'function') {
+          timer.unref();
+        }
+      }),
+    ]);
+    if (timer !== undefined) {
+      clearTimeout(timer);
+    }
   }
 
   /**
@@ -6853,7 +6866,9 @@ export class ModelResult<
         return;
       }
 
-      const { consumer, executionPromise } = this.startTurnBroadcasterExecution();
+      const { consumer, executionPromise } = this.startTurnBroadcasterExecution({
+        drainUiFragments: true,
+      });
 
       for await (const event of consumer) {
         const uiEvent = translateUiEvent(event);

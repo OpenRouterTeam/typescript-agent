@@ -7,6 +7,8 @@
  * client resolves refs/state and materializes DOM without its own parser.
  */
 
+import { escapeHtml, resolveMember } from './render-utils.js';
+
 const $ = (id) => document.getElementById(id);
 
 const PRESETS = [
@@ -89,13 +91,8 @@ function evalExpr(expr, depth = 0) {
       const target = doc.assignments.get(expr.name);
       return target ? evalExpr(target.expr, depth + 1) : null;
     }
-    case 'member': {
-      let base = evalExpr(expr.base, depth + 1);
-      for (const key of expr.path) {
-        base = base === null || base === undefined ? undefined : base[key];
-      }
-      return base;
-    }
+    case 'member':
+      return resolveMember(evalExpr(expr.base, depth + 1), expr.path);
     case 'call':
       return expr; // calls materialize as DOM, not values
     default:
@@ -626,10 +623,6 @@ function handleEvent(event) {
       setStatus(event.message, true);
       break;
   }
-}
-
-function escapeHtml(s) {
-  return s.replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
 }
 
 $('run').addEventListener('click', run);

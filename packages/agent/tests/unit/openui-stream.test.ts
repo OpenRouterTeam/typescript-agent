@@ -6,6 +6,7 @@
  */
 import type { OpenRouterCore } from '@openrouter/sdk/core';
 import type * as models from '@openrouter/sdk/models';
+import { StreamEvents$inboundSchema } from '@openrouter/sdk/models/streamevents';
 import { describe, expect, it, vi } from 'vitest';
 import { z } from 'zod/v4';
 import { callModel } from '../../src/inner-loop/call-model.js';
@@ -184,18 +185,21 @@ describe('translateUiEvent', () => {
     });
   });
 
-  it("unwraps the SDK's Unknown forward-compat encoding", () => {
-    const event = translateUiEvent({
+  it("unwraps the installed SDK's runtime Unknown encoding", () => {
+    const raw = {
+      type: 'response.openui.statement',
+      ref: '$tab',
+      kind: 'state',
+      source: '$tab = "overview"',
+    };
+    const encoded = StreamEvents$inboundSchema.parse(raw);
+
+    expect(encoded).toEqual({
       type: 'UNKNOWN',
       isUnknown: true,
-      raw: {
-        type: 'response.openui.statement',
-        ref: '$tab',
-        kind: 'state',
-        source: '$tab = "overview"',
-      },
+      raw,
     });
-    expect(event).toEqual({
+    expect(translateUiEvent(encoded)).toEqual({
       type: 'statement',
       ref: '$tab',
       kind: 'state',
@@ -418,14 +422,14 @@ describe('toUiOutput round lifecycle', () => {
     expect(mockBetaResponsesSend).toHaveBeenCalledTimes(2);
   });
 
-  it('delivers a normally-fast fragment before the UI stream closes', async () => {
+  it('bounds UI-stream close with the configured drain deadline', async () => {
     mockBetaResponsesSend.mockReset();
-    mockToolRound('fast_ui');
-    const fast = tool({
-      name: 'fast_ui',
+    mockToolRound('hanging_ui');
+    const hanging = tool({
+      name: 'hanging_ui',
       inputSchema: z.object({}),
       execute: () => 'ok',
-      toUiOutput: () => ui.Text('ready'),
+      toUiOutput: () => new Promise(() => undefined),
     });
     const result = callModel(
       {
@@ -435,20 +439,72 @@ describe('toUiOutput round lifecycle', () => {
         model: 'test-model',
         input: 'test',
         tools: [
-          fast,
+          hanging,
         ] as const,
+        asyncTools: {
+          drainTimeoutMs: 10,
+        },
       },
     );
-    const events = [];
 
+    const events = [];
     for await (const event of result.getUiStream()) {
       events.push(event);
     }
 
+    expect(events).toEqual([]);
+    expect(mockBetaResponsesSend).toHaveBeenCalledTimes(2);
+  });
+
+  it('advances the model while retaining ordinary async rendering until UI drain', async () => {
+    mockBetaResponsesSend.mockReset();
+    mockToolRound('async_ui');
+    let release: (() => void) | undefined;
+    const rendering = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const asyncUi = tool({
+      name: 'async_ui',
+      inputSchema: z.object({}),
+      execute: () => 'ok',
+      toUiOutput: async () => {
+        await rendering;
+        return ui.Text('ready');
+      },
+    });
+    const result = callModel(
+      {
+        _options: {},
+      } as OpenRouterCore,
+      {
+        model: 'test-model',
+        input: 'test',
+        tools: [
+          asyncUi,
+        ] as const,
+      },
+    );
+    const events: unknown[] = [];
+    async function consumeUiStream() {
+      for await (const event of result.getUiStream()) {
+        events.push(event);
+      }
+    }
+    const consuming = consumeUiStream();
+
+    await vi.waitFor(() => expect(mockBetaResponsesSend).toHaveBeenCalledTimes(2));
+    expect(events).not.toContainEqual(
+      expect.objectContaining({
+        type: 'fragment',
+      }),
+    );
+    release?.();
+    await consuming;
+
     expect(events).toContainEqual({
       type: 'fragment',
       toolCallId: 'c1',
-      toolName: 'fast_ui',
+      toolName: 'async_ui',
       dialect: 'openui-lang/0.5',
       source: 'root = Text("ready")',
     });
