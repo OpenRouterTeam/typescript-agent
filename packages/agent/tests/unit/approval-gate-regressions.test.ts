@@ -322,7 +322,7 @@ describe('approval predicate argument parity with execute (#54)', () => {
     });
   });
 
-  it('does not gate calls whose arguments fail schema validation', async () => {
+  it('fails closed when arguments fail schema validation', async () => {
     const predicate = vi.fn(() => false);
 
     const strict = tool({
@@ -334,13 +334,9 @@ describe('approval predicate argument parity with execute (#54)', () => {
       execute: async () => ({}),
     });
 
-    // `target` is missing entirely — the schema parse fails. Such a call can
-    // never execute (the executor runs the same schema through
-    // validateToolInput and turns the failure into a tool error output), so
-    // gating it would pause the run for a human to approve a call that can
-    // only fail — or throw outright when no state accessor is configured.
-    // The gate lets it through to the executor's normal validation error and
-    // never invokes the predicate on a value `execute` would not see.
+    // `target` is missing entirely. A PreToolUse hook could replace this with
+    // executable input later, so the gate cannot safely waive approval or
+    // invoke the predicate with a value the tool body would never receive.
     const invalidCall = {
       id: '3',
       name: 'strict_action',
@@ -355,7 +351,7 @@ describe('approval predicate argument parity with execute (#54)', () => {
       context,
     );
 
-    expect(requires).toBe(false);
+    expect(requires).toBe(true);
     expect(predicate).not.toHaveBeenCalled();
   });
 
@@ -445,12 +441,273 @@ describe('approval predicate argument parity with execute (#54)', () => {
   });
 });
 
+describe('approval uses the post-PreToolUse arguments that execute would receive', () => {
+  beforeEach(() => {
+    mockBetaResponsesSend.mockReset();
+  });
+
+  async function runMutationExploit(
+    wireArguments: Record<string, unknown>,
+    mutatedInput: Record<string, unknown>,
+  ) {
+    const predicate = vi.fn((params: { dangerous: boolean }) => params.dangerous);
+    const execute = vi.fn(async () => ({
+      ok: true,
+    }));
+    const guarded = tool({
+      name: 'guarded_action',
+      inputSchema: z.object({
+        dangerous: z.boolean(),
+      }),
+      outputSchema: z.object({
+        ok: z.boolean(),
+      }),
+      requireApproval: predicate,
+      execute,
+    });
+    const tools = [
+      guarded,
+    ] as const;
+    const hooks = new HooksManager();
+    hooks.on('PreToolUse', {
+      handler: () => ({
+        mutatedInput,
+      }),
+    });
+    mockBetaResponsesSend.mockResolvedValueOnce({
+      ok: true,
+      value: makeResponse('resp_mutation', [
+        makeFunctionCallItem('call_guarded', 'guarded_action', JSON.stringify(wireArguments)),
+      ]),
+    });
+    const { accessor, get } = createMemoryAccessor<typeof tools>();
+    const result = new ModelResult<typeof tools>({
+      request: {
+        model: 'test-model',
+        input: 'run the guarded action',
+        tools: [
+          {
+            type: 'function',
+            name: 'guarded_action',
+            description: null,
+            strict: null,
+            parameters: {},
+          },
+        ],
+      },
+      client: {} as OpenRouterCore,
+      tools,
+      hooks,
+      state: accessor,
+    });
+
+    await result.getResponse();
+
+    expect(predicate).toHaveBeenCalledWith(mutatedInput, {
+      numberOfTurns: 0,
+    });
+    expect(execute).not.toHaveBeenCalled();
+    expect(get()?.status).toBe('awaiting_approval');
+    expect(get()?.pendingToolCalls).toEqual([
+      {
+        id: 'call_guarded',
+        name: 'guarded_action',
+        arguments: mutatedInput,
+        preToolUseApplied: true,
+      },
+    ]);
+  }
+
+  it('does not let a hook rewrite safe arguments into an unapproved dangerous call', async () => {
+    await runMutationExploit(
+      {
+        dangerous: false,
+      },
+      {
+        dangerous: true,
+      },
+    );
+  });
+
+  it('does not let a hook make schema-invalid arguments executable after the gate', async () => {
+    await runMutationExploit(
+      {},
+      {
+        dangerous: true,
+      },
+    );
+  });
+
+  it('persists unconditional approvals with post-hook arguments and does not reapply the hook on resume', async () => {
+    const preToolUse = vi.fn(({ toolInput }: { toolInput: Record<string, unknown> }) => ({
+      mutatedInput: {
+        value: `${String(toolInput['value'])}-prepared`,
+      },
+    }));
+    const permissionRequest = vi.fn(() => ({
+      decision: 'ask_user' as const,
+    }));
+    const execute = vi.fn(async (input: { value: string }) => ({
+      value: input.value,
+    }));
+    const guarded = tool({
+      name: 'always_guarded',
+      inputSchema: z.object({
+        value: z.string(),
+      }),
+      outputSchema: z.object({
+        value: z.string(),
+      }),
+      requireApproval: true,
+      execute,
+    });
+    const tools = [
+      guarded,
+    ] as const;
+    const hooks = new HooksManager();
+    hooks.on('PreToolUse', {
+      handler: preToolUse,
+    });
+    hooks.on('PermissionRequest', {
+      handler: permissionRequest,
+    });
+    mockBetaResponsesSend.mockResolvedValueOnce({
+      ok: true,
+      value: makeResponse('resp_unconditional', [
+        makeFunctionCallItem(
+          'call_unconditional',
+          'always_guarded',
+          JSON.stringify({
+            value: 'original',
+          }),
+        ),
+      ]),
+    });
+    const { accessor, get } = createMemoryAccessor<typeof tools>();
+    const request = {
+      model: 'test-model',
+      input: 'run the guarded action',
+      tools: [
+        {
+          type: 'function' as const,
+          name: 'always_guarded',
+          description: null,
+          strict: null,
+          parameters: {},
+        },
+      ],
+    };
+
+    await new ModelResult<typeof tools>({
+      request,
+      client: {} as OpenRouterCore,
+      tools,
+      hooks,
+      state: accessor,
+    }).getResponse();
+
+    expect(permissionRequest).toHaveBeenCalledWith(
+      expect.objectContaining({
+        toolInput: {
+          value: 'original-prepared',
+        },
+      }),
+      expect.anything(),
+    );
+    expect(get()?.pendingToolCalls).toEqual([
+      {
+        id: 'call_unconditional',
+        name: 'always_guarded',
+        arguments: {
+          value: 'original-prepared',
+        },
+        preToolUseApplied: true,
+      },
+    ]);
+    const legacyState = structuredClone(get());
+    if (legacyState?.pendingToolCalls?.[0]) {
+      delete legacyState.pendingToolCalls[0].preToolUseApplied;
+    }
+
+    mockBetaResponsesSend.mockResolvedValueOnce({
+      ok: true,
+      value: makeResponse('resp_after_approval', [
+        {
+          type: 'message',
+          role: 'assistant',
+          status: 'completed',
+          content: [
+            {
+              type: 'output_text',
+              text: 'Done.',
+              annotations: [],
+            },
+          ],
+        },
+      ]),
+    });
+    await new ModelResult<typeof tools>({
+      request,
+      client: {} as OpenRouterCore,
+      tools,
+      hooks,
+      state: accessor,
+      approveToolCalls: [
+        'call_unconditional',
+      ],
+    }).getResponse();
+
+    expect(preToolUse).toHaveBeenCalledTimes(1);
+    expect(execute).toHaveBeenCalledTimes(1);
+    expect(execute).toHaveBeenCalledWith(
+      {
+        value: 'original-prepared',
+      },
+      expect.anything(),
+    );
+
+    const { accessor: legacyAccessor } = createMemoryAccessor(legacyState);
+    mockBetaResponsesSend.mockResolvedValueOnce({
+      ok: true,
+      value: makeResponse('resp_after_legacy_approval', [
+        {
+          type: 'message',
+          role: 'assistant',
+          status: 'completed',
+          content: [
+            {
+              type: 'output_text',
+              text: 'Done.',
+              annotations: [],
+            },
+          ],
+        },
+      ]),
+    });
+    await new ModelResult<typeof tools>({
+      request,
+      client: {} as OpenRouterCore,
+      tools,
+      hooks,
+      state: legacyAccessor,
+      approveToolCalls: [
+        'call_unconditional',
+      ],
+    }).getResponse();
+
+    expect(preToolUse).toHaveBeenCalledTimes(2);
+    expect(execute).toHaveBeenLastCalledWith(
+      {
+        value: 'original-prepared-prepared',
+      },
+      expect.anything(),
+    );
+  });
+});
+
 // ---------------------------------------------------------------------------
-// The gate's fail-open for schema-invalid arguments is only sound because
-// every engine execute path re-validates with the tool's inputSchema before
-// running the tool body. Lock that invariant in: if a future execute path
-// (or a refactor of an existing one) ever skips validateToolInput, these
-// tests fail — and the approval gate's fail-open must be revisited.
+// Every engine execute path validates before running the tool body. This is
+// still required for ordinary validation errors, independent of approval.
 // ---------------------------------------------------------------------------
 describe('every engine execute path validates before running the tool body', () => {
   const inputSchema = z.object({
@@ -948,7 +1205,7 @@ describe('allowFinalResponse path enforces the approval gate (#54)', () => {
     expect(JSON.stringify(outputs[0]?.output)).toContain('blocked by policy');
   });
 
-  it('surfaces schema-invalid arguments as a tool error instead of pausing or throwing', async () => {
+  it('fails closed on schema-invalid arguments that no hook repairs', async () => {
     const execute = vi.fn(async () => ({
       ok: true,
     }));
@@ -969,12 +1226,9 @@ describe('allowFinalResponse path enforces the approval gate (#54)', () => {
       strict,
     ] as const;
 
-    // The model emits `{}` — `target` is missing, so the arguments can never
-    // satisfy the schema. The gate must let the call through to the executor,
-    // which turns the validation failure into a tool error output the model
-    // can recover from. Gating it instead would pause the run for a human to
-    // approve a call that can only fail — and with no state accessor
-    // configured (as here), handleApprovalCheck would throw outright.
+    // The model emits `{}` — `target` is missing. Because a PreToolUse hook
+    // could repair it before execution, the predicate has no safe value to
+    // inspect and the gate fails closed.
     mockBetaResponsesSend
       .mockResolvedValueOnce({
         ok: true,
@@ -1022,31 +1276,19 @@ describe('allowFinalResponse path enforces the approval gate (#54)', () => {
       state: accessor,
     });
 
-    const text = await result.getText();
+    await result.getResponse();
 
-    // No throw, no pause: the run completes normally.
-    expect(text).toBe('Recovered.');
     const saved = get();
-    expect(saved?.status).toBe('complete');
-
-    // The tool body never ran — validation failed first — and the failure was
-    // recorded as the call's output so the model could see it and recover.
+    expect(saved?.status).toBe('awaiting_approval');
+    expect(saved?.pendingToolCalls).toEqual([
+      {
+        id: 'call_strict',
+        name: 'strict',
+        arguments: {},
+      },
+    ]);
     expect(execute).not.toHaveBeenCalled();
-    const outputs = (saved?.messages ?? []).filter(
-      (m): m is models.FunctionCallOutputItem =>
-        typeof m === 'object' &&
-        m !== null &&
-        'type' in m &&
-        m.type === 'function_call_output' &&
-        'callId' in m &&
-        m.callId === 'call_strict',
-    );
-    expect(outputs).toHaveLength(1);
-    expect(JSON.stringify(outputs[0]?.output)).toContain('target');
-
-    // One round trip for the initial request, one for the follow-up carrying
-    // the validation error.
-    expect(mockBetaResponsesSend).toHaveBeenCalledTimes(2);
+    expect(mockBetaResponsesSend).toHaveBeenCalledTimes(1);
   });
 
   it('gates the initial response only once when the stop condition fires on the first iteration', async () => {

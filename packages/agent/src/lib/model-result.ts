@@ -645,6 +645,21 @@ export class ModelResult<
   // normal tool round consults this to synthesize rejected outputs instead of
   // executing the calls.
   private readonly hookDeniedCalls = new Map<string, string>();
+  // PreToolUse must run before approval so predicates inspect the arguments
+  // that can actually execute. The prepared outcome is consumed by the
+  // execution path, preventing the hook from running twice.
+  private readonly preparedToolCalls = new Map<
+    string,
+    | {
+        type: 'ready';
+        toolCall: ParsedToolCall<Tool>;
+      }
+    | {
+        type: 'blocked';
+        reason: string;
+        output: models.FunctionCallOutputItem;
+      }
+  >();
   // The response most recently passed through handleApprovalCheck on this
   // run. The same response object can reach the gate more than once — the
   // pre-loop check plus the first loop iteration, or the pre-loop check plus
@@ -1396,6 +1411,7 @@ export class ModelResult<
     turnContext: TurnContext,
     onPreliminaryResult?: (toolCallId: string, result: unknown) => void,
     extras?: ToolExecutionExtras,
+    runPreToolUse = true,
   ): Promise<
     | {
         type: 'parse_error';
@@ -1484,10 +1500,22 @@ export class ModelResult<
       };
     }
 
-    let effectiveToolCall = toolCall;
+    const prepared = this.preparedToolCalls.get(toolCall.id);
+    this.preparedToolCalls.delete(toolCall.id);
+    if (prepared?.type === 'blocked') {
+      return {
+        type: 'hook_blocked',
+        toolCall,
+        reason: prepared.reason,
+        output: prepared.output,
+      };
+    }
 
-    // Emit PreToolUse hook -- can block or mutate input.
-    if (this.hooksManager) {
+    let effectiveToolCall = prepared?.type === 'ready' ? prepared.toolCall : toolCall;
+
+    // Emit PreToolUse here only when the approval gate has not already done
+    // so (for example, an approved call resumed from older persisted state).
+    if (this.hooksManager && !prepared && runPreToolUse) {
       // The hook payload coerces null/undefined arguments to {} for schema
       // validation, but `effectiveToolCall.arguments` only changes when the
       // chain reports an actual mutation (`emit.mutated`), so tools that
@@ -2612,6 +2640,53 @@ export class ModelResult<
     };
   }
 
+  private async prepareToolCallForApproval(
+    toolCall: ParsedToolCall<Tool>,
+  ): Promise<ParsedToolCall<Tool>> {
+    if (!this.hooksManager || typeof toolCall.arguments === 'string') {
+      return toolCall;
+    }
+
+    const preResult = await this.hooksManager.emit(
+      'PreToolUse',
+      {
+        toolName: toolCall.name,
+        toolInput: (toolCall.arguments ?? {}) as Record<string, unknown>,
+      },
+      this.hookEmitContext(toolCall.name),
+    );
+
+    if (preResult.blocked) {
+      const block = preResult.results.find((result) => result.block)?.block;
+      const reason = typeof block === 'string' ? block : 'Blocked by PreToolUse hook';
+      this.preparedToolCalls.set(toolCall.id, {
+        type: 'blocked',
+        reason,
+        output: {
+          type: 'function_call_output',
+          id: `output_${toolCall.id}`,
+          callId: toolCall.id,
+          output: JSON.stringify({
+            error: reason,
+          }),
+        },
+      });
+      return toolCall;
+    }
+
+    const effectiveToolCall = preResult.mutated
+      ? {
+          ...toolCall,
+          arguments: preResult.finalPayload.toolInput,
+        }
+      : toolCall;
+    this.preparedToolCalls.set(toolCall.id, {
+      type: 'ready',
+      toolCall: effectiveToolCall,
+    });
+    return effectiveToolCall;
+  }
+
   /**
    * Run the UserPromptSubmit hook, supporting both string and structured
    * inputs. If a handler returns a mutated prompt, the returned object
@@ -2864,12 +2939,33 @@ export class ModelResult<
       // context is handled via contextStore, not on TurnContext
     };
 
+    const preparedCalls = await Promise.all(
+      toolCalls.map(async (toolCall) => {
+        const tool = this.options.tools?.find(
+          (candidate) => isClientTool(candidate) && candidate.function.name === toolCall.name,
+        );
+        return tool && isAutoResolvableTool(tool)
+          ? this.prepareToolCallForApproval(toolCall)
+          : toolCall;
+      }),
+    );
+    const blockedIds = new Set(
+      preparedCalls
+        .filter((toolCall) => this.preparedToolCalls.get(toolCall.id)?.type === 'blocked')
+        .map((toolCall) => toolCall.id),
+    );
     const { requiresApproval: needsApproval, autoExecute } = await partitionToolCalls(
-      toolCalls as ParsedToolCall<TTools[number]>[],
+      preparedCalls.filter((toolCall) => !blockedIds.has(toolCall.id)) as ParsedToolCall<
+        TTools[number]
+      >[],
       this.options.tools,
       turnContext,
       this.requireApprovalFn ?? undefined,
     );
+    const autoExecuteIncludingBlocked = [
+      ...autoExecute,
+      ...preparedCalls.filter((toolCall) => blockedIds.has(toolCall.id)),
+    ];
 
     // Nothing needs an approval gate: return immediately WITHOUT executing
     // anything. The main loop's executeToolRound runs every call exactly
@@ -2931,7 +3027,7 @@ export class ModelResult<
     // so execute the auto-approved calls now and persist their results as
     // unsent so the resume path can pick them up without re-executing.
     const unsentResults = await this.executeAutoApproveTools(
-      autoExecute as ParsedToolCall<TTools[number]>[],
+      autoExecuteIncludingBlocked as ParsedToolCall<TTools[number]>[],
       turnContext,
     );
 
@@ -2947,7 +3043,12 @@ export class ModelResult<
     // Save state with pending approvals (only reached when stillPending > 0).
     const stateUpdates: Partial<Omit<ConversationState<TTools>, 'id' | 'createdAt' | 'updatedAt'>> =
       {
-        pendingToolCalls: stillPending,
+        pendingToolCalls: stillPending.map((toolCall) => ({
+          ...toolCall,
+          ...(this.preparedToolCalls.has(toolCall.id) && {
+            preToolUseApplied: true as const,
+          }),
+        })),
         status: 'awaiting_approval',
       };
     if (combinedResults.length > 0) {
@@ -5570,11 +5671,7 @@ export class ModelResult<
     // Declared from the approved calls only — a pending call the user did not
     // approve is not part of this round.
     await this.beginDoomLoopRound(
-      [
-        ...this.approvedToolCalls,
-      ]
-        .map((callId) => pendingCalls.find((tc) => tc.id === callId))
-        .filter((tc): tc is ParsedToolCall<Tool> => tc !== undefined),
+      pendingCalls.filter((toolCall) => this.approvedToolCalls.includes(toolCall.id)),
     );
 
     // Process approvals - execute the approved tools. Route through
@@ -5600,6 +5697,9 @@ export class ModelResult<
         tool,
         toolCall as ParsedToolCall<Tool>,
         turnContext,
+        undefined,
+        undefined,
+        toolCall.preToolUseApplied !== true,
       );
 
       if (hookOutcome.type === 'parse_error') {
