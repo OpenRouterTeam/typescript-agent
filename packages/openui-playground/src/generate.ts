@@ -148,6 +148,7 @@ export async function* generate(
   let ttfbMs: number | null = null;
   let firstStatementMs: number | null = null;
   let statements = 0;
+  let diagnostics = 0;
   let chars = 0;
 
   if (mode === 'native') {
@@ -173,6 +174,8 @@ export async function* generate(
         }
         statements += 1;
         chars += event.source.length;
+      } else if (event.type === 'document') {
+        diagnostics += event.diagnostics.length;
       }
       yield toPlaygroundEvent(event, Date.now() - start, statements);
     }
@@ -186,7 +189,7 @@ export async function* generate(
       firstStatementMs,
       totalMs: Date.now() - start,
       statements,
-      diagnostics: 0,
+      diagnostics,
       chars,
       ...usage,
     };

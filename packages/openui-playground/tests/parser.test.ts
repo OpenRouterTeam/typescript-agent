@@ -1,3 +1,4 @@
+import { serializeExpr } from '@openrouter/agent';
 import { describe, expect, it } from 'vitest';
 import { OpenUiLangParser, parseDocument } from '../src/lang/parser.js';
 
@@ -158,6 +159,20 @@ describe('parseDocument (tolerance + semantics)', () => {
           },
         },
       ],
+    });
+  });
+
+  it('round-trips strings serialized by the SDK', () => {
+    const value = 'bell:\u0007 newline:\n tab:\t return:\r slash:\\ quote:"';
+    const source = serializeExpr({
+      kind: 'literal',
+      value,
+    });
+    const doc = parseDocument(`value = ${source}`);
+    expect(doc.diagnostics).toEqual([]);
+    expect(doc.assignments['value']?.expr).toEqual({
+      kind: 'literal',
+      value,
     });
   });
 

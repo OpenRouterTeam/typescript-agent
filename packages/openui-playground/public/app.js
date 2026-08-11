@@ -92,7 +92,7 @@ function evalExpr(expr, depth = 0) {
     case 'member': {
       let base = evalExpr(expr.base, depth + 1);
       for (const key of expr.path) {
-        base = base !== null ? base[key] : null;
+        base = base === null || base === undefined ? undefined : base[key];
       }
       return base;
     }

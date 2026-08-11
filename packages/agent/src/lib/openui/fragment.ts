@@ -12,24 +12,9 @@ import * as z4 from 'zod/v4';
 import type { UiExpr, UiFragment, UiLiteralValue } from './document.js';
 import { OPENUI_LANG_DIALECT, OPENUI_ROOT_REF, serializeExpr } from './document.js';
 import type { UiLibrary } from './library.js';
-import { componentProps, OPENUI_BUILTIN_COMPONENTS } from './library.js';
+import { assertIdent, componentProps, OPENUI_BUILTIN_COMPONENTS } from './library.js';
 
 const FRAGMENT_EXPR: unique symbol = Symbol.for('openrouter.openui.fragment-expr');
-
-/*
- * Ref/state/builtin names are emitted verbatim into OpenUI Lang source (every
- * other value channel is quoted/JSON-escaped by the serializer), so a name
- * derived from model-controlled input could otherwise inject arbitrary
- * expressions into what the client treats as trusted tool-authored UI.
- */
-const IDENT_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
-
-function assertIdent(kind: string, name: string): string {
-  if (!IDENT_RE.test(name)) {
-    throw new Error(`${kind} name ${JSON.stringify(name)} must match ${IDENT_RE.source}`);
-  }
-  return name;
-}
 
 /** A composable fragment node: a {@link UiFragment} that also nests as a child argument. */
 export interface FragmentNode extends UiFragment {
@@ -38,6 +23,7 @@ export interface FragmentNode extends UiFragment {
 
 /** Any value accepted as a fragment constructor argument. */
 export type FragmentArg =
+  | undefined
   | UiLiteralValue
   | FragmentNode
   | FragmentArg[]
@@ -62,10 +48,22 @@ function toExpr(arg: FragmentArg): UiExpr {
   if (typeof arg === 'object' && arg !== null) {
     return {
       kind: 'object',
-      entries: Object.entries(arg).map(([key, value]) => ({
-        key,
-        value: toExpr(value),
-      })),
+      entries: Object.entries(arg).flatMap(([key, value]) =>
+        value === undefined
+          ? []
+          : [
+              {
+                key,
+                value: toExpr(value),
+              },
+            ],
+      ),
+    };
+  }
+  if (arg === undefined) {
+    return {
+      kind: 'literal',
+      value: null,
     };
   }
   return {
@@ -137,7 +135,7 @@ export function fragment<N extends string>(library: UiLibrary<N>): FragmentBuild
       const exprs = args.map((arg, i) => {
         const expr = toExpr(arg);
         const prop = props[i];
-        if (prop && expr.kind === 'literal') {
+        if (arg !== undefined && prop && expr.kind === 'literal') {
           const parsed = z4.safeParse(prop.schema, expr.value);
           if (!parsed.success) {
             throw new Error(

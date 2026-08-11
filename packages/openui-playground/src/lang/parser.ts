@@ -397,13 +397,26 @@ class ExprParser {
         throw new ParseFailure('unterminated escape');
       }
       this.pos += 1;
-      if (esc === 'n') {
-        out += '\n';
-      } else if (esc === 't') {
-        out += '\t';
-      } else {
-        out += esc;
+      if (esc === 'u') {
+        const hex = this.src.slice(this.pos, this.pos + 4);
+        if (!/^[0-9A-Fa-f]{4}$/.test(hex)) {
+          throw new ParseFailure(`invalid unicode escape '\\u${hex}'`);
+        }
+        out += String.fromCharCode(Number.parseInt(hex, 16));
+        this.pos += 4;
+        continue;
       }
+      const escaped = {
+        '"': '"',
+        '\\': '\\',
+        '/': '/',
+        b: '\b',
+        f: '\f',
+        n: '\n',
+        r: '\r',
+        t: '\t',
+      }[esc];
+      out += escaped ?? esc;
     }
   }
 

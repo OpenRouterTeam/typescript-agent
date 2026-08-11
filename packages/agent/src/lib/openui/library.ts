@@ -24,10 +24,20 @@ export interface ComponentDefinition<N extends string = string> {
   props?: ZodObject<ZodRawShape>;
 }
 
+const IDENT_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
+
+export function assertIdent(kind: string, name: string): string {
+  if (!IDENT_RE.test(name)) {
+    throw new Error(`${kind} name ${JSON.stringify(name)} must match ${IDENT_RE.source}`);
+  }
+  return name;
+}
+
 /** Declare a component the model (or a tool) may render. */
 export function defineComponent<const N extends string>(
   def: ComponentDefinition<N>,
 ): ComponentDefinition<N> {
+  assertIdent('component', def.name);
   return def;
 }
 
@@ -61,6 +71,7 @@ export function createLibrary<const D extends readonly ComponentDefinition[]>(
 ): UiLibrary<D[number]['name']> {
   const components = new Map<string, ComponentDefinition>();
   for (const def of definitions) {
+    assertIdent('component', def.name);
     if (components.has(def.name)) {
       throw new Error(`duplicate component name '${def.name}' in library`);
     }

@@ -225,6 +225,21 @@ describe('createLibrary / componentProps', () => {
     ).toThrow(/duplicate component name 'A'/);
   });
 
+  it('rejects component names that are not identifiers', () => {
+    expect(() =>
+      defineComponent({
+        name: 'Card); injected = Text("pwned")',
+      }),
+    ).toThrow(/component name .* must match/);
+    expect(() =>
+      createLibrary([
+        {
+          name: 'Card-name',
+        },
+      ]),
+    ).toThrow(/component name .* must match/);
+  });
+
   it('reports prop signatures in declaration order with optionality', () => {
     const card = library.components.get('Card');
     expect(card).toBeDefined();
@@ -288,6 +303,16 @@ describe('fragment builder', () => {
       } as never,
     ]);
     expect(wrapped.source).toBe('root = Card("W", [Text("ok"), {nested: [1, true, null]}])');
+  });
+
+  it('serializes undefined arguments as null and omits undefined object properties', () => {
+    expect(ui.Card(undefined).source).toBe('root = Card(null)');
+    expect(
+      ui.Query('weather', {
+        city: undefined,
+        units: 'metric',
+      }).source,
+    ).toBe('root = Query("weather", {units: "metric"})');
   });
 
   it('validates literal props at construction time', () => {
