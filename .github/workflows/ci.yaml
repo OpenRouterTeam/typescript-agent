@@ -185,7 +185,7 @@ jobs:
   ci-status:
     name: CI status
     if: always()
-    needs: [lint, typecheck, unit-tests, e2e-tests, structural-gate]
+    needs: [lint, typecheck, unit-tests, e2e-tests, structural-gate, package-boundaries]
     runs-on: ubuntu-latest
     steps:
       - name: Verify all checks passed
@@ -196,6 +196,7 @@ jobs:
             unit-tests=${{ needs.unit-tests.result }}
             e2e-tests=${{ needs.e2e-tests.result }}
             structural-gate=${{ needs.structural-gate.result }}
+            package-boundaries=${{ needs.package-boundaries.result }}
         run: |
           failed=0
           for entry in $RESULTS; do
