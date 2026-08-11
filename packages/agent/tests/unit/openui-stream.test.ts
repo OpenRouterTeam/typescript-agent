@@ -627,6 +627,16 @@ describe('broadcastUiFragment', () => {
     turnBroadcaster: {
       push: (event: unknown) => void;
     } | null;
+    pendingUiFragments: Set<Promise<void>>;
+    dispatchUiFragment: (value: {
+      toolCall: ParsedToolCall<Tool>;
+      tool: Tool;
+      result: {
+        result: unknown;
+        error?: Error;
+      };
+    }) => void;
+    drainUiFragments: () => Promise<void>;
     broadcastUiFragment: (value: {
       toolCall: ParsedToolCall<Tool>;
       tool: Tool;
@@ -677,6 +687,69 @@ describe('broadcastUiFragment', () => {
       result,
     };
   }
+
+  it('releases timed-out renders without removing renders added during the drain', async () => {
+    vi.useFakeTimers();
+    try {
+      const { internal, pushed } = makeHarness();
+      let releaseLater: (() => void) | undefined;
+      const hanging = tool({
+        name: 'hanging_ui',
+        inputSchema: z.object({
+          days: z.number(),
+        }),
+        execute: async () => 'old',
+        toUiOutput: () => new Promise(() => undefined),
+      });
+      const later = tool({
+        name: 'later_ui',
+        inputSchema: z.object({
+          days: z.number(),
+        }),
+        execute: async () => 'new',
+        toUiOutput: async () => {
+          await new Promise<void>((resolve) => {
+            releaseLater = resolve;
+          });
+          return ui.Text('later');
+        },
+      });
+
+      internal.dispatchUiFragment(
+        makeCall(hanging, {
+          result: 'old',
+        }),
+      );
+      const firstDrain = internal.drainUiFragments();
+      internal.dispatchUiFragment(
+        makeCall(later, {
+          result: 'new',
+        }),
+      );
+
+      await vi.advanceTimersByTimeAsync(30_000);
+      await firstDrain;
+      expect(internal.pendingUiFragments).toHaveLength(1);
+
+      let secondDrainFinished = false;
+      const secondDrain = internal.drainUiFragments().then(() => {
+        secondDrainFinished = true;
+      });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(secondDrainFinished).toBe(false);
+
+      releaseLater?.();
+      await secondDrain;
+      expect(internal.pendingUiFragments).toHaveLength(0);
+      expect(pushed).toContainEqual(
+        expect.objectContaining({
+          toolName: 'later_ui',
+        }),
+      );
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 
   it('pushes a tool.ui_fragment event for a successful execution', async () => {
     const { internal, pushed } = makeHarness();
