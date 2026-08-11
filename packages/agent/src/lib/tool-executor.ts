@@ -580,6 +580,61 @@ async function runUnifiedTool(args: {
   return fn.outputSchema ? await validateToolOutput(fn.outputSchema, result) : result;
 }
 
+function unifiedExecutionResult({
+  toolCall,
+  source,
+  result,
+  error,
+}: {
+  toolCall: ParsedToolCall<Tool>;
+  source: 'client' | 'mcp';
+  result: unknown;
+  error?: unknown;
+}): ToolExecutionResult<Tool> {
+  return {
+    toolCallId: toolCall.id,
+    toolName: toolCall.name,
+    source,
+    result,
+    ...(error !== undefined && {
+      error: error instanceof Error ? error : new Error(String(error)),
+    }),
+  };
+}
+
+function deferredInvocation({
+  toolCall,
+  result,
+  fn,
+  validatedInput,
+}: {
+  toolCall: ParsedToolCall<Tool>;
+  result: DeferredHandle;
+  fn: UnifiedTool['function'];
+  validatedInput: Record<string, unknown>;
+}): AsyncToolInvocation {
+  if (result.taskId.length === 0 || result.taskId.length > 256) {
+    throw new Error(`Tool "${toolCall.name}": ctx.defer() taskId must be 1-256 characters`);
+  }
+  return {
+    asyncMode: 'defer',
+    taskId: result.taskId,
+    ...(result.ack !== undefined
+      ? {
+          ack: result.ack,
+        }
+      : fn.ack !== undefined && {
+          ack: resolveAck(fn.ack, validatedInput),
+        }),
+    ...((result.pollAfterMs ?? fn.pollAfterMs) !== undefined && {
+      pollAfterMs: result.pollAfterMs ?? fn.pollAfterMs,
+    }),
+    ...(result.expiresAt !== undefined && {
+      expiresAt: result.expiresAt,
+    }),
+  };
+}
+
 /**
  * Prepare a unified tool invocation. Validates input eagerly; builds the
  * ToolRunContext (defer/log/onMessage/client wired by the engine through
@@ -615,13 +670,12 @@ export async function prepareUnifiedInvocation(
       unknown
     >;
   } catch (error) {
-    return {
-      toolCallId: toolCall.id,
-      toolName: toolCall.name,
+    return unifiedExecutionResult({
+      toolCall,
       source,
       result: null,
-      error: error instanceof Error ? error : new Error(String(error)),
-    };
+      error,
+    });
   }
 
   // Yield pipeline: eventSchema validation happened in runUnifiedTool; here
@@ -704,43 +758,25 @@ export async function prepareUnifiedInvocation(
   try {
     const result = await invokeRun();
 
-    if (isDeferredHandle(result)) {
-      if (result.taskId.length === 0 || result.taskId.length > 256) {
-        throw new Error(`Tool "${toolCall.name}": ctx.defer() taskId must be 1-256 characters`);
-      }
-      return {
-        asyncMode: 'defer',
-        taskId: result.taskId,
-        ...(result.ack !== undefined
-          ? {
-              ack: result.ack,
-            }
-          : fn.ack !== undefined && {
-              ack: resolveAck(fn.ack, validatedInput),
-            }),
-        ...((result.pollAfterMs ?? fn.pollAfterMs) !== undefined && {
-          pollAfterMs: result.pollAfterMs ?? fn.pollAfterMs,
-        }),
-        ...(result.expiresAt !== undefined && {
-          expiresAt: result.expiresAt,
-        }),
-      };
-    }
-
-    return {
-      toolCallId: toolCall.id,
-      toolName: toolCall.name,
-      source,
-      result,
-    };
+    return isDeferredHandle(result)
+      ? deferredInvocation({
+          toolCall,
+          result,
+          fn,
+          validatedInput,
+        })
+      : unifiedExecutionResult({
+          toolCall,
+          source,
+          result,
+        });
   } catch (error) {
-    return {
-      toolCallId: toolCall.id,
-      toolName: toolCall.name,
+    return unifiedExecutionResult({
+      toolCall,
       source,
       result: null,
-      error: error instanceof Error ? error : new Error(String(error)),
-    };
+      error,
+    });
   }
 }
 
