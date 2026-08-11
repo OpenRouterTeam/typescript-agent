@@ -232,6 +232,66 @@ describe('Standard Schema tool support', () => {
     expect(result.error?.message).toContain('Invalid type');
   });
 
+  it('awaits async Standard Schema context validation during execution', async () => {
+    const contextSchema: StandardSchemaV1<
+      unknown,
+      {
+        token: string;
+      }
+    > = {
+      '~standard': {
+        version: 1,
+        vendor: 'test',
+        validate: async (value) => {
+          const token = (
+            value as {
+              token?: unknown;
+            }
+          ).token;
+          return typeof token === 'string'
+            ? {
+                value: {
+                  token,
+                },
+              }
+            : {
+                issues: [
+                  {
+                    message: 'Expected token',
+                    path: [
+                      'token',
+                    ],
+                  },
+                ],
+              };
+        },
+        types: undefined,
+      },
+    };
+    const contextTool = tool({
+      name: 'async_context',
+      inputSchema,
+      inputJsonSchema,
+      contextSchema,
+      execute: (_input, ctx) => ctx!.local.token,
+    });
+    const store = new ToolContextStore({
+      async_context: {
+        token: 'secret',
+      },
+    });
+
+    const result = await executeRegularTool(
+      contextTool,
+      call('async_context', {
+        name: 'luke',
+      }),
+      context,
+      store,
+    );
+    expect(result.result).toBe('secret');
+  });
+
   it('validates and updates Standard Schema context', () => {
     const store = new ToolContextStore({
       standard: {

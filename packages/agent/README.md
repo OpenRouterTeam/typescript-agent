@@ -174,7 +174,7 @@ const searchTool = tool({
 });
 ```
 
-`inputJsonSchema` is only needed for `inputSchema`: output, event, and context schemas are validated locally and never sent to the model. The agent sanitizes both generated and supplied JSON Schema before the SDK boundary, including removing `~`-prefixed metadata keys. Standard Schema validators may validate synchronously or asynchronously; synchronous context mutation methods (`ctx.setContext()` and `ctx.setSharedContext()`) require a synchronous validator.
+`inputJsonSchema` is only needed for `inputSchema`: output, event, and context schemas are validated locally and never sent to the model. The agent sanitizes both generated and supplied JSON Schema before the SDK boundary, including removing `~`-prefixed metadata keys. Standard Schema validators may validate synchronously or asynchronously. Initial context validation supports asynchronous validators; synchronous context mutation methods (`ctx.setContext()` and `ctx.setSharedContext()`) require a synchronous validator.
 
 **Regular tools** — automatically executed by the agent loop:
 

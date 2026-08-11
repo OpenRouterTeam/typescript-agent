@@ -144,6 +144,8 @@ function validatePartialAgainstSchema(
  */
 export interface ToolExecutionExtras {
   signal?: AbortSignal;
+  /** Internal: context schemas were already validated asynchronously by the executor. */
+  contextValidated?: boolean;
   callId?: string;
   conversationId?: string;
   /** The parent run's client — agent tools use it to start child runs. */
@@ -214,12 +216,16 @@ export function buildToolExecuteContext<
   sharedSchema?: ObjectSchema | undefined,
   extras?: ToolExecutionExtras,
 ): ToolExecuteContext<TName, TContext, TShared> {
-  // Validate initial context eagerly (throws on bad data)
-  if (store && schema) {
-    extractToolContext(store, toolName, schema);
-  }
-  if (store && sharedSchema) {
-    extractToolContext(store, SHARED_CONTEXT_KEY, sharedSchema);
+  // Validate initial context eagerly (throws on bad data). Tool execution does
+  // this asynchronously before calling us so Promise-returning Standard Schema
+  // validators work; direct callers retain this synchronous validation path.
+  if (!extras?.contextValidated) {
+    if (store && schema) {
+      extractToolContext(store, toolName, schema);
+    }
+    if (store && sharedSchema) {
+      extractToolContext(store, SHARED_CONTEXT_KEY, sharedSchema);
+    }
   }
 
   const ctx: ToolExecuteContext<TName, TContext, TShared> = {

@@ -195,14 +195,24 @@ export function parseToolCallArguments(argumentsString: string): unknown {
  * otherwise.
  */
 // biome-ignore lint: parameters match the internal API shape
-function buildExecuteCtx(
+async function buildExecuteCtx(
   tool: ClientTool,
   toolCall: ParsedToolCall<Tool> | undefined,
   turnContext: TurnContext,
   contextStore?: ToolContextStore,
   sharedSchema?: ObjectSchema,
   extras?: ToolExecutionExtras,
-): ToolExecuteContext {
+): Promise<ToolExecuteContext> {
+  if (contextStore && tool.function.contextSchema) {
+    await validateSchema(
+      tool.function.contextSchema,
+      contextStore.getToolContext(tool.function.name),
+    );
+  }
+  if (contextStore && sharedSchema) {
+    await validateSchema(sharedSchema, contextStore.getToolContext('shared'));
+  }
+
   const resolvedToolCall = turnContext.toolCall ?? (toolCall && toFunctionCallItem(toolCall));
   return buildToolExecuteContext(
     resolvedToolCall
@@ -215,7 +225,10 @@ function buildExecuteCtx(
     tool.function.name,
     tool.function.contextSchema,
     sharedSchema,
-    extras,
+    {
+      ...extras,
+      contextValidated: true,
+    },
   );
 }
 
@@ -264,7 +277,7 @@ export async function executeRegularTool(
 
   try {
     const validatedInput = await validateToolInput(tool.function.inputSchema, toolCall.arguments);
-    const executeContext = buildExecuteCtx(
+    const executeContext = await buildExecuteCtx(
       tool,
       toolCall,
       context,
@@ -329,7 +342,7 @@ export async function executeGeneratorTool(
 
   try {
     const validatedInput = await validateToolInput(tool.function.inputSchema, toolCall.arguments);
-    const executeContext = buildExecuteCtx(
+    const executeContext = await buildExecuteCtx(
       tool,
       toolCall,
       context,
@@ -426,7 +439,7 @@ export async function executeHITLTool(
 
   try {
     const validatedInput = await validateToolInput(tool.function.inputSchema, toolCall.arguments);
-    const executeContext = buildExecuteCtx(
+    const executeContext = await buildExecuteCtx(
       tool,
       toolCall,
       context,
@@ -637,6 +650,15 @@ export async function prepareUnifiedInvocation(
       onYield(validated);
     },
   }) as NonNullable<ToolExecutionExtras['runExtras']>;
+  if (contextStore && tool.function.contextSchema) {
+    await validateSchema(
+      tool.function.contextSchema,
+      contextStore.getToolContext(tool.function.name),
+    );
+  }
+  if (contextStore && sharedSchema) {
+    await validateSchema(sharedSchema, contextStore.getToolContext('shared'));
+  }
   const runContext = buildToolRunContext(
     context,
     contextStore,
@@ -645,6 +667,7 @@ export async function prepareUnifiedInvocation(
     sharedSchema,
     {
       ...extras,
+      contextValidated: true,
       runExtras,
     },
   );
@@ -942,7 +965,13 @@ async function invokeOnResponseReceived(
    * call's arguments are not — so no synthetic `toolCall` is threaded. A
    * caller-provided `turnContext.toolCall` still flows through.
    */
-  const executeContext = buildExecuteCtx(tool, undefined, context, contextStore, sharedSchema);
+  const executeContext = await buildExecuteCtx(
+    tool,
+    undefined,
+    context,
+    contextStore,
+    sharedSchema,
+  );
   try {
     const hookResult = await Promise.resolve(hook(parsed, executeContext));
     const validation = await safeValidateSchema(tool.function.outputSchema, hookResult);
