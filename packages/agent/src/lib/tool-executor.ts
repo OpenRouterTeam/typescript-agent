@@ -6,6 +6,7 @@ import {
   isZodSchema,
   StandardSchemaError,
   safeValidateSchema,
+  tryStandardJsonSchema,
   validateSchema,
   validateSchemaSync,
 } from './schema.js';
@@ -107,8 +108,12 @@ export function convertSchemaToJsonSchema(
   if (jsonSchema) {
     return sanitizeJsonSchema(jsonSchema);
   }
+  const standardJsonSchema = tryStandardJsonSchema(schema, 'draft-07');
+  if (standardJsonSchema) {
+    return sanitizeJsonSchema(standardJsonSchema);
+  }
   throw new Error(
-    'Non-Zod inputSchema requires inputJsonSchema because Standard Schema does not define JSON Schema conversion.',
+    'Non-Zod inputSchema must implement StandardJSONSchemaV1 or provide inputJsonSchema.',
   );
 }
 

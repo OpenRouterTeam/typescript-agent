@@ -1,4 +1,5 @@
-import type { StandardSchemaV1 } from '@standard-schema/spec';
+import type { StandardJSONSchemaV1, StandardSchemaV1 } from '@standard-schema/spec';
+import { toStandardJsonSchema } from '@valibot/to-json-schema';
 import * as v from 'valibot';
 import { describe, expect, it } from 'vitest';
 import { z } from 'zod/v4';
@@ -135,6 +136,130 @@ describe('Standard Schema tool support', () => {
     );
   });
 
+  it('converts the StandardJSONSchemaV1 trait without inputJsonSchema', () => {
+    const schema = toStandardJsonSchema(inputSchema);
+    const valibotTool = tool({
+      name: 'standard_json_schema',
+      inputSchema: schema,
+      execute: () => null,
+    });
+
+    const [apiTool] = convertToolsToAPIFormat([
+      valibotTool,
+    ]);
+    expect(apiTool).toMatchObject({
+      parameters: {
+        type: 'object',
+        required: [
+          'name',
+        ],
+      },
+    });
+  });
+
+  it('falls through when the trait converter throws', () => {
+    const schema = {
+      ...inputSchema,
+      '~standard': {
+        ...inputSchema['~standard'],
+        jsonSchema: {
+          input: () => {
+            throw new Error('not convertible');
+          },
+          output: () => {
+            throw new Error('not convertible');
+          },
+        },
+      },
+    } satisfies typeof inputSchema & StandardJSONSchemaV1;
+    const valibotTool = tool({
+      name: 'throwing_standard_json_schema',
+      inputSchema: schema,
+      execute: () => null,
+    });
+
+    expect(() =>
+      convertToolsToAPIFormat([
+        valibotTool,
+      ]),
+    ).toThrow('must implement StandardJSONSchemaV1 or provide inputJsonSchema');
+  });
+
+  it('accepts explicit inputJsonSchema when the trait converter would throw', () => {
+    const schema = {
+      ...inputSchema,
+      '~standard': {
+        ...inputSchema['~standard'],
+        jsonSchema: {
+          input: () => {
+            throw new Error('not convertible');
+          },
+          output: () => {
+            throw new Error('not convertible');
+          },
+        },
+      },
+    } satisfies typeof inputSchema & StandardJSONSchemaV1;
+    const valibotTool = tool({
+      name: 'throwing_standard_json_schema',
+      inputSchema: schema,
+      inputJsonSchema,
+      execute: () => null,
+    });
+
+    const [apiTool] = convertToolsToAPIFormat([
+      valibotTool,
+    ]);
+    expect(apiTool).toMatchObject({
+      parameters: {
+        required: [
+          'name',
+        ],
+      },
+    });
+  });
+
+  it('prefers explicit inputJsonSchema over the trait', () => {
+    let converted = false;
+    const schema = {
+      ...inputSchema,
+      '~standard': {
+        ...inputSchema['~standard'],
+        jsonSchema: {
+          input: () => {
+            converted = true;
+            return {
+              type: 'object',
+              title: 'trait',
+            };
+          },
+          output: () => ({
+            type: 'object',
+          }),
+        },
+      },
+    } satisfies typeof inputSchema & StandardJSONSchemaV1;
+    const valibotTool = tool({
+      name: 'overridden_standard_json_schema',
+      inputSchema: schema,
+      inputJsonSchema: {
+        type: 'object',
+        title: 'explicit',
+      },
+      execute: () => null,
+    });
+
+    const [apiTool] = convertToolsToAPIFormat([
+      valibotTool,
+    ]);
+    expect(apiTool).toMatchObject({
+      parameters: {
+        title: 'explicit',
+      },
+    });
+    expect(converted).toBe(false);
+  });
+
   it('uses and sanitizes the explicit JSON Schema escape hatch', () => {
     const valibotTool = tool({
       name: 'valibot_tool',
@@ -177,7 +302,7 @@ describe('Standard Schema tool support', () => {
       convertToolsToAPIFormat([
         valibotTool,
       ]),
-    ).toThrow('requires inputJsonSchema');
+    ).toThrow('must implement StandardJSONSchemaV1 or provide inputJsonSchema');
   });
 
   it('awaits async Standard Schema validation', async () => {

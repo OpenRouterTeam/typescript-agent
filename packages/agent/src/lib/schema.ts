@@ -1,4 +1,4 @@
-import type { StandardSchemaV1 } from '@standard-schema/spec';
+import type { StandardJSONSchemaV1, StandardSchemaV1 } from '@standard-schema/spec';
 import * as z4 from 'zod/v4';
 import type { $ZodObject, $ZodShape, $ZodType, infer as zodInfer } from 'zod/v4/core';
 
@@ -10,16 +10,15 @@ export type ObjectSchema =
   | $ZodObject<$ZodShape>
   | StandardSchemaV1<unknown, Record<string, unknown>>;
 
-export type InputSchemaConfig<TInput extends ObjectSchema> =
-  TInput extends $ZodObject<$ZodShape>
-    ? {
-        inputSchema: TInput;
-        inputJsonSchema?: Record<string, unknown>;
-      }
-    : {
-        inputSchema: TInput;
-        inputJsonSchema: Record<string, unknown>;
-      };
+export type InputSchemaConfig<TInput extends ObjectSchema> = {
+  inputSchema: TInput;
+} & (TInput extends $ZodObject<$ZodShape> | StandardJSONSchemaV1
+  ? {
+      inputJsonSchema?: Record<string, unknown>;
+    }
+  : {
+      inputJsonSchema: Record<string, unknown>;
+    });
 
 export type InferSchemaInput<TSchema> = TSchema extends $ZodType
   ? TSchema['_zod']['input']
@@ -61,6 +60,30 @@ export function isZodSchema(schema: unknown): schema is $ZodType {
     '_zod' in schema &&
     typeof schema._zod === 'object'
   );
+}
+
+export function tryStandardJsonSchema(
+  schema: unknown,
+  target: StandardJSONSchemaV1.Target,
+): Record<string, unknown> | undefined {
+  if (typeof schema !== 'object' || schema === null || !('~standard' in schema)) {
+    return undefined;
+  }
+  const standard = schema['~standard'] as {
+    jsonSchema?: {
+      input?: unknown;
+    };
+  };
+  if (typeof standard.jsonSchema?.input !== 'function') {
+    return undefined;
+  }
+  try {
+    return (standard.jsonSchema.input as StandardJSONSchemaV1.Converter['input'])({
+      target,
+    });
+  } catch {
+    return undefined;
+  }
 }
 
 function isStandardSchema(schema: unknown): schema is StandardSchemaV1 {

@@ -1,3 +1,4 @@
+import { toStandardJsonSchema } from '@valibot/to-json-schema';
 import * as v from 'valibot';
 import { expectTypeOf } from 'vitest';
 import { z } from 'zod/v4';
@@ -15,6 +16,15 @@ const missingInputJsonSchema = tool({
   execute: ({ value }) => value,
 });
 void missingInputJsonSchema;
+
+const traitTool = tool({
+  name: 'standard_json_schema_trait',
+  inputSchema: toStandardJsonSchema(valibotInputSchema),
+  execute: ({ value }) => value,
+});
+expectTypeOf(traitTool.function.execute).parameter(0).toEqualTypeOf<{
+  value: string;
+}>();
 
 const standardTool = tool({
   name: 'standard',
