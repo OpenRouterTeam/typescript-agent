@@ -128,9 +128,8 @@ export async function executeHandlerChain<P, R>(
 
     try {
       const returnValue = await entry.handler(currentPayload, context);
-      const outcome = isZodSchema(options.resultSchema)
-        ? classifyZodHandlerReturn<R>(returnValue, i, options)
-        : await classifyHandlerReturn<R>(returnValue, i, options);
+      const classified = classifyHandlerReturn<R>(returnValue, i, options);
+      const outcome = classified instanceof Promise ? await classified : classified;
 
       if (outcome.kind === 'async') {
         // Fire-and-forget: track the (optional) work promise for drain/timeout.
@@ -227,29 +226,30 @@ type HandlerReturnOutcome<R> =
       result: R;
     };
 
-function classifyZodHandlerReturn<R>(
+type HandlerValidation =
+  | {
+      success: true;
+      data: unknown;
+    }
+  | {
+      success: false;
+      error: Error;
+    };
+
+function validateHandlerReturn(
+  schema: Schema,
   returnValue: unknown,
+): HandlerValidation | Promise<HandlerValidation> {
+  return isZodSchema(schema)
+    ? safeParse(schema, returnValue)
+    : safeValidateSchema(schema, returnValue);
+}
+
+function validationOutcome<R>(
+  validation: HandlerValidation,
   index: number,
   options: ExecuteChainOptions,
 ): HandlerReturnOutcome<R> {
-  if (isAsyncOutput(returnValue)) {
-    return {
-      kind: 'async',
-      trackedWork: trackAsyncWork(returnValue, options.hookName, options.onAsyncTimeout),
-    };
-  }
-  if (returnValue === undefined || returnValue === null) {
-    return {
-      kind: 'skip',
-    };
-  }
-  if (!options.resultSchema || !isZodSchema(options.resultSchema)) {
-    return {
-      kind: 'result',
-      result: returnValue as R,
-    };
-  }
-  const validation = safeParse(options.resultSchema, returnValue);
   if (!validation.success) {
     const err = new Error(
       `[HooksManager] Handler ${index} for hook "${options.hookName}" returned an invalid result: ${validation.error.message}`,
@@ -280,11 +280,11 @@ function classifyZodHandlerReturn<R>(
  *   with .transform() / .default() / .catch() / .coerce -- so downstream
  *   callers see transformed values. Validation failure in strict mode throws.
  */
-async function classifyHandlerReturn<R>(
+function classifyHandlerReturn<R>(
   returnValue: unknown,
   index: number,
   options: ExecuteChainOptions,
-): Promise<HandlerReturnOutcome<R>> {
+): HandlerReturnOutcome<R> | Promise<HandlerReturnOutcome<R>> {
   if (isAsyncOutput(returnValue)) {
     return {
       kind: 'async',
@@ -302,23 +302,10 @@ async function classifyHandlerReturn<R>(
       result: returnValue as R,
     };
   }
-  const validation = await safeValidateSchema(options.resultSchema, returnValue);
-  if (!validation.success) {
-    const err = new Error(
-      `[HooksManager] Handler ${index} for hook "${options.hookName}" returned an invalid result: ${validation.error.message}`,
-    );
-    if (options.throwOnHandlerError) {
-      throw err;
-    }
-    console.warn(err.message);
-    return {
-      kind: 'skip',
-    };
-  }
-  return {
-    kind: 'result',
-    result: validation.data as R,
-  };
+  const validation = validateHandlerReturn(options.resultSchema, returnValue);
+  return validation instanceof Promise
+    ? validation.then((result) => validationOutcome<R>(result, index, options))
+    : validationOutcome<R>(validation, index, options);
 }
 
 /**
