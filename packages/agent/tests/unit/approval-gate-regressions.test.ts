@@ -217,6 +217,62 @@ describe('approval predicate argument parity with execute (#54)', () => {
     expect(requires).toBe(true);
   });
 
+  it('honors a false call-level check when arguments fail schema validation', async () => {
+    const strict = tool({
+      name: 'call_level_invalid_action',
+      inputSchema: z.object({
+        target: z.string(),
+      }),
+      execute: async () => ({}),
+    });
+    const invalidCall = {
+      id: 'call-level-invalid-false',
+      name: 'call_level_invalid_action',
+      arguments: {},
+    };
+    const callLevelCheck = vi.fn(() => false);
+
+    expect(
+      await toolRequiresApproval(
+        invalidCall,
+        [
+          strict,
+        ],
+        context,
+        callLevelCheck,
+      ),
+    ).toBe(false);
+    expect(callLevelCheck).toHaveBeenCalledWith(invalidCall, context);
+  });
+
+  it('honors a true call-level check when arguments fail schema validation', async () => {
+    const strict = tool({
+      name: 'call_level_invalid_action',
+      inputSchema: z.object({
+        target: z.string(),
+      }),
+      execute: async () => ({}),
+    });
+    const invalidCall = {
+      id: 'call-level-invalid-true',
+      name: 'call_level_invalid_action',
+      arguments: {},
+    };
+    const callLevelCheck = vi.fn(() => true);
+
+    expect(
+      await toolRequiresApproval(
+        invalidCall,
+        [
+          strict,
+        ],
+        context,
+        callLevelCheck,
+      ),
+    ).toBe(true);
+    expect(callLevelCheck).toHaveBeenCalledWith(invalidCall, context);
+  });
+
   it('parses original wire arguments once for the predicate and once for execution', async () => {
     let transformCalls = 0;
     const predicate = vi.fn(() => false);

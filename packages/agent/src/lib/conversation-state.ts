@@ -266,7 +266,7 @@ export function appendToMessages(
  * @param toolCall - The tool call to check
  * @param tools - Available tools
  * @param context - Turn context for the approval check
- * @param callLevelCheck - Optional call-level approval function (overrides tool-level), can be async
+ * @param callLevelCheck - Optional call-level approval function (overrides tool-level), can be async. Receives normalized arguments when schema parsing succeeds and raw arguments otherwise.
  */
 export async function toolRequiresApproval<TTools extends readonly Tool[]>(
   toolCall: ParsedToolCall<TTools[number]>,
@@ -287,9 +287,8 @@ export async function toolRequiresApproval<TTools extends readonly Tool[]>(
       }
     > => isClientTool(t) && t.function.name === toolCall.name,
   );
-  // Call-level checks take precedence. When the call maps to a client tool,
-  // give the callback a normalized copy while preserving the original wire
-  // arguments for execution to parse independently.
+  // Call-level checks always take precedence. Pass a normalized copy when
+  // parsing succeeds, or the raw call when it does not.
   if (callLevelCheck) {
     if (!tool) {
       return callLevelCheck(toolCall, context);
@@ -297,7 +296,7 @@ export async function toolRequiresApproval<TTools extends readonly Tool[]>(
 
     const parsed = z4.safeParse(tool.function.inputSchema, toolCall.arguments);
     if (!parsed.success) {
-      return !isAutoResolvableTool(tool);
+      return callLevelCheck(toolCall, context);
     }
 
     return callLevelCheck(

@@ -67,7 +67,7 @@ type BaseCallModelInput<
   context?: ContextInput<ToolContextMapWithShared<TTools, TShared>>;
   /**
    * Call-level approval check - overrides tool-level requireApproval setting
-   * Receives the tool call and turn context, can be sync or async
+   * Receives normalized arguments when schema parsing succeeds and raw arguments otherwise
    */
   requireApproval?: (
     toolCall: ParsedToolCall<TTools[number]>,
