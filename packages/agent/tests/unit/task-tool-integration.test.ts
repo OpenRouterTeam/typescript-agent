@@ -2,7 +2,7 @@ import type { OpenRouterCore } from '@openrouter/sdk/core';
 import type * as models from '@openrouter/sdk/models';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { z } from 'zod/v4';
-import type { ConversationState, StateAccessor } from '../../src/index.js';
+import type { BuiltinTaskToolEvent, ConversationState, StateAccessor } from '../../src/index.js';
 import { isToolResultEvent } from '../../src/index.js';
 import { callModel } from '../../src/inner-loop/call-model.js';
 import { tool } from '../../src/lib/tool.js';
@@ -369,6 +369,7 @@ describe('task tool — events & state persistence', () => {
               'task',
               JSON.stringify({
                 taskId,
+                view: 'logs',
               }),
             ),
           ]),
@@ -403,19 +404,24 @@ describe('task tool — events & state persistence', () => {
       },
     });
 
-    const toolResults: Array<{
-      toolCallId: string;
-      result: unknown;
-    }> = [];
+    const toolResults: BuiltinTaskToolEvent[] = [];
     for await (const event of result.getFullResponsesStream()) {
-      if (isToolResultEvent(event)) {
-        toolResults.push(event as never);
+      if (isToolResultEvent(event) && event.toolName === 'task') {
+        toolResults.push(event);
       }
     }
 
     const checkEvent = toolResults.find((e) => e.toolCallId === 'call_check');
-    expect(checkEvent).toBeDefined();
-    expect((checkEvent?.result as Record<string, unknown>)['status']).toBe('working');
+    expect(checkEvent).toMatchObject({
+      type: 'tool.result',
+      toolCallId: 'call_check',
+      toolName: 'task',
+      source: 'client',
+      result: {
+        status: 'working',
+        logs: expect.any(Array),
+      },
+    });
   });
 
   it('task-tool call/output pairs persist into conversation state history', async () => {

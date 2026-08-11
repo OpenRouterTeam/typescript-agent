@@ -1445,6 +1445,16 @@ export type CorrelatedToolResultEvent<T extends Tool> = Omit<
 type WidestCorrelatedToolEvent = ToolPreliminaryResultEvent | ToolResultEvent;
 
 /**
+ * Final result emitted by the engine-injected `task` tool used to inspect,
+ * steer, fetch, or cancel long-running tasks. The payload is `unknown`
+ * because custom check handlers and completed task results are user-defined.
+ */
+export type BuiltinTaskToolEvent = Omit<ToolResultEvent<unknown, never, 'task'>, 'toolName'> & {
+  toolName: 'task';
+  source: 'client';
+};
+
+/**
  * Discriminated union of name-correlated tool events across a tools tuple.
  * Checking `event.toolName === 'my_tool'` narrows `result` to that tool's output.
  *
@@ -1455,13 +1465,15 @@ type WidestCorrelatedToolEvent = ToolPreliminaryResultEvent | ToolResultEvent;
  * when `T[K]` resolves to the full `Tool` union (`ClientTool | ServerToolBase`)
  * the check fails as a monolithic comparison rather than narrowing per-member.
  */
-export type CorrelatedToolEventUnion<T extends readonly Tool[]> = readonly Tool[] extends T
-  ? WidestCorrelatedToolEvent
-  : {
-      [K in keyof T]: T[K] extends ClientTool
-        ? CorrelatedToolPreliminaryResultEvent<T[K]> | CorrelatedToolResultEvent<T[K]>
-        : never;
-    }[number];
+export type CorrelatedToolEventUnion<T extends readonly Tool[]> =
+  | BuiltinTaskToolEvent
+  | (readonly Tool[] extends T
+      ? WidestCorrelatedToolEvent
+      : {
+          [K in keyof T]: T[K] extends ClientTool
+            ? CorrelatedToolPreliminaryResultEvent<T[K]> | CorrelatedToolResultEvent<T[K]>
+            : never;
+        }[number]);
 
 /**
  * Widest backward-compatible shape for {@link CorrelatedToolStreamPreliminaryUnion}

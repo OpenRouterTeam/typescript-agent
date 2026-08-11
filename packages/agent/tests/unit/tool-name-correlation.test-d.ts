@@ -7,6 +7,7 @@ import { expectTypeOf } from 'vitest';
 import * as z from 'zod';
 import { serverTool, tool } from '../../src/lib/tool.js';
 import type {
+  BuiltinTaskToolEvent,
   ChatStreamEvent,
   CorrelatedResponseStreamEvent,
   CorrelatedToolEventUnion,
@@ -504,9 +505,52 @@ const _resultMissingName: CorrelatedToolResultEvent<typeof weather> = {
 };
 void _resultMissingName;
 
-// Correlated tuple-typed unions still discriminate on a required literal `toolName`.
+// Correlated tuple-typed unions still discriminate on a required literal `toolName`,
+// including the engine-injected task helper.
 expectTypeOf<CorrelatedToolEventUnion<Tools>['toolName']>().toEqualTypeOf<
-  'weather' | 'progress_tool' | 'unified_tool' | 'manual_tool' | 'hitl_tool'
+  'task' | 'weather' | 'progress_tool' | 'unified_tool' | 'manual_tool' | 'hitl_tool'
 >();
+expectTypeOf<
+  Extract<
+    Events,
+    {
+      toolName: 'task';
+    }
+  >
+>().toEqualTypeOf<BuiltinTaskToolEvent>();
+
+function assertNever(value: never): never {
+  throw new Error(`Unexpected value: ${String(value)}`);
+}
+
+function exhaustToolNames(event: Events): void {
+  switch (event.toolName) {
+    case 'task':
+    case 'weather':
+    case 'progress_tool':
+    case 'unified_tool':
+    case 'manual_tool':
+    case 'hitl_tool':
+      return;
+    default:
+      assertNever(event);
+  }
+}
+void exhaustToolNames;
+
+function missingBuiltinTaskCase(event: Events): void {
+  switch (event.toolName) {
+    case 'weather':
+    case 'progress_tool':
+    case 'unified_tool':
+    case 'manual_tool':
+    case 'hitl_tool':
+      return;
+    default:
+      // @ts-expect-error the built-in task event remains unhandled
+      assertNever(event);
+  }
+}
+void missingBuiltinTaskCase;
 expectTypeOf<Stream['toolName' & keyof Stream]>().not.toEqualTypeOf<string | undefined>();
 expectTypeOf<ToolStream['toolName' & keyof ToolStream]>().not.toEqualTypeOf<string | undefined>();

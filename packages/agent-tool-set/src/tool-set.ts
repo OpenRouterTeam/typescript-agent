@@ -132,7 +132,9 @@ function cloneSituationsMap<TShared extends Record<string, unknown>>(
 }
 
 function normalizeConditionalRule<TShared extends Record<string, unknown>>(
-  rule: SituationConditionalRule<TShared>,
+  situation: string,
+  toolId: string,
+  rule: unknown,
 ): {
   mode: 'activateWhen' | 'deactivateWhen';
   predicate: ActivationPredicate<TShared>;
@@ -140,12 +142,27 @@ function normalizeConditionalRule<TShared extends Record<string, unknown>>(
   if (typeof rule === 'function') {
     return {
       mode: 'activateWhen',
-      predicate: rule,
+      predicate: rule as ActivationPredicate<TShared>,
     };
   }
+  if (
+    typeof rule !== 'object' ||
+    rule === null ||
+    !('predicate' in rule) ||
+    typeof rule.predicate !== 'function' ||
+    ('mode' in rule &&
+      rule.mode !== undefined &&
+      rule.mode !== 'activateWhen' &&
+      rule.mode !== 'deactivateWhen')
+  ) {
+    throw new Error(
+      `Situation "${situation}": conditional rule for tool "${toolId}" must be a function or { mode, predicate } object`,
+    );
+  }
+  const mode = 'mode' in rule ? rule.mode : undefined;
   return {
-    mode: rule.mode ?? 'activateWhen',
-    predicate: rule.predicate,
+    mode: (mode ?? 'activateWhen') as 'activateWhen' | 'deactivateWhen',
+    predicate: rule.predicate as ActivationPredicate<TShared>,
   };
 }
 
@@ -463,12 +480,14 @@ export class ToolSet<
     >) {
       const enabled = config.enabled ?? [];
       const disabled = config.disabled ?? [];
-      const conditionalEntries = Object.entries(config.conditional ?? {}) as Array<
-        [
+      const conditionalEntries = Object.entries(config.conditional ?? {}).filter(
+        (
+          entry,
+        ): entry is [
           string,
           SituationConditionalRule<TShared>,
-        ]
-      >;
+        ] => entry[1] !== undefined,
+      );
 
       const seen = new Set<string>();
       const record = (id: string, bucket: string): void => {
@@ -500,7 +519,7 @@ export class ToolSet<
           ...disabled,
         ],
         conditional: conditionalEntries.map(([id, rule]) => {
-          const normalized = normalizeConditionalRule(rule);
+          const normalized = normalizeConditionalRule<TShared>(name, id, rule);
           return {
             id,
             mode: normalized.mode,

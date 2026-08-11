@@ -245,6 +245,7 @@ export type {
 export { DEFAULT_TASK_LOG_LIMITS, ToolTask } from './lib/tool-task.js';
 export type {
   AsyncToolAck,
+  BuiltinTaskToolEvent,
   ChatStreamEvent,
   ClientTool,
   ConversationState,

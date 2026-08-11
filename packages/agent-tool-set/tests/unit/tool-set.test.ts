@@ -1298,6 +1298,68 @@ describe('defineSituations / resolveSituation', () => {
     ).toThrow(/lists tool "a" more than once/);
   });
 
+  it('ignores undefined conditional entries', () => {
+    const ts = createToolSet({
+      tools: [
+        a,
+        b,
+      ] as const,
+    }).defineSituations({
+      optional: {
+        conditional: {
+          a: undefined,
+          b: () => false,
+        },
+      },
+    });
+
+    expect(ts.resolveSituation('optional').activeTools).toEqual([
+      'a',
+    ]);
+  });
+
+  it('rejects malformed conditional rules at definition time with the situation and tool id', () => {
+    const base = createToolSet({
+      tools: [
+        a,
+      ] as const,
+    });
+
+    expect(() =>
+      base.defineSituations({
+        checkout: {
+          conditional: {
+            a: 'invalid',
+          },
+        },
+      } as never),
+    ).toThrow(
+      'Situation "checkout": conditional rule for tool "a" must be a function or { mode, predicate } object',
+    );
+  });
+
+  it('rejects a missing conditional predicate at definition time', () => {
+    const base = createToolSet({
+      tools: [
+        a,
+      ] as const,
+    });
+
+    expect(() =>
+      base.defineSituations({
+        checkout: {
+          conditional: {
+            a: {
+              mode: 'activateWhen',
+            },
+          },
+        },
+      } as never),
+    ).toThrow(
+      'Situation "checkout": conditional rule for tool "a" must be a function or { mode, predicate } object',
+    );
+  });
+
   it('throws on unknown situation names at resolve time', () => {
     const ts = createToolSet({
       tools: [
