@@ -2660,11 +2660,24 @@ export class ModelResult<
     phase: 'initial' | 'mutated',
     responseKey: string,
   ): string {
-    const scope = `${phase}:${responseKey}:${toolCall.id}`;
     try {
-      return `${scope}:${canonicalizeKeyMaterial(toolCall.arguments)}`;
+      return JSON.stringify([
+        phase,
+        responseKey,
+        toolCall.id,
+        {
+          canonical: canonicalizeKeyMaterial(toolCall.arguments),
+        },
+      ]);
     } catch {
-      return `${scope}:uncanonicalizable:${this.nextApprovalGateFallback++}`;
+      return JSON.stringify([
+        phase,
+        responseKey,
+        toolCall.id,
+        {
+          uncanonicalizable: this.nextApprovalGateFallback++,
+        },
+      ]);
     }
   }
 

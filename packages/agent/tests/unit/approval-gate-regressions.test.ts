@@ -634,6 +634,57 @@ describe('approval uses the post-PreToolUse arguments that execute would receive
     expect(execute).not.toHaveBeenCalled();
   });
 
+  it('gates delimiter-colliding canonical and fallback call IDs independently', () => {
+    let deep: Record<string, unknown> = {};
+    for (let index = 0; index < 200; index++) {
+      deep = {
+        child: deep,
+      };
+    }
+    const result = new ModelResult({
+      request: {
+        model: 'test-model',
+        input: 'run both',
+      },
+      client: {} as OpenRouterCore,
+    });
+    const approvalGateKey = (
+      result as unknown as {
+        approvalGateKey: (
+          toolCall: {
+            id: string;
+            name: string;
+            arguments: unknown;
+          },
+          phase: 'initial' | 'mutated',
+          responseKey: string,
+        ) => string;
+      }
+    ).approvalGateKey.bind(result);
+    const completed = new Set<string>();
+    const gate = (id: string, args: unknown) => {
+      const key = approvalGateKey(
+        {
+          id,
+          name: 'guarded',
+          arguments: args,
+        },
+        'initial',
+        'response:0',
+      );
+      if (completed.has(key)) {
+        return false;
+      }
+      completed.add(key);
+      return true;
+    };
+
+    expect(gate('a:uncanonicalizable', 0)).toBe(true);
+    expect(gate('a:uncanonicalizable', 0)).toBe(false);
+    expect(gate('a', deep)).toBe(true);
+    expect(gate('a', deep)).toBe(true);
+  });
+
   it('gates identical post-hook calls independently across responses', async () => {
     const predicate = vi.fn((params: { dangerous: boolean }) => params.dangerous);
     const execute = vi.fn(async () => ({
