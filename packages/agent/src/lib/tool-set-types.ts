@@ -1,3 +1,4 @@
+import { TOOL_SET_SNAPSHOT } from './async-params.js';
 import type {
   ClientTool,
   ConversationState,
@@ -5,7 +6,6 @@ import type {
   ServerToolBase,
   Tool,
 } from './tool-types.js';
-import { TOOL_SET_SNAPSHOT } from './async-params.js';
 
 // ─── identity ───────────────────────────────────────────────────────────────
 
