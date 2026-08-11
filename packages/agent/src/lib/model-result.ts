@@ -2703,40 +2703,51 @@ export class ModelResult<
     );
   }
 
-  private async prepareAfterInitialApproval(
+  private async blockPreparedToolCall(
     toolCall: ParsedToolCall<Tool>,
-    context: TurnContext,
-    responseKey: string,
-  ): Promise<'ready' | 'blocked' | 'pending'> {
-    const effective = await this.prepareToolCallForApproval(toolCall);
-    const prepared = this.preparedToolCalls.get(toolCall.id);
-    if (prepared?.type !== 'ready' || !prepared.mutated) {
-      return prepared?.type === 'blocked' ? 'blocked' : 'ready';
-    }
+    reason: string,
+  ): Promise<void> {
+    this.preparedToolCalls.set(toolCall.id, {
+      type: 'blocked',
+      reason,
+      output: {
+        type: 'function_call_output',
+        id: `output_${toolCall.id}`,
+        callId: toolCall.id,
+        output: JSON.stringify({
+          error: reason,
+        }),
+      },
+    });
+    await this.emitPreparedFailure(toolCall, reason);
+  }
 
+  private async normalizePreparedMutation(effective: ParsedToolCall<Tool>): Promise<
+    | {
+        status: 'ready' | 'blocked';
+      }
+    | {
+        status: 'normalized';
+        toolCall: ParsedToolCall<Tool>;
+      }
+  > {
     const tool = this.options.tools?.find(
       (candidate) => isClientTool(candidate) && candidate.function.name === effective.name,
     );
     if (!tool || !isClientTool(tool)) {
-      return 'ready';
+      return {
+        status: 'ready',
+      };
     }
     const parsed = z4.safeParse(tool.function.inputSchema, effective.arguments);
     if (!parsed.success || !isRecord(parsed.data)) {
-      const reason = `PreToolUse produced invalid input for "${effective.name}"`;
-      this.preparedToolCalls.set(effective.id, {
-        type: 'blocked',
-        reason,
-        output: {
-          type: 'function_call_output',
-          id: `output_${effective.id}`,
-          callId: effective.id,
-          output: JSON.stringify({
-            error: reason,
-          }),
-        },
-      });
-      await this.emitPreparedFailure(effective, reason);
-      return 'blocked';
+      await this.blockPreparedToolCall(
+        effective,
+        `PreToolUse produced invalid input for "${effective.name}"`,
+      );
+      return {
+        status: 'blocked',
+      };
     }
 
     const normalized = {
@@ -2748,6 +2759,28 @@ export class ModelResult<
       toolCall: normalized,
       mutated: true,
     });
+    return {
+      status: 'normalized',
+      toolCall: normalized,
+    };
+  }
+
+  private async prepareAfterInitialApproval(
+    toolCall: ParsedToolCall<Tool>,
+    context: TurnContext,
+    responseKey: string,
+  ): Promise<'ready' | 'blocked' | 'pending'> {
+    const effective = await this.prepareToolCallForApproval(toolCall);
+    const prepared = this.preparedToolCalls.get(toolCall.id);
+    if (prepared?.type !== 'ready' || !prepared.mutated) {
+      return prepared?.type === 'blocked' ? 'blocked' : 'ready';
+    }
+
+    const mutation = await this.normalizePreparedMutation(effective);
+    if (mutation.status !== 'normalized') {
+      return mutation.status;
+    }
+    const normalized = mutation.toolCall;
     const key = this.approvalGateKey(normalized, 'mutated', responseKey);
     if (this.completedApprovalGates.has(key)) {
       return 'ready';
@@ -2762,20 +2795,7 @@ export class ModelResult<
       return 'ready';
     }
     if (decision === 'deny') {
-      const denial = reason ?? 'Denied by PermissionRequest hook';
-      this.preparedToolCalls.set(normalized.id, {
-        type: 'blocked',
-        reason: denial,
-        output: {
-          type: 'function_call_output',
-          id: `output_${normalized.id}`,
-          callId: normalized.id,
-          output: JSON.stringify({
-            error: denial,
-          }),
-        },
-      });
-      await this.emitPreparedFailure(normalized, denial);
+      await this.blockPreparedToolCall(normalized, reason ?? 'Denied by PermissionRequest hook');
       return 'blocked';
     }
     return 'pending';
@@ -2995,6 +3015,137 @@ export class ModelResult<
     return results;
   }
 
+  private async classifyInitialApprovalCalls(
+    toolCalls: ParsedToolCall<Tool>[],
+    responseKey: string,
+  ): Promise<{
+    unseenCalls: ParsedToolCall<Tool>[];
+    blockedCalls: ParsedToolCall<Tool>[];
+  }> {
+    const unseenCalls: ParsedToolCall<Tool>[] = [];
+    const blockedCalls: ParsedToolCall<Tool>[] = [];
+    const unseenKeys = toolCalls.filter(
+      (toolCall) =>
+        !this.completedApprovalGates.has(this.approvalGateKey(toolCall, 'initial', responseKey)),
+    );
+    await this.beginDoomLoopRound(unseenKeys);
+
+    for (const toolCall of toolCalls) {
+      const key = this.approvalGateKey(toolCall, 'initial', responseKey);
+      if (this.completedApprovalGates.has(key)) {
+        continue;
+      }
+      this.completedApprovalGates.add(key);
+      const tool = this.options.tools?.find(
+        (candidate) => isClientTool(candidate) && candidate.function.name === toolCall.name,
+      );
+      if (tool && isAutoResolvableTool(tool)) {
+        const rawArgs: unknown = toolCall.arguments;
+        const doomOutcome =
+          typeof rawArgs === 'string' && this.doomLoopMonitor
+            ? await this.enqueueDoomLoopEvaluation({
+                toolName: String(toolCall.name),
+                keyMaterial: rawArgs,
+                fallbackKeyMaterial: null,
+                allowBlock: true,
+                detector: 'tool-fingerprint',
+                toolCall,
+              }).then((decision) => ({
+                blocked: decision.action === 'block' || decision.action === 'stop',
+                reason: decision.message ?? 'Blocked by doom loop',
+              }))
+            : await this.checkDoomLoopBeforeExecution(tool, toolCall);
+        if (doomOutcome.blocked) {
+          this.preparedToolCalls.set(toolCall.id, {
+            type: 'blocked',
+            reason: doomOutcome.reason,
+            output: {
+              type: 'function_call_output',
+              id: `output_${toolCall.id}`,
+              callId: toolCall.id,
+              output: JSON.stringify({
+                error: doomOutcome.reason,
+              }),
+            },
+          });
+          blockedCalls.push(toolCall);
+          continue;
+        }
+      }
+      unseenCalls.push(toolCall);
+    }
+    return {
+      unseenCalls,
+      blockedCalls,
+    };
+  }
+
+  private async resolveApprovalPhases(
+    needsApproval: ParsedToolCall<TTools[number]>[],
+    autoExecute: ParsedToolCall<TTools[number]>[],
+    turnContext: TurnContext,
+    responseKey: string,
+  ): Promise<{
+    denied: {
+      tc: ParsedToolCall<TTools[number]>;
+      reason: string;
+    }[];
+    stillPending: ParsedToolCall<TTools[number]>[];
+    initialSurvivors: ParsedToolCall<Tool>[];
+  }> {
+    const denied: {
+      tc: ParsedToolCall<TTools[number]>;
+      reason: string;
+    }[] = [];
+    const stillPending: ParsedToolCall<TTools[number]>[] = [];
+
+    if (this.hooksManager) {
+      for (const tc of needsApproval) {
+        const { decision, reason } = await this.emitPermissionRequest(tc as ParsedToolCall<Tool>);
+        if (decision === 'deny') {
+          denied.push({
+            tc,
+            reason: reason ?? 'Denied by PermissionRequest hook',
+          });
+        } else if (decision !== 'allow') {
+          stillPending.push(tc);
+        }
+      }
+    } else {
+      stillPending.push(...needsApproval);
+    }
+
+    const initialSurvivors = [
+      ...autoExecute,
+      ...needsApproval.filter(
+        (tc) =>
+          !stillPending.some((pending) => pending.id === tc.id) &&
+          !denied.some((entry) => entry.tc.id === tc.id),
+      ),
+    ] as ParsedToolCall<Tool>[];
+    for (const toolCall of initialSurvivors) {
+      const tool = this.options.tools?.find(
+        (candidate) => isClientTool(candidate) && candidate.function.name === toolCall.name,
+      );
+      if (!tool || !isAutoResolvableTool(tool)) {
+        continue;
+      }
+      if (
+        (await this.prepareAfterInitialApproval(toolCall, turnContext, responseKey)) === 'pending'
+      ) {
+        const prepared = this.preparedToolCalls.get(toolCall.id);
+        if (prepared?.type === 'ready') {
+          stillPending.push(prepared.toolCall as ParsedToolCall<TTools[number]>);
+        }
+      }
+    }
+    return {
+      denied,
+      stillPending,
+      initialSurvivors,
+    };
+  }
+
   /**
    * Check for tools requiring approval and handle accordingly.
    * Partitions tool calls into those needing approval and those that can auto-execute.
@@ -3019,63 +3170,10 @@ export class ModelResult<
     };
     const responseKey = this.approvalResponseKey(currentResponse);
 
-    const unseenCalls: ParsedToolCall<Tool>[] = [];
-    const blockedCalls: ParsedToolCall<Tool>[] = [];
-    const unseenKeys = toolCalls.filter(
-      (toolCall) =>
-        !this.completedApprovalGates.has(this.approvalGateKey(toolCall, 'initial', responseKey)),
+    const { unseenCalls, blockedCalls } = await this.classifyInitialApprovalCalls(
+      toolCalls,
+      responseKey,
     );
-    await this.beginDoomLoopRound(unseenKeys);
-    for (const toolCall of toolCalls) {
-      const key = this.approvalGateKey(toolCall, 'initial', responseKey);
-      if (this.completedApprovalGates.has(key)) {
-        continue;
-      }
-      this.completedApprovalGates.add(key);
-      const tool = this.options.tools.find(
-        (candidate) => isClientTool(candidate) && candidate.function.name === toolCall.name,
-      );
-      if (tool && isAutoResolvableTool(tool)) {
-        const rawArgs: unknown = toolCall.arguments;
-        const doomOutcome =
-          typeof rawArgs === 'string' && this.doomLoopMonitor
-            ? await this.enqueueDoomLoopEvaluation({
-                toolName: String(toolCall.name),
-                keyMaterial: rawArgs,
-                fallbackKeyMaterial: null,
-                allowBlock: true,
-                detector: 'tool-fingerprint',
-                toolCall,
-              }).then((decision) =>
-                decision.action === 'block' || decision.action === 'stop'
-                  ? {
-                      blocked: true as const,
-                      reason: decision.message ?? 'Blocked by doom loop',
-                    }
-                  : {
-                      blocked: false as const,
-                    },
-              )
-            : await this.checkDoomLoopBeforeExecution(tool, toolCall);
-        if (doomOutcome.blocked) {
-          this.preparedToolCalls.set(toolCall.id, {
-            type: 'blocked',
-            reason: doomOutcome.reason,
-            output: {
-              type: 'function_call_output',
-              id: `output_${toolCall.id}`,
-              callId: toolCall.id,
-              output: JSON.stringify({
-                error: doomOutcome.reason,
-              }),
-            },
-          });
-          blockedCalls.push(toolCall);
-          continue;
-        }
-      }
-      unseenCalls.push(toolCall);
-    }
 
     if (unseenCalls.length === 0 && blockedCalls.length === 0) {
       return false;
@@ -3088,62 +3186,12 @@ export class ModelResult<
       this.requireApprovalFn ?? undefined,
     );
 
-    // Run the PermissionRequest hook for each tool that needs approval.
-    // This lets hooks short-circuit the approval flow in either direction:
-    // 'allow' promotes the call past the gate (executed once by the normal
-    // round), 'deny' synthesizes a rejection (recorded so the round emits a
-    // rejected output instead of executing), 'ask_user' falls through to the
-    // human approval flow.
-    const denied: {
-      tc: ParsedToolCall<TTools[number]>;
-      reason: string;
-    }[] = [];
-    const stillPending: ParsedToolCall<TTools[number]>[] = [];
-
-    if (this.hooksManager) {
-      for (const tc of needsApproval) {
-        const { decision, reason } = await this.emitPermissionRequest(tc as ParsedToolCall<Tool>);
-        if (decision === 'allow') {
-          // Promoted past the gate; the normal tool round executes it once.
-        } else if (decision === 'deny') {
-          denied.push({
-            tc,
-            reason: reason ?? 'Denied by PermissionRequest hook',
-          });
-        } else {
-          stillPending.push(tc);
-        }
-      }
-    } else {
-      stillPending.push(...needsApproval);
-    }
-
-    const initialSurvivors = [
-      ...autoExecute,
-      ...needsApproval.filter(
-        (tc) =>
-          !stillPending.some((pending) => pending.id === tc.id) &&
-          !denied.some((d) => d.tc.id === tc.id),
-      ),
-    ] as ParsedToolCall<Tool>[];
-    const secondPending: ParsedToolCall<Tool>[] = [];
-    for (const toolCall of initialSurvivors) {
-      const tool = this.options.tools.find(
-        (candidate) => isClientTool(candidate) && candidate.function.name === toolCall.name,
-      );
-      if (!tool || !isAutoResolvableTool(tool)) {
-        continue;
-      }
-      if (
-        (await this.prepareAfterInitialApproval(toolCall, turnContext, responseKey)) === 'pending'
-      ) {
-        const prepared = this.preparedToolCalls.get(toolCall.id);
-        if (prepared?.type === 'ready') {
-          secondPending.push(prepared.toolCall);
-        }
-      }
-    }
-    stillPending.push(...secondPending);
+    const { denied, stillPending, initialSurvivors } = await this.resolveApprovalPhases(
+      needsApproval,
+      autoExecute,
+      turnContext,
+      responseKey,
+    );
 
     if (stillPending.length === 0) {
       for (const d of denied) {
