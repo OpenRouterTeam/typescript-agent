@@ -707,6 +707,12 @@ export class ModelResult<
   > | null = null;
   private uiBroadcaster: ToolEventBroadcaster<ToolUiFragmentEvent> | null = null;
   private pendingUiFragments = new Set<Promise<void>>();
+  private queuedUiToolResults: Array<{
+    callId: string;
+    name: string;
+    input: Record<string, unknown>;
+    output: unknown;
+  }> = [];
   private uiBroadcasterCompletionPromise: Promise<void> | null = null;
   private turnBroadcasterCompletionPromise: Promise<void> | null = null;
   private initialStreamPipeStarted = false;
@@ -2775,10 +2781,12 @@ export class ModelResult<
     }
 
     const registry = this.ensureAsyncToolRegistry();
+    const input = (tc.arguments ?? {}) as Record<string, unknown>;
     const liveTask = registry.trackDeferred({
       callId: tc.id,
       taskId: invocation.taskId,
       name: String(tc.name),
+      input,
       ...(invocation.pollAfterMs !== undefined && {
         pollAfterMs: invocation.pollAfterMs,
       }),
@@ -2793,6 +2801,7 @@ export class ModelResult<
       mode: 'defer',
       status: 'working',
       startedAt: liveTask.startedAt,
+      input,
       ...(invocation.pollAfterMs !== undefined && {
         pollAfterMs: invocation.pollAfterMs,
       }),
@@ -3797,10 +3806,12 @@ export class ModelResult<
       if (collision) {
         return collision;
       }
+      const input = (toolCall.arguments ?? {}) as Record<string, unknown>;
       const liveTask = registry.trackDeferred({
         callId: toolCall.id,
         taskId: invocation.taskId,
         name: String(toolCall.name),
+        input,
         ...(invocation.expiresAt !== undefined && {
           expiresAt: invocation.expiresAt,
         }),
@@ -3816,6 +3827,7 @@ export class ModelResult<
         mode: 'defer',
         status: 'working',
         startedAt: liveTask.startedAt,
+        input,
         ...(invocation.pollAfterMs !== undefined && {
           pollAfterMs: invocation.pollAfterMs,
         }),
@@ -4420,6 +4432,41 @@ export class ModelResult<
       send: (message: unknown) => task.send(message),
       cancel: (reason?: string) => registry?.cancelTask(task.taskId, reason) ?? false,
     };
+  }
+
+  /** @internal Queue externally resumed tool results for the UI lifecycle. */
+  queueUiToolResults(
+    results: Array<{
+      callId: string;
+      name: string;
+      input: Record<string, unknown>;
+      output: unknown;
+    }>,
+  ): void {
+    this.queuedUiToolResults.push(...results);
+  }
+
+  private dispatchQueuedUiToolResults(): void {
+    const queued = this.queuedUiToolResults;
+    this.queuedUiToolResults = [];
+    for (const result of queued) {
+      const tool = this.options.tools?.find(
+        (candidate) => isClientTool(candidate) && candidate.function.name === result.name,
+      );
+      if (tool) {
+        this.dispatchUiFragment({
+          toolCall: {
+            id: result.callId,
+            name: result.name,
+            arguments: result.input,
+          } as ParsedToolCall<Tool>,
+          tool,
+          result: {
+            result: result.output,
+          },
+        });
+      }
+    }
   }
 
   private dispatchUiFragment(value: {
@@ -6945,9 +6992,8 @@ export class ModelResult<
    */
   getUiStream(): AsyncIterableIterator<UiStreamEvent> {
     return async function* (this: ModelResult<TTools, TShared>) {
-      await this.initStreamGuarded();
-
       if (!this.options.tools?.length) {
+        await this.initStreamGuarded();
         let streamFailed = false;
         try {
           if (this.reusableStream) {
@@ -6973,6 +7019,8 @@ export class ModelResult<
       const uiBroadcaster = this.uiBroadcaster;
       const uiConsumer = uiBroadcaster.createConsumer();
       try {
+        this.dispatchQueuedUiToolResults();
+        await this.initStreamGuarded();
         const { consumer, executionPromise } = this.startTurnBroadcasterExecution();
         if (!this.uiBroadcasterCompletionPromise) {
           this.uiBroadcasterCompletionPromise = executionPromise.finally(async () => {

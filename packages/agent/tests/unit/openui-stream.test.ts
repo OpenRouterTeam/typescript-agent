@@ -10,13 +10,19 @@ import { StreamEvents$inboundSchema } from '@openrouter/sdk/models/streamevents'
 import { describe, expect, it, vi } from 'vitest';
 import { z } from 'zod/v4';
 import { callModel } from '../../src/inner-loop/call-model.js';
+import { resumeToolResults } from '../../src/inner-loop/resume-tool-results.js';
 import { ModelResult } from '../../src/lib/model-result.js';
 import { fragment } from '../../src/lib/openui/fragment.js';
 import { createLibrary, defineComponent } from '../../src/lib/openui/library.js';
 import { translateUiEvent } from '../../src/lib/openui/ui-stream.js';
 import { ReusableReadableStream } from '../../src/lib/reusable-stream.js';
 import { tool } from '../../src/lib/tool.js';
-import type { ParsedToolCall, Tool } from '../../src/lib/tool-types.js';
+import type {
+  ConversationState,
+  ParsedToolCall,
+  StateAccessor,
+  Tool,
+} from '../../src/lib/tool-types.js';
 import { isToolUiFragmentEvent } from '../../src/lib/tool-types.js';
 
 const mockBetaResponsesSend = vi.hoisted(() => vi.fn());
@@ -996,38 +1002,48 @@ describe('async tool settlement', () => {
 });
 
 describe('late async tool UI settlement', () => {
-  it('skips rendering when deferred settlement has no retained input', async () => {
-    const toUiOutput = vi.fn(() => ui.Text('never'));
-    const deferred = tool({
-      name: 'deferred_ui',
-      lifecycle: 'deferred',
-      inputSchema: z.object({
-        city: z.string(),
-      }),
-      outputSchema: z.object({
-        summary: z.string(),
-      }),
-      run: () => ({
-        taskId: 'task_1',
-      }),
-      toUiOutput,
-    });
+  const deferred = tool({
+    name: 'deferred_ui',
+    lifecycle: 'deferred',
+    inputSchema: z.object({
+      city: z.string(),
+    }),
+    outputSchema: z.object({
+      summary: z.string(),
+    }),
+    run: () => ({
+      taskId: 'task_1',
+    }),
+    toUiOutput: ({ input, output }) => ui.Text(`${input.city}: ${output.summary}`),
+  });
+
+  function makeSettlementHarness(input?: Record<string, unknown>) {
     const result = new ModelResult({
       request: {
         model: 'test-model',
         input: 'test',
-        tools: [
-          deferred,
-        ],
       },
+      tools: [
+        deferred,
+      ],
       client: {} as OpenRouterCore,
     });
+    const pushed: unknown[] = [];
     const internal = result as unknown as {
       asyncToolRegistry: {
         takeSettled: () => Array<Record<string, unknown>>;
       };
+      uiBroadcaster: {
+        activeConsumerCount: number;
+        push: (event: unknown) => void;
+      };
       flushAsyncToolDeliveries: () => Promise<boolean>;
       injectAppendPromptMessage: () => Promise<void>;
+      drainUiFragments: () => Promise<void>;
+    };
+    internal.uiBroadcaster = {
+      activeConsumerCount: 1,
+      push: (event) => pushed.push(event),
     };
     internal.asyncToolRegistry = {
       takeSettled: () => [
@@ -1039,15 +1055,130 @@ describe('late async tool UI settlement', () => {
           result: {
             summary: 'Clear',
           },
+          ...(input !== undefined && {
+            input,
+          }),
           durationMs: 1,
         },
       ],
     };
     internal.injectAppendPromptMessage = async () => undefined;
+    return {
+      internal,
+      pushed,
+    };
+  }
+
+  it('renders same-run deferred settlement with retained input', async () => {
+    const { internal, pushed } = makeSettlementHarness({
+      city: 'Lisbon',
+    });
 
     await internal.flushAsyncToolDeliveries();
+    await internal.drainUiFragments();
 
-    expect(toUiOutput).not.toHaveBeenCalled();
+    expect(pushed).toContainEqual(
+      expect.objectContaining({
+        type: 'tool.ui_fragment',
+        toolCallId: 'c1',
+        fragment: {
+          dialect: 'openui-lang/0.5',
+          source: 'root = Text("Lisbon: Clear")',
+        },
+      }),
+    );
+  });
+
+  it('renders externally resumed deferred settlement through the UI stream', async () => {
+    mockBetaResponsesSend.mockReset();
+    mockBetaResponsesSend.mockResolvedValueOnce({
+      ok: true,
+      value: response('r2', [
+        {
+          type: 'message',
+          id: 'm1',
+          role: 'assistant',
+          status: 'completed',
+          content: [
+            {
+              type: 'output_text',
+              text: 'done',
+              annotations: [],
+            },
+          ],
+        },
+      ]),
+    });
+    let state: ConversationState = {
+      id: 'conversation_1',
+      messages: [],
+      status: 'awaiting_async_tools',
+      pendingAsyncTools: [
+        {
+          callId: 'c1',
+          taskId: 'task_1',
+          name: 'deferred_ui',
+          mode: 'defer',
+          status: 'working',
+          startedAt: Date.now(),
+          input: {
+            city: 'Lisbon',
+          },
+        },
+      ],
+    };
+    const accessor: StateAccessor = {
+      load: async () => state,
+      save: async (next) => {
+        state = next;
+      },
+    };
+
+    const result = await resumeToolResults(
+      {
+        _options: {},
+      } as OpenRouterCore,
+      {
+        state: accessor,
+        tools: [
+          deferred,
+        ] as const,
+        results: [
+          {
+            taskId: 'task_1',
+            output: {
+              summary: 'Clear',
+            },
+          },
+        ],
+        run: {
+          model: 'test-model',
+        },
+      },
+    );
+    const events: unknown[] = [];
+    if (result) {
+      for await (const event of result.getUiStream()) {
+        events.push(event);
+      }
+    }
+
+    expect(events).toContainEqual({
+      type: 'fragment',
+      toolCallId: 'c1',
+      toolName: 'deferred_ui',
+      dialect: 'openui-lang/0.5',
+      source: 'root = Text("Lisbon: Clear")',
+    });
+  });
+
+  it('skips legacy deferred settlement without retained input', async () => {
+    const { internal, pushed } = makeSettlementHarness();
+
+    await internal.flushAsyncToolDeliveries();
+    await internal.drainUiFragments();
+
+    expect(pushed).toEqual([]);
   });
 });
 

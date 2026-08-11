@@ -1622,6 +1622,8 @@ export interface PendingAsyncTool {
   status: ToolTaskStatus;
   /** Unix ms when the task started. */
   startedAt: number;
+  /** The original call arguments, retained for deferred UI rendering. */
+  input?: Record<string, unknown>;
   /** Unix ms after which the task is considered expired. */
   expiresAt?: number;
   /** Poll-interval hint surfaced to the model and external pollers. */
