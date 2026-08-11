@@ -210,6 +210,15 @@ describe('callModel activeTools filter', () => {
     ]);
   });
 
+  it('omits the tools key when tools is explicitly empty', async () => {
+    const { raw } = await captureOutboundRequest({
+      model: 'openai/gpt-4o-mini',
+      input: 'hi',
+      tools: [],
+    });
+    expect(raw).not.toHaveProperty('tools');
+  });
+
   it('omits the tools key entirely (not an empty array) when activeTools filters out every tool', async () => {
     const captured: {
       names: string[] | null;

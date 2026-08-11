@@ -4,7 +4,7 @@
     "outDir": "esm",
     "rootDir": "src",
     // Resolve deps via published exports, not the repo-wide "source" condition:
-    // the optional peer "@modelcontextprotocol/sdk" (used by src/mcp) transitively
+    // the optional peer "@modelcontextprotocol/client" (used by src/mcp) transitively
     // exposes a "source" condition pointing at raw .ts files (eventsource).
     "customConditions": []
   },

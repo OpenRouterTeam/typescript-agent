@@ -28,7 +28,7 @@ let closeThrowsSync = false;
 vi.mock('../../../src/mcp/mcp-connection.js', () => ({
   // Minimal stand-in for the real guard: these tests drive auth failures with a
   // `FakeUnauthorized` whose marker the walk below recognises.
-  isAuthFailure: (err: unknown): boolean =>
+  isAuthFailure: ({ err }: { err: unknown }): boolean =>
     typeof err === 'object' && err !== null && 'isFakeAuthFailure' in err,
   connect: (options: ConnectOptions): Promise<MCPConnection> => {
     connectCalls.push(options);

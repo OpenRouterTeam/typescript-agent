@@ -1,6 +1,6 @@
 import * as agentCreateMcpTools from '@openrouter/agent/mcp/create-mcp-tools';
-import * as wrapperCreateMcpTools from '@openrouter/mcp/create-mcp-tools';
 import { describe, expect, it } from 'vitest';
+import * as wrapperCreateMcpTools from '../../src/create-mcp-tools.js';
 
 describe('@openrouter/mcp/create-mcp-tools export parity', () => {
   it('exports exactly the same runtime binding names as @openrouter/agent/mcp/create-mcp-tools', () => {

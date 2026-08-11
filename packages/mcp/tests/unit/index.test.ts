@@ -1,6 +1,6 @@
 import * as agentMcp from '@openrouter/agent/mcp';
-import * as wrapperMcp from '@openrouter/mcp';
 import { describe, expect, it } from 'vitest';
+import * as wrapperMcp from '../../src/index.js';
 
 // Compatibility/export-parity tests: @openrouter/mcp is a thin wrapper that
 // re-exports @openrouter/agent/mcp. These tests verify the wrapper's runtime
@@ -22,4 +22,24 @@ describe('@openrouter/mcp root export parity with @openrouter/agent/mcp', () => 
       );
     }
   });
+});
+
+it('preserves the published runtime export surface', () => {
+  expect(Object.keys(wrapperMcp).sort()).toEqual(
+    [
+      'InMemoryMCPCacheStore',
+      'MCPCacheError',
+      'MCPCacheWriteError',
+      'MCPConnectionError',
+      'MCPError',
+      'MCPMissingPeerDependencyError',
+      'MCPStaleSnapshotError',
+      'MCPToolCallError',
+      'convertMcpInputSchema',
+      'createMCPTools',
+      'defaultCacheKey',
+      'isSerializedMCPServer',
+      'rehydrateMCPTools',
+    ].sort(),
+  );
 });

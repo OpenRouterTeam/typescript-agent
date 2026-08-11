@@ -49,6 +49,9 @@ const FORWARDED_REHYDRATE_KEYS = [
   'loopKeys',
   'autoRefreshOnListChanged',
   'cacheCredentials',
+  'protocolNegotiation',
+  'probeTimeoutMs',
+  'staleness',
 ] as const satisfies readonly (keyof CreateMCPToolsOptions & keyof RehydrateMCPToolsOptions)[];
 
 /** Copy the defined forwarded options from `createMCPTools` into a rehydrate base. */
@@ -72,7 +75,12 @@ async function tryCacheHit(
   store: MCPCacheStore,
   cacheKey: string,
 ): Promise<MCPToolsHandle | undefined> {
-  const snapshot = await store.get(cacheKey);
+  let snapshot: Awaited<ReturnType<MCPCacheStore['get']>> | undefined;
+  try {
+    snapshot = await store.get(cacheKey);
+  } catch {
+    snapshot = undefined;
+  }
   if (snapshot === null || snapshot === undefined || !isSerializedMCPServer(snapshot)) {
     return undefined;
   }

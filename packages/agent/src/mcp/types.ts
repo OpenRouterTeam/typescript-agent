@@ -2,9 +2,13 @@ import type { Tool, ToolLoopKey } from '../lib/tool-types.js';
 import type { MCPAuth } from './auth/auth-types.js';
 import type { MCPCacheStore } from './cache/cache-store.js';
 import type { UnconvertibleSchemaMode } from './schema/json-schema-to-zod.js';
-import type { MCPProtocolNegotiation, MCPTransportKind } from './transport-types.js';
+import type {
+  MCPProtocolNegotiation,
+  MCPProtocolRevision,
+  MCPTransportKind,
+} from './transport-types.js';
 
-export type { MCPProtocolNegotiation, MCPTransportKind };
+export type { MCPProtocolNegotiation, MCPProtocolRevision, MCPTransportKind };
 
 /**
  * Response to a server-initiated elicitation request. `accept` must carry

@@ -23,13 +23,13 @@ Expose the tools of a remote [Model Context Protocol](https://modelcontextprotoc
 For new code, install the agent plus the optional MCP peer:
 
 ```bash
-pnpm add @openrouter/agent @modelcontextprotocol/sdk
+pnpm add @openrouter/agent @modelcontextprotocol/client
 ```
 
-Existing applications may continue installing the compatibility package:
+Existing applications can keep installing only the compatibility package; it retains `@modelcontextprotocol/client` as a dependency, so the prior transitive-install behavior is unchanged:
 
 ```bash
-pnpm add @openrouter/mcp @openrouter/agent @modelcontextprotocol/sdk
+pnpm add @openrouter/mcp
 ```
 
 The agent package is marked `sideEffects: false`, and MCP code is exposed only

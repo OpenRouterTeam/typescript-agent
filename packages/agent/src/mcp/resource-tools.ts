@@ -1,7 +1,7 @@
 import type { Client } from '@modelcontextprotocol/client';
-import { markMcp, tool } from '@openrouter/agent/tool';
-import type { McpBranded } from '@openrouter/agent/tool-types';
 import * as z from 'zod';
+import { markMcp, tool } from '../lib/tool.js';
+import type { McpBranded } from '../lib/tool-types.js';
 
 export interface ResourceToolsOptions {
   client: Client;

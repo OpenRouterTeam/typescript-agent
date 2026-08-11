@@ -1,7 +1,7 @@
 import type { Client, Progress } from '@modelcontextprotocol/client';
-import { markMcp, tool } from '@openrouter/agent/tool';
-import type { McpBranded, ToolLoopKey } from '@openrouter/agent/tool-types';
 import * as z from 'zod';
+import { markMcp, tool } from '../lib/tool.js';
+import type { McpBranded, ToolLoopKey } from '../lib/tool-types.js';
 import type { RawCallToolResult } from './result-mapper.js';
 import { mapCallToolResult } from './result-mapper.js';
 import { isJsonSchemaObject } from './schema/json-schema-guards.js';

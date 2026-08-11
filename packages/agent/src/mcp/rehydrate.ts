@@ -10,6 +10,7 @@ import { MCPCacheError, MCPCacheWriteError, MCPStaleSnapshotError } from './erro
 import { freshConnect, makeHandle } from './handle.js';
 import type { ConnectOptions, MCPConnection } from './mcp-connection.js';
 import { connect, isAuthFailure } from './mcp-connection.js';
+import { loadMcpSdk } from './mcp-sdk.js';
 import type { UnconvertibleSchemaMode } from './schema/json-schema-to-zod.js';
 import type { McpToolDef } from './tool-wrapper.js';
 import type {
@@ -616,13 +617,14 @@ export async function rehydrateMCPTools(
     // matching the guards on the SSE fallback and the legacy retry. Dialling a
     // fresh connection after the caller cancelled would both waste the dial and
     // bury the cancellation under a "failed to connect" it didn't cause.
+    const { UnauthorizedError } = await loadMcpSdk();
     if (
       reconnectOnExpiry &&
       options.signal?.aborted !== true &&
       !isAuthFailure({
         err,
         auth: effectiveAuth,
-        UnauthorizedErrorType: undefined,
+        UnauthorizedErrorType: UnauthorizedError,
       })
     ) {
       return freshConnect(createOptions, url, cacheKey);

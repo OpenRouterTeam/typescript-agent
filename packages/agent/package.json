@@ -120,6 +120,30 @@
       "types": "./esm/mcp/cache/cache-store.d.ts",
       "default": "./esm/mcp/cache/cache-store.js"
     },
+    "./tool-concurrency": {
+      "types": "./esm/lib/tool-concurrency.d.ts",
+      "default": "./esm/lib/tool-concurrency.js"
+    },
+    "./async-tool-registry": {
+      "types": "./esm/lib/async-tool-registry.d.ts",
+      "default": "./esm/lib/async-tool-registry.js"
+    },
+    "./resume-tool-results": {
+      "types": "./esm/inner-loop/resume-tool-results.d.ts",
+      "default": "./esm/inner-loop/resume-tool-results.js"
+    },
+    "./tool-task": {
+      "types": "./esm/lib/tool-task.d.ts",
+      "default": "./esm/lib/tool-task.js"
+    },
+    "./tool-check": {
+      "types": "./esm/lib/tool-check.d.ts",
+      "default": "./esm/lib/tool-check.js"
+    },
+    "./agent-tool": {
+      "types": "./esm/lib/agent-tool.d.ts",
+      "default": "./esm/lib/agent-tool.js"
+    },
     "./package.json": "./package.json"
   },
   "sideEffects": false,
@@ -141,12 +165,13 @@
   "scripts": {
     "lint": "biome check src tests",
     "lint:fix": "biome check --write src tests",
-    "build": "tsc",
+    "build": "node scripts/gen-version.mjs && tsc",
     "test": "vitest --run --project unit",
     "test:e2e": "vitest --run --project e2e --coverage.enabled=false",
     "test:watch": "vitest --watch --project unit",
     "typecheck": "tsc --noEmit -p tsconfig.typecheck.json",
-    "compile": "tsc"
+    "compile": "node scripts/gen-version.mjs && tsc",
+    "gen:version": "node scripts/gen-version.mjs"
   },
   "dependencies": {
     "@openrouter/sdk": "^0.13.7",

@@ -1,6 +1,6 @@
 import * as agentSchema from '@openrouter/agent/mcp/schema';
-import * as wrapperSchema from '@openrouter/mcp/schema';
 import { describe, expect, it } from 'vitest';
+import * as wrapperSchema from '../../src/schema.js';
 
 describe('@openrouter/mcp/schema export parity', () => {
   it('exports exactly the same runtime binding names as @openrouter/agent/mcp/schema', () => {

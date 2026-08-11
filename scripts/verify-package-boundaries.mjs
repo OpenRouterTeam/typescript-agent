@@ -128,43 +128,47 @@ try {
       '--ignore-scripts',
       '--no-audit',
       '--no-fund',
-      ...tarballs,
+      tarballs[0],
     ],
     cwd: consumerDir,
   });
 
-  const smoke = `
-const entries = [
-  '@openrouter/agent',
-  '@openrouter/agent/tool-set',
-  '@openrouter/agent/mcp',
-  '@openrouter/agent/mcp/create-mcp-tools',
-  '@openrouter/agent/mcp/types',
-  '@openrouter/agent/mcp/schema',
-  '@openrouter/agent/mcp/cache',
-  '@openrouter/mcp',
-  '@openrouter/mcp/create-mcp-tools',
-  '@openrouter/mcp/types',
-  '@openrouter/mcp/schema',
-  '@openrouter/mcp/cache',
-];
-for (const entry of entries) await import(entry);
+  const baseSmoke = `
+for (const entry of ['@openrouter/agent', '@openrouter/agent/tool-set', '@openrouter/agent/mcp']) {
+  await import(entry);
+}
 const { createMCPTools, MCPMissingPeerDependencyError } = await import('@openrouter/agent/mcp');
 try {
   await createMCPTools({ url: 'https://mcp.example.com/mcp' });
   throw new Error('Expected the optional MCP peer to be absent');
 } catch (error) {
   if (!(error instanceof MCPMissingPeerDependencyError)) throw error;
-  if (!error.message.includes('pnpm add @modelcontextprotocol/sdk')) throw error;
+  if (!error.message.includes('pnpm add @modelcontextprotocol/client')) throw error;
 }
 `;
   run({
     command: 'node',
-    args: [
-      '--input-type=module',
-      '--eval',
-      smoke,
-    ],
+    args: ['--input-type=module', '--eval', baseSmoke],
+    cwd: consumerDir,
+  });
+
+  run({
+    command: 'npm',
+    args: ['install', '--ignore-scripts', '--no-audit', '--no-fund', tarballs[1]],
+    cwd: consumerDir,
+  });
+  const facadeSmoke = `
+for (const entry of [
+  '@openrouter/mcp',
+  '@openrouter/mcp/create-mcp-tools',
+  '@openrouter/mcp/types',
+  '@openrouter/mcp/schema',
+  '@openrouter/mcp/cache',
+]) await import(entry);
+`;
+  run({
+    command: 'node',
+    args: ['--input-type=module', '--eval', facadeSmoke],
     cwd: consumerDir,
   });
 

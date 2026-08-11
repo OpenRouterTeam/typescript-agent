@@ -1,6 +1,6 @@
 import * as agentCache from '@openrouter/agent/mcp/cache';
-import * as wrapperCache from '@openrouter/mcp/cache';
 import { describe, expect, it } from 'vitest';
+import * as wrapperCache from '../../src/cache.js';
 
 describe('@openrouter/mcp/cache export parity', () => {
   it('exports exactly the same runtime binding names as @openrouter/agent/mcp/cache', () => {
