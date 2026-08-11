@@ -529,13 +529,147 @@ describe('approval uses the post-PreToolUse arguments that execute would receive
     );
   });
 
-  it('does not let a hook make schema-invalid arguments executable after the gate', async () => {
-    await runMutationExploit(
-      {},
-      {
+  it('gates identical post-hook calls independently across responses', async () => {
+    const predicate = vi.fn((params: { dangerous: boolean }) => params.dangerous);
+    const execute = vi.fn(async () => ({
+      ok: true,
+    }));
+    const guarded = tool({
+      name: 'guarded_action',
+      inputSchema: z.object({
+        dangerous: z.boolean(),
+      }),
+      outputSchema: z.object({
+        ok: z.boolean(),
+      }),
+      requireApproval: predicate,
+      execute,
+    });
+    const tools = [
+      guarded,
+    ] as const;
+    const hooks = new HooksManager();
+    hooks.on('PreToolUse', {
+      handler: () => ({
+        mutatedInput: {
+          dangerous: true,
+        },
+      }),
+    });
+    const permissionRequest = vi.fn(() => ({
+      decision: 'allow' as const,
+    }));
+    hooks.on('PermissionRequest', {
+      handler: permissionRequest,
+    });
+
+    mockBetaResponsesSend
+      .mockResolvedValueOnce({
+        ok: true,
+        value: makeResponse('resp_mutation_reused', [
+          makeFunctionCallItem(
+            'call_reused',
+            'guarded_action',
+            JSON.stringify({
+              dangerous: false,
+            }),
+          ),
+        ]),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        value: makeResponse('resp_mutation_reused', [
+          makeFunctionCallItem(
+            'call_reused',
+            'guarded_action',
+            JSON.stringify({
+              dangerous: false,
+            }),
+          ),
+        ]),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        value: makeResponse('resp_done', [
+          {
+            id: 'msg_done',
+            type: 'message',
+            role: 'assistant',
+            status: 'completed',
+            content: [
+              {
+                type: 'output_text',
+                text: 'Done.',
+                annotations: [],
+              },
+            ],
+          },
+        ]),
+      });
+
+    await new ModelResult<typeof tools>({
+      request: {
+        model: 'test-model',
+        input: 'run twice',
+        tools: [],
+      },
+      client: {} as OpenRouterCore,
+      tools,
+      hooks,
+    }).getResponse();
+
+    expect(predicate.mock.calls.filter(([params]) => params.dangerous === true)).toHaveLength(2);
+    expect(permissionRequest).toHaveBeenCalledTimes(2);
+    expect(execute).toHaveBeenCalledTimes(2);
+  });
+
+  it('gates schema-invalid model arguments before running PreToolUse', async () => {
+    const preToolUse = vi.fn(() => ({
+      mutatedInput: {
         dangerous: true,
       },
-    );
+    }));
+    const execute = vi.fn(async () => ({
+      ok: true,
+    }));
+    const guarded = tool({
+      name: 'guarded_action',
+      inputSchema: z.object({
+        dangerous: z.boolean(),
+      }),
+      requireApproval: (params) => params.dangerous,
+      execute,
+    });
+    const tools = [
+      guarded,
+    ] as const;
+    const hooks = new HooksManager();
+    hooks.on('PreToolUse', {
+      handler: preToolUse,
+    });
+    mockBetaResponsesSend.mockResolvedValueOnce({
+      ok: true,
+      value: makeResponse('resp_invalid_original', [
+        makeFunctionCallItem('call_invalid_original', 'guarded_action', '{}'),
+      ]),
+    });
+    const { accessor, get } = createMemoryAccessor<typeof tools>();
+
+    await new ModelResult<typeof tools>({
+      request: {
+        model: 'test-model',
+        input: 'run',
+        tools: [],
+      },
+      client: {} as OpenRouterCore,
+      tools,
+      hooks,
+      state: accessor,
+    }).getResponse();
+
+    expect(preToolUse).not.toHaveBeenCalled();
+    expect(execute).not.toHaveBeenCalled();
+    expect(get()?.status).toBe('awaiting_approval');
   });
 
   it('persists unconditional approvals with post-hook arguments and does not reapply the hook on resume', async () => {
@@ -609,7 +743,7 @@ describe('approval uses the post-PreToolUse arguments that execute would receive
     expect(permissionRequest).toHaveBeenCalledWith(
       expect.objectContaining({
         toolInput: {
-          value: 'original-prepared',
+          value: 'original',
         },
       }),
       expect.anything(),
@@ -619,9 +753,8 @@ describe('approval uses the post-PreToolUse arguments that execute would receive
         id: 'call_unconditional',
         name: 'always_guarded',
         arguments: {
-          value: 'original-prepared',
+          value: 'original',
         },
-        preToolUseApplied: true,
       },
     ]);
     const legacyState = structuredClone(get());
@@ -658,6 +791,7 @@ describe('approval uses the post-PreToolUse arguments that execute would receive
     }).getResponse();
 
     expect(preToolUse).toHaveBeenCalledTimes(1);
+    expect(permissionRequest).toHaveBeenCalledTimes(1);
     expect(execute).toHaveBeenCalledTimes(1);
     expect(execute).toHaveBeenCalledWith(
       {
@@ -698,7 +832,7 @@ describe('approval uses the post-PreToolUse arguments that execute would receive
     expect(preToolUse).toHaveBeenCalledTimes(2);
     expect(execute).toHaveBeenLastCalledWith(
       {
-        value: 'original-prepared-prepared',
+        value: 'original-prepared',
       },
       expect.anything(),
     );

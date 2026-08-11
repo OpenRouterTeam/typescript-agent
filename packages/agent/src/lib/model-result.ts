@@ -3,6 +3,7 @@ import { betaResponsesSend } from '@openrouter/sdk/funcs/betaResponsesSend';
 import type { EventStream } from '@openrouter/sdk/lib/event-streams';
 import type { RequestOptions } from '@openrouter/sdk/lib/sdks';
 import type * as models from '@openrouter/sdk/models';
+import * as z4 from 'zod/v4';
 import type { $ZodObject, $ZodShape } from 'zod/v4/core';
 import type { CallModelInput, ResolvedCallModelInput } from './async-params.js';
 import { hasAsyncFunctions, resolveAsyncFunctions } from './async-params.js';
@@ -29,6 +30,7 @@ import {
   extractTextFromResponse as extractTextFromResponseState,
   normalizeInputToArray,
   partitionToolCalls,
+  toolRequiresApproval,
   unsentResultsToAPIFormat,
   updateState,
 } from './conversation-state.js';
@@ -645,14 +647,13 @@ export class ModelResult<
   // normal tool round consults this to synthesize rejected outputs instead of
   // executing the calls.
   private readonly hookDeniedCalls = new Map<string, string>();
-  // PreToolUse must run before approval so predicates inspect the arguments
-  // that can actually execute. The prepared outcome is consumed by the
-  // execution path, preventing the hook from running twice.
+  // PreToolUse outcomes parked between the approval gates and execution.
   private readonly preparedToolCalls = new Map<
     string,
     | {
         type: 'ready';
         toolCall: ParsedToolCall<Tool>;
+        mutated: boolean;
       }
     | {
         type: 'blocked';
@@ -660,14 +661,11 @@ export class ModelResult<
         output: models.FunctionCallOutputItem;
       }
   >();
-  // The response most recently passed through handleApprovalCheck on this
-  // run. The same response object can reach the gate more than once — the
-  // pre-loop check plus the first loop iteration, or the pre-loop check plus
-  // the post-loop allowFinalResponse gate when a stop condition fires before
-  // any follow-up request. Re-gating would re-emit PermissionRequest hooks
-  // (duplicate prompts/audit records) and re-run requireApproval predicates
-  // for calls already resolved, so the gate runs at most once per response.
-  private lastApprovalGatedResponse: models.OpenResponsesResult | null = null;
+  // Approval is idempotent per response occurrence, call id, argument state,
+  // and phase. This distinguishes a newly emitted call that reuses an id.
+  private readonly completedApprovalGates = new Set<string>();
+  private readonly approvalResponseOccurrences = new WeakMap<object, number>();
+  private nextApprovalResponseOccurrence = 0;
   // Telemetry for the PostModelCall hook: the initial/resume request is
   // dispatched in initStream but its response is materialized later (stream
   // consumption), so the dispatch time and turn labeling are parked here
@@ -1440,23 +1438,6 @@ export class ModelResult<
     // synthetic error without running the tool or firing hooks.
     const rawArgs: unknown = toolCall.arguments;
     if (typeof rawArgs === 'string') {
-      // Malformed calls are classic doom-loop fuel: a model stuck emitting
-      // the same invalid JSON re-triggers this parse error forever. Record
-      // the raw string as the call's identity so the streak trips the
-      // detector instead of bouncing off the parse error unbounded. The
-      // parse-error output below already prevents execution, so 'block'
-      // needs no extra handling; 'steer'/'stop' side effects are applied
-      // inside the ordered evaluation.
-      if (this.doomLoopMonitor) {
-        await this.enqueueDoomLoopEvaluation({
-          toolName: String(toolCall.name),
-          keyMaterial: rawArgs,
-          fallbackKeyMaterial: null,
-          allowBlock: true,
-          detector: 'tool-fingerprint',
-          toolCall,
-        });
-      }
       const errorMessage =
         `Failed to parse tool call arguments for "${toolCall.name}": The model provided invalid JSON. ` +
         `Raw arguments received: "${rawArgs}". ` +
@@ -1471,30 +1452,6 @@ export class ModelResult<
           callId: toolCall.id,
           output: JSON.stringify({
             error: errorMessage,
-          }),
-        },
-      };
-    }
-
-    // Doom-loop checkpoint — BEFORE PreToolUse, on the arguments the MODEL
-    // issued (pre-mutation): the loop evidence is the model repeating
-    // itself, and a PreToolUse hook that rewrites input each call (e.g.
-    // injecting a nonce) must not mask that repetition. A 'block' verdict
-    // returns the same `hook_blocked` shape as a PreToolUse block, so every
-    // caller handles it identically; PreToolUse deliberately does not fire
-    // for doom-blocked calls (nothing will execute — mirrors parse_error).
-    const doomOutcome = await this.checkDoomLoopBeforeExecution(tool, toolCall);
-    if (doomOutcome.blocked) {
-      return {
-        type: 'hook_blocked',
-        toolCall,
-        reason: doomOutcome.reason,
-        output: {
-          type: 'function_call_output' as const,
-          id: `output_${toolCall.id}`,
-          callId: toolCall.id,
-          output: JSON.stringify({
-            error: doomOutcome.reason,
           }),
         },
       };
@@ -2683,8 +2640,145 @@ export class ModelResult<
     this.preparedToolCalls.set(toolCall.id, {
       type: 'ready',
       toolCall: effectiveToolCall,
+      mutated: preResult.mutated,
     });
     return effectiveToolCall;
+  }
+
+  private approvalResponseKey(response: models.OpenResponsesResult): string {
+    let occurrence = this.approvalResponseOccurrences.get(response);
+    if (occurrence === undefined) {
+      occurrence = this.nextApprovalResponseOccurrence++;
+      this.approvalResponseOccurrences.set(response, occurrence);
+    }
+    return `${response.id}:${occurrence}`;
+  }
+
+  private approvalGateKey(
+    toolCall: ParsedToolCall<Tool>,
+    phase: 'initial' | 'mutated',
+    responseKey: string,
+  ): string {
+    return `${phase}:${responseKey}:${toolCall.id}:${canonicalizeKeyMaterial(toolCall.arguments)}`;
+  }
+
+  /** Re-check only approval sources whose answer can depend on input. */
+  private async mutatedInputRequiresApproval(
+    toolCall: ParsedToolCall<Tool>,
+    context: TurnContext,
+  ): Promise<boolean> {
+    const tools = this.options.tools;
+    if (!tools) {
+      return false;
+    }
+    const tool = tools.find(
+      (candidate) => isClientTool(candidate) && candidate.function.name === toolCall.name,
+    );
+    if (this.requireApprovalFn) {
+      return toolRequiresApproval(
+        toolCall as ParsedToolCall<TTools[number]>,
+        tools,
+        context,
+        this.requireApprovalFn,
+      );
+    }
+    if (!tool || !isClientTool(tool) || typeof tool.function.requireApproval !== 'function') {
+      return false;
+    }
+    return toolRequiresApproval(toolCall as ParsedToolCall<TTools[number]>, tools, context);
+  }
+
+  private async emitPreparedFailure(toolCall: ParsedToolCall<Tool>, reason: string): Promise<void> {
+    if (!this.hooksManager) {
+      return;
+    }
+    await this.hooksManager.emit(
+      'PostToolUseFailure',
+      {
+        toolName: toolCall.name,
+        toolInput: (toolCall.arguments ?? {}) as Record<string, unknown>,
+        error: new Error(reason),
+      },
+      this.hookEmitContext(toolCall.name),
+    );
+  }
+
+  private async prepareAfterInitialApproval(
+    toolCall: ParsedToolCall<Tool>,
+    context: TurnContext,
+    responseKey: string,
+  ): Promise<'ready' | 'blocked' | 'pending'> {
+    const effective = await this.prepareToolCallForApproval(toolCall);
+    const prepared = this.preparedToolCalls.get(toolCall.id);
+    if (prepared?.type !== 'ready' || !prepared.mutated) {
+      return prepared?.type === 'blocked' ? 'blocked' : 'ready';
+    }
+
+    const tool = this.options.tools?.find(
+      (candidate) => isClientTool(candidate) && candidate.function.name === effective.name,
+    );
+    if (!tool || !isClientTool(tool)) {
+      return 'ready';
+    }
+    const parsed = z4.safeParse(tool.function.inputSchema, effective.arguments);
+    if (!parsed.success || !isRecord(parsed.data)) {
+      const reason = `PreToolUse produced invalid input for "${effective.name}"`;
+      this.preparedToolCalls.set(effective.id, {
+        type: 'blocked',
+        reason,
+        output: {
+          type: 'function_call_output',
+          id: `output_${effective.id}`,
+          callId: effective.id,
+          output: JSON.stringify({
+            error: reason,
+          }),
+        },
+      });
+      await this.emitPreparedFailure(effective, reason);
+      return 'blocked';
+    }
+
+    const normalized = {
+      ...effective,
+      arguments: parsed.data,
+    } as ParsedToolCall<Tool>;
+    this.preparedToolCalls.set(effective.id, {
+      type: 'ready',
+      toolCall: normalized,
+      mutated: true,
+    });
+    const key = this.approvalGateKey(normalized, 'mutated', responseKey);
+    if (this.completedApprovalGates.has(key)) {
+      return 'ready';
+    }
+    this.completedApprovalGates.add(key);
+    if (!(await this.mutatedInputRequiresApproval(normalized, context))) {
+      return 'ready';
+    }
+
+    const { decision, reason } = await this.emitPermissionRequest(normalized);
+    if (decision === 'allow') {
+      return 'ready';
+    }
+    if (decision === 'deny') {
+      const denial = reason ?? 'Denied by PermissionRequest hook';
+      this.preparedToolCalls.set(normalized.id, {
+        type: 'blocked',
+        reason: denial,
+        output: {
+          type: 'function_call_output',
+          id: `output_${normalized.id}`,
+          callId: normalized.id,
+          output: JSON.stringify({
+            error: denial,
+          }),
+        },
+      });
+      await this.emitPreparedFailure(normalized, denial);
+      return 'blocked';
+    }
+    return 'pending';
   }
 
   /**
@@ -2831,9 +2925,6 @@ export class ModelResult<
     toolCalls: ParsedToolCall<TTools[number]>[],
     turnContext: TurnContext,
   ): Promise<UnsentToolResult<TTools>[]> {
-    // Auto-approved batch = one doom-loop round: identical parallel calls
-    // count once (see beginDoomLoopRound).
-    await this.beginDoomLoopRound(toolCalls as ParsedToolCall<Tool>[]);
     const toolCallPromises = toolCalls.map(async (tc) => {
       const tool = this.options.tools?.find((t) => isClientTool(t) && t.function.name === tc.name);
       if (!tool || !isAutoResolvableTool(tool)) {
@@ -2923,56 +3014,79 @@ export class ModelResult<
       return false;
     }
 
-    // Each response is gated at most once per run (see the field doc). A
-    // repeat visit for the same response object means the calls were already
-    // partitioned, the hooks already fired, and any hook 'deny' results are
-    // already recorded in hookDeniedCalls — and it did not pause (a pause
-    // returns out of the run). Skipping is therefore both safe and required
-    // to avoid duplicate permission prompts.
-    if (currentResponse === this.lastApprovalGatedResponse) {
-      return false;
-    }
-    this.lastApprovalGatedResponse = currentResponse;
-
     const turnContext: TurnContext = {
       numberOfTurns: currentRound,
-      // context is handled via contextStore, not on TurnContext
     };
+    const responseKey = this.approvalResponseKey(currentResponse);
 
-    const preparedCalls = await Promise.all(
-      toolCalls.map(async (toolCall) => {
-        const tool = this.options.tools?.find(
-          (candidate) => isClientTool(candidate) && candidate.function.name === toolCall.name,
-        );
-        return tool && isAutoResolvableTool(tool)
-          ? this.prepareToolCallForApproval(toolCall)
-          : toolCall;
-      }),
+    const unseenCalls: ParsedToolCall<Tool>[] = [];
+    const blockedCalls: ParsedToolCall<Tool>[] = [];
+    const unseenKeys = toolCalls.filter(
+      (toolCall) =>
+        !this.completedApprovalGates.has(this.approvalGateKey(toolCall, 'initial', responseKey)),
     );
-    const blockedIds = new Set(
-      preparedCalls
-        .filter((toolCall) => this.preparedToolCalls.get(toolCall.id)?.type === 'blocked')
-        .map((toolCall) => toolCall.id),
-    );
+    await this.beginDoomLoopRound(unseenKeys);
+    for (const toolCall of toolCalls) {
+      const key = this.approvalGateKey(toolCall, 'initial', responseKey);
+      if (this.completedApprovalGates.has(key)) {
+        continue;
+      }
+      this.completedApprovalGates.add(key);
+      const tool = this.options.tools.find(
+        (candidate) => isClientTool(candidate) && candidate.function.name === toolCall.name,
+      );
+      if (tool && isAutoResolvableTool(tool)) {
+        const rawArgs: unknown = toolCall.arguments;
+        const doomOutcome =
+          typeof rawArgs === 'string' && this.doomLoopMonitor
+            ? await this.enqueueDoomLoopEvaluation({
+                toolName: String(toolCall.name),
+                keyMaterial: rawArgs,
+                fallbackKeyMaterial: null,
+                allowBlock: true,
+                detector: 'tool-fingerprint',
+                toolCall,
+              }).then((decision) =>
+                decision.action === 'block' || decision.action === 'stop'
+                  ? {
+                      blocked: true as const,
+                      reason: decision.message ?? 'Blocked by doom loop',
+                    }
+                  : {
+                      blocked: false as const,
+                    },
+              )
+            : await this.checkDoomLoopBeforeExecution(tool, toolCall);
+        if (doomOutcome.blocked) {
+          this.preparedToolCalls.set(toolCall.id, {
+            type: 'blocked',
+            reason: doomOutcome.reason,
+            output: {
+              type: 'function_call_output',
+              id: `output_${toolCall.id}`,
+              callId: toolCall.id,
+              output: JSON.stringify({
+                error: doomOutcome.reason,
+              }),
+            },
+          });
+          blockedCalls.push(toolCall);
+          continue;
+        }
+      }
+      unseenCalls.push(toolCall);
+    }
+
+    if (unseenCalls.length === 0 && blockedCalls.length === 0) {
+      return false;
+    }
+
     const { requiresApproval: needsApproval, autoExecute } = await partitionToolCalls(
-      preparedCalls.filter((toolCall) => !blockedIds.has(toolCall.id)) as ParsedToolCall<
-        TTools[number]
-      >[],
+      unseenCalls as ParsedToolCall<TTools[number]>[],
       this.options.tools,
       turnContext,
       this.requireApprovalFn ?? undefined,
     );
-    const autoExecuteIncludingBlocked = [
-      ...autoExecute,
-      ...preparedCalls.filter((toolCall) => blockedIds.has(toolCall.id)),
-    ];
-
-    // Nothing needs an approval gate: return immediately WITHOUT executing
-    // anything. The main loop's executeToolRound runs every call exactly
-    // once; pre-executing here would double-run side-effecting tools.
-    if (needsApproval.length === 0) {
-      return false;
-    }
 
     // Run the PermissionRequest hook for each tool that needs approval.
     // This lets hooks short-circuit the approval flow in either direction:
@@ -3004,10 +3118,34 @@ export class ModelResult<
       stillPending.push(...needsApproval);
     }
 
+    const initialSurvivors = [
+      ...autoExecute,
+      ...needsApproval.filter(
+        (tc) =>
+          !stillPending.some((pending) => pending.id === tc.id) &&
+          !denied.some((d) => d.tc.id === tc.id),
+      ),
+    ] as ParsedToolCall<Tool>[];
+    const secondPending: ParsedToolCall<Tool>[] = [];
+    for (const toolCall of initialSurvivors) {
+      const tool = this.options.tools.find(
+        (candidate) => isClientTool(candidate) && candidate.function.name === toolCall.name,
+      );
+      if (!tool || !isAutoResolvableTool(tool)) {
+        continue;
+      }
+      if (
+        (await this.prepareAfterInitialApproval(toolCall, turnContext, responseKey)) === 'pending'
+      ) {
+        const prepared = this.preparedToolCalls.get(toolCall.id);
+        if (prepared?.type === 'ready') {
+          secondPending.push(prepared.toolCall);
+        }
+      }
+    }
+    stillPending.push(...secondPending);
+
     if (stillPending.length === 0) {
-      // The hook resolved every gated call, so we do not pause. Record denied
-      // calls so executeToolRound synthesizes rejections instead of running
-      // them; allowed calls execute once via the normal round.
       for (const d of denied) {
         this.hookDeniedCalls.set(d.tc.id, d.reason);
       }
@@ -3026,8 +3164,13 @@ export class ModelResult<
     // We are pausing: the normal tool round will NOT run for this response,
     // so execute the auto-approved calls now and persist their results as
     // unsent so the resume path can pick them up without re-executing.
+    const pendingIds = new Set(stillPending.map((call) => call.id));
+    const executableNow = [
+      ...initialSurvivors.filter((call) => !pendingIds.has(call.id)),
+      ...blockedCalls,
+    ];
     const unsentResults = await this.executeAutoApproveTools(
-      autoExecuteIncludingBlocked as ParsedToolCall<TTools[number]>[],
+      executableNow as ParsedToolCall<TTools[number]>[],
       turnContext,
     );
 
@@ -3056,6 +3199,8 @@ export class ModelResult<
     }
     await this.saveStateSafely(stateUpdates);
 
+    this.preparedToolCalls.clear();
+    this.hookDeniedCalls.clear();
     this.finalResponse = currentResponse;
     return true; // Pause for approval
   }
@@ -3639,9 +3784,6 @@ export class ModelResult<
     pausedCalls: ParsedToolCall<Tool>[];
     deferredTasks: PendingAsyncTool[];
   }> {
-    // One executed batch = one doom-loop round: identical parallel calls in
-    // this batch count as ONE piece of loop evidence and share a decision.
-    await this.beginDoomLoopRound(toolCalls);
     const toolCallPromises = toolCalls.map((toolCall) =>
       this.executeSingleToolCall(toolCall, turnContext),
     );
@@ -5661,18 +5803,12 @@ export class ModelResult<
       // context is handled via contextStore, not on TurnContext
     };
 
+    // Calls that pause again after PreToolUse mutation remain pending without
+    // re-running the hook on the next resume.
+    const secondGatePausedIds = new Set<string>();
     // Track approved HITL calls that paused (onToolCalled returned null) —
     // these stay in pendingToolCalls so the caller can resume them later.
     const hitlPausedIds = new Set<string>();
-
-    // The approved batch is one doom-loop round: N approved duplicates of
-    // the same call count once (the sequential loop below still evaluates
-    // in order; restored streaks from the persisted state carry forward).
-    // Declared from the approved calls only — a pending call the user did not
-    // approve is not part of this round.
-    await this.beginDoomLoopRound(
-      pendingCalls.filter((toolCall) => this.approvedToolCalls.includes(toolCall.id)),
-    );
 
     // Process approvals - execute the approved tools. Route through
     // runToolWithHooks so PreToolUse/PostToolUse fire even on this path.
@@ -5693,13 +5829,31 @@ export class ModelResult<
         continue;
       }
 
+      if (toolCall.preToolUseApplied !== true) {
+        const prepared = await this.prepareAfterInitialApproval(
+          toolCall as ParsedToolCall<Tool>,
+          turnContext,
+          `persisted:${this.currentState.previousResponseId ?? 'unknown'}`,
+        );
+        if (prepared === 'pending') {
+          const ready = this.preparedToolCalls.get(callId);
+          if (ready?.type === 'ready') {
+            Object.assign(toolCall, ready.toolCall, {
+              preToolUseApplied: true as const,
+            });
+          }
+          secondGatePausedIds.add(callId);
+          continue;
+        }
+      }
+
       const hookOutcome = await this.runToolWithHooks(
         tool,
         toolCall as ParsedToolCall<Tool>,
         turnContext,
         undefined,
         undefined,
-        toolCall.preToolUseApplied !== true,
+        false,
       );
 
       if (hookOutcome.type === 'parse_error') {
@@ -5752,7 +5906,13 @@ export class ModelResult<
         continue;
       }
 
-      unsentResults.push(createRejectedResult(callId, String(toolCall.name), 'Rejected by user'));
+      const reason = 'Rejected by user';
+      if (toolCall.preToolUseApplied === true) {
+        await this.emitPreparedFailure(toolCall as ParsedToolCall<Tool>, reason);
+      }
+      this.preparedToolCalls.delete(callId);
+      this.hookDeniedCalls.delete(callId);
+      unsentResults.push(createRejectedResult(callId, String(toolCall.name), reason));
     }
 
     // Remove processed calls from pending. Approved HITL calls that paused are
@@ -5762,7 +5922,7 @@ export class ModelResult<
       [
         ...this.approvedToolCalls,
         ...this.rejectedToolCalls,
-      ].filter((id) => !hitlPausedIds.has(id)),
+      ].filter((id) => !hitlPausedIds.has(id) && !secondGatePausedIds.has(id)),
     );
     const remainingPending = pendingCalls.filter((tc) => !processedIds.has(tc.id));
 
@@ -5817,6 +5977,8 @@ export class ModelResult<
     // user message between dangling function_calls and their future
     // outputs would be invalid history).
     if (nextStatus !== 'in_progress') {
+      this.preparedToolCalls.clear();
+      this.hookDeniedCalls.clear();
       return;
     }
 
