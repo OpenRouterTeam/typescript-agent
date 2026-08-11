@@ -488,4 +488,82 @@ describe('Standard Schema tool support', () => {
       greeting: 'Hello LUKE',
     });
   });
+
+  it('rejects thenable-returning validators in synchronous context mutation', async () => {
+    const thenableSchema: StandardSchemaV1 = {
+      '~standard': {
+        version: 1,
+        vendor: 'test',
+        // A custom thenable (not a Promise instance) must still be rejected.
+        validate: () => ({
+          // biome-ignore lint/suspicious/noThenProperty: intentionally testing thenable rejection
+          then: (resolve: (result: { value: unknown }) => void) =>
+            resolve({
+              value: {},
+            }),
+        }),
+        types: undefined,
+      },
+    };
+    const store = new ToolContextStore({
+      thenable: {
+        token: 'initial',
+      },
+    });
+    const ctx = buildToolExecuteContext(context, store, 'thenable', thenableSchema, undefined, {
+      contextValidated: true,
+    });
+
+    expect(() =>
+      ctx.setContext({
+        token: 'updated',
+      }),
+    ).toThrow('Async Standard Schema validators are not supported');
+
+    // The same validator is fine on the async execution path.
+    const asyncTool = tool({
+      name: 'thenable_tool',
+      inputSchema: thenableSchema,
+      inputJsonSchema: {
+        type: 'object',
+      },
+      execute: () => 'ok',
+    });
+    const result = await executeRegularTool(asyncTool, call('thenable_tool', {}), context);
+    expect(result.result).toBe('ok');
+  });
+
+  it('filters unknown keys and stores transformed values on Standard Schema context updates', () => {
+    const store = new ToolContextStore({
+      standard: {
+        count: 1,
+      },
+    });
+    const ctx = buildToolExecuteContext<
+      'standard',
+      {
+        count: number;
+      }
+    >(
+      context,
+      store,
+      'standard',
+      v.object({
+        count: v.pipe(
+          v.number(),
+          v.transform((count) => count * 2),
+        ),
+      }),
+    );
+
+    ctx.setContext({
+      count: 5,
+      junk: 'dropped',
+    } as unknown as {
+      count: number;
+    });
+    expect(ctx.local).toEqual({
+      count: 10,
+    });
+  });
 });

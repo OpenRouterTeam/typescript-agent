@@ -1,6 +1,6 @@
 import * as z4 from 'zod/v4';
 import type { ObjectSchema } from './schema.js';
-import { validateSchemaSync } from './schema.js';
+import { isZodSchema, validateSchemaSync } from './schema.js';
 import type { ToolExecuteContext, TurnContext } from './tool-types.js';
 import { SHARED_CONTEXT_KEY } from './tool-types.js';
 
@@ -108,20 +108,30 @@ export class ToolContextStore {
 //#region buildToolExecuteContext
 
 /**
- * Validate a partial update against a schema's shape, filtering to known keys
- * and validating each key individually. Returns the filtered partial.
+ * Validate a partial update against a schema. Zod keeps the legacy per-field
+ * path (filter to shape keys, parse each individually). Standard Schema
+ * validators only see the merged object, so we validate the merge and store
+ * the validator's output for the partial's keys — preserving Zod's
+ * unknown-key filtering and applying any transforms.
  */
 function validatePartialAgainstSchema(
   partial: Record<string, unknown>,
   current: Record<string, unknown>,
   schema: ObjectSchema,
 ): Record<string, unknown> {
-  if (!('_zod' in schema)) {
-    validateSchemaSync(schema, {
+  if (!isZodSchema(schema)) {
+    const validated = validateSchemaSync(schema, {
       ...current,
       ...partial,
-    });
-    return partial;
+    }) as Record<string, unknown>;
+    return Object.fromEntries(
+      Object.keys(partial)
+        .filter((key) => key in validated)
+        .map((key) => [
+          key,
+          validated[key],
+        ]),
+    );
   }
 
   const shape = schema._zod.def.shape;

@@ -368,8 +368,8 @@ export function getInternalRegistrar(manager: HooksManager): InternalRegistrar {
  * without tripping validation -- for built-ins and custom hooks alike.
  *
  * Implementation note: `schema._zod.def.type` is zod v4's designated
- * introspection surface for library authors (every `Schema` carries a
- * `_zod: SchemaInternals` with a stable `def.type` discriminator). A string
+ * introspection surface for library authors (every zod `$ZodType` carries a
+ * `_zod: $ZodTypeInternals` with a stable `def.type` discriminator). A string
  * check is deliberately preferred over `instanceof $ZodVoid`, which breaks
  * across duplicated zod module instances (dual-package hazard) and mixed
  * zod/v4 vs zod/v4-mini usage. Behavior is pinned by tests in

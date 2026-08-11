@@ -125,15 +125,18 @@ export function validateSchemaSync<TSchema extends Schema>(
     throw new Error('Invalid Standard Schema v1 validator provided');
   }
   const result = schema['~standard'].validate(value);
-  if (result instanceof Promise) {
+  // Thenable check, not `instanceof Promise`: cross-realm promises and custom
+  // thenables must be rejected here too, or they'd pass as a silent success.
+  if (result !== null && typeof (result as PromiseLike<unknown>).then === 'function') {
     throw new Error(
-      'Async Standard Schema validators are not supported for synchronous context updates',
+      'Async Standard Schema validators are not supported in synchronous validation paths',
     );
   }
-  if (result.issues) {
-    throw new StandardSchemaError(result.issues);
+  const syncResult = result as StandardSchemaV1.Result<unknown>;
+  if (syncResult.issues) {
+    throw new StandardSchemaError(syncResult.issues);
   }
-  return result.value as InferSchemaOutput<TSchema>;
+  return syncResult.value as InferSchemaOutput<TSchema>;
 }
 
 export async function safeValidateSchema<TSchema extends Schema>(
