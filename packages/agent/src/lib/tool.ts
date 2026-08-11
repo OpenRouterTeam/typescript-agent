@@ -225,8 +225,9 @@ type HITLToolConfig<
 type ToolConfigWithSharedContext<
   TShared extends Record<string, unknown>,
   TCtx extends $ZodObject<$ZodShape> = $ZodObject<$ZodShape>,
+  TName extends string = string,
 > = {
-  name: string;
+  name: TName;
   description?: string;
   inputSchema: $ZodObject<$ZodShape>;
   outputSchema?: $ZodType;
@@ -245,11 +246,11 @@ type ToolConfigWithSharedContext<
   execute:
     | ((
         params: Record<string, unknown>,
-        context?: ToolExecuteContext<string, ContextFromSchema<TCtx>, TShared>,
+        context?: ToolExecuteContext<TName, ContextFromSchema<TCtx>, TShared>,
       ) => unknown)
     | ((
         params: Record<string, unknown>,
-        context?: ToolExecuteContext<string, ContextFromSchema<TCtx>, TShared>,
+        context?: ToolExecuteContext<TName, ContextFromSchema<TCtx>, TShared>,
       ) => AsyncGenerator<unknown>)
     | false;
   /** Convert tool execution output to model-facing output */
@@ -382,7 +383,7 @@ type RegularToolConfig<
  * ```typescript
  * type SharedCtx = z.infer<typeof SharedContextSchema>;
  *
- * const execTool = tool<SharedCtx>({
+ * const execTool = tool<SharedCtx>()({
  *   name: "sandbox_exec",
  *   inputSchema: z.object({ command: z.string() }),
  *   execute: async (params, ctx) => {
@@ -392,6 +393,20 @@ type RegularToolConfig<
  * });
  * ```
  */
+// Curried explicit-TShared overload. TypeScript cannot infer type arguments
+// that follow an explicitly supplied one, so the config gets its own generic
+// call boundary to preserve literal names.
+export function tool<TShared extends Record<string, unknown>>(): <
+  const TName extends string,
+  TCtx extends $ZodObject<$ZodShape> = $ZodObject<$ZodShape>,
+>(
+  config: ToolConfigWithSharedContext<TShared, TCtx, TName>,
+) => Tool & {
+  function: {
+    name: TName;
+  };
+};
+
 // NEW unified overloads — ordered FIRST so `run` configs never fall through
 // to a legacy-overload error message. Disjointness with the released
 // overloads is structural: run configs declare `execute?: undefined` /
@@ -489,10 +504,9 @@ export function tool<
   config: RegularToolConfigWithoutOutput<TInput, TReturn, TCtx, TName>,
 ): ToolWithExecute<TInput, $ZodType<TReturn>, Record<string, unknown>, TCtx, TName>;
 
-// Overload for explicit TShared: tool<SharedContext>({...})
-// When a non-ZodObject type is provided as the first generic,
-// the specific overloads above won't match (constraint mismatch),
-// so TypeScript falls through to this catch-all.
+// Backward-compatible uncurried explicit-TShared overload. Its name remains
+// wide because TypeScript cannot partially infer generics after TShared;
+// use tool<TShared>()({...}) when literal-name inference is needed.
 export function tool<
   TShared extends Record<string, unknown>,
   TName extends string = string,
@@ -509,7 +523,7 @@ export function tool<
 
 // Implementation
 export function tool(
-  config:
+  config?:
     | GeneratorToolConfig<$ZodObject<$ZodShape>, $ZodType, $ZodType>
     | RegularToolConfig<$ZodObject<$ZodShape>, $ZodType, unknown>
     | ManualToolConfig<$ZodObject<$ZodShape>>
@@ -517,7 +531,11 @@ export function tool(
     | RunToolConfigWithOutput<$ZodObject<$ZodShape>, $ZodType>
     | SyncRunToolConfigWithoutOutput<$ZodObject<$ZodShape>, unknown>
     | ToolConfigWithSharedContext<Record<string, unknown>>,
-): Tool {
+): Tool | ((sharedConfig: ToolConfigWithSharedContext<Record<string, unknown>>) => Tool) {
+  if (config === undefined) {
+    return tool;
+  }
+
   // 'shared' is reserved for shared context — forbid it as a tool name
   if (config.name === SHARED_CONTEXT_KEY) {
     throw new Error(

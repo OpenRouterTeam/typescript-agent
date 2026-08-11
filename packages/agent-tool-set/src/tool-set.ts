@@ -1,5 +1,5 @@
 import type { ServerToolBase, Tool } from '@openrouter/agent';
-import { isServerTool } from '@openrouter/agent';
+import { isServerTool, TOOL_SET_SNAPSHOT } from '@openrouter/agent';
 import type {
   ActivatePartition,
   ActivationInput,
@@ -591,10 +591,9 @@ export class ToolSet<
    * callModel(client, { model, input, tools, activeTools });
    * ```
    *
-   * `callModel` also defensively strips `enabled` / `disabled` /
-   * `statusByTool` (and a top-level `callModel` key) from whatever it's
-   * given, so spreading this method's full result is safe too — but the
-   * two-field pattern above is the documented, minimal contract.
+   * This result carries an internal marker so `callModel` can strip its
+   * metadata when the whole object is spread. Identically named request fields
+   * on ordinary, unmarked inputs are preserved.
    */
   inferTools(input?: ActivationInput<TShared>): {
     tools: Tool[];
@@ -602,6 +601,7 @@ export class ToolSet<
     enabled: readonly string[];
     disabled: readonly string[];
     statusByTool: StatusByToolMap<string>;
+    [TOOL_SET_SNAPSHOT]: true;
   } {
     const snapshot = this.resolve(input);
     return {
@@ -614,6 +614,7 @@ export class ToolSet<
       enabled: snapshot.enabled,
       disabled: snapshot.disabled,
       statusByTool: snapshot.statusByTool,
+      [TOOL_SET_SNAPSHOT]: true,
     };
   }
 
@@ -695,6 +696,7 @@ export class ToolSet<
     enabled: string[];
     disabled: string[];
     statusByTool: Record<string, ToolStatusEntry>;
+    [TOOL_SET_SNAPSHOT]: true;
   } {
     const resolvedInput: ActivationInput<TShared> = input ?? {};
     const tools: Tool[] = [];
@@ -745,6 +747,7 @@ export class ToolSet<
       enabled,
       disabled,
       statusByTool,
+      [TOOL_SET_SNAPSHOT]: true,
     };
   }
 

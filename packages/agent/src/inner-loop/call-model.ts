@@ -2,7 +2,7 @@ import type { OpenRouterCore } from '@openrouter/sdk/core';
 import type { RequestOptions } from '@openrouter/sdk/lib/sdks';
 import type { $ZodObject, $ZodShape, infer as zodInfer } from 'zod/v4/core';
 import type { CallModelInput } from '../lib/async-params.js';
-import { TOOL_SET_SNAPSHOT_METADATA_KEYS } from '../lib/async-params.js';
+import { stripToolSetSnapshotMetadata } from '../lib/async-params.js';
 import { resolveHooks } from '../lib/hooks-resolve.js';
 import type { GetResponseOptions } from '../lib/model-result.js';
 import { ModelResult } from '../lib/model-result.js';
@@ -149,26 +149,13 @@ export function callModel<
     apiTools.push(buildTaskToolApiDefinition(convertZodToJsonSchema));
   }
 
-  // Build the request with converted tools
-  // Note: async functions are resolved later in ModelResult.executeToolsIfNeeded()
-  // The request can have async fields (functions) or sync fields, and the tools are converted to API format
-  //
-  // Defense-in-depth: `apiRequest` is typed as "whatever wasn't one of the
-  // known client-only fields above", but TypeScript's excess-property
-  // checking does not run on spread arguments — so a caller who does
-  // `callModel(client, { ...toolSet.inferTools(), model, input })` (a
-  // documented, intended pattern for `tools`/`activeTools`) can silently
-  // carry `@openrouter/agent-tool-set` snapshot metadata (`enabled`,
-  // `disabled`, `statusByTool`) straight through to the outbound request
-  // with no compile-time or destructure-time signal. Strip any such keys
-  // here, at the single choke point every callModel() call passes through,
-  // regardless of which ToolSet method produced the spread object.
-  const finalRequest: Record<string, unknown> = {
+  // Build the request with converted tools. Tool-set snapshots carry a symbol
+  // marker that survives object spread, allowing their metadata to be removed
+  // without reserving otherwise legitimate API field names.
+  const finalRequest: Record<PropertyKey, unknown> = {
     ...apiRequest,
   };
-  for (const key of TOOL_SET_SNAPSHOT_METADATA_KEYS) {
-    delete finalRequest[key];
-  }
+  stripToolSetSnapshotMetadata(finalRequest);
 
   if (apiTools !== undefined) {
     finalRequest['tools'] = apiTools;

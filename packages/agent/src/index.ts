@@ -100,7 +100,11 @@ export type {
   CallModelInputWithState,
   ResolvedCallModelInput,
 } from './lib/async-params.js';
-export { hasAsyncFunctions, resolveAsyncFunctions } from './lib/async-params.js';
+export {
+  hasAsyncFunctions,
+  resolveAsyncFunctions,
+  TOOL_SET_SNAPSHOT,
+} from './lib/async-params.js';
 // Async tool task registry types
 export type { SettledToolTask } from './lib/async-tool-registry.js';
 export { AsyncToolRegistry } from './lib/async-tool-registry.js';

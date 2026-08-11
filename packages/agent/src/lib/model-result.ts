@@ -8,7 +8,7 @@ import type { CallModelInput, ResolvedCallModelInput } from './async-params.js';
 import {
   hasAsyncFunctions,
   resolveAsyncFunctions,
-  TOOL_SET_SNAPSHOT_METADATA_KEYS,
+  stripToolSetSnapshotMetadata,
 } from './async-params.js';
 import type { SettledToolTask, TaskToolInput, ToolSemaphore, ToolTaskMode } from './async-tools.js';
 import {
@@ -4936,14 +4936,10 @@ export class ModelResult<
       activeTools: _activeTools,
       ...rest
     } = this.options.request;
-    // Defense-in-depth: also drop `@openrouter/agent-tool-set` snapshot
-    // metadata in case it reached this stage without callModel filtering it.
-    const resolved: Record<string, unknown> = {
+    const resolved: Record<PropertyKey, unknown> = {
       ...rest,
     };
-    for (const key of TOOL_SET_SNAPSHOT_METADATA_KEYS) {
-      delete resolved[key];
-    }
+    stripToolSetSnapshotMetadata(resolved);
     return this.applyResolvedForcedToolChoicePolicy(resolved as ResolvedCallModelInput);
   }
 

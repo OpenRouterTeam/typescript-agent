@@ -5,6 +5,7 @@ import type {
   ServerToolBase,
   Tool,
 } from '@openrouter/agent';
+import { TOOL_SET_SNAPSHOT } from '@openrouter/agent';
 
 // ─── identity ───────────────────────────────────────────────────────────────
 
@@ -370,6 +371,8 @@ export type ResolvedToolSnapshot<
   readonly disabled: readonly Exclude<ToolIdsOfTuple<TTools>, P['enabled']>[];
   /** Exhaustive id → status entry. Every ToolIdsOfTuple key present. */
   readonly statusByTool: StatusByToolMap<ToolIdsOfTuple<TTools>>;
+  /** Internal marker allowing `callModel` to recognize a snapshot spread. */
+  readonly [TOOL_SET_SNAPSHOT]: true;
 };
 
 // ─── ToolSet structural eraser + inference utilities ────────────────────────

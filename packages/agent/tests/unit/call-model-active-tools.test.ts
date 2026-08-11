@@ -3,6 +3,7 @@ import { HTTPClient } from '@openrouter/sdk/lib/http';
 import { describe, expect, it } from 'vitest';
 import { z } from 'zod/v4';
 import { callModel } from '../../src/inner-loop/call-model.js';
+import { stripToolSetSnapshotMetadata, TOOL_SET_SNAPSHOT } from '../../src/lib/async-params.js';
 import { tool } from '../../src/lib/tool.js';
 
 type CapturedPayload = {
@@ -295,6 +296,7 @@ describe('callModel strips @openrouter/agent-tool-set snapshot metadata', () => 
           'a',
         ],
       },
+      [TOOL_SET_SNAPSHOT]: true,
     };
 
     const { raw } = await captureOutboundRequest(snapshotLikeRequest);
@@ -307,6 +309,28 @@ describe('callModel strips @openrouter/agent-tool-set snapshot metadata', () => 
     expect(extractToolNames(raw as CapturedPayload)).toEqual([
       'a',
     ]);
+  });
+
+  it('preserves identically named request fields when the request is not a tool-set snapshot', () => {
+    const request = {
+      enabled: true,
+      disabled: false,
+      statusByTool: {
+        a: 'request-value',
+      },
+      callModel: 'request-value',
+    };
+
+    stripToolSetSnapshotMetadata(request);
+
+    expect(request).toEqual({
+      enabled: true,
+      disabled: false,
+      statusByTool: {
+        a: 'request-value',
+      },
+      callModel: 'request-value',
+    });
   });
 
   it('still sends the documented { tools, activeTools } spread-safe pattern unaffected', async () => {

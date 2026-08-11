@@ -81,7 +81,7 @@ const manual = tool({
 
 const shared = tool<{
   userId: string;
-}>({
+}>()({
   name: 'shared_tool',
   inputSchema: z.object({}),
   execute: async (_params, ctx) => ctx?.shared.userId ?? '',
