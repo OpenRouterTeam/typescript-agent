@@ -26,7 +26,9 @@ describe('@openrouter/mcp/types export parity (type-level)', () => {
     expectTypeOf<WrapperTypes.ResourcesOption>().toEqualTypeOf<AgentTypes.ResourcesOption>();
   });
 
-  it('MCPTransportKind is structurally identical', () => {
+  it('preserves the published protocol types', () => {
+    expectTypeOf<WrapperTypes.MCPProtocolNegotiation>().toEqualTypeOf<AgentTypes.MCPProtocolNegotiation>();
+    expectTypeOf<WrapperTypes.MCPProtocolRevision>().toEqualTypeOf<AgentTypes.MCPProtocolRevision>();
     expectTypeOf<WrapperTypes.MCPTransportKind>().toEqualTypeOf<AgentTypes.MCPTransportKind>();
   });
 });

@@ -38,7 +38,7 @@ function pack(packageDir) {
   if (typeof filename !== 'string') {
     throw new Error(`Could not determine tarball name for ${packageDir}`);
   }
-  return resolve(join(root, packageDir), filename);
+  return resolve(packDir, filename);
 }
 
 function tarEntries(tarball) {
