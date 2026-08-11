@@ -21,6 +21,7 @@ export type {
   InitialPartition,
   Partition,
   ResolvedToolSnapshot,
+  ResolvedTools,
   ServerToolIdOf,
   ServerToolIdsOfTuple,
   SituationConditionalRule,

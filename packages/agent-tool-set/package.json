@@ -43,7 +43,7 @@
     "build": "tsc",
     "test": "vitest --run --project unit",
     "test:watch": "vitest --watch --project unit",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "tsc --noEmit -p tsconfig.typecheck.json",
     "compile": "tsc"
   },
   "dependencies": {

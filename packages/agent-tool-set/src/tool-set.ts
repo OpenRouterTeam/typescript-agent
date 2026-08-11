@@ -14,6 +14,7 @@ import type {
   InitialPartition,
   Partition,
   ResolvedToolSnapshot,
+  ResolvedTools,
   ServerToolIdsOfTuple,
   SituationConditionalRule,
   SituationConfig,
@@ -916,6 +917,7 @@ export function createToolSet<
 export type {
   ClientToolNamesOfTuple,
   FilterToolsByIds,
+  ResolvedTools,
   ServerToolIdsOfTuple,
   ToolIdOf,
   ToolIdsOfTuple,

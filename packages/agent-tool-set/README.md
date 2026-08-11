@@ -117,12 +117,12 @@ Duplicate IDs throw at `createToolSet` construction. Activation methods accept o
 
 | Resolution style | Developer-time knowledge | Runtime knowledge |
 | --- | --- | --- |
-| Static `activate` / `deactivate` | Exact partition | Exact snapshot |
-| Named static situation (`enabled`/`disabled` only) | Exact filtered tool tuple | Exact snapshot |
-| `activateWhen` / `deactivateWhen` / situation `conditional` | Upper bound (`enabled ∪ conditional`) | Exact snapshot after predicates |
-| Mutable `ToolSet` | Partition types may widen | Exact snapshot |
+| Static `activate` / `deactivate` | Exact partition and filtered `tools` tuple | Exact snapshot |
+| Named static situation (`enabled`/`disabled` only) | Exact partition and filtered `tools` tuple | Exact snapshot |
+| `activateWhen` / `deactivateWhen` / situation `conditional` | `tools` is a readonly array of possible active members; length and positions are not exact | Exact snapshot after predicates |
+| Mutable `ToolSet` | Widened partition; `tools` is a readonly array of possible active members | Exact snapshot |
 
-The type system cannot execute predicates. Conditional IDs therefore expand the compile-time upper bound of active tools; after `resolve`, the returned arrays and `statusByTool` are always exhaustive and exact.
+The type system cannot execute predicates. If any IDs are conditional, `snapshot.tools` and `snapshot.callModel.tools` are arrays whose member union is limited to the active upper bound, but their length and positions remain unknown. Static-only partitions retain exact filtered tuples. At runtime, all snapshot arrays and `statusByTool` reflect the resolved predicates exactly.
 
 ## API
 
@@ -162,7 +162,7 @@ Situation overlays the base partition for every ID it mentions; unmentioned IDs 
 
 ```ts
 {
-  tools: /* active tools, construction order, concrete types */;
+  tools: /* exact tuple when static; possible-member array when conditional */;
   activeTools: /* active *client* names for callModel */;
   callModel: { tools, activeTools }; // safe to spread into callModel()
   enabled: /* every active ID (client + server) */;

@@ -115,6 +115,22 @@ export type FilterToolsByIds<
       : FilterToolsByIds<R, Active>
     : readonly [];
 
+/**
+ * Exact tuple for static partitions; possible active members for partitions
+ * whose runtime predicates can change tuple membership.
+ */
+export type ResolvedTools<
+  TTools extends readonly Tool[],
+  P extends Partition,
+  TActive extends string = P['enabled'] | P['conditional'],
+> = [
+  P['conditional'],
+] extends [
+  never,
+]
+  ? FilterToolsByIds<TTools, TActive & ToolIdsOfTuple<TTools>>
+  : readonly FilterToolsByIds<TTools, TActive & ToolIdsOfTuple<TTools>>[number][];
+
 // ─── three-way compile-time partition ───────────────────────────────────────
 
 /**
@@ -339,7 +355,9 @@ export type StatusByToolMap<TIds extends string> = {
  * For static-only partitions (`conditional = never`), TActive is exactly
  * `P['enabled']` and the snapshot is fully known at compile time.
  * When conditional ≠ never, TActive is the sound upper bound
- * `P['enabled'] | P['conditional']`; runtime arrays/status are exact.
+ * `P['enabled'] | P['conditional']`; tools become a readonly array of the
+ * possible active member union because predicates can change length and
+ * positions at runtime. Runtime arrays/status are exact.
  *
  * `disabled` is declared as the complement of the *definitely-enabled* set
  * (`P['enabled']`), not of `TActive`. A conditional id's predicate can
@@ -355,12 +373,12 @@ export type ResolvedToolSnapshot<
   TActive extends string = P['enabled'] | P['conditional'],
 > = {
   /** Active tools only, construction order preserved, concrete member types kept. */
-  readonly tools: FilterToolsByIds<TTools, TActive & ToolIdsOfTuple<TTools>>;
+  readonly tools: ResolvedTools<TTools, P, TActive>;
   /** Active client names only (`callModel.activeTools` wire format). Server ids omitted. */
   readonly activeTools: readonly Extract<TActive, ClientToolNamesOfTuple<TTools>>[];
   /** Spread-safe input for `callModel`; snapshot metadata is intentionally excluded. */
   readonly callModel: {
-    readonly tools: FilterToolsByIds<TTools, TActive & ToolIdsOfTuple<TTools>>;
+    readonly tools: ResolvedTools<TTools, P, TActive>;
     readonly activeTools: readonly Extract<TActive, ClientToolNamesOfTuple<TTools>>[];
   };
   /** IDs that resolved active (client + server). */
