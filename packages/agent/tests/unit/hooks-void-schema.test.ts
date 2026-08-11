@@ -32,6 +32,12 @@ describe('void schema detection (pins zod v4 internals against upgrades)', () =>
     expect(isVoidSchema(v.undefined())).toBe(true);
     expect(isVoidSchema(v.string())).toBe(false);
     expect(isVoidSchema(v.object({}))).toBe(false);
+    // Permissive schemas accept undefined but are NOT void — result
+    // validation must still run, as it does for z.unknown()/z.optional().
+    expect(isVoidSchema(v.any())).toBe(false);
+    expect(isVoidSchema(v.unknown())).toBe(false);
+    expect(isVoidSchema(v.optional(v.string()))).toBe(false);
+    expect(isVoidSchema(v.nullish(v.string()))).toBe(false);
   });
 
   it('the _zod.def.type introspection surface exists on v4 schemas', () => {

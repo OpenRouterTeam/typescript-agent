@@ -378,21 +378,32 @@ export function getInternalRegistrar(manager: HooksManager): InternalRegistrar {
  * re-enabling result validation on void hooks.
  *
  * Standard Schema: no introspection surface exists, so we probe — a
- * synchronous validator that accepts `undefined` (v.void(), v.undefined(),
- * v.optional(...)) is treated as void. Async validators can't be probed
- * here and fall back to enforced result validation.
+ * synchronous validator that accepts `undefined` and rejects other value
+ * kinds (v.void(), v.undefined()) is treated as void. Permissive schemas
+ * that also accept undefined (v.any(), v.optional(...)) stay validated,
+ * matching the Zod treatment of z.unknown()/z.optional(). Async validators
+ * can't be probed here and fall back to enforced result validation.
  *
  * Exported for the pinning tests only; NOT re-exported from the package
  * index and NOT part of the public API.
  */
 export function isVoidSchema(schema: Schema): boolean {
   if (!isZodSchema(schema)) {
-    try {
-      validateSchemaSync(schema, undefined);
-      return true;
-    } catch {
-      return false;
-    }
+    // Probe: a void-result validator accepts `undefined` and nothing else.
+    // Permissive schemas (v.any(), v.optional(...), ...) also accept
+    // undefined — requiring rejection of other probes keeps them validated,
+    // matching how z.unknown()/z.optional() are treated above.
+    const accepts = (value: unknown): boolean => {
+      try {
+        validateSchemaSync(schema, value);
+        return true;
+      } catch {
+        return false;
+      }
+    };
+    return (
+      accepts(undefined) && !accepts(null) && !accepts('sentinel') && !accepts(0) && !accepts({})
+    );
   }
   const def = (
     schema as {

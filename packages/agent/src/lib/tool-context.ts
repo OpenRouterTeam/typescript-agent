@@ -110,9 +110,11 @@ export class ToolContextStore {
 /**
  * Validate a partial update against a schema. Zod keeps the legacy per-field
  * path (filter to shape keys, parse each individually). Standard Schema
- * validators only see the merged object, so we validate the merge and store
- * the validator's output for the partial's keys — preserving Zod's
- * unknown-key filtering and applying any transforms.
+ * validators only see the merged object, so we validate the merge and use
+ * the validator's output to filter unknown keys — but persist the raw
+ * caller-supplied values like the Zod branch. Storing transformed output
+ * would let a type-changing transform poison the store: every other context
+ * path validates the raw stored value and discards the parse output.
  */
 function validatePartialAgainstSchema(
   partial: Record<string, unknown>,
@@ -129,7 +131,7 @@ function validatePartialAgainstSchema(
         .filter((key) => Object.hasOwn(validated, key))
         .map((key) => [
           key,
-          validated[key],
+          partial[key],
         ]),
     );
   }

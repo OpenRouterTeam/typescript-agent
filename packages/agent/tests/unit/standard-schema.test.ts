@@ -534,7 +534,7 @@ describe('Standard Schema tool support', () => {
     expect(result.result).toBe('ok');
   });
 
-  it('filters unknown keys and stores transformed values on Standard Schema context updates', () => {
+  it('filters unknown keys and stores raw values on Standard Schema context updates', () => {
     const store = new ToolContextStore({
       standard: {
         count: 1,
@@ -563,9 +563,52 @@ describe('Standard Schema tool support', () => {
     } as unknown as {
       count: number;
     });
+    // Raw caller-supplied value is stored (Zod parity) — storing the
+    // transform's output would poison later merged validations.
     expect(ctx.local).toEqual({
-      count: 10,
+      count: 5,
     });
+  });
+
+  it('keeps context usable after updates with a type-changing validator', async () => {
+    const contextSchema = v.object({
+      n: v.pipe(v.string(), v.transform(Number)),
+    });
+    const store = new ToolContextStore({
+      convert: {
+        n: '5',
+      },
+    });
+    const ctx = buildToolExecuteContext<
+      'convert',
+      {
+        n: number;
+      }
+    >(context, store, 'convert', contextSchema);
+    ctx.setContext({
+      n: '7',
+    } as unknown as {
+      n: number;
+    });
+
+    const contextTool = tool({
+      name: 'convert',
+      inputSchema,
+      inputJsonSchema,
+      contextSchema,
+      execute: (_input, execCtx) => execCtx!.local.n,
+    });
+    const result = await executeRegularTool(
+      contextTool,
+      call('convert', {
+        name: 'luke',
+      }),
+      context,
+      store,
+    );
+    expect(result.error).toBeUndefined();
+    // Context values are validated but never transformed (raw storage).
+    expect(result.result).toBe('7');
   });
 
   it('filters prototype-named keys from context updates', () => {
@@ -657,7 +700,6 @@ describe('Standard Schema tool support', () => {
         ok: z.boolean(),
       }),
       run: () => {
-        // biome-ignore lint: intentionally throwing no value
         throw undefined;
       },
     });
