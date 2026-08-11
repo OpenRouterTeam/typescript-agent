@@ -4,6 +4,18 @@ import { z } from 'zod/v4';
 import { tool } from '../../src/lib/tool.js';
 import type { InferToolInput } from '../../src/lib/tool-types.js';
 
+const valibotInputSchema = v.object({
+  value: v.string(),
+});
+
+// @ts-expect-error non-Zod input schemas require the provider-facing JSON Schema
+const missingInputJsonSchema = tool({
+  name: 'missing_json_schema',
+  inputSchema: valibotInputSchema,
+  execute: ({ value }) => value,
+});
+void missingInputJsonSchema;
+
 const standardTool = tool({
   name: 'standard',
   inputSchema: v.object({
@@ -60,6 +72,7 @@ expectTypeOf<InferToolInput<typeof standardTool>>().toEqualTypeOf<{
   value: number;
 }>();
 
+// Zod keeps its built-in JSON Schema conversion and needs no inputJsonSchema.
 const zodTool = tool({
   name: 'zod',
   inputSchema: z.object({

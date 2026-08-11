@@ -163,12 +163,15 @@ describe('Standard Schema tool support', () => {
     ).not.toHaveProperty('~standard');
   });
 
-  it('requires raw JSON Schema for non-Zod input validators', () => {
-    const valibotTool = tool({
-      name: 'valibot_tool',
-      inputSchema,
-      execute: () => null,
-    });
+  it('requires raw JSON Schema for non-Zod input validators at runtime', () => {
+    const valibotTool = {
+      type: 'function',
+      function: {
+        name: 'valibot_tool',
+        inputSchema,
+        execute: () => null,
+      },
+    } as unknown as Tool;
 
     expect(() =>
       convertToolsToAPIFormat([

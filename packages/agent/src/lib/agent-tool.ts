@@ -2,7 +2,7 @@ import type { OpenRouterCore } from '@openrouter/sdk/core';
 import type { CallModelInput } from './async-params.js';
 import { extractTextFromResponse } from './conversation-state.js';
 import type { ModelResult } from './model-result.js';
-import type { InferSchemaOutput, ObjectSchema, Schema } from './schema.js';
+import type { InferSchemaOutput, InputSchemaConfig, ObjectSchema, Schema } from './schema.js';
 import { TASK_TOOL_NAME } from './tool-check.js';
 import type { TaskTranscriptSource } from './tool-task.js';
 import { truncateTranscriptTail } from './tool-task.js';
@@ -134,11 +134,9 @@ export type AgentToolConfig<
   TChildTools extends readonly Tool[] = readonly Tool[],
   TCtx extends ObjectSchema = ObjectSchema,
   TName extends string = string,
-> = {
+> = InputSchemaConfig<TInput> & {
   name: TName;
   description?: string;
-  inputSchema: TInput;
-  inputJsonSchema?: Record<string, unknown>;
   /**
    * Whether providers should enforce strict schema adherence for this agent
    * tool's generated arguments. OpenAI-style strict mode requires every

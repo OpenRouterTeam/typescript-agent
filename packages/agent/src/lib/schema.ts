@@ -10,6 +10,17 @@ export type ObjectSchema =
   | $ZodObject<$ZodShape>
   | StandardSchemaV1<unknown, Record<string, unknown>>;
 
+export type InputSchemaConfig<TInput extends ObjectSchema> =
+  TInput extends $ZodObject<$ZodShape>
+    ? {
+        inputSchema: TInput;
+        inputJsonSchema?: Record<string, unknown>;
+      }
+    : {
+        inputSchema: TInput;
+        inputJsonSchema: Record<string, unknown>;
+      };
+
 export type InferSchemaInput<TSchema> = TSchema extends $ZodType
   ? TSchema['_zod']['input']
   : TSchema extends StandardSchemaV1

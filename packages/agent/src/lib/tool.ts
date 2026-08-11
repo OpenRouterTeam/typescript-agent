@@ -3,7 +3,7 @@ import type { RequestOptions } from '@openrouter/sdk/lib/sdks';
 import { agentToolBuilder } from './agent-tool.js';
 import type { CallModelInput } from './async-params.js';
 import type { ModelResult } from './model-result.js';
-import type { InferSchemaOutput, ObjectSchema, Schema } from './schema.js';
+import type { InferSchemaOutput, InputSchemaConfig, ObjectSchema, Schema } from './schema.js';
 import { TASK_TOOL_NAME } from './tool-check.js';
 import type { TaskLogLimits } from './tool-task.js';
 import type {
@@ -44,11 +44,9 @@ type RegularToolConfigWithOutput<
   TOutput extends Schema,
   TCtx extends ObjectSchema = ObjectSchema,
   TName extends string = string,
-> = {
+> = InputSchemaConfig<TInput> & {
   name: TName;
   description?: string;
-  inputSchema: TInput;
-  inputJsonSchema?: Record<string, unknown>;
   outputSchema: TOutput;
   eventSchema?: undefined;
   /** Strict schema adherence for tool-call generation — see {@link BaseToolFunction.strict} */
@@ -79,11 +77,9 @@ type RegularToolConfigWithoutOutput<
   TReturn,
   TCtx extends ObjectSchema = ObjectSchema,
   TName extends string = string,
-> = {
+> = InputSchemaConfig<TInput> & {
   name: TName;
   description?: string;
-  inputSchema: TInput;
-  inputJsonSchema?: Record<string, unknown>;
   outputSchema?: undefined;
   eventSchema?: undefined;
   /** Strict schema adherence for tool-call generation — see {@link BaseToolFunction.strict} */
@@ -115,11 +111,9 @@ type GeneratorToolConfig<
   TOutput extends Schema,
   TCtx extends ObjectSchema = ObjectSchema,
   TName extends string = string,
-> = {
+> = InputSchemaConfig<TInput> & {
   name: TName;
   description?: string;
-  inputSchema: TInput;
-  inputJsonSchema?: Record<string, unknown>;
   eventSchema: TEvent;
   outputSchema: TOutput;
   /** Strict schema adherence for tool-call generation — see {@link BaseToolFunction.strict} */
@@ -145,11 +139,12 @@ type GeneratorToolConfig<
 /**
  * Configuration for a manual tool (execute: false, no eventSchema or outputSchema)
  */
-type ManualToolConfig<TInput extends ObjectSchema, TCtx extends ObjectSchema = ObjectSchema> = {
+type ManualToolConfig<
+  TInput extends ObjectSchema,
+  TCtx extends ObjectSchema = ObjectSchema,
+> = InputSchemaConfig<TInput> & {
   name: string; // Manual tools don't use TName since they have no execute
   description?: string;
-  inputSchema: TInput;
-  inputJsonSchema?: Record<string, unknown>;
   /** Strict schema adherence for tool-call generation — see {@link BaseToolFunction.strict} */
   strict?: boolean | null;
   /** Zod schema declaring the context data this tool needs */
@@ -181,11 +176,9 @@ type HITLToolConfig<
   TOutput extends Schema,
   TCtx extends ObjectSchema = ObjectSchema,
   TName extends string = string,
-> = {
+> = InputSchemaConfig<TInput> & {
   name: TName;
   description?: string;
-  inputSchema: TInput;
-  inputJsonSchema?: Record<string, unknown>;
   /**
    * Required for HITL tools. Used to validate both the `onToolCalled` return
    * value (when non-null) and the caller-supplied response that comes back via
@@ -225,12 +218,11 @@ type HITLToolConfig<
  */
 type ToolConfigWithSharedContext<
   TShared extends Record<string, unknown>,
+  TInput extends ObjectSchema,
   TCtx extends ObjectSchema = ObjectSchema,
-> = {
+> = InputSchemaConfig<TInput> & {
   name: string;
   description?: string;
-  inputSchema: ObjectSchema;
-  inputJsonSchema?: Record<string, unknown>;
   outputSchema?: Schema;
   eventSchema?: Schema;
   /** Strict schema adherence for tool-call generation — see {@link BaseToolFunction.strict} */
@@ -265,11 +257,9 @@ type RunToolConfigBase<
   TInput extends ObjectSchema,
   TCtx extends ObjectSchema = ObjectSchema,
   TName extends string = string,
-> = {
+> = InputSchemaConfig<TInput> & {
   name: TName;
   description?: string;
-  inputSchema: TInput;
-  inputJsonSchema?: Record<string, unknown>;
   /** Never present on run configs — keeps them disjoint from legacy overloads. */
   execute?: undefined;
   onToolCalled?: undefined;
@@ -495,9 +485,10 @@ export function tool<
 // When a non-ZodObject type is provided as the first generic,
 // the specific overloads above won't match (constraint mismatch),
 // so TypeScript falls through to this catch-all.
-export function tool<TShared extends Record<string, unknown>>(
-  config: ToolConfigWithSharedContext<TShared>,
-): Tool;
+export function tool<
+  TShared extends Record<string, unknown>,
+  TInput extends ObjectSchema = ObjectSchema,
+>(config: ToolConfigWithSharedContext<TShared, TInput>): Tool;
 
 // Implementation
 export function tool(
@@ -508,7 +499,7 @@ export function tool(
     | HITLToolConfig<ObjectSchema, Schema>
     | RunToolConfigWithOutput<ObjectSchema, Schema>
     | SyncRunToolConfigWithoutOutput<ObjectSchema, unknown>
-    | ToolConfigWithSharedContext<Record<string, unknown>>,
+    | ToolConfigWithSharedContext<Record<string, unknown>, ObjectSchema>,
 ): Tool {
   // 'shared' is reserved for shared context — forbid it as a tool name
   if (config.name === SHARED_CONTEXT_KEY) {
