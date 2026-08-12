@@ -2,14 +2,28 @@ import type { StandardJSONSchemaV1, StandardSchemaV1 } from '@standard-schema/sp
 import * as z4 from 'zod/v4';
 import type { $ZodObject, $ZodShape, $ZodType, infer as zodInfer } from 'zod/v4/core';
 
+/**
+ * Any validator the agent accepts for tool input, output, event, context,
+ * shared-context, check, and custom-hook schemas: a Zod v4 schema (kept on
+ * the native fast path) or any Standard Schema v1 validator (Valibot,
+ * ArkType, Effect Schema, ...).
+ */
 export type Schema<Input = unknown, Output = Input> =
   | $ZodType<Output, Input>
   | StandardSchemaV1<Input, Output>;
 
+/** A {@link Schema} whose validated output is an object shape. */
 export type ObjectSchema =
   | $ZodObject<$ZodShape>
   | StandardSchemaV1<unknown, Record<string, unknown>>;
 
+/**
+ * Tool config shape for the input schema. `inputJsonSchema` — the JSON
+ * Schema sent to the model — is optional when the validator can produce one
+ * itself (Zod via z.toJSONSchema, or the StandardJSONSchemaV1 trait) and
+ * required at compile time for validation-only non-Zod input schemas. When
+ * supplied it always wins.
+ */
 export type InputSchemaConfig<TInput extends ObjectSchema> = {
   inputSchema: TInput;
 } & (TInput extends $ZodObject<$ZodShape> | StandardJSONSchemaV1
@@ -20,23 +34,31 @@ export type InputSchemaConfig<TInput extends ObjectSchema> = {
       inputJsonSchema: Record<string, unknown>;
     });
 
+/** Infer the input (pre-validation) type of a Zod or Standard Schema v1 schema. */
 export type InferSchemaInput<TSchema> = TSchema extends $ZodType
   ? TSchema['_zod']['input']
   : TSchema extends StandardSchemaV1
     ? StandardSchemaV1.InferInput<TSchema>
     : unknown;
 
+/** Infer the output (post-validation) type of a Zod or Standard Schema v1 schema. */
 export type InferSchemaOutput<TSchema> = TSchema extends $ZodType
   ? zodInfer<TSchema>
   : TSchema extends StandardSchemaV1
     ? StandardSchemaV1.InferOutput<TSchema>
     : unknown;
 
+/** A single normalized Standard Schema validation issue. */
 export interface SchemaIssue {
   readonly message: string;
   readonly path: PropertyKey[];
 }
 
+/**
+ * Error thrown when a Standard Schema v1 validator rejects a value. Issues
+ * are normalized to the same `{ message, path }` shape the agent surfaces
+ * for Zod validation errors.
+ */
 export class StandardSchemaError extends Error {
   readonly issues: SchemaIssue[];
 
