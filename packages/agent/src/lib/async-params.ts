@@ -4,6 +4,7 @@ import type { DoomLoopOption } from './doom-loop.js';
 import type { HooksManager } from './hooks-manager.js';
 import type { InlineHookConfig } from './hooks-types.js';
 import type { Item } from './item-types.js';
+import type { StreamReplay } from './reusable-stream.js';
 import type { ContextInput } from './tool-context.js';
 import type {
   ParsedToolCall,
@@ -114,6 +115,13 @@ type BaseCallModelInput<
    * Receives the turn context and the completed response for that turn
    */
   onTurnEnd?: (context: TurnContext, response: OpenResponsesResult) => void | Promise<void>;
+  /**
+   * Controls replay history retained for stream getters.
+   * `full` preserves all events for delayed and sequential consumers.
+   * `active-consumers` compacts events after every attached consumer advances.
+   * @default 'full'
+   */
+  streamReplay?: StreamReplay;
   /**
    * When the loop exits because `stopWhen` was met and the last response
    * still contained tool calls, execute those pending tool calls (so they
@@ -332,6 +340,7 @@ export async function resolveAsyncFunctions<TTools extends readonly Tool[] = rea
     'sharedContextSchema', // Client-side schema for shared context validation
     'onTurnStart', // Client-side turn start callback
     'onTurnEnd', // Client-side turn end callback
+    'streamReplay', // Client-side stream replay policy
     'allowFinalResponse', // Client-side: tunes the default toolChoice:'none' final turn when stopWhen breaks the loop
     'strictFinalResponse', // Client-side: restore throw on empty final after tool rounds
     'hooks', // Client-side hook system
