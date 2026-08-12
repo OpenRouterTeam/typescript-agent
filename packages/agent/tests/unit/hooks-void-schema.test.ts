@@ -26,18 +26,16 @@ describe('void schema detection (pins zod v4 internals against upgrades)', () =>
     expect(isVoidSchema(z4.null())).toBe(false);
   });
 
-  it('probes Standard Schema validators by validating undefined', async () => {
+  it('never treats Standard Schema validators as void (fail-safe)', async () => {
+    // The spec has no introspection surface and value probing can't tell
+    // "only undefined" apart from "undefined | T", so non-Zod result
+    // schemas are always validated.
     const v = await import('valibot');
-    expect(isVoidSchema(v.void())).toBe(true);
-    expect(isVoidSchema(v.undefined())).toBe(true);
+    expect(isVoidSchema(v.void())).toBe(false);
+    expect(isVoidSchema(v.undefined())).toBe(false);
     expect(isVoidSchema(v.string())).toBe(false);
-    expect(isVoidSchema(v.object({}))).toBe(false);
-    // Permissive schemas accept undefined but are NOT void — result
-    // validation must still run, as it does for z.unknown()/z.optional().
     expect(isVoidSchema(v.any())).toBe(false);
-    expect(isVoidSchema(v.unknown())).toBe(false);
     expect(isVoidSchema(v.optional(v.string()))).toBe(false);
-    expect(isVoidSchema(v.nullish(v.string()))).toBe(false);
   });
 
   it('the _zod.def.type introspection surface exists on v4 schemas', () => {

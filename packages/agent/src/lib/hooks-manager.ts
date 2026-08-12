@@ -12,7 +12,7 @@ import type {
   LifecycleHookContext,
 } from './hooks-types.js';
 import type { InferSchemaInput, InferSchemaOutput, Schema } from './schema.js';
-import { isZodSchema, safeValidateSchema, validateSchemaSync } from './schema.js';
+import { isZodSchema, safeValidateSchema } from './schema.js';
 
 //#region Types
 
@@ -377,33 +377,20 @@ export function getInternalRegistrar(manager: HooksManager): InternalRegistrar {
  * that restructures the internals fails loudly instead of silently
  * re-enabling result validation on void hooks.
  *
- * Standard Schema: no introspection surface exists, so we probe — a
- * synchronous validator that accepts `undefined` and rejects other value
- * kinds (v.void(), v.undefined()) is treated as void. Permissive schemas
- * that also accept undefined (v.any(), v.optional(...)) stay validated,
- * matching the Zod treatment of z.unknown()/z.optional(). Async validators
- * can't be probed here and fall back to enforced result validation.
+ * Standard Schema: the spec has no introspection surface, and probing
+ * values can't distinguish "accepts only undefined" from "undefined | T"
+ * (v.optional(v.object(...)) rejects every finite sentinel set). So we fail
+ * safe: non-Zod result schemas are ALWAYS validated. A side-effect-only
+ * handler that returns undefined still passes a v.void() result schema;
+ * handlers returning real values on a void hook get warned/thrown, which is
+ * stricter than the Zod path but sane.
  *
  * Exported for the pinning tests only; NOT re-exported from the package
  * index and NOT part of the public API.
  */
 export function isVoidSchema(schema: Schema): boolean {
   if (!isZodSchema(schema)) {
-    // Probe: a void-result validator accepts `undefined` and nothing else.
-    // Permissive schemas (v.any(), v.optional(...), ...) also accept
-    // undefined — requiring rejection of other probes keeps them validated,
-    // matching how z.unknown()/z.optional() are treated above.
-    const accepts = (value: unknown): boolean => {
-      try {
-        validateSchemaSync(schema, value);
-        return true;
-      } catch {
-        return false;
-      }
-    };
-    return (
-      accepts(undefined) && !accepts(null) && !accepts('sentinel') && !accepts(0) && !accepts({})
-    );
+    return false;
   }
   const def = (
     schema as {
