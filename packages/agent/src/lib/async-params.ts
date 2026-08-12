@@ -17,8 +17,8 @@ import type {
 // Re-export Tool type for convenience
 export type { Tool } from './tool-types.js';
 
-/** Identifies objects produced by `@openrouter/agent-tool-set`. */
-export const TOOL_SET_SNAPSHOT = Symbol.for('@openrouter/agent-tool-set/snapshot');
+/** Identifies objects produced by `@openrouter/agent/tool-set`. */
+export const TOOL_SET_SNAPSHOT = Symbol.for('@openrouter/agent/tool-set/snapshot');
 
 const TOOL_SET_SNAPSHOT_METADATA_KEYS: ReadonlySet<string> = new Set([
   'enabled',
@@ -87,7 +87,7 @@ type BaseCallModelInput<
    * Optional filter restricting which tools are exposed to the model for this
    * call. Tool names not in this list are removed before the request is sent
    * and are also not callable by the model. Pairs with
-   * `@openrouter/agent-tool-set`'s `.inferTools()` output — spreading its
+   * `@openrouter/agent/tool-set`'s `.inferTools()` output — spreading its
    * `{ tools, activeTools }` (or a whole marked snapshot from `.inferTools()` /
    * `.resolve()` / `.resolveSituation()`) into this object is safe: `callModel`
    * strips metadata introduced by that snapshot before sending the request.

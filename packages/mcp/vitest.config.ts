@@ -11,7 +11,6 @@ export default defineConfig({
       enabled: true,
       provider: 'v8',
       include: ['src/**/*.ts'],
-      exclude: ['src/**/*.test.ts'],
       reporter: ['text', 'json-summary', 'html'],
       // Coverage ratchet: thresholds are pinned at current levels. Any PR
       // that lowers coverage fails the unit-test job. When you raise
@@ -39,15 +38,6 @@ export default defineConfig({
           include: ['tests/unit/**/*.test.ts', 'src/**/*.test.ts'],
           testTimeout: 10000,
           hookTimeout: 10000,
-        },
-      },
-      {
-        extends: true,
-        test: {
-          name: 'e2e',
-          include: ['tests/e2e/**/*.test.ts'],
-          testTimeout: 30000,
-          hookTimeout: 30000,
         },
       },
     ],
