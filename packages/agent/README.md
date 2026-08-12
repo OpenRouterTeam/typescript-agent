@@ -87,18 +87,6 @@ console.log(response.usage); // { inputTokens, outputTokens, cost, ... }
 const usage = await result.getUsage();
 console.log(usage); // { modelCalls, inputTokens, outputTokens, totalTokens, cachedTokens, reasoningTokens, cost? }
 
-For long-lived consumers, `streamReplay: 'active-consumers'` releases buffered
-events after every attached consumer advances past them. The default
-`streamReplay: 'full'` retains complete replay history:
-
-```typescript
-const result = callModel(client, {
-  model,
-  input,
-  streamReplay: 'active-consumers',
-});
-```
-
 // Stream text deltas
 for await (const delta of result.getTextStream()) {
   process.stdout.write(delta);
@@ -138,6 +126,24 @@ What each stream emits:
 | `getToolCallsStream()` | parsed tool calls as they complete |
 | `getItemsStream()` | all output items (messages, function calls, …) — output items **only**, no usage/response metadata |
 | `getFullResponsesStream()` | every response event, including `tool.result` / `tool.call_output` execution events, and each round's `response.completed` (with that round's usage block) |
+
+#### Replay history for stream consumers
+
+Every stream getter above can start from event zero, so by default a result
+retains its full event history for the lifetime of the call. Long generator-tool
+streams make that history expensive in a constrained runtime. When all consumers
+attach before draining, `streamReplay: 'active-consumers'` releases buffered
+events once every attached consumer has advanced past them:
+
+```typescript
+const result = callModel(client, {
+  model,
+  input,
+  // Default 'full' retains complete replay history for delayed and
+  // sequential consumers; 'active-consumers' trades that for bounded memory.
+  streamReplay: 'active-consumers',
+});
+```
 
 #### Usage across a multi-round tool loop
 
