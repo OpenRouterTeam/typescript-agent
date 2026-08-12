@@ -87,6 +87,18 @@ console.log(response.usage); // { inputTokens, outputTokens, cost, ... }
 const usage = await result.getUsage();
 console.log(usage); // { modelCalls, inputTokens, outputTokens, totalTokens, cachedTokens, reasoningTokens, cost? }
 
+For long-lived consumers, `streamReplay: 'active-consumers'` releases buffered
+events after every attached consumer advances past them. The default
+`streamReplay: 'full'` retains complete replay history:
+
+```typescript
+const result = callModel(client, {
+  model,
+  input,
+  streamReplay: 'active-consumers',
+});
+```
+
 // Stream text deltas
 for await (const delta of result.getTextStream()) {
   process.stdout.write(delta);

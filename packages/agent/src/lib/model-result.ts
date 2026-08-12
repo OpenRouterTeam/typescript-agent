@@ -1149,6 +1149,7 @@ export class ModelResult<
     }
 
     if (this.initialResponse) {
+      await this.emitPendingModelCallOnce(this.initialResponse);
       return this.initialResponse;
     }
 
@@ -1158,6 +1159,26 @@ export class ModelResult<
       return response;
     }
     throw new Error('Neither stream nor response initialized');
+  }
+
+  private extractCachedCompletion(): models.OpenResponsesResult {
+    if (this.initialResponseError) {
+      throw this.initialResponseError;
+    }
+    if (this.initialResponse) {
+      return this.initialResponse;
+    }
+    if (!this.reusableStream) {
+      throw new Error('Stream not initialized');
+    }
+    return extractCompletionFromBuffer(this.reusableStream);
+  }
+
+  private tryExtractCachedCompletion(): models.OpenResponsesResult | undefined {
+    if (this.initialResponse) {
+      return this.initialResponse;
+    }
+    return this.reusableStream ? tryExtractCompletionFromBuffer(this.reusableStream) : undefined;
   }
 
   /**
@@ -2538,7 +2559,7 @@ export class ModelResult<
           // Sync backward scan of the retained buffer — not a consumer
           // replay, which would cost one microtask hop per buffered event
           // on every hook-less streaming teardown.
-          await this.emitPendingModelCallOnce(extractCompletionFromBuffer(this.reusableStream));
+          await this.emitPendingModelCallOnce(this.extractCachedCompletion());
         } else if (this.reusableStream) {
           // Consumers stop at the terminal event (streamTerminationEvents),
           // usually before the pump reads the source close that flips
@@ -2548,7 +2569,7 @@ export class ModelResult<
           // dropping the parked telemetry. Stays silent (no emit, no
           // throw) when nothing terminal was buffered — e.g. an errored
           // mid-flight stream, where no materialized response exists.
-          const buffered = tryExtractCompletionFromBuffer(this.reusableStream);
+          const buffered = this.tryExtractCachedCompletion();
           if (buffered) {
             await this.emitPendingModelCallOnce(buffered);
           }
@@ -4986,6 +5007,7 @@ export class ModelResult<
       strictFinalResponse: _sfr,
       hooks: _h,
       doomLoop: _dl,
+      streamReplay: _sr,
       signal: _sig,
       toolTimeoutMs: _ttm,
       toolConcurrency: _tc,
@@ -7200,7 +7222,7 @@ export class ModelResult<
         // reusable stream is a passive observation: it buffers events
         // without executing tools or mutating conversation state, so the
         // resume generation is counted without advancing the loop.
-        await this.emitPendingModelCallOnce(await consumeStreamForCompletion(this.reusableStream));
+        await this.emitPendingModelCallOnce(await this.getInitialResponse());
       }
     } catch (error) {
       // Intentionally swallowed — see the "never rejects" note above. The

@@ -106,10 +106,9 @@ export class ReusableReadableStream<T> {
         if (bufferIndex < self.buffer.length) {
           const value = self.buffer[bufferIndex];
           if (value === undefined) {
-            return {
-              done: true,
-              value: undefined,
-            };
+            throw new Error(
+              'ReusableReadableStream buffer invariant violated: consumed slot was cleared',
+            );
           }
           consumer.position++;
           self.trimConsumed();

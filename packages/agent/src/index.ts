@@ -205,6 +205,7 @@ export {
   buildNextTurnParamsContext,
   executeNextTurnParamsFunctions,
 } from './lib/next-turn-params.js';
+export type { StreamReplay } from './lib/reusable-stream.js';
 // Stop condition helpers
 export {
   finishReasonIs,
