@@ -1,0 +1,6 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": { "noEmit": true, "rootDir": "." },
+  "include": ["src/**/*.ts", "tests/unit/resolved-tools.test-d.ts"],
+  "exclude": ["node_modules", "esm"]
+}

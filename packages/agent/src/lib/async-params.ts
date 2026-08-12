@@ -17,6 +17,27 @@ import type {
 // Re-export Tool type for convenience
 export type { Tool } from './tool-types.js';
 
+/** Identifies objects produced by `@openrouter/agent-tool-set`. */
+export const TOOL_SET_SNAPSHOT = Symbol.for('@openrouter/agent-tool-set/snapshot');
+
+const TOOL_SET_SNAPSHOT_METADATA_KEYS: ReadonlySet<string> = new Set([
+  'enabled',
+  'disabled',
+  'statusByTool',
+  'callModel',
+]);
+
+/** Remove tool-set metadata only from marked snapshots or their spreads. */
+export function stripToolSetSnapshotMetadata(input: Record<PropertyKey, unknown>): void {
+  if (input[TOOL_SET_SNAPSHOT] !== true) {
+    return;
+  }
+  for (const key of TOOL_SET_SNAPSHOT_METADATA_KEYS) {
+    delete input[key];
+  }
+  delete input[TOOL_SET_SNAPSHOT];
+}
+
 /**
  * Type guard to check if a value is a parameter function
  * Parameter functions take TurnContext and return a value or promise
@@ -62,6 +83,16 @@ type BaseCallModelInput<
 } & {
   input: FieldOrAsyncFunction<Item[]> | string;
   tools?: TTools;
+  /**
+   * Optional filter restricting which tools are exposed to the model for this
+   * call. Tool names not in this list are removed before the request is sent
+   * and are also not callable by the model. Pairs with
+   * `@openrouter/agent-tool-set`'s `.inferTools()` output — spreading its
+   * `{ tools, activeTools }` (or a whole marked snapshot from `.inferTools()` /
+   * `.resolve()` / `.resolveSituation()`) into this object is safe: `callModel`
+   * strips metadata introduced by that snapshot before sending the request.
+   */
+  activeTools?: readonly string[];
   stopWhen?: StopWhen<TTools>;
   /** Typed context data passed to tools via contextSchema. Includes optional `shared` key. */
   context?: ContextInput<ToolContextMapWithShared<TTools, TShared>>;
@@ -309,12 +340,19 @@ export async function resolveAsyncFunctions<TTools extends readonly Tool[] = rea
     'toolTimeoutMs', // Client-side per-tool deadline default
     'toolConcurrency', // Client-side tool concurrency limits
     'asyncTools', // Client-side async tool (background/deferred) behavior
+    'activeTools', // Applied client-side to filter tools before conversion
   ]);
 
+  const request = {
+    ...input,
+  } as Record<PropertyKey, unknown>;
+  stripToolSetSnapshotMetadata(request);
+
   // Iterate over all keys in the input
-  for (const [key, value] of Object.entries(input)) {
+  for (const [key, value] of Object.entries(request)) {
     // Skip client-only fields - they're handled separately and shouldn't be sent to the API
     // Note: tools are already in API format at this point (converted in callModel()), so we include them
+    //
     if (clientOnlyFields.has(key)) {
       continue;
     }
