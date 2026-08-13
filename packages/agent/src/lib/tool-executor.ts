@@ -337,7 +337,6 @@ export async function executeGeneratorTool(
       extras,
     );
 
-    const preliminaryResults: unknown[] = [];
     let finalResult: unknown;
     let hasFinalResult = false;
     let lastEmittedValue: unknown;
@@ -359,7 +358,6 @@ export async function executeGeneratorTool(
         hasFinalResult = true;
       } else {
         const validatedPreliminary = validateToolOutput(tool.function.eventSchema, event);
-        preliminaryResults.push(validatedPreliminary);
         if (onPreliminaryResult) {
           onPreliminaryResult(toolCall.id, validatedPreliminary);
         }
@@ -387,7 +385,6 @@ export async function executeGeneratorTool(
       toolName: toolCall.name,
       source,
       result: finalResult,
-      preliminaryResults,
     };
   } catch (error) {
     return {

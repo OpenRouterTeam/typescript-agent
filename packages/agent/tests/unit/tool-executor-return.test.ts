@@ -45,15 +45,7 @@ describe('executeGeneratorTool - return value capture', () => {
     const result = await executeGeneratorTool(generatorTool, toolCall, mockContext);
 
     expect(result.error).toBeUndefined();
-    expect(result.preliminaryResults).toHaveLength(2);
-    expect(result.preliminaryResults).toEqual([
-      {
-        status: 'working',
-      },
-      {
-        status: 'almost done',
-      },
-    ]);
+    expect(result.preliminaryResults).toBeUndefined();
     // The return value should be captured as the final result
     expect(result.result).toEqual({
       result: 'Done: test',
@@ -91,7 +83,7 @@ describe('executeGeneratorTool - return value capture', () => {
     const result = await executeGeneratorTool(generatorTool, toolCall, mockContext);
 
     expect(result.error).toBeUndefined();
-    expect(result.preliminaryResults).toHaveLength(0);
+    expect(result.preliminaryResults).toBeUndefined();
     expect(result.result).toEqual({
       result: 'Direct: test',
     });
@@ -134,7 +126,7 @@ describe('executeGeneratorTool - return value capture', () => {
     const result = await executeGeneratorTool(generatorTool, toolCall, mockContext);
 
     expect(result.error).toBeUndefined();
-    expect(result.preliminaryResults).toHaveLength(2);
+    expect(result.preliminaryResults).toBeUndefined();
     // Return value should take precedence
     expect(result.result).toEqual({
       finalValue: 'Final: test',

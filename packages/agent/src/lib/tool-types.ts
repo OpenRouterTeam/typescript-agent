@@ -1213,7 +1213,7 @@ export interface ToolExecutionResult<T extends Tool> {
         : unknown; // Final result (sent to model)
   preliminaryResults?: T extends ToolWithGenerator<$ZodObject<$ZodShape>, infer E>
     ? zodInfer<E>[]
-    : undefined; // All yielded values from generator
+    : undefined; // Kept for type compatibility; no longer populated
   error?: Error;
 }
 
@@ -1365,6 +1365,7 @@ export type ToolResultEvent<
   source: 'client' | 'mcp';
   result: TResult;
   timestamp: number;
+  /** Kept for type compatibility; the runtime no longer copies every yield here. */
   preliminaryResults?: TPreliminaryResults[];
 };
 
