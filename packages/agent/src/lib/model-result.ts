@@ -4386,9 +4386,25 @@ export class ModelResult<
       this.resolvedRequest,
     );
 
-    if (Object.keys(computedParams).length > 0) {
-      this.resolvedRequest = applyNextTurnParamsToRequest(this.resolvedRequest, computedParams);
+    if (Object.keys(computedParams).length === 0) {
+      return;
     }
+
+    const nextRequest = applyNextTurnParamsToRequest(this.resolvedRequest, computedParams);
+
+    /*
+     * A tool-computed `toolChoice` becomes the new caller-level policy, not a
+     * one-turn override. Merging it onto the request alone is not enough:
+     * `makeFollowupRequest` re-derives the wire choice from
+     * `configuredToolChoice` via `applyForcedToolChoicePolicy`, which would
+     * discard the tool's value before dispatch. Re-running the resolved-policy
+     * bookkeeping re-stamps the configured choice and its forced-choice
+     * consumption key together, so relaxation stays consistent for later turns.
+     */
+    this.resolvedRequest =
+      'toolChoice' in computedParams
+        ? this.applyResolvedForcedToolChoicePolicy(nextRequest)
+        : nextRequest;
   }
 
   /**
