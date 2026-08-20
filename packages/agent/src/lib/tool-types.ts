@@ -287,6 +287,17 @@ export const SHARED_CONTEXT_KEY = 'shared' as const;
 export type NextTurnParamsContext = {
   /** Current input (messages) */
   input: models.InputsUnion;
+  /**
+   * Current tool choice.
+   *
+   * Returning a new value changes which tools the model may call next turn
+   * without touching the `tools` array — the hook a tool-search tool uses to
+   * widen `{ type: 'allowed_tools', tools: [...] }` once it has found what it
+   * was looking for. Leaving `tools` alone is the point: rewriting it would
+   * invalidate the provider's prompt-cache prefix, which is usually the reason
+   * the caller is withholding tools in the first place.
+   */
+  toolChoice: models.ResponsesRequest['toolChoice'];
   /** Current model selection */
   model: string;
   /** Current models array */
