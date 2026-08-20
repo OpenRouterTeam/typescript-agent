@@ -1,5 +1,5 @@
 ---
-'@openrouter/agent': patch
+'@openrouter/agent': major
 ---
 
-Stop accumulating generator-tool `preliminaryResults` arrays. Yields are still broadcast live; the terminal `tool.result` event no longer copies every yield.
+Stop accumulating generator-tool `preliminaryResults` arrays. Yields are still broadcast live; the terminal `tool.result` event and `ToolExecutionResult` no longer carry the full yield history.
