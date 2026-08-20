@@ -1,5 +1,108 @@
 # @openrouter/agent
 
+## 0.10.0
+
+### Minor Changes
+
+- [#102](https://github.com/OpenRouterTeam/typescript-agent/pull/102) [`787cbf8`](https://github.com/OpenRouterTeam/typescript-agent/commit/787cbf8b22bf2b8071e81e2dbf84ecd871a5e824) Thanks [@LukasParke](https://github.com/LukasParke)! - Add the full MCP integration under the canonical `@openrouter/agent/mcp` subpath. `@modelcontextprotocol/client` is an optional peer, so base agent installations and imports do not install or load MCP support. The existing `@openrouter/mcp` package remains as a compatibility facade and now re-exports the canonical agent subpaths.
+
+  ```ts
+  import { callModel, OpenRouter } from "@openrouter/agent";
+  import { createMCPTools } from "@openrouter/agent/mcp";
+
+  const mcp = await createMCPTools({ url: "https://mcp.example.com/mcp" });
+  const result = callModel(new OpenRouter(), {
+    model: "openai/gpt-4o-mini",
+    input: "Use the remote tools.",
+    tools: mcp.tools,
+  });
+  ```
+
+  Install `@modelcontextprotocol/client` alongside `@openrouter/agent` when using `/mcp`. The SDK is loaded lazily, so importing the base agent or the MCP entry point does not require the peer; the first MCP connection attempt without it throws an actionable `MCPMissingPeerDependencyError`.
+
+  Existing `@openrouter/mcp` imports continue to work as tooling-visible deprecated migration facades, but new code should prefer `@openrouter/agent/mcp`. The facade would only be removed in a future breaking release after migration notice.
+
+  The `@openrouter/mcp` facade continues to install `@modelcontextprotocol/client` transitively for backward compatibility; only direct `@openrouter/agent/mcp` users need to add the optional peer explicitly.
+
+- [#31](https://github.com/OpenRouterTeam/typescript-agent/pull/31) [`8d2ed61`](https://github.com/OpenRouterTeam/typescript-agent/commit/8d2ed61964aa063936763c7b80f6b5bf389fa144) Thanks [@mattapperson](https://github.com/mattapperson)! - Add `@openrouter/agent/tool-set` (port of ai-tool-set v1.0.0, MIT © Chris Cook): declarative activate / deactivate / activateWhen / deactivateWhen for tools with state- and context-aware predicates. Integrates with a new `activeTools?: readonly string[]` option on `callModel` that filters which tools are sent to the model for a given call.
+
+  ```ts
+  import { callModel, OpenRouter, serverTool, tool } from "@openrouter/agent";
+  import { createToolSet } from "@openrouter/agent/tool-set";
+  import { z } from "zod/v4";
+
+  type AppContext = { accountId: string };
+
+  // Curried form preserves the literal name for correlated tool event types.
+  const listOrders = tool<AppContext>()({
+    name: "list_orders",
+    inputSchema: z.object({}),
+    execute: async (_params, ctx) => ({
+      accountId: ctx?.shared.accountId,
+      orders: [],
+    }),
+  });
+  // override the default `server:${type}` id
+  const search = serverTool(
+    { type: "web_search_2025_08_26" },
+    { id: "public_search" }
+  );
+
+  const toolSet = createToolSet({
+    tools: [listOrders, search] as const,
+  }).deactivate("list_orders");
+
+  const client = new OpenRouter({ apiKey: process.env["OPENROUTER_API_KEY"] });
+  const resolved = toolSet.resolve();
+
+  // resolved.callModel is `{ tools, activeTools }` — spread it straight in
+  const result = callModel(client, {
+    model: "openai/gpt-4o-mini",
+    input: "Search for OpenRouter pricing.",
+    ...resolved.callModel,
+  });
+  ```
+
+- [#114](https://github.com/OpenRouterTeam/typescript-agent/pull/114) [`66d7232`](https://github.com/OpenRouterTeam/typescript-agent/commit/66d7232d53d9881c5842c77f8bc342314724bf3b) Thanks [@mattapperson](https://github.com/mattapperson)! - Add `toolChoice` to `nextTurnParams`, so a tool can change which tools the model may call on the following turn without touching the `tools` array.
+
+  This is what a tool-search tool needs: declare every tool up front, keep the not-yet-needed ones out of reach behind an `allowed_tools` choice, and widen that choice as the model discovers what it wants. Because `tools` is byte-identical across turns, the provider's prompt-cache prefix survives — which is the whole reason to withhold tools rather than send them all.
+
+  ```ts
+  import { callModel, OpenRouter, tool } from "@openrouter/agent";
+  import { z } from "zod/v4";
+
+  const allowed = (names: string[]) => ({
+    type: "allowed_tools" as const,
+    mode: "auto" as const,
+    tools: names.map((name) => ({ type: "function", name })),
+  });
+
+  const toolSearch = tool({
+    name: "tool_search",
+    inputSchema: z.object({ pattern: z.string() }),
+    execute: ({ pattern }) => findMatchingToolNames(pattern),
+    nextTurnParams: {
+      // Append, never rebuild: dropping a name revokes a tool the model may
+      // already have used, and reordering churns the request for nothing.
+      toolChoice: ({ pattern }, context) =>
+        allowed([
+          ...namesIn(context.toolChoice),
+          ...findMatchingToolNames(pattern),
+        ]),
+    },
+  });
+
+  const client = new OpenRouter({ apiKey: process.env["OPENROUTER_API_KEY"] });
+
+  const result = callModel(client, {
+    model: "openai/gpt-4o-mini",
+    input: "What is the weather in Tokyo?",
+    tools: [toolSearch, getWeather, sendEmail, listRepos],
+    // Only the search tool is reachable until it finds something.
+    toolChoice: allowed(["tool_search"]),
+  });
+  ```
+
 ## 0.9.0
 
 ### Minor Changes

@@ -2,4 +2,4 @@
 // Run `pnpm --filter @openrouter/agent gen:version` after bumping the version.
 
 /** This package's version, self-reported to MCP servers as `clientInfo`. */
-export const PACKAGE_VERSION = '0.9.0';
+export const PACKAGE_VERSION = '0.10.0';
