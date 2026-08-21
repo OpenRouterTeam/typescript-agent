@@ -1,0 +1,270 @@
+name: Release train
+
+# Scheduled auto-merge for the "chore: version packages" PR that
+# changesets/action maintains (see publish.yaml). Before this existed, that PR
+# waited for a human to merge it, so shipped features sat unreleased between
+# manual releases. The train bounds that latency: twice a week it finds the
+# Version Packages PR, gates it on CI via pr-gate.sh (the same gate the
+# SDK-bump flow uses), and squash-merges on green — which triggers publish.yaml
+# on push to main and cuts the actual npm release.
+#
+# Failure modes are alerted, never silently skipped:
+#   - PR exists but is red/stuck  → pr-gate.sh posts to Slack and exits non-zero
+#   - changesets pending on main but no Version PR → Slack alert (changesets/action
+#     failed to open one; investigate publish.yaml runs)
+#   - PR labeled `release:hold`   → skipped on purpose, logged + Slack notice
+#
+# Escape hatches:
+#   - add the `release:hold` label to the Version PR to pause the train
+#     (coordinated @openrouter/agent + @openrouter/sdk releases, etc.)
+#   - workflow_dispatch with dry_run to see what the train would do
+
+on:
+  schedule:
+    # Tue and Thu 09:23 UTC — off the :00 mark (GitHub delays on-the-hour
+    # crons), early enough in the EU/US-overlap day that a red gate alert
+    # lands while people are around to act on it.
+    - cron: '23 9 * * 2,4'
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Report what would happen; do not merge'
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: release-train
+  cancel-in-progress: false
+
+env:
+  REPO: OpenRouterTeam/typescript-agent
+  VERSION_PR_BRANCH: changeset-release/main # changesets/action's fixed head branch
+  HOLD_LABEL: release:hold
+
+jobs:
+  train:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      # Short-lived App installation token (same App as publish.yaml /
+      # bump-openrouter-sdk.yaml). Replaces the old GH_TOKEN PAT, which the
+      # enterprise's 366-day-lifetime policy started rejecting — that outage
+      # surfaced as every train run failing at the first gh call. Only this
+      # repo is needed here: the train reads, gates, and merges locally.
+      #
+      # continue-on-error + the guard step below: a mint failure (missing
+      # var/secret, uninstalled App, token-API outage) must page like every
+      # other failure mode in this workflow — a bare failing first step would
+      # kill the run before any alerting exists, recreating exactly the
+      # silent 2026-08 PAT stall this migration is fixing.
+      - name: Mint release-bot token
+        id: app-token
+        continue-on-error: true
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ vars.RELEASE_BOT_APP_ID }}
+          private-key: ${{ secrets.RELEASE_BOT_PRIVATE_KEY }}
+          owner: OpenRouterTeam
+          repositories: typescript-agent
+
+      - name: Alert if token minting failed
+        if: steps.app-token.outcome != 'success'
+        env:
+          SLACK_BOT_TOKEN: ${{ secrets.CI_RELEASE_ALERT_SLACK_BOT_TOKEN }}
+          SLACK_CHANNEL_ID: ${{ secrets.CI_RELEASE_ALERT_SLACK_CHANNEL_ID }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          TEXT=":rotating_light: Release train: could not mint the release-bot App token (RELEASE_BOT_APP_ID/RELEASE_BOT_PRIVATE_KEY missing or App uninstalled?). Releases are stalled until this is fixed. <${RUN_URL}|run>"
+          echo "::error::App token minting failed — releases are stalled."
+          if [ -n "${SLACK_BOT_TOKEN:-}" ] && [ -n "${SLACK_CHANNEL_ID:-}" ]; then
+            curl -fsS -X POST https://slack.com/api/chat.postMessage \
+              -H "Authorization: Bearer ${SLACK_BOT_TOKEN}" \
+              -H "Content-type: application/json; charset=utf-8" \
+              --data "$(python3 -c "import json,sys; print(json.dumps({'channel':sys.argv[1],'unfurl_links':False,'text':sys.argv[2]}))" "$SLACK_CHANNEL_ID" "$TEXT")" \
+              >/dev/null || echo "::warning::Slack post failed"
+          else
+            echo "(slack not configured; would have posted) $TEXT"
+          fi
+          exit 1
+
+      - name: Find Version Packages PR
+        id: find
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          SLACK_BOT_TOKEN: ${{ secrets.CI_RELEASE_ALERT_SLACK_BOT_TOKEN }}
+          SLACK_CHANNEL_ID: ${{ secrets.CI_RELEASE_ALERT_SLACK_CHANNEL_ID }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          slack() {
+            if [ -n "${SLACK_BOT_TOKEN:-}" ] && [ -n "${SLACK_CHANNEL_ID:-}" ]; then
+              curl -fsS -X POST https://slack.com/api/chat.postMessage \
+                -H "Authorization: Bearer ${SLACK_BOT_TOKEN}" \
+                -H "Content-type: application/json; charset=utf-8" \
+                --data "$(python3 -c "import json,sys; print(json.dumps({'channel':sys.argv[1],'unfurl_links':False,'text':sys.argv[2]}))" "$SLACK_CHANNEL_ID" "$1")" \
+                >/dev/null || echo "::warning::Slack post failed"
+            else
+              echo "(slack not configured; would have posted) $1"
+            fi
+          }
+          # This is a cron-driven workflow nobody watches: any abort in this
+          # step must page, not just annotate the run. ERR fires on unexpected
+          # gh/python failures under set -e; deliberate exits alert inline.
+          trap 'slack ":warning: Release train: the find step failed unexpectedly — releases may be stalled. <${RUN_URL}|run>"' ERR
+
+          # `--head` matches by branch *name*, which a fork can also use — an
+          # outsider's fork PR named changeset-release/main must never be
+          # what the train merges. Pin the base to main too (the branch can be
+          # PR'd anywhere), keep only same-repo PRs, and refuse to guess if
+          # more than one somehow matches.
+          MATCHES="$(gh pr list -R "$REPO" \
+            --head "$VERSION_PR_BRANCH" \
+            --base main \
+            --state open \
+            --json number,labels,isCrossRepository \
+            --jq '[.[] | select(.isCrossRepository | not)]')"
+
+          COUNT="$(echo "$MATCHES" | python3 -c 'import sys,json; print(len(json.load(sys.stdin)))')"
+          if [ "$COUNT" -gt 1 ]; then
+            slack ":warning: Release train: ${COUNT} same-repo PRs open from ${VERSION_PR_BRANCH} — refusing to pick one. Close the extras. <${RUN_URL}|run>"
+            echo "::error::${COUNT} same-repo PRs from ${VERSION_PR_BRANCH} — refusing to pick one."
+            exit 1
+          fi
+
+          PR_JSON="$(echo "$MATCHES" | python3 -c 'import sys,json; m=json.load(sys.stdin); print(json.dumps(m[0]) if m else "")')"
+          if [ -z "$PR_JSON" ]; then
+            echo "pr_number=" >> "$GITHUB_OUTPUT"
+            echo "held=false" >> "$GITHUB_OUTPUT"
+            echo "No open Version Packages PR."
+            exit 0
+          fi
+
+          PR_NUMBER="$(echo "$PR_JSON" | python3 -c 'import sys,json; print(json.load(sys.stdin)["number"])')"
+          HELD="$(echo "$PR_JSON" | HOLD_LABEL="$HOLD_LABEL" python3 -c 'import sys,json,os; pr=json.load(sys.stdin); print(str(any(l["name"]==os.environ["HOLD_LABEL"] for l in pr.get("labels",[]))).lower())')"
+          echo "pr_number=$PR_NUMBER" >> "$GITHUB_OUTPUT"
+          echo "held=$HELD" >> "$GITHUB_OUTPUT"
+          echo "Found Version Packages PR #$PR_NUMBER (held=$HELD)"
+
+      # No Version PR is only fine when there is also nothing waiting to ship.
+      # Pending changesets with no PR means changesets/action failed on some
+      # push to main (or someone closed the PR) — exactly the silent-stall case
+      # the train exists to catch, so alert instead of exiting quietly.
+      - name: Check for stranded changesets
+        if: steps.find.outputs.pr_number == ''
+        env:
+          SLACK_BOT_TOKEN: ${{ secrets.CI_RELEASE_ALERT_SLACK_BOT_TOKEN }}
+          SLACK_CHANNEL_ID: ${{ secrets.CI_RELEASE_ALERT_SLACK_CHANNEL_ID }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          # Cron-driven and unwatched: an unexpected abort must page too.
+          trap 'if [ -n "${SLACK_BOT_TOKEN:-}" ] && [ -n "${SLACK_CHANNEL_ID:-}" ]; then curl -fsS -X POST https://slack.com/api/chat.postMessage -H "Authorization: Bearer ${SLACK_BOT_TOKEN}" -H "Content-type: application/json; charset=utf-8" --data "$(python3 -c "import json,sys; print(json.dumps({\"channel\":sys.argv[1],\"unfurl_links\":False,\"text\":sys.argv[2]}))" "$SLACK_CHANNEL_ID" ":warning: Release train: stranded-changesets check failed unexpectedly. <${RUN_URL}|run>")" >/dev/null || true; fi' ERR
+          PENDING="$(find .changeset -maxdepth 1 -name '*.md' ! -name 'README.md' | wc -l | tr -d ' ')"
+          if [ "$PENDING" = "0" ]; then
+            echo "No pending changesets and no Version PR — nothing to release."
+            exit 0
+          fi
+
+          TEXT=":warning: Release train: ${PENDING} pending changeset(s) on main but no open Version Packages PR. changesets/action may have failed — check recent publish.yaml runs. <${RUN_URL}|run>"
+          echo "::error::${PENDING} pending changeset(s) but no Version Packages PR"
+          if [ -n "${SLACK_BOT_TOKEN:-}" ] && [ -n "${SLACK_CHANNEL_ID:-}" ]; then
+            curl -fsS -X POST https://slack.com/api/chat.postMessage \
+              -H "Authorization: Bearer ${SLACK_BOT_TOKEN}" \
+              -H "Content-type: application/json; charset=utf-8" \
+              --data "$(python3 -c "import json,sys; print(json.dumps({'channel':sys.argv[1],'unfurl_links':False,'text':sys.argv[2]}))" "$SLACK_CHANNEL_ID" "$TEXT")" \
+              >/dev/null || echo "::warning::Slack post failed"
+          else
+            echo "(slack not configured; would have posted) $TEXT"
+          fi
+          exit 1
+
+      - name: Respect release:hold
+        if: steps.find.outputs.pr_number != '' && steps.find.outputs.held == 'true'
+        env:
+          SLACK_BOT_TOKEN: ${{ secrets.CI_RELEASE_ALERT_SLACK_BOT_TOKEN }}
+          SLACK_CHANNEL_ID: ${{ secrets.CI_RELEASE_ALERT_SLACK_CHANNEL_ID }}
+          PR: ${{ steps.find.outputs.pr_number }}
+        run: |
+          set -euo pipefail
+          TEXT=":double_vertical_bar: Release train: Version Packages <${{ github.server_url }}/${REPO}/pull/${PR}|PR #${PR}> has \`${HOLD_LABEL}\` — skipping this run. Remove the label to resume."
+          echo "$TEXT"
+          if [ -n "${SLACK_BOT_TOKEN:-}" ] && [ -n "${SLACK_CHANNEL_ID:-}" ]; then
+            curl -fsS -X POST https://slack.com/api/chat.postMessage \
+              -H "Authorization: Bearer ${SLACK_BOT_TOKEN}" \
+              -H "Content-type: application/json; charset=utf-8" \
+              --data "$(python3 -c "import json,sys; print(json.dumps({'channel':sys.argv[1],'unfurl_links':False,'text':sys.argv[2]}))" "$SLACK_CHANNEL_ID" "$TEXT")" \
+              >/dev/null || echo "::warning::Slack post failed"
+          fi
+
+      # An unattended merge into a publish pipeline must only ever carry
+      # mechanical `changeset version` output. changeset-release/main is an
+      # ordinary branch — anything else on it (pushed by anyone with write
+      # access) would ride the auto-merge straight into an npm publish, and
+      # CI + AI review are not a reliable control against a deliberate
+      # smuggle. verify-version-pr-scope.sh vets paths (paginated, so a
+      # padded PR can't hide files past the 100-entry page) AND package.json
+      # patch content (only version / internal-range bumps), failing closed
+      # on anything unreadable. It also emits the head SHA it vetted, which
+      # pr-gate.sh pins so commits pushed mid-gate can't bypass this check.
+      - name: Verify Version PR diff scope
+        id: scope
+        if: steps.find.outputs.pr_number != '' && steps.find.outputs.held != 'true'
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          PR: ${{ steps.find.outputs.pr_number }}
+          SLACK_BOT_TOKEN: ${{ secrets.CI_RELEASE_ALERT_SLACK_BOT_TOKEN }}
+          SLACK_CHANNEL_ID: ${{ secrets.CI_RELEASE_ALERT_SLACK_CHANNEL_ID }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          chmod +x .github/scripts/verify-version-pr-scope.sh
+          if OUT="$(./.github/scripts/verify-version-pr-scope.sh)"; then
+            echo "$OUT" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          TEXT=":no_entry: Release train: Version Packages PR #${PR} failed the version-bump scope check (unexpected paths or non-version package.json changes) — NOT merging. <${RUN_URL}|run>"
+          echo "::error::Scope check failed for Version PR #${PR}"
+          if [ -n "${SLACK_BOT_TOKEN:-}" ] && [ -n "${SLACK_CHANNEL_ID:-}" ]; then
+            curl -fsS -X POST https://slack.com/api/chat.postMessage \
+              -H "Authorization: Bearer ${SLACK_BOT_TOKEN}" \
+              -H "Content-type: application/json; charset=utf-8" \
+              --data "$(python3 -c "import json,sys; print(json.dumps({'channel':sys.argv[1],'unfurl_links':False,'text':sys.argv[2]}))" "$SLACK_CHANNEL_ID" "$TEXT")" \
+              >/dev/null || echo "::warning::Slack post failed"
+          fi
+          exit 1
+
+      - name: Gate and merge Version Packages PR
+        if: steps.find.outputs.pr_number != '' && steps.find.outputs.held != 'true'
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          PR: ${{ steps.find.outputs.pr_number }}
+          # REPO comes from the workflow-level env block.
+          # On schedule runs `inputs` is empty, so dry_run != true → AUTO_MERGE=true.
+          AUTO_MERGE: ${{ inputs.dry_run != true }}
+          GATE_LABEL: 'Release train (Version Packages)'
+          # Re-checked live inside pr-gate.sh on every poll and just before
+          # merge, so a hold applied mid-gate still stops the train.
+          BLOCK_LABEL: ${{ env.HOLD_LABEL }}
+          # The head the diff-scope step vetted; pr-gate.sh refuses to merge
+          # any other head (TOCTOU guard for the scope check) — unless the
+          # moved head passes a fresh SCOPE_SCRIPT run, the routine
+          # changesets/action refresh case, which re-vets and re-polls.
+          EXPECTED_HEAD: ${{ steps.scope.outputs.head_sha }}
+          # The pin is a security control here — an empty EXPECTED_HEAD
+          # (broken output wiring) must abort the gate, not skip the pin.
+          REQUIRE_HEAD: 'true'
+          SCOPE_SCRIPT: .github/scripts/verify-version-pr-scope.sh
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          SLACK_BOT_TOKEN: ${{ secrets.CI_RELEASE_ALERT_SLACK_BOT_TOKEN }}
+          SLACK_CHANNEL_ID: ${{ secrets.CI_RELEASE_ALERT_SLACK_CHANNEL_ID }}
+        run: |
+          chmod +x .github/scripts/pr-gate.sh
+          ./.github/scripts/pr-gate.sh

@@ -1,13 +1,23 @@
 {
   "hooks": {
-    "stop": [
+    "Stop": [
       {
-        "command": "pnpm run lint",
-        "blocking": true
-      },
-      {
-        "command": "pnpm run typecheck",
-        "blocking": true
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PROJECT_DIR}/.claude/hooks/stop-check.sh",
+            "args": ["lint"],
+            "statusMessage": "Linting…",
+            "timeout": 120
+          },
+          {
+            "type": "command",
+            "command": "${CLAUDE_PROJECT_DIR}/.claude/hooks/stop-check.sh",
+            "args": ["typecheck"],
+            "statusMessage": "Typechecking…",
+            "timeout": 120
+          }
+        ]
       }
     ]
   }

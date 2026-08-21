@@ -1847,4 +1847,197 @@ describe('callModel E2E Tests', () => {
       expect(fullResponse.model).toBeDefined();
     });
   });
+
+  describe('allowFinalResponse', () => {
+    const weatherTool = {
+      type: ToolType.Function,
+      function: {
+        name: 'get_weather',
+        description: 'Get the weather for a location.',
+        inputSchema: z.object({
+          location: z.string().describe('City name'),
+        }),
+        outputSchema: z.object({
+          temperature: z.number(),
+          condition: z.string(),
+        }),
+        execute: async (params: { location: string }) => ({
+          temperature: 22,
+          condition: `Sunny in ${params.location}`,
+        }),
+      },
+    } as const;
+
+    it('should coerce a text response when stopWhen halts mid-tool-call (true)', async () => {
+      const response = client.callModel({
+        model: 'anthropic/claude-haiku-4.5',
+        instructions: 'You are a weather assistant. Always call get_weather when asked.',
+        input: fromChatMessages([
+          {
+            role: 'user',
+            content: "What's the weather in Tokyo?",
+          },
+        ]),
+        toolChoice: 'required',
+        stopWhen: stepCountIs(1),
+        allowFinalResponse: true,
+        tools: [
+          weatherTool,
+        ] as const,
+      });
+
+      const text = await response.getText();
+
+      expect(typeof text).toBe('string');
+      expect(text.length).toBeGreaterThan(0);
+    }, 30000);
+
+    // Regression: DEV-658. The forced final turn used to strip tools and
+    // append no directive, so models that emit tool-call syntax as text
+    // (GLM) would attempt another call and leak unparsed `<tool_call>…`
+    // into content. Reproduced 3/3 on the legacy path (no directive) and
+    // 0/3 with the directive — this test discriminates the fix. The final
+    // turn now keeps tools with `toolChoice: 'none'` and is on by default,
+    // so the option is deliberately omitted here.
+    //
+    // Flake hardening (measured 2026-07-22): the run is THREE sequential
+    // GLM requests, and the final turn triggers a 750–1150-token reasoning
+    // burst taking 50–65s on a healthy provider (~70–80s total), so the
+    // old 120s budget was a coin flip against provider variance — one CI
+    // window saw both the attempt AND its retry time out back-to-back.
+    // Three mitigations, none of which weaken the discrimination (the leak
+    // pressure is "wants to search, can't", not question difficulty or
+    // reasoning depth):
+    // 1. 300s test budget over the measured ~80s healthy path.
+    // 2. Bounded generation: a reasoning token cap + maxOutputTokens, so
+    //    the final turn cannot reason unboundedly. (The API rejects
+    //    reasoning.effort combined with reasoning.maxTokens — the token
+    //    cap is the harder bound, so it wins.)
+    // 3. Per-request timeoutMs (90s) via RequestOptions, so a stalled
+    //    provider fails THAT request in seconds-not-minutes and the vitest
+    //    retry gets a fresh provider draw instead of inheriting a burned
+    //    budget.
+    it('DEV-658: default final turn must not leak raw tool-call syntax on GLM', {
+      retry: 1,
+      timeout: 300000,
+    }, async () => {
+      const leakPattern = /<tool_call|<\|tool|<tool▁|\[TOOL_CALL\]|<function=/i;
+      const searchTool = {
+        type: ToolType.Function,
+        function: {
+          name: 'web_search',
+          description: 'Search the web for information.',
+          inputSchema: z.object({
+            query: z.string(),
+          }),
+          outputSchema: z.object({
+            results: z.string(),
+          }),
+          // Unhelpful results pressure the model to try another search on
+          // the final turn — the exact condition that leaked pre-fix.
+          execute: async (params: { query: string }) => ({
+            results: `No useful results for "${params.query}". Try a refined query.`,
+          }),
+        },
+      } as const;
+
+      const response = client.callModel(
+        {
+          model: 'z-ai/glm-5.2',
+          // Unanswerable-without-search, but shallow: the model MUST want
+          // another search on the final turn (the leak condition) without
+          // being invited to derive a multi-hop answer from parametric
+          // memory (the reasoning-burst condition).
+          input:
+            'What was the closing price of OpenRouter (fictional ticker ORTR) on the Frankfurt exchange yesterday? Use web_search to find out; do not guess.',
+          tools: [
+            searchTool,
+          ] as const,
+          stopWhen: stepCountIs(1),
+          // allowFinalResponse omitted — default-on path under test
+          reasoning: {
+            maxTokens: 512,
+          },
+          maxOutputTokens: 1024,
+        },
+        {
+          timeoutMs: 90000,
+        },
+      );
+
+      const finalResponse = await response.getResponse();
+      const text = await response.getText();
+
+      // A real answer, not an empty turn.
+      expect(text.length).toBeGreaterThan(0);
+      // No unparsed tool-call syntax leaked into content.
+      expect(text).not.toMatch(leakPattern);
+      // The forced final turn produced no structured tool calls either.
+      const outputItems = Array.isArray(finalResponse.output)
+        ? finalResponse.output
+        : [
+            finalResponse.output,
+          ];
+      expect(outputItems.filter((item) => item?.type === 'function_call')).toHaveLength(0);
+    });
+
+    it('should append string allowFinalResponse as a user message', async () => {
+      const response = client.callModel({
+        model: 'anthropic/claude-haiku-4.5',
+        instructions: 'You are a weather assistant. Always call get_weather when asked.',
+        input: fromChatMessages([
+          {
+            role: 'user',
+            content: "What's the weather in Tokyo?",
+          },
+        ]),
+        toolChoice: 'required',
+        // Forced final triggers only when all of these are true:
+        // - stopWhen ended the loop.
+        // - The current model response still contains a pending tool call.
+        // - That tool is executable.
+        // - allowFinalResponse !== false.
+        // The SDK then executes the pending tool and sends one final request
+        // with toolChoice: 'none'.
+        //
+        // stepCountIs(0) stops on the initial tool-call response, so forced
+        // final is guaranteed. stepCountIs(1) stops after the relaxed `auto`
+        // follow-up returns, so forced final occurs only if that response
+        // contains another tool call.
+        stopWhen: stepCountIs(0),
+        allowFinalResponse:
+          'Stop calling tools. Reply with exactly the word "FINAL" and nothing else.',
+        tools: [
+          weatherTool,
+        ] as const,
+      });
+
+      const text = await response.getText();
+
+      expect(typeof text).toBe('string');
+      expect(text.length).toBeGreaterThan(0);
+      expect(text.toUpperCase()).toContain('FINAL');
+    }, 30000);
+
+    it('should be a no-op when the loop exits naturally without tool calls', async () => {
+      const response = client.callModel({
+        model: 'anthropic/claude-haiku-4.5',
+        input: fromChatMessages([
+          {
+            role: 'user',
+            content: "Say 'no-op test' and nothing else.",
+          },
+        ]),
+        allowFinalResponse: 'This should never be appended.',
+      });
+
+      const text = await response.getText();
+
+      expect(typeof text).toBe('string');
+      expect(text.length).toBeGreaterThan(0);
+      // Final response should be the model's normal answer, not a follow-up
+      // triggered by allowFinalResponse.
+      expect(text.toLowerCase()).toContain('no-op test');
+    }, 15000);
+  });
 });

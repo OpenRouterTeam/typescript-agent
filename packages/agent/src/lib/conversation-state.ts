@@ -1,4 +1,10 @@
 import type * as models from '@openrouter/sdk/models';
+// Same zod entry point the executor validates through (see
+// `validateToolInput` in tool-executor.ts) so the approval predicate and
+// `execute` agree on parse semantics. Imported directly rather than reusing
+// that helper because tool-executor.ts imports this module — sharing it would
+// create an import cycle.
+import * as z4 from 'zod/v4';
 import type {
   ConversationState,
   ParsedToolCall,
@@ -58,6 +64,9 @@ export function generateConversationId(): string {
   return `conv_${Date.now()}_${Math.random().toString(36).substring(2, 15)}`;
 }
 
+/** Currently supported ConversationState serialization version. */
+export const CONVERSATION_STATE_VERSION = 1 as const;
+
 /**
  * Create an initial conversation state
  * @param id - Optional custom ID, generates one if not provided
@@ -67,6 +76,7 @@ export function createInitialState<TTools extends readonly Tool[] = readonly Too
 ): ConversationState<TTools> {
   const now = Date.now();
   return {
+    version: CONVERSATION_STATE_VERSION,
     id: id ?? generateConversationId(),
     messages: [],
     status: 'in_progress',
@@ -76,12 +86,159 @@ export function createInitialState<TTools extends readonly Tool[] = readonly Too
 }
 
 /**
+ * Thrown when {@link deserializeConversationState} encounters a state blob whose
+ * `version` is not supported by this SDK build.
+ */
+export class UnsupportedStateVersionError extends Error {
+  readonly found: number;
+  readonly supported: readonly number[];
+
+  constructor(
+    found: number,
+    supported: readonly number[] = [
+      CONVERSATION_STATE_VERSION,
+    ],
+  ) {
+    super(
+      `Unsupported ConversationState version ${found}; supported version(s): ${supported.join(', ')}`,
+    );
+    this.name = 'UnsupportedStateVersionError';
+    this.found = found;
+    this.supported = supported;
+  }
+}
+
+/**
+ * Thrown when {@link deserializeConversationState} receives JSON that is not a
+ * well-formed ConversationState (missing/wrong required fields, or invalid JSON).
+ */
+export class InvalidStateError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'InvalidStateError';
+  }
+}
+
+/**
+ * Serialize a {@link ConversationState} to a stable JSON string for durable storage.
+ *
+ * Guarantees the `version` field is present (injects `1` when the input state
+ * lacks it). Treat the returned JSON as **opaque**: consumers should round-trip
+ * via these helpers rather than introspecting item shapes.
+ *
+ * **Compat policy:** additive field changes within a major version. On version
+ * bumps, migrations run inside {@link deserializeConversationState}. The
+ * StateAccessor load/save contract is unchanged — these helpers are opt-in.
+ */
+export function serializeConversationState<TTools extends readonly Tool[] = readonly Tool[]>(
+  state: ConversationState<TTools>,
+): string {
+  return JSON.stringify({
+    ...state,
+    version: state.version ?? CONVERSATION_STATE_VERSION,
+  });
+}
+
+/**
+ * Parse and validate a previously serialized {@link ConversationState}.
+ *
+ * Accepts version-less legacy blobs and states with `version: 1`, normalizing
+ * both to `version: 1`. Throws {@link UnsupportedStateVersionError} for any
+ * other version (fail loudly so stores don't silently misinterpret future
+ * shapes). Throws {@link InvalidStateError} for malformed JSON or missing
+ * required fields (`id`, `messages`, `status`).
+ *
+ * **Compat policy:** absence of `version` means v1. Migrations for future
+ * versions happen here; callers should treat the JSON as opaque.
+ */
+export function deserializeConversationState<TTools extends readonly Tool[] = readonly Tool[]>(
+  json: string,
+): ConversationState<TTools> {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(json);
+  } catch (error) {
+    throw new InvalidStateError(
+      `Invalid ConversationState JSON: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+
+  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+    throw new InvalidStateError('ConversationState must be a JSON object');
+  }
+
+  const obj = parsed as Record<string, unknown>;
+
+  // Version check runs before structural validation: a future-version blob may
+  // have a different shape, and it must fail with UnsupportedStateVersionError
+  // rather than a misleading InvalidStateError about v1 fields.
+  const version = obj['version'];
+  if (version !== undefined && version !== CONVERSATION_STATE_VERSION) {
+    if (typeof version !== 'number') {
+      throw new InvalidStateError(
+        `ConversationState field "version" must be a number when present (got ${describeType(version)})`,
+      );
+    }
+    throw new UnsupportedStateVersionError(version, [
+      CONVERSATION_STATE_VERSION,
+    ]);
+  }
+
+  if (typeof obj['id'] !== 'string') {
+    throw new InvalidStateError(
+      `ConversationState missing or invalid field "id" (expected string, got ${describeType(obj['id'])})`,
+    );
+  }
+
+  // messages is models.InputsUnion — typically an array of items, but the type
+  // also allows a single item / string; require array for durable store blobs.
+  if (!Array.isArray(obj['messages'])) {
+    throw new InvalidStateError(
+      `ConversationState missing or invalid field "messages" (expected array, got ${describeType(obj['messages'])})`,
+    );
+  }
+
+  if (typeof obj['status'] !== 'string') {
+    throw new InvalidStateError(
+      `ConversationState missing or invalid field "status" (expected string, got ${describeType(obj['status'])})`,
+    );
+  }
+
+  if (typeof obj['createdAt'] !== 'number') {
+    throw new InvalidStateError(
+      `ConversationState missing or invalid field "createdAt" (expected number, got ${describeType(obj['createdAt'])})`,
+    );
+  }
+
+  if (typeof obj['updatedAt'] !== 'number') {
+    throw new InvalidStateError(
+      `ConversationState missing or invalid field "updatedAt" (expected number, got ${describeType(obj['updatedAt'])})`,
+    );
+  }
+
+  return {
+    ...(obj as unknown as ConversationState<TTools>),
+    version: CONVERSATION_STATE_VERSION,
+  };
+}
+
+function describeType(value: unknown): string {
+  if (value === null) {
+    return 'null';
+  }
+  if (Array.isArray(value)) {
+    return 'array';
+  }
+  return typeof value;
+}
+
+/**
  * Update a conversation state with new values
  * Automatically updates the updatedAt timestamp
  */
 export function updateState<TTools extends readonly Tool[] = readonly Tool[]>(
   state: ConversationState<TTools>,
-  updates: Partial<Omit<ConversationState<TTools>, 'id' | 'createdAt' | 'updatedAt'>>,
+  updates: Partial<Omit<ConversationState<TTools>, 'id' | 'createdAt' | 'updatedAt' | 'version'>>,
 ): ConversationState<TTools> {
   return {
     ...state,
@@ -109,7 +266,7 @@ export function appendToMessages(
  * @param toolCall - The tool call to check
  * @param tools - Available tools
  * @param context - Turn context for the approval check
- * @param callLevelCheck - Optional call-level approval function (overrides tool-level), can be async
+ * @param callLevelCheck - Optional call-level approval function (overrides tool-level), can be async. Receives normalized arguments when schema parsing succeeds and raw arguments otherwise.
  */
 export async function toolRequiresApproval<TTools extends readonly Tool[]>(
   toolCall: ParsedToolCall<TTools[number]>,
@@ -120,12 +277,6 @@ export async function toolRequiresApproval<TTools extends readonly Tool[]>(
     context: TurnContext,
   ) => boolean | Promise<boolean>,
 ): Promise<boolean> {
-  // Call-level check takes precedence
-  if (callLevelCheck) {
-    return callLevelCheck(toolCall, context);
-  }
-
-  // Fall back to tool-level setting (server tools never require approval)
   const tool = tools.find(
     (
       t,
@@ -136,6 +287,28 @@ export async function toolRequiresApproval<TTools extends readonly Tool[]>(
       }
     > => isClientTool(t) && t.function.name === toolCall.name,
   );
+  // Call-level checks always take precedence. Pass a normalized copy when
+  // parsing succeeds, or the raw call when it does not.
+  if (callLevelCheck) {
+    if (!tool) {
+      return callLevelCheck(toolCall, context);
+    }
+
+    const parsed = z4.safeParse(tool.function.inputSchema, toolCall.arguments);
+    if (!parsed.success) {
+      return callLevelCheck(toolCall, context);
+    }
+
+    return callLevelCheck(
+      {
+        ...toolCall,
+        arguments: parsed.data,
+      } as ParsedToolCall<TTools[number]>,
+      context,
+    );
+  }
+
+  // Fall back to the tool-level setting (server tools never require approval).
   if (!tool) {
     return false;
   }
@@ -143,18 +316,34 @@ export async function toolRequiresApproval<TTools extends readonly Tool[]>(
   const requireApproval = tool.function.requireApproval;
 
   // If it's a function, call it with the tool's arguments and context.
-  // Arguments have already been parsed and validated against the tool's
-  // Zod inputSchema (a ZodObject), so the runtime shape is always a
-  // record here. A non-record value signals a real upstream bug — surface
-  // it rather than substituting an empty object.
+  //
+  // `toolCall.arguments` at this point is only the JSON-parsed wire payload
+  // (see extractToolCallsFromResponse) — it has NOT been validated against
+  // the tool's Zod inputSchema. The executor validates separately, right
+  // before calling `execute` (see validateToolInput in tool-executor.ts), so
+  // handing the raw payload to the predicate would let the two see different
+  // values whenever the schema applies a default, coercion, or transform
+  // (e.g. schema `{ dangerous: z.boolean().default(true) }` + model emits
+  // `{}`: the predicate sees `undefined` and waves the call through, then
+  // `execute` runs with `dangerous: true`).
+  //
+  // Parse with the same schema the executor uses so the predicate decides on
+  // exactly the values `execute` will receive.
   if (typeof requireApproval === 'function') {
-    const rawArgs: unknown = toolCall.arguments;
-    if (!isRecord(rawArgs)) {
-      throw new Error(
-        `toolCall.arguments for "${toolCall.name}" must be an object after Zod validation, got ${rawArgs === null ? 'null' : Array.isArray(rawArgs) ? 'array' : typeof rawArgs}`,
-      );
+    const parsed = z4.safeParse(tool.function.inputSchema, toolCall.arguments);
+    if (!parsed.success) {
+      // There is no trustworthy value to pass to the predicate. Fail closed:
+      // a PreToolUse hook may later replace invalid input with executable
+      // input, so schema-invalid wire arguments cannot safely bypass approval.
+      return true;
     }
-    return requireApproval(rawArgs, context);
+    if (!isRecord(parsed.data)) {
+      // Valid per the schema but not an object — the predicate contract is
+      // Record<string, unknown>, so there is no trustworthy value to judge.
+      // Fail closed.
+      return true;
+    }
+    return requireApproval(parsed.data, context);
   }
 
   // Otherwise treat as boolean
@@ -244,7 +433,9 @@ export function createRejectedResult<TTools extends readonly Tool[] = readonly T
  * Check if a value is a valid content array (array of input_text, input_image, or input_file blocks).
  * These can be passed directly as tool output without JSON.stringify.
  */
-function isContentArray(value: unknown): value is models.FunctionCallOutputItemOutputUnion1[] {
+export function isContentArray(
+  value: unknown,
+): value is models.FunctionCallOutputItemOutputUnion1[] {
   if (!Array.isArray(value)) {
     return false;
   }
@@ -374,3 +565,12 @@ export function extractToolCallsFromResponse<TTools extends readonly Tool[]>(
 
   return toolCalls;
 }
+
+/*
+ * Re-exported so `model-result.ts` can normalize input without a direct edge to
+ * `turn-context.js`: that module sits at the structural gate's fan-out ceiling
+ * (`no_god_files` trips above 15 outbound edges). This module already imports
+ * the helper for its own append path, and normalizing conversation input is
+ * squarely its concern, so nothing new is coupled.
+ */
+export { normalizeInputToArray } from './turn-context.js';

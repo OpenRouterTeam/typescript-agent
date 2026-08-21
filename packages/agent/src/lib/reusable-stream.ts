@@ -5,28 +5,80 @@
  * Key features:
  * - Multiple concurrent consumers with independent read positions
  * - New consumers can attach while streaming is active
- * - Efficient memory management with automatic cleanup
+ * - Full replay for delayed and sequential consumers by default
+ * - Opt-in active-consumer replay compaction for bounded memory
  * - Each consumer can read at their own pace
  */
+export type StreamReplay = 'full' | 'active-consumers';
+
+export interface ReusableReadableStreamOptions<T> {
+  streamReplay?: StreamReplay;
+  onValue?: (value: T) => void;
+  isTerminalValue?: (value: T) => boolean;
+}
+
 export class ReusableReadableStream<T> {
-  private buffer: T[] = [];
+  private buffer: (T | undefined)[] = [];
+  private bufferHead = 0;
+  // Consumer positions are absolute. Buffer index = bufferHead + position - trimOffset.
+  private trimOffset = 0;
   private consumers = new Map<number, ConsumerState>();
   private nextConsumerId = 0;
   private sourceReader: ReadableStreamDefaultReader<T> | null = null;
   private sourceComplete = false;
   private sourceError: Error | null = null;
   private pumpStarted = false;
+  private sourceCancelPromise: Promise<void> | null = null;
+  private readonly streamReplay: StreamReplay;
+  private readonly onValue: ((value: T) => void) | undefined;
+  private readonly isTerminalValue: ((value: T) => boolean) | undefined;
 
-  constructor(private sourceStream: ReadableStream<T>) {}
+  constructor(
+    private sourceStream: ReadableStream<T>,
+    options: ReusableReadableStreamOptions<T> = {},
+  ) {
+    this.streamReplay = options.streamReplay ?? 'full';
+    this.onValue = options.onValue;
+    this.isTerminalValue = options.isTerminalValue;
+  }
+
+  /**
+   * True once the source stream has been fully read into the buffer.
+   * A fresh consumer created after this point replays the retained buffer
+   * without waiting on the source.
+   */
+  get isComplete(): boolean {
+    return this.sourceComplete;
+  }
+
+  /**
+   * Synchronously scan the retained buffer from the end, returning the
+   * last item matching `predicate`. Sees only what has been buffered so
+   * far — call once `isComplete` to cover the whole stream. Unlike a
+   * consumer replay, this costs no per-item microtask hop, so teardown
+   * paths can locate the completion event without re-walking a large
+   * buffer asynchronously.
+   */
+  findLastBuffered(predicate: (item: T) => boolean): T | undefined {
+    for (let i = this.buffer.length - 1; i >= this.bufferHead; i--) {
+      const item = this.buffer[i];
+      if (item !== undefined && predicate(item)) {
+        return item;
+      }
+    }
+    return undefined;
+  }
 
   /**
    * Create a new consumer that can independently iterate over the stream.
-   * Multiple consumers can be created and will all receive the same data.
+   * Full-replay consumers start at position 0. Active-consumer replay starts
+   * at the current trim watermark. Multiple attached consumers advance
+   * independently in either mode.
    */
   createConsumer(): AsyncIterableIterator<T> {
     const consumerId = this.nextConsumerId++;
     const state: ConsumerState = {
-      position: 0,
+      position: this.trimOffset,
       waitingPromise: null,
       cancelled: false,
     };
@@ -43,25 +95,23 @@ export class ReusableReadableStream<T> {
     return {
       async next(): Promise<IteratorResult<T>> {
         const consumer = self.consumers.get(consumerId);
-        if (!consumer) {
+        if (!consumer || consumer.cancelled) {
           return {
             done: true,
             value: undefined,
           };
         }
 
-        if (consumer.cancelled) {
-          return {
-            done: true,
-            value: undefined,
-          };
-        }
-
-        // If we have buffered data at this position, return it
-        if (consumer.position < self.buffer.length) {
-          const value = self.buffer[consumer.position]!;
+        const bufferIndex = self.bufferHead + consumer.position - self.trimOffset;
+        if (bufferIndex < self.buffer.length) {
+          const value = self.buffer[bufferIndex];
+          if (value === undefined) {
+            throw new Error(
+              'ReusableReadableStream buffer invariant violated: consumed slot was cleared',
+            );
+          }
           consumer.position++;
-          // Note: We don't clean up buffer to allow sequential/reusable access
+          self.trimConsumed();
           return {
             done: false,
             value,
@@ -94,7 +144,11 @@ export class ReusableReadableStream<T> {
           // Immediately check if we should resolve after setting up the promise
           // This handles the case where data arrived or source completed
           // between our initial checks and promise creation
-          if (self.sourceComplete || self.sourceError || consumer.position < self.buffer.length) {
+          if (
+            self.sourceComplete ||
+            self.sourceError ||
+            self.bufferHead + consumer.position - self.trimOffset < self.buffer.length
+          ) {
             resolve();
           }
         });
@@ -113,6 +167,7 @@ export class ReusableReadableStream<T> {
         if (consumer) {
           consumer.cancelled = true;
           self.consumers.delete(consumerId);
+          self.trimConsumed();
         }
         return {
           done: true,
@@ -125,6 +180,7 @@ export class ReusableReadableStream<T> {
         if (consumer) {
           consumer.cancelled = true;
           self.consumers.delete(consumerId);
+          self.trimConsumed();
         }
         throw e;
       },
@@ -133,6 +189,39 @@ export class ReusableReadableStream<T> {
         return this;
       },
     };
+  }
+
+  private trimConsumed(): void {
+    if (this.streamReplay === 'full' || this.consumers.size === 0) {
+      return;
+    }
+
+    let min = Number.POSITIVE_INFINITY;
+    for (const consumer of this.consumers.values()) {
+      if (consumer.position < min) {
+        min = consumer.position;
+      }
+    }
+
+    const nextHead = this.bufferHead + min - this.trimOffset;
+    if (nextHead <= this.bufferHead) {
+      return;
+    }
+
+    this.trimOffset = min;
+    if (nextHead === this.buffer.length) {
+      this.buffer = [];
+      this.bufferHead = 0;
+      return;
+    }
+
+    this.buffer.fill(undefined, this.bufferHead, nextHead);
+    if (nextHead >= BUFFER_COMPACTION_MIN_HEAD && nextHead * 2 >= this.buffer.length) {
+      this.buffer = this.buffer.slice(nextHead);
+      this.bufferHead = 0;
+      return;
+    }
+    this.bufferHead = nextHead;
   }
 
   /**
@@ -145,11 +234,12 @@ export class ReusableReadableStream<T> {
     this.pumpStarted = true;
     this.sourceReader = this.sourceStream.getReader();
 
+    const sourceReader = this.sourceReader;
     // biome-ignore lint: IIFE used for fire-and-forget stream pump
     void (async () => {
       try {
         while (true) {
-          const result = await this.sourceReader!.read();
+          const result = await sourceReader.read();
 
           if (result.done) {
             this.sourceComplete = true;
@@ -159,19 +249,39 @@ export class ReusableReadableStream<T> {
 
           // Add to buffer
           this.buffer.push(result.value);
+          this.onValue?.(result.value);
 
           // Notify waiting consumers
           this.notifyAllConsumers();
+
+          if (this.isTerminalValue?.(result.value)) {
+            this.sourceComplete = true;
+            this.notifyAllConsumers();
+            try {
+              await this.cancelSourceReader(sourceReader);
+            } catch {
+              // The terminal event is authoritative, cancellation is cleanup only.
+            }
+            break;
+          }
         }
       } catch (error) {
         this.sourceError = error instanceof Error ? error : new Error(String(error));
         this.notifyAllConsumers();
       } finally {
-        if (this.sourceReader) {
-          this.sourceReader.releaseLock();
+        sourceReader.releaseLock();
+        if (this.sourceReader === sourceReader) {
+          this.sourceReader = null;
         }
       }
     })();
+  }
+
+  private cancelSourceReader(sourceReader: ReadableStreamDefaultReader<T>): Promise<void> {
+    if (!this.sourceCancelPromise) {
+      this.sourceCancelPromise = sourceReader.cancel();
+    }
+    return this.sourceCancelPromise;
   }
 
   /**
@@ -205,8 +315,7 @@ export class ReusableReadableStream<T> {
 
     // Cancel the source stream
     if (this.sourceReader) {
-      await this.sourceReader.cancel();
-      this.sourceReader.releaseLock();
+      await this.cancelSourceReader(this.sourceReader);
     }
   }
 }
@@ -219,3 +328,5 @@ interface ConsumerState {
   } | null;
   cancelled: boolean;
 }
+
+const BUFFER_COMPACTION_MIN_HEAD = 1024;

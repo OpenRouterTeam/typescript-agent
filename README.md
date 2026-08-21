@@ -1,3 +1,5 @@
+![hero illustration](./assets/banner.png)
+
 # typescript-agent
 
 Monorepo for the OpenRouter TypeScript agent ecosystem.
@@ -6,7 +8,8 @@ Monorepo for the OpenRouter TypeScript agent ecosystem.
 
 | Package | Path | Description |
 | --- | --- | --- |
-| [`@openrouter/agent`](./packages/agent) | `packages/agent` | Agent toolkit for building AI applications with OpenRouter — tool orchestration, streaming, multi-turn conversations, and format compatibility. |
+| [`@openrouter/agent`](./packages/agent) | `packages/agent` | Agent toolkit with optional `@openrouter/agent/tool-set` and `@openrouter/agent/mcp` subpaths. |
+| [`@openrouter/mcp`](./packages/mcp) | `packages/mcp` | Compatibility facade for the canonical `@openrouter/agent/mcp` integration. |
 
 ## Development
 

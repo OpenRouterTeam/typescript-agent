@@ -3,6 +3,8 @@ node_modules/
 .eslintcache
 .worktrees/
 .turbo/
+coverage/
 .env
 .env.*
 !.env.example
+bun.lock

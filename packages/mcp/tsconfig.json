@@ -1,0 +1,14 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "outDir": "esm",
+    // Resolve dependencies via their published exports (built JS + d.ts) rather
+    // than the repo-wide "source" condition. The MCP SDK transitively exposes a
+    // "source" condition that points at raw .ts files (eventsource), which would
+    // otherwise be type-checked. @openrouter/agent is built first by turbo, so it
+    // resolves cleanly through its normal exports.
+    "customConditions": []
+  },
+  "include": ["src"],
+  "exclude": ["node_modules", "esm"]
+}

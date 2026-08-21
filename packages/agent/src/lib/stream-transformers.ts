@@ -290,13 +290,8 @@ type InferServerToolOutputsUnion<TTools extends readonly Tool[]> = InferServerTo
  * `true extends (distributed-check)` so distribution over a union yields
  * `true` when any member matches (not `boolean`).
  */
-type HasClientTool<TTools extends readonly Tool[]> = true extends (
-  TTools[number] extends ClientTool
-    ? true
-    : never
-)
-  ? true
-  : false;
+type HasClientTool<TTools extends readonly Tool[]> =
+  Extract<TTools[number], ClientTool> extends never ? false : true;
 
 /**
  * Widest possible streamable output — every item type the API can emit
@@ -634,6 +629,72 @@ export async function* buildMessageStream(
       yield convertToAssistantMessage(update.completeMessage);
     }
   }
+}
+
+/**
+ * Backward scan of a `ReusableReadableStream`'s retained buffer for the
+ * last terminal event. Shared by the two extractors below.
+ */
+function findBufferedTerminalEvent(
+  stream: ReusableReadableStream<models.StreamEvents>,
+):
+  | models.StreamEventsResponseCompleted
+  | models.StreamEventsResponseFailed
+  | models.StreamEventsResponseIncomplete
+  | undefined {
+  return stream.findLastBuffered(
+    (event) =>
+      'type' in event &&
+      (isResponseCompletedEvent(event) ||
+        isResponseFailedEvent(event) ||
+        isResponseIncompleteEvent(event)),
+  ) as
+    | models.StreamEventsResponseCompleted
+    | models.StreamEventsResponseFailed
+    | models.StreamEventsResponseIncomplete
+    | undefined;
+}
+
+/**
+ * Synchronous counterpart to `consumeStreamForCompletion` for streams that
+ * have already fully buffered (`isComplete`): scan the retained buffer
+ * backwards for the terminal event instead of replaying every event through
+ * a fresh consumer (one async microtask hop per event). Same contract —
+ * returns the completed/incomplete response, throws on a failed response or
+ * a buffer with no terminal event.
+ */
+export function extractCompletionFromBuffer(
+  stream: ReusableReadableStream<models.StreamEvents>,
+): models.OpenResponsesResult {
+  const terminal = findBufferedTerminalEvent(stream);
+
+  if (terminal && isResponseFailedEvent(terminal)) {
+    throw new Error(`Response failed: ${JSON.stringify(terminal.response.error)}`);
+  }
+  if (terminal && (isResponseCompletedEvent(terminal) || isResponseIncompleteEvent(terminal))) {
+    return terminal.response;
+  }
+  throw new Error('Stream ended without completion event');
+}
+
+/**
+ * Non-throwing variant of `extractCompletionFromBuffer` for streams that may
+ * still be mid-flight: returns the buffered completed/incomplete response
+ * when the terminal event has already been buffered, `undefined` otherwise
+ * (no terminal event yet, or the response failed). Consumers stop at the
+ * terminal event itself (`streamTerminationEvents`), typically before the
+ * pump has read the source close that flips `isComplete` — this lets
+ * teardown paths recover the completion in that window without waiting on
+ * the close frame.
+ */
+export function tryExtractCompletionFromBuffer(
+  stream: ReusableReadableStream<models.StreamEvents>,
+): models.OpenResponsesResult | undefined {
+  const terminal = findBufferedTerminalEvent(stream);
+  if (terminal && (isResponseCompletedEvent(terminal) || isResponseIncompleteEvent(terminal))) {
+    return terminal.response;
+  }
+  return undefined;
 }
 
 /**

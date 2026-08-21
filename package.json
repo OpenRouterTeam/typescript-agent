@@ -11,7 +11,9 @@
     "lint": "turbo run lint",
     "lint:fix": "biome check --write packages/*/src packages/*/tests",
     "typecheck": "turbo run typecheck",
+    "verify:packages": "node scripts/verify-package-boundaries.mjs",
     "changeset": "changeset",
+    "version": "changeset version && turbo run gen:version",
     "prepare": "husky"
   },
   "devDependencies": {
@@ -19,10 +21,11 @@
     "@changesets/changelog-github": "^0.6.0",
     "@changesets/cli": "^2.30.0",
     "@types/node": "^22.13.12",
+    "@vitest/coverage-v8": "^4.1.5",
     "dotenv": "^16.4.7",
     "husky": "^9.1.7",
     "turbo": "2.9.6",
     "typescript": "~5.8.3",
-    "vitest": "^3.2.4"
+    "vitest": "^4.1.5"
   }
 }

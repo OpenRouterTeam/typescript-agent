@@ -3,6 +3,18 @@ name: CI
 on:
   pull_request:
     branches: [main]
+  push:
+    branches: [main]
+  schedule:
+    # Nightly full run on main, including live e2e smoke tests.
+    - cron: '0 6 * * *'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   TURBO_TELEMETRY_DISABLED: '1'
@@ -11,13 +23,13 @@ jobs:
   lint:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           fetch-depth: 2
 
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@v6
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v6
         with:
           node-version: 22
           cache: pnpm
@@ -30,13 +42,13 @@ jobs:
   typecheck:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           fetch-depth: 2
 
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@v6
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v6
         with:
           node-version: 22
           cache: pnpm
@@ -49,44 +61,155 @@ jobs:
   unit-tests:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           fetch-depth: 2
 
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@v6
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v6
         with:
           node-version: 22
           cache: pnpm
 
       - run: pnpm install --frozen-lockfile
 
-      - name: Tests
+      # Coverage is always collected (enabled in each package's vitest
+      # config) and the run FAILS if any package drops below its pinned
+      # thresholds. This job is the coverage gate for every PR.
+      - name: Unit tests with coverage thresholds
         run: pnpm run test
+
+      - name: Coverage summary
+        if: always()
+        run: node .github/scripts/coverage-summary.mjs >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload coverage reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage
+          path: |
+            packages/*/coverage/
+          if-no-files-found: ignore
+          retention-days: 14
+
+  package-boundaries:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 2
+
+      - uses: pnpm/action-setup@v6
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Verify packed package boundaries
+        run: pnpm verify:packages
 
   e2e-tests:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           fetch-depth: 2
 
-      - uses: pnpm/action-setup@v4
+      # Live API smoke tests require the OPENROUTER_API_KEY secret.
+      # Fork PRs never receive secrets, so skipping is legitimate ONLY there.
+      # For same-repo PRs, pushes to main, and nightly runs, a missing key
+      # is a hard failure — silently green e2e is worse than no e2e.
+      - name: Guard API key availability
+        env:
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          IS_FORK: ${{ github.event.pull_request.head.repo.fork || false }}
+        run: |
+          if [ -n "$OPENROUTER_API_KEY" ]; then
+            exit 0
+          fi
+          if [ "$IS_FORK" = "true" ]; then
+            echo "::warning::Fork PR: secrets are unavailable, skipping live e2e tests."
+            echo "SKIP_E2E=1" >> "$GITHUB_ENV"
+            exit 0
+          fi
+          echo "::error::OPENROUTER_API_KEY secret is not set; refusing to skip e2e tests outside of fork PRs."
+          exit 1
 
-      - uses: actions/setup-node@v4
+      - uses: pnpm/action-setup@v6
+        if: env.SKIP_E2E != '1'
+
+      - uses: actions/setup-node@v6
+        if: env.SKIP_E2E != '1'
         with:
           node-version: 22
           cache: pnpm
 
-      - run: pnpm install --frozen-lockfile
+      - if: env.SKIP_E2E != '1'
+        run: pnpm install --frozen-lockfile
 
       - name: E2E tests
+        if: env.SKIP_E2E != '1'
         env:
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+        run: pnpm run test:e2e
+
+  structural-gate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 2
+
+      - name: Install sentrux
+        env:
+          SENTRUX_VERSION: v0.5.7
         run: |
-          if [ -z "$OPENROUTER_API_KEY" ]; then
-            echo "::warning::OPENROUTER_API_KEY is not set; skipping e2e tests."
-            exit 0
+          curl -fsSL \
+            "https://github.com/sentrux/sentrux/releases/download/${SENTRUX_VERSION}/sentrux-linux-x86_64" \
+            -o /usr/local/bin/sentrux
+          chmod +x /usr/local/bin/sentrux
+          sentrux --version
+
+      - name: Structural regression gate
+        run: sentrux gate
+
+  # Single aggregated status check. Point branch protection at THIS job
+  # ("ci-status") so the set of required checks is defined in one place —
+  # adding a job to `needs` automatically extends the gate, and a renamed
+  # or deleted job can never silently leave the gate green.
+  ci-status:
+    name: CI status
+    if: always()
+    needs: [lint, typecheck, unit-tests, e2e-tests, structural-gate, package-boundaries]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Verify all checks passed
+        env:
+          RESULTS: >-
+            lint=${{ needs.lint.result }}
+            typecheck=${{ needs.typecheck.result }}
+            unit-tests=${{ needs.unit-tests.result }}
+            e2e-tests=${{ needs.e2e-tests.result }}
+            structural-gate=${{ needs.structural-gate.result }}
+            package-boundaries=${{ needs.package-boundaries.result }}
+        run: |
+          failed=0
+          for entry in $RESULTS; do
+            job="${entry%%=*}"
+            result="${entry#*=}"
+            echo "$job: $result"
+            # "skipped" is acceptable (e.g. e2e on fork PRs); anything else
+            # that isn't "success" fails the gate.
+            if [ "$result" != "success" ] && [ "$result" != "skipped" ]; then
+              failed=1
+            fi
+          done
+          if [ "$failed" -ne 0 ]; then
+            echo "::error::One or more CI checks did not pass."
+            exit 1
           fi
-          pnpm run test:e2e
