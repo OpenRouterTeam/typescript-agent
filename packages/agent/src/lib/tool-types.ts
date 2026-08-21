@@ -891,10 +891,11 @@ export interface ServerToolBase {
  * @template T The specific server-tool type literal (narrows `config`).
  * @template TId Stable tool-set ID (defaults to `server:${T}`).
  */
-export type ServerTool<
-  T extends ServerToolType = never,
-  TId extends string = `server:${T}`,
-> = [T] extends [never]
+export type ServerTool<T extends ServerToolType = never, TId extends string = `server:${T}`> = [
+  T,
+] extends [
+  never,
+]
   ? ServerToolBase
   : ServerToolBase & {
       readonly config: Extract<
