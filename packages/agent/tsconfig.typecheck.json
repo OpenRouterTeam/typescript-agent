@@ -4,7 +4,14 @@
   "include": [
     "src/**/*.ts",
     "tests/unit/context-schema-inference.test-d.ts",
-    "tests/unit/standard-schema-inference.test-d.ts"
+    "tests/unit/standard-schema-inference.test-d.ts",
+    "tests/unit/message-compat-types.test-d.ts",
+    "tests/unit/filter-tools-by-ids.test-d.ts",
+    "tests/unit/has-approval-tools.test-d.ts",
+    "tests/unit/mcp-result-discrimination.test-d.ts",
+    "tests/unit/resolved-tools.test-d.ts",
+    "tests/unit/server-tool-id.test-d.ts",
+    "tests/unit/tool-shared-name.test-d.ts"
   ],
   "exclude": ["node_modules", "esm"]
 }

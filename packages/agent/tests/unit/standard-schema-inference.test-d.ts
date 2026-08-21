@@ -9,11 +9,24 @@ const valibotInputSchema = v.object({
   value: v.string(),
 });
 
-// @ts-expect-error non-Zod input schemas require the provider-facing JSON Schema
+// A validator implementing Standard Schema v1 but with no way to produce a
+// JSON Schema (valibot >= 1.4 carries the StandardJSONSchemaV1 trait natively,
+// so it no longer exercises this path). The model-facing wire format must be
+// supplied explicitly for validation-only schemas.
+const validationOnlySchema = {
+  '~standard': {
+    version: 1 as const,
+    validate: (value: unknown) => ({
+      value: value as Record<string, unknown>,
+    }),
+  },
+};
+
 const missingInputJsonSchema = tool({
   name: 'missing_json_schema',
-  inputSchema: valibotInputSchema,
-  execute: ({ value }) => value,
+  // @ts-expect-error non-Zod input schemas require the provider-facing JSON Schema
+  inputSchema: validationOnlySchema,
+  execute: (params) => params,
 });
 void missingInputJsonSchema;
 

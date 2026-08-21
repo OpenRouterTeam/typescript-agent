@@ -204,7 +204,7 @@ export function agentToolBuilder<
   TName extends string = string,
 >(
   config: AgentToolConfig<TInput, TOutput, TChildTools, TCtx, TName>,
-): UnifiedTool<TInput, TOutput, Schema, Record<string, unknown>, TCtx> {
+): UnifiedTool<TInput, TOutput, Schema, Record<string, unknown>, TCtx, TName> {
   // Same reserved-name guards as tool() — a subagent named 'shared' would
   // collide with the shared-context store key, one named 'task' would
   // disable the built-in task-interaction tool.
@@ -360,7 +360,8 @@ export function agentToolBuilder<
       TOutput,
       Schema,
       Record<string, unknown>,
-      TCtx
+      TCtx,
+      TName
     >['function'],
   };
 }

@@ -1,4 +1,8 @@
-import * as models from '@openrouter/sdk/models';
+// Type-only: a runtime import of the models barrel would evaluate ~600
+// Speakeasy modules of top-level Zod schema construction in every consumer
+// that statically reaches the `tool` subpath (~+200ms of Cloudflare Worker
+// startup CPU). See the startup-import-closure unit test.
+import type * as models from '@openrouter/sdk/models';
 import type { TurnContext } from './tool-types.js';
 
 /**
@@ -67,7 +71,7 @@ export function normalizeInputToArray(input: models.InputsUnion): Array<models.B
   if (typeof input === 'string') {
     // Construct object with all required fields - type is optional
     const message: models.EasyInputMessage = {
-      role: models.EasyInputMessageRoleUser.User,
+      role: 'user',
       content: input,
     };
     return [

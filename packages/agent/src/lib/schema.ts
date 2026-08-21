@@ -186,3 +186,62 @@ export async function safeValidateSchema<TSchema extends Schema>(
     };
   }
 }
+
+/**
+ * Synchronous, non-throwing schema validation for call sites that branch on
+ * success/failure (approval gates, pre-tool-use checks). Accepts both Zod v4
+ * schemas and Standard Schema v1 validators; async validators are rejected
+ * rather than awaited, mirroring {@link validateSchemaSync}.
+ */
+export function safeParseSchemaSync<TSchema extends Schema>(
+  schema: TSchema,
+  value: unknown,
+):
+  | {
+      success: true;
+      data: InferSchemaOutput<TSchema>;
+    }
+  | {
+      success: false;
+      error: unknown;
+    } {
+  if (isZodSchema(schema)) {
+    const parsed = z4.safeParse(schema, value);
+    if (parsed.success) {
+      return {
+        success: true,
+        data: parsed.data as InferSchemaOutput<TSchema>,
+      };
+    }
+    return {
+      success: false,
+      error: parsed.error,
+    };
+  }
+  if (!isStandardSchema(schema)) {
+    return {
+      success: false,
+      error: new Error('Invalid Standard Schema v1 validator provided'),
+    };
+  }
+  const result = schema['~standard'].validate(value);
+  if (result !== null && typeof (result as PromiseLike<unknown>).then === 'function') {
+    return {
+      success: false,
+      error: new Error(
+        'Async Standard Schema validators are not supported in synchronous validation paths',
+      ),
+    };
+  }
+  const syncResult = result as StandardSchemaV1.Result<unknown>;
+  if (syncResult.issues) {
+    return {
+      success: false,
+      error: new StandardSchemaError(syncResult.issues),
+    };
+  }
+  return {
+    success: true,
+    data: syncResult.value as InferSchemaOutput<TSchema>,
+  };
+}

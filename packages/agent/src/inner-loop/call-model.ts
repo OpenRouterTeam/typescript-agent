@@ -1,6 +1,7 @@
 import type { OpenRouterCore } from '@openrouter/sdk/core';
 import type { RequestOptions } from '@openrouter/sdk/lib/sdks';
 import type { CallModelInput } from '../lib/async-params.js';
+import { stripToolSetSnapshotMetadata } from '../lib/async-params.js';
 import { resolveHooks } from '../lib/hooks-resolve.js';
 import type { GetResponseOptions } from '../lib/model-result.js';
 import { ModelResult } from '../lib/model-result.js';
@@ -8,6 +9,7 @@ import type { InferSchemaOutput, ObjectSchema } from '../lib/schema.js';
 import { buildTaskToolApiDefinition, needsTaskTool } from '../lib/tool-check.js';
 import { convertToolsToAPIFormat, convertZodToJsonSchema } from '../lib/tool-executor.js';
 import type { Tool } from '../lib/tool-types.js';
+import { isServerTool } from '../lib/tool-types.js';
 
 // Re-export CallModelInput for convenience
 export type { CallModelInput } from '../lib/async-params.js';
@@ -96,6 +98,7 @@ export function callModel<
   // Destructure state management options along with tools and stopWhen
   const {
     tools,
+    activeTools,
     stopWhen,
     state,
     requireApproval,
@@ -105,6 +108,7 @@ export function callModel<
     sharedContextSchema,
     onTurnStart,
     onTurnEnd,
+    streamReplay,
     allowFinalResponse,
     strictFinalResponse,
     hooks,
@@ -116,8 +120,25 @@ export function callModel<
     ...apiRequest
   } = request;
 
+  // Narrow tools to the active subset (if provided) before API conversion and
+  // before they are registered for execution, so the model cannot call filtered
+  // tools and the executor does not carry orphaned definitions.
+  const activeSet = activeTools ? new Set(activeTools) : undefined;
+  const activeFilteredTools = activeSet
+    ? tools?.filter((t) => isServerTool(t) || activeSet.has(t.function.name))
+    : tools;
+
+  // Collapse a filtered-to-empty (or explicitly empty) tools list to
+  // `undefined` so a fully-deactivated tool set (a first-class output of
+  // `inferTools()`/`.resolve()`) omits the outbound `tools` key entirely
+  // instead of sending `tools: []` — several providers reject an empty
+  // array outright. `ModelResult` treats `undefined` as its no-tools state
+  // (see the `?.length` / truthiness checks throughout), so this also keeps
+  // the engine's tool-execution machinery correctly disabled.
+  const filteredTools = activeFilteredTools?.length ? activeFilteredTools : undefined;
+
   // Convert tools to API format - no cast needed now that convertToolsToAPIFormat accepts readonly
-  const apiTools = tools ? convertToolsToAPIFormat(tools) : undefined;
+  const apiTools = filteredTools ? convertToolsToAPIFormat(filteredTools) : undefined;
 
   // Append the single universal `task` tool when any long-running tool is
   // registered (and check-ins aren't disabled): ONE static wire definition
@@ -125,16 +146,17 @@ export function callModel<
   // context cost stays constant regardless of the tool count. Appended
   // here (not per-request in ModelResult) so `resolvedRequest.tools` stays
   // stable across turns. Calls to it are engine-intercepted.
-  if (apiTools && tools && asyncTools?.checkins !== false && needsTaskTool(tools)) {
+  if (apiTools && filteredTools && asyncTools?.checkins !== false && needsTaskTool(filteredTools)) {
     apiTools.push(buildTaskToolApiDefinition(convertZodToJsonSchema));
   }
 
-  // Build the request with converted tools
-  // Note: async functions are resolved later in ModelResult.executeToolsIfNeeded()
-  // The request can have async fields (functions) or sync fields, and the tools are converted to API format
-  const finalRequest: Record<string, unknown> = {
+  // Build the request with converted tools. Tool-set snapshots carry a symbol
+  // marker that survives object spread, allowing their metadata to be removed
+  // without reserving otherwise legitimate API field names.
+  const finalRequest: Record<PropertyKey, unknown> = {
     ...apiRequest,
   };
+  stripToolSetSnapshotMetadata(finalRequest);
 
   if (apiTools !== undefined) {
     finalRequest['tools'] = apiTools;
@@ -158,7 +180,7 @@ export function callModel<
     client,
     request: finalRequest,
     options: callModelOptions,
-    tools,
+    tools: filteredTools,
     stopWhen,
     state,
     requireApproval,
@@ -168,6 +190,7 @@ export function callModel<
     sharedContextSchema,
     onTurnStart,
     onTurnEnd,
+    streamReplay,
     allowFinalResponse,
     strictFinalResponse,
     hooks: hooks !== undefined ? resolveHooks(hooks) : undefined,

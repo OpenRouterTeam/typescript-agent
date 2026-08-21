@@ -1,4 +1,8 @@
 import type * as models from '@openrouter/sdk/models';
+// Same validation semantics the executor uses (schema.ts's Standard Schema +
+// zod dual path, see `validateSchemaSync`) so the approval predicate and
+// `execute` agree on parse behavior. schema.ts is a leaf module — no cycle.
+import { safeParseSchemaSync } from './schema.js';
 import type {
   ConversationState,
   ParsedToolCall,
@@ -260,7 +264,7 @@ export function appendToMessages(
  * @param toolCall - The tool call to check
  * @param tools - Available tools
  * @param context - Turn context for the approval check
- * @param callLevelCheck - Optional call-level approval function (overrides tool-level), can be async
+ * @param callLevelCheck - Optional call-level approval function (overrides tool-level), can be async. Receives normalized arguments when schema parsing succeeds and raw arguments otherwise.
  */
 export async function toolRequiresApproval<TTools extends readonly Tool[]>(
   toolCall: ParsedToolCall<TTools[number]>,
@@ -271,12 +275,6 @@ export async function toolRequiresApproval<TTools extends readonly Tool[]>(
     context: TurnContext,
   ) => boolean | Promise<boolean>,
 ): Promise<boolean> {
-  // Call-level check takes precedence
-  if (callLevelCheck) {
-    return callLevelCheck(toolCall, context);
-  }
-
-  // Fall back to tool-level setting (server tools never require approval)
   const tool = tools.find(
     (
       t,
@@ -287,6 +285,28 @@ export async function toolRequiresApproval<TTools extends readonly Tool[]>(
       }
     > => isClientTool(t) && t.function.name === toolCall.name,
   );
+  // Call-level checks always take precedence. Pass a normalized copy when
+  // parsing succeeds, or the raw call when it does not.
+  if (callLevelCheck) {
+    if (!tool) {
+      return callLevelCheck(toolCall, context);
+    }
+
+    const parsed = safeParseSchemaSync(tool.function.inputSchema, toolCall.arguments);
+    if (!parsed.success) {
+      return callLevelCheck(toolCall, context);
+    }
+
+    return callLevelCheck(
+      {
+        ...toolCall,
+        arguments: parsed.data,
+      } as ParsedToolCall<TTools[number]>,
+      context,
+    );
+  }
+
+  // Fall back to the tool-level setting (server tools never require approval).
   if (!tool) {
     return false;
   }
@@ -294,18 +314,34 @@ export async function toolRequiresApproval<TTools extends readonly Tool[]>(
   const requireApproval = tool.function.requireApproval;
 
   // If it's a function, call it with the tool's arguments and context.
-  // Arguments have already been parsed and validated against the tool's
-  // Zod inputSchema (a ZodObject), so the runtime shape is always a
-  // record here. A non-record value signals a real upstream bug — surface
-  // it rather than substituting an empty object.
+  //
+  // `toolCall.arguments` at this point is only the JSON-parsed wire payload
+  // (see extractToolCallsFromResponse) — it has NOT been validated against
+  // the tool's Zod inputSchema. The executor validates separately, right
+  // before calling `execute` (see validateToolInput in tool-executor.ts), so
+  // handing the raw payload to the predicate would let the two see different
+  // values whenever the schema applies a default, coercion, or transform
+  // (e.g. schema `{ dangerous: z.boolean().default(true) }` + model emits
+  // `{}`: the predicate sees `undefined` and waves the call through, then
+  // `execute` runs with `dangerous: true`).
+  //
+  // Parse with the same schema the executor uses so the predicate decides on
+  // exactly the values `execute` will receive.
   if (typeof requireApproval === 'function') {
-    const rawArgs: unknown = toolCall.arguments;
-    if (!isRecord(rawArgs)) {
-      throw new Error(
-        `toolCall.arguments for "${toolCall.name}" must be an object after Zod validation, got ${rawArgs === null ? 'null' : Array.isArray(rawArgs) ? 'array' : typeof rawArgs}`,
-      );
+    const parsed = safeParseSchemaSync(tool.function.inputSchema, toolCall.arguments);
+    if (!parsed.success) {
+      // There is no trustworthy value to pass to the predicate. Fail closed:
+      // a PreToolUse hook may later replace invalid input with executable
+      // input, so schema-invalid wire arguments cannot safely bypass approval.
+      return true;
     }
-    return requireApproval(rawArgs, context);
+    if (!isRecord(parsed.data)) {
+      // Valid per the schema but not an object — the predicate contract is
+      // Record<string, unknown>, so there is no trustworthy value to judge.
+      // Fail closed.
+      return true;
+    }
+    return requireApproval(parsed.data, context);
   }
 
   // Otherwise treat as boolean

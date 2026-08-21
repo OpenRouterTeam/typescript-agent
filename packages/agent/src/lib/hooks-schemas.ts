@@ -75,13 +75,9 @@ export const PostToolUseFailurePayloadSchema = z4.object({
 });
 
 /**
- * Fired when a tool EXECUTION throws or returns an error.
- *
- * Deliberately NOT fired when a tool never ran: a PermissionRequest 'deny',
- * a user rejection on approval resume, or a PreToolUse block all synthesize
- * a rejected result without execution, so no failure event is emitted.
- * Observe those outcomes via the PermissionRequest / PreToolUse hooks
- * themselves.
+ * Fired when an entered tool lifecycle fails after PreToolUse, including a
+ * mutated-input approval denial/rejection or schema-invalid mutation.
+ * Initial approval denials and rejections do not enter the lifecycle.
  */
 export type PostToolUseFailurePayload = Readonly<z4.infer<typeof PostToolUseFailurePayloadSchema>>;
 
