@@ -127,6 +127,24 @@ What each stream emits:
 | `getItemsStream()` | all output items (messages, function calls, …) — output items **only**, no usage/response metadata |
 | `getFullResponsesStream()` | every response event, including `tool.result` / `tool.call_output` execution events, and each round's `response.completed` (with that round's usage block) |
 
+#### Replay history for stream consumers
+
+Every stream getter above can start from event zero, so by default a result
+retains its full event history for the lifetime of the call. Long generator-tool
+streams make that history expensive in a constrained runtime. When all consumers
+attach before draining, `streamReplay: 'active-consumers'` releases buffered
+events once every attached consumer has advanced past them:
+
+```typescript
+const result = callModel(client, {
+  model,
+  input,
+  // Default 'full' retains complete replay history for delayed and
+  // sequential consumers; 'active-consumers' trades that for bounded memory.
+  streamReplay: 'active-consumers',
+});
+```
+
 #### Usage across a multi-round tool loop
 
 `getResponse()` resolves to the **final** round's response, so in a

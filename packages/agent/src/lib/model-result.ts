@@ -59,6 +59,7 @@ import {
   applyNextTurnParamsToRequest,
   executeNextTurnParamsFunctions,
 } from './next-turn-params.js';
+import type { StreamReplay } from './reusable-stream.js';
 import { ReusableReadableStream } from './reusable-stream.js';
 import { isStopConditionMet } from './stop-conditions.js';
 import type { ItemInProgress, StreamableOutputItem } from './stream-transformers.js';
@@ -305,6 +306,14 @@ function isEventStream(value: unknown): value is EventStream<models.StreamEvents
   return typeof maybeStream.getReader === 'function';
 }
 
+function isTerminalResponseStreamEvent(event: models.StreamEvents): boolean {
+  return (
+    isResponseCompletedEvent(event) ||
+    isResponseFailedEvent(event) ||
+    isResponseIncompleteEvent(event)
+  );
+}
+
 /**
  * Map the server's usage block onto the hook-facing ModelCallUsage shape.
  * Returns undefined when the response carried no usage accounting.
@@ -462,6 +471,8 @@ export interface GetResponseOptions<
   onTurnStart?: (context: TurnContext) => void | Promise<void>;
   /** Callback invoked at the end of each tool execution turn */
   onTurnEnd?: (context: TurnContext, response: models.OpenResponsesResult) => void | Promise<void>;
+  /** Replay history retained for delayed and sequential stream consumers. */
+  streamReplay?: StreamReplay;
   /**
    * When the loop exits because `stopWhen` was met and the last response
    * still contained tool calls, make one more model request with no tools so
@@ -633,6 +644,9 @@ export class ModelResult<
     null;
   private initialStreamPipeStarted = false;
   private initialPipePromise: Promise<void> | null = null;
+  private initialResponse: models.OpenResponsesResult | null = null;
+  private initialResponseError: Error | null = null;
+  private readonly streamReplay: StreamReplay;
 
   // Context store for typed tool context (persists across turns)
   private contextStore: ToolContextStore | null = null;
@@ -769,6 +783,7 @@ export class ModelResult<
 
   constructor(options: GetResponseOptions<TTools, TShared>) {
     this.options = options;
+    this.streamReplay = options.streamReplay ?? 'full';
     this.hooksManager = options.hooks;
     const doomLoopConfig = resolveDoomLoopOption(options.doomLoop);
     this.doomLoopMonitor = doomLoopConfig ? new DoomLoopMonitor(doomLoopConfig) : null;
@@ -883,7 +898,7 @@ export class ModelResult<
    */
   private ensureTurnBroadcaster(): ToolEventBroadcaster<CorrelatedResponseStreamEvent<TTools>> {
     if (!this.turnBroadcaster) {
-      this.turnBroadcaster = new ToolEventBroadcaster();
+      this.turnBroadcaster = new ToolEventBroadcaster(this.streamReplay);
     }
     return this.turnBroadcaster;
   }
@@ -926,7 +941,32 @@ export class ModelResult<
         timestamp: Date.now(),
       } satisfies TurnEndEvent);
     })().catch((error) => {
-      broadcaster.complete(error instanceof Error ? error : new Error(String(error)));
+      const normalizedError = error instanceof Error ? error : new Error(String(error));
+      this.initialResponseError = normalizedError;
+      broadcaster.complete(normalizedError);
+    });
+  }
+
+  private captureInitialStreamEvent(event: models.StreamEvents): void {
+    if (isResponseCompletedEvent(event) || isResponseIncompleteEvent(event)) {
+      this.initialResponse = event.response;
+      return;
+    }
+
+    if (isResponseFailedEvent(event)) {
+      this.initialResponseError = new Error(
+        `Response failed: ${JSON.stringify(event.response.error)}`,
+      );
+    }
+  }
+
+  private setReusableStream(stream: ReadableStream<models.StreamEvents>): void {
+    this.initialResponse = null;
+    this.initialResponseError = null;
+    this.reusableStream = new ReusableReadableStream(stream, {
+      streamReplay: this.streamReplay,
+      onValue: (event) => this.captureInitialStreamEvent(event),
+      isTerminalValue: isTerminalResponseStreamEvent,
     });
   }
 
@@ -1091,7 +1131,10 @@ export class ModelResult<
     turnNumber: number,
   ): Promise<models.OpenResponsesResult> {
     if (isEventStream(value)) {
-      const stream = new ReusableReadableStream(value);
+      const stream = new ReusableReadableStream(value, {
+        streamReplay: this.streamReplay,
+        isTerminalValue: isTerminalResponseStreamEvent,
+      });
       if (this.turnBroadcaster) {
         return this.pipeAndConsumeStream(stream, turnNumber);
       }
@@ -1118,12 +1161,47 @@ export class ModelResult<
     if (this.finalResponse) {
       return this.finalResponse;
     }
+
+    const initialPipePromise = this.initialPipePromise;
+    if (initialPipePromise) {
+      await initialPipePromise;
+    }
+
+    if (this.initialResponseError) {
+      throw this.initialResponseError;
+    }
+
+    if (this.initialResponse) {
+      await this.emitPendingModelCallOnce(this.initialResponse);
+      return this.initialResponse;
+    }
+
     if (this.reusableStream) {
       const response = await consumeStreamForCompletion(this.reusableStream);
       await this.emitPendingModelCallOnce(response);
       return response;
     }
     throw new Error('Neither stream nor response initialized');
+  }
+
+  private extractCachedCompletion(): models.OpenResponsesResult {
+    if (this.initialResponseError) {
+      throw this.initialResponseError;
+    }
+    if (this.initialResponse) {
+      return this.initialResponse;
+    }
+    if (!this.reusableStream) {
+      throw new Error('Stream not initialized');
+    }
+    return extractCompletionFromBuffer(this.reusableStream);
+  }
+
+  private tryExtractCachedCompletion(): models.OpenResponsesResult | undefined {
+    if (this.initialResponse) {
+      return this.initialResponse;
+    }
+    return this.reusableStream ? tryExtractCompletionFromBuffer(this.reusableStream) : undefined;
   }
 
   /**
@@ -2476,7 +2554,7 @@ export class ModelResult<
           // Sync backward scan of the retained buffer — not a consumer
           // replay, which would cost one microtask hop per buffered event
           // on every hook-less streaming teardown.
-          await this.emitPendingModelCallOnce(extractCompletionFromBuffer(this.reusableStream));
+          await this.emitPendingModelCallOnce(this.extractCachedCompletion());
         } else if (this.reusableStream) {
           // Consumers stop at the terminal event (streamTerminationEvents),
           // usually before the pump reads the source close that flips
@@ -2486,7 +2564,7 @@ export class ModelResult<
           // dropping the parked telemetry. Stays silent (no emit, no
           // throw) when nothing terminal was buffered — e.g. an errored
           // mid-flight stream, where no materialized response exists.
-          const buffered = tryExtractCompletionFromBuffer(this.reusableStream);
+          const buffered = this.tryExtractCachedCompletion();
           if (buffered) {
             await this.emitPendingModelCallOnce(buffered);
           }
@@ -5271,6 +5349,7 @@ export class ModelResult<
       strictFinalResponse: _sfr,
       hooks: _h,
       doomLoop: _dl,
+      streamReplay: _sr,
       signal: _sig,
       toolTimeoutMs: _ttm,
       toolConcurrency: _tc,
@@ -5882,7 +5961,7 @@ export class ModelResult<
       // Handle both streaming and non-streaming responses
       // The API may return a non-streaming response even when stream: true is requested
       if (isEventStream(apiResult.value)) {
-        this.reusableStream = new ReusableReadableStream(apiResult.value);
+        this.setReusableStream(apiResult.value);
       } else if (this.isNonStreamingResponse(apiResult.value)) {
         // API returned a complete response directly - use it as the final response
         this.finalResponse = apiResult.value;
@@ -6189,7 +6268,7 @@ export class ModelResult<
 
     // Handle both streaming and non-streaming responses
     if (isEventStream(apiResult.value)) {
-      this.reusableStream = new ReusableReadableStream(apiResult.value);
+      this.setReusableStream(apiResult.value);
     } else if (this.isNonStreamingResponse(apiResult.value)) {
       this.finalResponse = apiResult.value;
       await this.emitPendingModelCallOnce(this.finalResponse);
@@ -7219,7 +7298,7 @@ export class ModelResult<
       throw new Error('Stream not initialized');
     }
 
-    const completedResponse = await consumeStreamForCompletion(this.reusableStream);
+    const completedResponse = await this.getInitialResponse();
     await this.emitPendingModelCallOnce(completedResponse);
     return extractToolCallsFromResponse(completedResponse) as ParsedToolCall<TTools[number]>[];
   }
@@ -7525,7 +7604,7 @@ export class ModelResult<
         // reusable stream is a passive observation: it buffers events
         // without executing tools or mutating conversation state, so the
         // resume generation is counted without advancing the loop.
-        await this.emitPendingModelCallOnce(await consumeStreamForCompletion(this.reusableStream));
+        await this.emitPendingModelCallOnce(await this.getInitialResponse());
       }
     } catch (error) {
       // Intentionally swallowed — see the "never rejects" note above. The
