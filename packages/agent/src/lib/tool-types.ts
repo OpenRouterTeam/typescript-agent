@@ -2002,3 +2002,10 @@ export function toolHasApprovalConfigured(tool: Tool): boolean {
 export function hasApprovalRequiredTools(tools: readonly Tool[]): boolean {
   return tools.some(toolHasApprovalConfigured);
 }
+
+/**
+ * Re-exported so validation call sites (model-result, conversation-state)
+ * can reach the schema-aware parse helper without widening their import
+ * fan-out; schema.ts is this module's own dependency.
+ */
+export { safeParseSchemaSync } from './schema.js';

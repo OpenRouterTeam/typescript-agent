@@ -61,7 +61,6 @@ import {
 } from './next-turn-params.js';
 import type { StreamReplay } from './reusable-stream.js';
 import { ReusableReadableStream } from './reusable-stream.js';
-import { safeParseSchemaSync } from './schema.js';
 import { isStopConditionMet } from './stop-conditions.js';
 import type { ItemInProgress, StreamableOutputItem } from './stream-transformers.js';
 import {
@@ -134,6 +133,7 @@ import {
   isServerTool,
   isToolCallOutputEvent,
   isUnifiedTool,
+  safeParseSchemaSync,
 } from './tool-types.js';
 
 /**

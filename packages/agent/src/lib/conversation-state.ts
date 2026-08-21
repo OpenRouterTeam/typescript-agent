@@ -1,8 +1,4 @@
 import type * as models from '@openrouter/sdk/models';
-// Same validation semantics the executor uses (schema.ts's Standard Schema +
-// zod dual path, see `validateSchemaSync`) so the approval predicate and
-// `execute` agree on parse behavior. schema.ts is a leaf module — no cycle.
-import { safeParseSchemaSync } from './schema.js';
 import type {
   ConversationState,
   ParsedToolCall,
@@ -10,7 +6,11 @@ import type {
   TurnContext,
   UnsentToolResult,
 } from './tool-types.js';
-import { isClientTool } from './tool-types.js';
+// Same validation semantics the executor uses (schema.ts's Standard Schema +
+// zod dual path, see `validateSchemaSync`) so the approval predicate and
+// `execute` agree on parse behavior. Re-exported through tool-types, whose
+// schema dependency is already part of this module's graph.
+import { isClientTool, safeParseSchemaSync } from './tool-types.js';
 
 import { normalizeInputToArray } from './turn-context.js';
 
