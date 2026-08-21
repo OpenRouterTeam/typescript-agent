@@ -88,6 +88,10 @@
       "types": "./esm/lib/tool-event-broadcaster.d.ts",
       "default": "./esm/lib/tool-event-broadcaster.js"
     },
+    "./reusable-stream": {
+      "types": "./esm/lib/reusable-stream.d.ts",
+      "default": "./esm/lib/reusable-stream.js"
+    },
     "./turn-context": {
       "types": "./esm/lib/turn-context.d.ts",
       "default": "./esm/lib/turn-context.js"
