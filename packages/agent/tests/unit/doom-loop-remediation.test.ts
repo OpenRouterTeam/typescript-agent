@@ -588,37 +588,13 @@ describe('D2/D3: approval-resume doom gating and verdict persistence', () => {
         pausedCallId as string,
       ],
     });
+    const requestsBeforeResume = mockBetaResponsesSend.mock.calls.length;
     await resume1.getResponse().catch(() => undefined);
 
-    const pausedAgain = accessor.getLatest();
-    expect(pausedAgain?.status).toBe('awaiting_approval');
-    const secondCallId = pausedAgain?.pendingToolCalls?.[0]?.id;
-    expect(secondCallId).toBeDefined();
-    const requestsBeforeResume2 = mockBetaResponsesSend.mock.calls.length;
-
-    // Resume 2: approving the second identical call crosses the stop rung
-    // (restored streak 1 + this execution = 2). NO unsent-results model
-    // request may fire.
-    const resume2 = callModel(client, {
-      model: 'test-model',
-      input: undefined as unknown as string,
-      tools: [
-        approvalTool,
-      ] as const,
-      doomLoop: {
-        ladder: {
-          observe: 1,
-          block: false,
-          stop: 2,
-        },
-      },
-      toolChoice: 'required',
-      state: accessor,
-      approveToolCalls: [
-        secondCallId as string,
-      ],
-    });
-    const verdict = await resume2.getDoomLoopVerdict();
+    // The initial checkpoint now runs before approval. The repeated call in
+    // the response after resume therefore crosses the stop rung before a
+    // second approval pause or PreToolUse lifecycle can begin.
+    const verdict = await resume1.getDoomLoopVerdict();
 
     expect(verdict).toMatchObject({
       action: 'stop',
@@ -626,7 +602,7 @@ describe('D2/D3: approval-resume doom gating and verdict persistence', () => {
       toolName: 'risky',
     });
     // No additional model request after the doom stop.
-    expect(mockBetaResponsesSend).toHaveBeenCalledTimes(requestsBeforeResume2);
+    expect(mockBetaResponsesSend).toHaveBeenCalledTimes(requestsBeforeResume + 1);
 
     // The stop verdict is persisted for decision-only resumes.
     expect(accessor.getLatest()?.doomLoop?.stopVerdict).toMatchObject({

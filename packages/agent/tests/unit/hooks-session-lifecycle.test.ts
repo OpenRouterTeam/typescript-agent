@@ -587,7 +587,7 @@ describe('session lifecycle end-to-end', () => {
     );
   });
 
-  it('strips hooks from the outgoing API request on both request-resolution paths', async () => {
+  it('strips hooks and activeTools from the outgoing API request on both request-resolution paths', async () => {
     // `hooks` is a client-only field. callModel destructures it before the
     // request reaches ModelResult, but ModelResult is publicly exported and
     // its constructor accepts a request that may still carry `hooks` (e.g.
@@ -609,6 +609,9 @@ describe('session lifecycle end-to-end', () => {
         model: 'test-model',
         input: 'hi',
         hooks,
+        activeTools: [
+          'echo',
+        ],
       },
       hooks,
     } as unknown as ConstructorParameters<typeof ModelResult>[0]);
@@ -635,6 +638,7 @@ describe('session lifecycle end-to-end', () => {
         }
       ).responsesRequest;
       expect(sentRequest).not.toHaveProperty('hooks');
+      expect(sentRequest).not.toHaveProperty('activeTools');
     }
   });
 });

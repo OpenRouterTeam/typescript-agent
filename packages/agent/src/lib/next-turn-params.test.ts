@@ -112,3 +112,89 @@ describe('applyNextTurnParamsToRequest', () => {
     expect(result.instructions).toBe('');
   });
 });
+
+/*
+ * `toolChoice` is how a tool-search tool widens the model's reach mid-run: the
+ * `tools` array stays byte-identical (preserving the provider's prompt-cache
+ * prefix) while `{ type: 'allowed_tools', tools: [...] }` grows.
+ */
+describe('applyNextTurnParamsToRequest with allowed_tools', () => {
+  const allowed = (names: string[]): models.ResponsesRequest['toolChoice'] => ({
+    type: 'allowed_tools',
+    mode: 'auto',
+    tools: names.map((name) => ({
+      type: 'function',
+      name,
+    })),
+  });
+
+  it('replaces toolChoice with a widened allowed_tools set', () => {
+    const request = createBaseRequest({
+      toolChoice: allowed([
+        'tool_search',
+      ]),
+    });
+
+    const result = applyNextTurnParamsToRequest(request, {
+      toolChoice: allowed([
+        'tool_search',
+        'get_weather',
+      ]),
+    });
+
+    expect(result.toolChoice).toEqual(
+      allowed([
+        'tool_search',
+        'get_weather',
+      ]),
+    );
+  });
+
+  it('leaves the tools array untouched so the prompt-cache prefix survives', () => {
+    const tools = [
+      {
+        type: 'function' as const,
+        name: 'tool_search',
+        parameters: {},
+      },
+      {
+        type: 'function' as const,
+        name: 'get_weather',
+        parameters: {},
+      },
+    ];
+    const request = createBaseRequest({
+      tools,
+      toolChoice: allowed([
+        'tool_search',
+      ]),
+    });
+
+    const result = applyNextTurnParamsToRequest(request, {
+      toolChoice: allowed([
+        'tool_search',
+        'get_weather',
+      ]),
+    });
+
+    expect(result.tools).toBe(tools);
+  });
+
+  it('leaves toolChoice alone when no tool computed one', () => {
+    const request = createBaseRequest({
+      toolChoice: allowed([
+        'tool_search',
+      ]),
+    });
+
+    const result = applyNextTurnParamsToRequest(request, {
+      temperature: 0.2,
+    });
+
+    expect(result.toolChoice).toEqual(
+      allowed([
+        'tool_search',
+      ]),
+    );
+  });
+});

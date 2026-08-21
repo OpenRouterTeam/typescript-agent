@@ -1,6 +1,6 @@
 {
   "name": "@openrouter/agent",
-  "version": "0.9.0",
+  "version": "0.10.0",
   "author": "OpenRouter",
   "description": "Agent toolkit for building AI applications with OpenRouter — tool orchestration, streaming, multi-turn conversations, and format compatibility.",
   "keywords": [
@@ -88,15 +88,42 @@
       "types": "./esm/lib/tool-event-broadcaster.d.ts",
       "default": "./esm/lib/tool-event-broadcaster.js"
     },
+    "./reusable-stream": {
+      "types": "./esm/lib/reusable-stream.d.ts",
+      "default": "./esm/lib/reusable-stream.js"
+    },
     "./turn-context": {
       "types": "./esm/lib/turn-context.d.ts",
       "default": "./esm/lib/turn-context.js"
+    },
+    "./tool-set": {
+      "types": "./esm/lib/tool-set.d.ts",
+      "default": "./esm/lib/tool-set.js"
     },
     "./openrouter": {
       "types": "./esm/openrouter.d.ts",
       "default": "./esm/openrouter.js"
     },
-    "./package.json": "./package.json",
+    "./mcp": {
+      "types": "./esm/mcp/index.d.ts",
+      "default": "./esm/mcp/index.js"
+    },
+    "./mcp/create-mcp-tools": {
+      "types": "./esm/mcp/create-mcp-tools.d.ts",
+      "default": "./esm/mcp/create-mcp-tools.js"
+    },
+    "./mcp/types": {
+      "types": "./esm/mcp/types.d.ts",
+      "default": "./esm/mcp/types.js"
+    },
+    "./mcp/schema": {
+      "types": "./esm/mcp/schema/json-schema-to-zod.d.ts",
+      "default": "./esm/mcp/schema/json-schema-to-zod.js"
+    },
+    "./mcp/cache": {
+      "types": "./esm/mcp/cache/cache-store.d.ts",
+      "default": "./esm/mcp/cache/cache-store.js"
+    },
     "./tool-concurrency": {
       "types": "./esm/lib/tool-concurrency.d.ts",
       "default": "./esm/lib/tool-concurrency.js"
@@ -120,7 +147,8 @@
     "./agent-tool": {
       "types": "./esm/lib/agent-tool.d.ts",
       "default": "./esm/lib/agent-tool.js"
-    }
+    },
+    "./package.json": "./package.json"
   },
   "sideEffects": false,
   "repository": {
@@ -135,20 +163,33 @@
   "files": [
     "esm",
     "package.json",
-    "README.md"
+    "README.md",
+    "THIRD_PARTY_NOTICES.md"
   ],
   "scripts": {
     "lint": "biome check src tests",
     "lint:fix": "biome check --write src tests",
-    "build": "tsc",
+    "build": "node scripts/gen-version.mjs && tsc",
     "test": "vitest --run --project unit",
     "test:e2e": "vitest --run --project e2e --coverage.enabled=false",
     "test:watch": "vitest --watch --project unit",
     "typecheck": "tsc --noEmit -p tsconfig.typecheck.json",
-    "compile": "tsc"
+    "compile": "node scripts/gen-version.mjs && tsc",
+    "gen:version": "node scripts/gen-version.mjs"
   },
   "dependencies": {
     "@openrouter/sdk": "^0.13.7",
     "zod": "^4.0.0"
+  },
+  "peerDependencies": {
+    "@modelcontextprotocol/client": "^2.0.0"
+  },
+  "peerDependenciesMeta": {
+    "@modelcontextprotocol/client": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@modelcontextprotocol/client": "^2.0.0"
   }
 }
