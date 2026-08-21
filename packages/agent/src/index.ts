@@ -206,6 +206,8 @@ export {
   executeNextTurnParamsFunctions,
 } from './lib/next-turn-params.js';
 export type { StreamReplay } from './lib/reusable-stream.js';
+export type { InferSchemaInput, InferSchemaOutput, ObjectSchema, Schema } from './lib/schema.js';
+export { StandardSchemaError } from './lib/schema.js';
 // Stop condition helpers
 export {
   finishReasonIs,

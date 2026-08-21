@@ -1,7 +1,15 @@
 import type * as models from '@openrouter/sdk/models';
 import * as z4 from 'zod/v4';
-import type { $ZodObject, $ZodShape, $ZodType } from 'zod/v4/core';
 import { isContentArray } from './conversation-state.js';
+import type { InferSchemaOutput, ObjectSchema, Schema } from './schema.js';
+import {
+  isZodSchema,
+  StandardSchemaError,
+  safeValidateSchema,
+  tryStandardJsonSchema,
+  validateSchema,
+  validateSchemaSync,
+} from './schema.js';
 import { isFunctionCallItem, isFunctionCallOutputItem } from './stream-type-guards.js';
 import type { ToolContextStore, ToolExecutionExtras } from './tool-context.js';
 import { buildToolExecuteContext, buildToolRunContext } from './tool-context.js';
@@ -74,37 +82,42 @@ export function sanitizeJsonSchema(obj: unknown): unknown {
 }
 
 /**
- * Typeguard to check if a value is a valid Zod schema compatible with zod/v4.
- * Zod schemas have a _zod property that contains schema metadata.
- */
-function isZodSchema(value: unknown): value is z4.ZodType {
-  if (typeof value !== 'object' || value === null) {
-    return false;
-  }
-  if (!('_zod' in value)) {
-    return false;
-  }
-  // After the 'in' check, TypeScript knows value has _zod property
-  return typeof value._zod === 'object';
-}
-
-/**
  * Convert a Zod schema to JSON Schema using Zod v4's toJSONSchema function.
  * Accepts ZodType from the main zod package for user compatibility.
  * The resulting schema is sanitized to remove metadata properties (like ~standard)
  * that would cause 400 errors with downstream providers.
  */
-export function convertZodToJsonSchema(zodSchema: $ZodType): Record<string, unknown> {
+export function convertZodToJsonSchema(zodSchema: Schema): Record<string, unknown> {
   if (!isZodSchema(zodSchema)) {
     throw new Error('Invalid Zod schema provided');
   }
-  // Use draft-7 as it's closest to OpenAPI 3.0's JSON Schema variant
-  const jsonSchema = z4.toJSONSchema(zodSchema, {
-    target: 'draft-7',
-  });
-  // jsonSchema is always a Record<string, unknown> from toJSONSchema
-  // The overloaded sanitizeJsonSchema preserves this type
-  return sanitizeJsonSchema(jsonSchema);
+  return sanitizeJsonSchema(
+    z4.toJSONSchema(zodSchema, {
+      target: 'draft-7',
+    }),
+  );
+}
+
+export function convertSchemaToJsonSchema(
+  schema: Schema,
+  jsonSchema?: Record<string, unknown>,
+): Record<string, unknown> {
+  // Explicit caller intent always wins — including for Zod, where
+  // z4.toJSONSchema throws on unrepresentable constructs (z.custom(),
+  // some transforms) and a hand-written schema is the only way through.
+  if (jsonSchema) {
+    return sanitizeJsonSchema(jsonSchema);
+  }
+  if (isZodSchema(schema)) {
+    return convertZodToJsonSchema(schema);
+  }
+  const standardJsonSchema = tryStandardJsonSchema(schema, 'draft-07');
+  if (standardJsonSchema) {
+    return sanitizeJsonSchema(standardJsonSchema);
+  }
+  throw new Error(
+    'Non-Zod inputSchema must implement StandardJSONSchemaV1 or provide inputJsonSchema.',
+  );
 }
 
 /**
@@ -129,35 +142,31 @@ export function convertToolsToAPIFormat(
       name: tool.function.name,
       description: tool.function.description || null,
       strict: tool.function.strict ?? null,
-      parameters: convertZodToJsonSchema(tool.function.inputSchema),
+      parameters: convertSchemaToJsonSchema(
+        tool.function.inputSchema,
+        tool.function.inputJsonSchema,
+      ),
     };
     return apiTool;
   });
 }
 
-/**
- * Validate tool input against Zod schema
- * @throws ZodError if validation fails
- */
-export function validateToolInput<T>(schema: $ZodType<T>, args: unknown): T {
-  return z4.parse(schema, args);
+export async function validateToolInput<TSchema extends Schema>(
+  schema: TSchema,
+  args: unknown,
+): Promise<InferSchemaOutput<TSchema>> {
+  return validateSchema(schema, args);
 }
 
-/**
- * Validate tool output against Zod schema
- * @throws ZodError if validation fails
- */
-export function validateToolOutput<T>(schema: $ZodType<T>, result: unknown): T {
-  return z4.parse(schema, result);
+export async function validateToolOutput<TSchema extends Schema>(
+  schema: TSchema,
+  result: unknown,
+): Promise<InferSchemaOutput<TSchema>> {
+  return validateSchema(schema, result);
 }
 
-/**
- * Try to validate a value against a Zod schema without throwing
- * @returns true if validation succeeds, false otherwise
- */
-function tryValidate(schema: $ZodType, value: unknown): boolean {
-  const result = z4.safeParse(schema, value);
-  return result.success;
+async function tryValidate(schema: Schema, value: unknown): Promise<boolean> {
+  return (await safeValidateSchema(schema, value)).success;
 }
 
 /**
@@ -194,14 +203,24 @@ export function parseToolCallArguments(argumentsString: string): unknown {
  * otherwise.
  */
 // biome-ignore lint: parameters match the internal API shape
-function buildExecuteCtx(
+async function buildExecuteCtx(
   tool: ClientTool,
   toolCall: ParsedToolCall<Tool> | undefined,
   turnContext: TurnContext,
   contextStore?: ToolContextStore,
-  sharedSchema?: $ZodObject<$ZodShape>,
+  sharedSchema?: ObjectSchema,
   extras?: ToolExecutionExtras,
-): ToolExecuteContext {
+): Promise<ToolExecuteContext> {
+  if (contextStore && tool.function.contextSchema) {
+    await validateSchema(
+      tool.function.contextSchema,
+      contextStore.getToolContext(tool.function.name),
+    );
+  }
+  if (contextStore && sharedSchema) {
+    await validateSchema(sharedSchema, contextStore.getToolContext('shared'));
+  }
+
   const resolvedToolCall = turnContext.toolCall ?? (toolCall && toFunctionCallItem(toolCall));
   return buildToolExecuteContext(
     resolvedToolCall
@@ -214,7 +233,10 @@ function buildExecuteCtx(
     tool.function.name,
     tool.function.contextSchema,
     sharedSchema,
-    extras,
+    {
+      ...extras,
+      contextValidated: true,
+    },
   );
 }
 
@@ -250,7 +272,7 @@ export async function executeRegularTool(
   toolCall: ParsedToolCall<Tool>,
   context: TurnContext,
   contextStore?: ToolContextStore,
-  sharedSchema?: $ZodObject<$ZodShape>,
+  sharedSchema?: ObjectSchema,
   extras?: ToolExecutionExtras,
 ): Promise<ToolExecutionResult<Tool>> {
   if (!isRegularExecuteTool(tool)) {
@@ -262,8 +284,8 @@ export async function executeRegularTool(
   const source = isMcpTool(tool) ? 'mcp' : 'client';
 
   try {
-    const validatedInput = validateToolInput(tool.function.inputSchema, toolCall.arguments);
-    const executeContext = buildExecuteCtx(
+    const validatedInput = await validateToolInput(tool.function.inputSchema, toolCall.arguments);
+    const executeContext = await buildExecuteCtx(
       tool,
       toolCall,
       context,
@@ -277,7 +299,7 @@ export async function executeRegularTool(
 
     // Validate output if schema is provided
     if (tool.function.outputSchema) {
-      const validatedOutput = validateToolOutput(tool.function.outputSchema, result);
+      const validatedOutput = await validateToolOutput(tool.function.outputSchema, result);
 
       return {
         toolCallId: toolCall.id,
@@ -317,7 +339,7 @@ export async function executeGeneratorTool(
   context: TurnContext,
   onPreliminaryResult?: (toolCallId: string, result: unknown) => void,
   contextStore?: ToolContextStore,
-  sharedSchema?: $ZodObject<$ZodShape>,
+  sharedSchema?: ObjectSchema,
   extras?: ToolExecutionExtras,
 ): Promise<ToolExecutionResult<Tool>> {
   if (!isGeneratorTool(tool)) {
@@ -327,8 +349,8 @@ export async function executeGeneratorTool(
   const source = isMcpTool(tool) ? 'mcp' : 'client';
 
   try {
-    const validatedInput = validateToolInput(tool.function.inputSchema, toolCall.arguments);
-    const executeContext = buildExecuteCtx(
+    const validatedInput = await validateToolInput(tool.function.inputSchema, toolCall.arguments);
+    const executeContext = await buildExecuteCtx(
       tool,
       toolCall,
       context,
@@ -351,14 +373,14 @@ export async function executeGeneratorTool(
       lastEmittedValue = event;
       hasEmittedValue = true;
 
-      const matchesOutputSchema = tryValidate(tool.function.outputSchema, event);
-      const matchesEventSchema = tryValidate(tool.function.eventSchema, event);
+      const matchesOutputSchema = await tryValidate(tool.function.outputSchema, event);
+      const matchesEventSchema = await tryValidate(tool.function.eventSchema, event);
 
       if (matchesOutputSchema && !matchesEventSchema && !hasFinalResult) {
-        finalResult = validateToolOutput(tool.function.outputSchema, event);
+        finalResult = await validateToolOutput(tool.function.outputSchema, event);
         hasFinalResult = true;
       } else {
-        const validatedPreliminary = validateToolOutput(tool.function.eventSchema, event);
+        const validatedPreliminary = await validateToolOutput(tool.function.eventSchema, event);
         preliminaryResults.push(validatedPreliminary);
         if (onPreliminaryResult) {
           onPreliminaryResult(toolCall.id, validatedPreliminary);
@@ -369,7 +391,7 @@ export async function executeGeneratorTool(
     }
 
     if (iterResult.value !== undefined) {
-      finalResult = validateToolOutput(tool.function.outputSchema, iterResult.value);
+      finalResult = await validateToolOutput(tool.function.outputSchema, iterResult.value);
       hasFinalResult = true;
     }
 
@@ -379,7 +401,7 @@ export async function executeGeneratorTool(
           `Generator tool "${toolCall.name}" completed without emitting any values or returning a result`,
         );
       }
-      finalResult = validateToolOutput(tool.function.outputSchema, lastEmittedValue);
+      finalResult = await validateToolOutput(tool.function.outputSchema, lastEmittedValue);
     }
 
     return {
@@ -414,7 +436,7 @@ export async function executeHITLTool(
   toolCall: ParsedToolCall<Tool>,
   context: TurnContext,
   contextStore?: ToolContextStore,
-  sharedSchema?: $ZodObject<$ZodShape>,
+  sharedSchema?: ObjectSchema,
   extras?: ToolExecutionExtras,
 ): Promise<ToolExecutionResult<Tool> | null> {
   if (!isHITLTool(tool)) {
@@ -424,8 +446,8 @@ export async function executeHITLTool(
   const source = isMcpTool(tool) ? 'mcp' : 'client';
 
   try {
-    const validatedInput = validateToolInput(tool.function.inputSchema, toolCall.arguments);
-    const executeContext = buildExecuteCtx(
+    const validatedInput = await validateToolInput(tool.function.inputSchema, toolCall.arguments);
+    const executeContext = await buildExecuteCtx(
       tool,
       toolCall,
       context,
@@ -444,7 +466,7 @@ export async function executeHITLTool(
     }
 
     // outputSchema is required on HITL tools — validate unconditionally.
-    const validatedOutput = validateToolOutput(tool.function.outputSchema, result);
+    const validatedOutput = await validateToolOutput(tool.function.outputSchema, result);
     return {
       toolCallId: toolCall.id,
       toolName: toolCall.name,
@@ -543,7 +565,9 @@ async function runUnifiedTool(args: {
     const iterator = (returned as AsyncGenerator<unknown, unknown>)[Symbol.asyncIterator]();
     let step = await iterator.next();
     while (!step.done) {
-      const event = fn.eventSchema ? validateToolOutput(fn.eventSchema, step.value) : step.value;
+      const event = fn.eventSchema
+        ? await validateToolOutput(fn.eventSchema, step.value)
+        : step.value;
       onYield(event);
       step = await iterator.next();
     }
@@ -561,7 +585,62 @@ async function runUnifiedTool(args: {
     return result;
   }
 
-  return fn.outputSchema ? validateToolOutput(fn.outputSchema, result) : result;
+  return fn.outputSchema ? await validateToolOutput(fn.outputSchema, result) : result;
+}
+
+function unifiedExecutionResult({
+  toolCall,
+  source,
+  result,
+  error,
+}: {
+  toolCall: ParsedToolCall<Tool>;
+  source: 'client' | 'mcp';
+  result: unknown;
+  error?: Error;
+}): ToolExecutionResult<Tool> {
+  return {
+    toolCallId: toolCall.id,
+    toolName: toolCall.name,
+    source,
+    result,
+    ...(error !== undefined && {
+      error,
+    }),
+  };
+}
+
+function deferredInvocation({
+  toolCall,
+  result,
+  fn,
+  validatedInput,
+}: {
+  toolCall: ParsedToolCall<Tool>;
+  result: DeferredHandle;
+  fn: UnifiedTool['function'];
+  validatedInput: Record<string, unknown>;
+}): AsyncToolInvocation {
+  if (result.taskId.length === 0 || result.taskId.length > 256) {
+    throw new Error(`Tool "${toolCall.name}": ctx.defer() taskId must be 1-256 characters`);
+  }
+  return {
+    asyncMode: 'defer',
+    taskId: result.taskId,
+    ...(result.ack !== undefined
+      ? {
+          ack: result.ack,
+        }
+      : fn.ack !== undefined && {
+          ack: resolveAck(fn.ack, validatedInput),
+        }),
+    ...((result.pollAfterMs ?? fn.pollAfterMs) !== undefined && {
+      pollAfterMs: result.pollAfterMs ?? fn.pollAfterMs,
+    }),
+    ...(result.expiresAt !== undefined && {
+      expiresAt: result.expiresAt,
+    }),
+  };
 }
 
 /**
@@ -583,7 +662,7 @@ export async function prepareUnifiedInvocation(
   context: TurnContext,
   onPreliminaryResult?: (toolCallId: string, result: unknown) => void,
   contextStore?: ToolContextStore,
-  sharedSchema?: $ZodObject<$ZodShape>,
+  sharedSchema?: ObjectSchema,
   extras?: ToolExecutionExtras,
 ): Promise<ToolExecutionResult<Tool> | AsyncToolInvocation> {
   if (!isUnifiedTool(tool)) {
@@ -594,18 +673,19 @@ export async function prepareUnifiedInvocation(
 
   let validatedInput: Record<string, unknown>;
   try {
-    validatedInput = validateToolInput(fn.inputSchema, toolCall.arguments) as Record<
+    validatedInput = (await validateToolInput(fn.inputSchema, toolCall.arguments)) as Record<
       string,
       unknown
     >;
   } catch (error) {
-    return {
-      toolCallId: toolCall.id,
-      toolName: toolCall.name,
+    return unifiedExecutionResult({
+      toolCall,
       source,
       result: null,
+      // A catch value can be `undefined` (`throw undefined`, `Promise.reject()`)
+      // — normalize eagerly so the failure always surfaces as an error.
       error: error instanceof Error ? error : new Error(String(error)),
-    };
+    });
   }
 
   // Yield pipeline: eventSchema validation happened in runUnifiedTool; here
@@ -622,18 +702,44 @@ export async function prepareUnifiedInvocation(
   // (TaskLogEntry.kind 'text'), so a tool that declares a structured
   // eventSchema can still log a plain sentence.
   //
+  // Non-Zod event schemas are validated asynchronously: the sink is sync,
+  // but an async Standard Schema validator must not throw out of the tool
+  // body (the parallel yield path awaits validation). Invalid async entries
+  // are dropped with a warning; valid ones are forwarded once validated.
+  //
   // Object.create (not spread): the engine's runExtras exposes `taskId` as
   // a LIVE getter backed by the run binding — a spread would snapshot its
   // current value (undefined; the ToolTask doesn't exist yet).
   const runExtras = Object.assign(Object.create(extras?.runExtras ?? null), {
     log: (entry: unknown) => {
-      const validated =
-        fn.eventSchema && typeof entry !== 'string'
-          ? validateToolOutput(fn.eventSchema, entry)
-          : entry;
-      onYield(validated);
+      if (!fn.eventSchema || typeof entry === 'string') {
+        onYield(entry);
+        return;
+      }
+      if (isZodSchema(fn.eventSchema)) {
+        onYield(validateSchemaSync(fn.eventSchema, entry));
+        return;
+      }
+      void safeValidateSchema(fn.eventSchema, entry).then((validation) => {
+        if (validation.success) {
+          onYield(validation.data);
+        } else {
+          console.warn(
+            `[tool] ${fn.name}: dropping invalid log entry: ${validation.error.message}`,
+          );
+        }
+      });
     },
   }) as NonNullable<ToolExecutionExtras['runExtras']>;
+  if (contextStore && tool.function.contextSchema) {
+    await validateSchema(
+      tool.function.contextSchema,
+      contextStore.getToolContext(tool.function.name),
+    );
+  }
+  if (contextStore && sharedSchema) {
+    await validateSchema(sharedSchema, contextStore.getToolContext('shared'));
+  }
   const runContext = buildToolRunContext(
     context,
     contextStore,
@@ -642,6 +748,7 @@ export async function prepareUnifiedInvocation(
     sharedSchema,
     {
       ...extras,
+      contextValidated: true,
       runExtras,
     },
   );
@@ -678,43 +785,25 @@ export async function prepareUnifiedInvocation(
   try {
     const result = await invokeRun();
 
-    if (isDeferredHandle(result)) {
-      if (result.taskId.length === 0 || result.taskId.length > 256) {
-        throw new Error(`Tool "${toolCall.name}": ctx.defer() taskId must be 1-256 characters`);
-      }
-      return {
-        asyncMode: 'defer',
-        taskId: result.taskId,
-        ...(result.ack !== undefined
-          ? {
-              ack: result.ack,
-            }
-          : fn.ack !== undefined && {
-              ack: resolveAck(fn.ack, validatedInput),
-            }),
-        ...((result.pollAfterMs ?? fn.pollAfterMs) !== undefined && {
-          pollAfterMs: result.pollAfterMs ?? fn.pollAfterMs,
-        }),
-        ...(result.expiresAt !== undefined && {
-          expiresAt: result.expiresAt,
-        }),
-      };
-    }
-
-    return {
-      toolCallId: toolCall.id,
-      toolName: toolCall.name,
-      source,
-      result,
-    };
+    return isDeferredHandle(result)
+      ? deferredInvocation({
+          toolCall,
+          result,
+          fn,
+          validatedInput,
+        })
+      : unifiedExecutionResult({
+          toolCall,
+          source,
+          result,
+        });
   } catch (error) {
-    return {
-      toolCallId: toolCall.id,
-      toolName: toolCall.name,
+    return unifiedExecutionResult({
+      toolCall,
       source,
       result: null,
       error: error instanceof Error ? error : new Error(String(error)),
-    };
+    });
   }
 }
 
@@ -735,7 +824,7 @@ export async function executeTool(
   context: TurnContext,
   onPreliminaryResult?: (toolCallId: string, result: unknown) => void,
   contextStore?: ToolContextStore,
-  sharedSchema?: $ZodObject<$ZodShape>,
+  sharedSchema?: ObjectSchema,
   extras?: ToolExecutionExtras,
 ): Promise<ToolExecutionResult<Tool> | AsyncToolInvocation | null> {
   if (isHITLTool(tool)) {
@@ -801,7 +890,7 @@ export function formatToolResultForModel(result: ToolExecutionResult<Tool>): str
  * Create a user-friendly error message for tool execution errors
  */
 export function formatToolExecutionError(error: Error, toolCall: ParsedToolCall<Tool>): string {
-  if (error instanceof ZodError) {
+  if (error instanceof ZodError || error instanceof StandardSchemaError) {
     const issues = error.issues.map((issue) => ({
       path: issue.path.join('.'),
       message: issue.message,
@@ -928,7 +1017,7 @@ async function invokeOnResponseReceived(
   parsed: unknown,
   context: TurnContext,
   contextStore?: ToolContextStore,
-  sharedSchema?: $ZodObject<$ZodShape>,
+  sharedSchema?: ObjectSchema,
 ): Promise<HookOutput> {
   const hook = tool.function.onResponseReceived;
   if (!hook) {
@@ -939,10 +1028,16 @@ async function invokeOnResponseReceived(
    * call's arguments are not — so no synthetic `toolCall` is threaded. A
    * caller-provided `turnContext.toolCall` still flows through.
    */
-  const executeContext = buildExecuteCtx(tool, undefined, context, contextStore, sharedSchema);
+  const executeContext = await buildExecuteCtx(
+    tool,
+    undefined,
+    context,
+    contextStore,
+    sharedSchema,
+  );
   try {
     const hookResult = await Promise.resolve(hook(parsed, executeContext));
-    const validation = z4.safeParse(tool.function.outputSchema, hookResult);
+    const validation = await safeValidateSchema(tool.function.outputSchema, hookResult);
     if (!validation.success) {
       return formatHookError(validation.error.message, parsed);
     }
@@ -965,7 +1060,7 @@ async function computeHitlItemOutput(
   item: models.FunctionCallOutputItem,
   context: TurnContext,
   contextStore?: ToolContextStore,
-  sharedSchema?: $ZodObject<$ZodShape>,
+  sharedSchema?: ObjectSchema,
 ): Promise<HookOutput | null> {
   const parsed = parseRawFunctionCallOutput(item.output);
 
@@ -975,7 +1070,7 @@ async function computeHitlItemOutput(
 
   // No hook — validate the parsed raw output against outputSchema. On
   // success, leave the item untouched; on failure, surface an error wrapper.
-  const validation = z4.safeParse(tool.function.outputSchema, parsed);
+  const validation = await safeValidateSchema(tool.function.outputSchema, parsed);
   if (validation.success) {
     return null;
   }
@@ -1009,7 +1104,7 @@ export async function applyOnResponseReceivedHooks(
   tools: readonly Tool[] | undefined,
   context: TurnContext,
   contextStore?: ToolContextStore,
-  sharedSchema?: $ZodObject<$ZodShape>,
+  sharedSchema?: ObjectSchema,
 ): Promise<models.InputsUnion> {
   if (!tools || tools.length === 0 || !isItemArray(input)) {
     return input;

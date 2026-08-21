@@ -1,5 +1,5 @@
 import * as z4 from 'zod/v4';
-import type { $ZodType } from 'zod/v4/core';
+import type { Schema } from './schema.js';
 
 //#region Hook Names & Definition Shape
 //
@@ -28,8 +28,8 @@ export type HookName = (typeof HookName)[keyof typeof HookName];
  * A hook definition is a pair of Zod schemas: one for the payload and one for the result.
  */
 export interface HookDefinition {
-  readonly payload: $ZodType;
-  readonly result: $ZodType;
+  readonly payload: Schema;
+  readonly result: Schema;
 }
 
 /**

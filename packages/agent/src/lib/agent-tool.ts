@@ -1,8 +1,8 @@
 import type { OpenRouterCore } from '@openrouter/sdk/core';
-import type { $ZodObject, $ZodShape, $ZodType, infer as zodInfer } from 'zod/v4/core';
 import type { CallModelInput } from './async-params.js';
 import { extractTextFromResponse } from './conversation-state.js';
 import type { ModelResult } from './model-result.js';
+import type { InferSchemaOutput, InputSchemaConfig, ObjectSchema, Schema } from './schema.js';
 import { TASK_TOOL_NAME } from './tool-check.js';
 import type { TaskTranscriptSource } from './tool-task.js';
 import { truncateTranscriptTail } from './tool-task.js';
@@ -129,15 +129,14 @@ export class AgentTranscriptSource implements TaskTranscriptSource {
 
 /** Configuration for `tool.agent()`. */
 export type AgentToolConfig<
-  TInput extends $ZodObject<$ZodShape>,
-  TOutput extends $ZodType,
+  TInput extends ObjectSchema,
+  TOutput extends Schema,
   TChildTools extends readonly Tool[] = readonly Tool[],
-  TCtx extends $ZodObject<$ZodShape> = $ZodObject<$ZodShape>,
+  TCtx extends ObjectSchema = ObjectSchema,
   TName extends string = string,
-> = {
+> = InputSchemaConfig<TInput> & {
   name: TName;
   description?: string;
-  inputSchema: TInput;
   /**
    * Whether providers should enforce strict schema adherence for this agent
    * tool's generated arguments. OpenAI-style strict mode requires every
@@ -152,7 +151,7 @@ export type AgentToolConfig<
   outputSchema: TOutput;
   /** Build the child run spec from this call's arguments. */
   agent: (
-    params: zodInfer<TInput>,
+    params: InferSchemaOutput<TInput>,
     context?: ToolExecuteContext<TName, ContextFromSchema<TCtx>>,
   ) => AgentRunSpec<TChildTools> | Promise<AgentRunSpec<TChildTools>>;
   /**
@@ -160,7 +159,9 @@ export type AgentToolConfig<
    * `{ text: await child.getText() }` — so the natural outputSchema is
    * `z.object({ text: z.string() })`.
    */
-  result?: (child: ModelResult<TChildTools>) => Promise<zodInfer<TOutput>> | zodInfer<TOutput>;
+  result?: (
+    child: ModelResult<TChildTools>,
+  ) => Promise<InferSchemaOutput<TOutput>> | InferSchemaOutput<TOutput>;
   /** Hold the round this long before placeholdering. Default 250ms. */
   graceMs?: number;
   /** Deadline for the whole child run, in ms. */
@@ -168,13 +169,13 @@ export type AgentToolConfig<
   /** Max simultaneous child runs of this tool. */
   maxConcurrency?: number;
   /** Model-facing acknowledgement merged into the pending placeholder. */
-  ack?: AsyncToolAck<zodInfer<TInput>>;
+  ack?: AsyncToolAck<InferSchemaOutput<TInput>>;
   /** Check-in config (the SDK default reports turns + activity). */
   check?: ToolCheckConfig;
   contextSchema?: TCtx;
-  nextTurnParams?: NextTurnParamsFunctions<zodInfer<TInput>>;
-  requireApproval?: boolean | ToolApprovalCheck<zodInfer<TInput>>;
-  loopKey?: ToolLoopKey<zodInfer<TInput>>;
+  nextTurnParams?: NextTurnParamsFunctions<InferSchemaOutput<TInput>>;
+  requireApproval?: boolean | ToolApprovalCheck<InferSchemaOutput<TInput>>;
+  loopKey?: ToolLoopKey<InferSchemaOutput<TInput>>;
 };
 
 /** Paused child statuses that an in-memory agent child cannot recover from. */
@@ -196,14 +197,14 @@ const CHILD_PAUSE_STATUSES = new Set([
  * turn boundary. `cancelTask` / parent abort cancel the child run.
  */
 export function agentToolBuilder<
-  TInput extends $ZodObject<$ZodShape>,
-  TOutput extends $ZodType,
+  TInput extends ObjectSchema,
+  TOutput extends Schema,
   TChildTools extends readonly Tool[] = readonly Tool[],
-  TCtx extends $ZodObject<$ZodShape> = $ZodObject<$ZodShape>,
+  TCtx extends ObjectSchema = ObjectSchema,
   TName extends string = string,
 >(
   config: AgentToolConfig<TInput, TOutput, TChildTools, TCtx, TName>,
-): UnifiedTool<TInput, TOutput, $ZodType<unknown>, Record<string, unknown>, TCtx, TName> {
+): UnifiedTool<TInput, TOutput, Schema, Record<string, unknown>, TCtx, TName> {
   // Same reserved-name guards as tool() — a subagent named 'shared' would
   // collide with the shared-context store key, one named 'task' would
   // disable the built-in task-interaction tool.
@@ -233,7 +234,7 @@ export function agentToolBuilder<
   // Turn activity surfaces through ctx.log (task log + preliminary events);
   // the transcript reads the child's live in-memory conversation state.
   async function run(
-    params: zodInfer<TInput>,
+    params: InferSchemaOutput<TInput>,
     ctx?: ToolExecuteContext<TName, ContextFromSchema<TCtx>> & {
       client?: OpenRouterCore;
       log?: (entry: unknown) => void;
@@ -242,7 +243,7 @@ export function agentToolBuilder<
         transcriptSource?: TaskTranscriptSource;
       };
     },
-  ): Promise<zodInfer<TOutput>> {
+  ): Promise<InferSchemaOutput<TOutput>> {
     const client = ctx?.client;
     if (!client) {
       throw new Error(
@@ -334,6 +335,7 @@ export function agentToolBuilder<
   };
   const optionalFields = [
     'description',
+    'inputJsonSchema',
     'strict',
     'contextSchema',
     'nextTurnParams',
@@ -356,7 +358,7 @@ export function agentToolBuilder<
     function: fn as unknown as UnifiedTool<
       TInput,
       TOutput,
-      $ZodType<unknown>,
+      Schema,
       Record<string, unknown>,
       TCtx,
       TName

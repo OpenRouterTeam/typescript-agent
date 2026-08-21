@@ -1,4 +1,3 @@
-import type { $ZodType, infer as zodInfer, input as zodInput } from 'zod/v4/core';
 import { safeParse } from 'zod/v4/core';
 import { executeHandlerChain } from './hooks-emit.js';
 import { BUILT_IN_HOOK_NAMES, BUILT_IN_HOOKS } from './hooks-schemas.js';
@@ -12,6 +11,8 @@ import type {
   HooksManagerOptions,
   LifecycleHookContext,
 } from './hooks-types.js';
+import type { InferSchemaInput, InferSchemaOutput, Schema } from './schema.js';
+import { isZodSchema, safeValidateSchema } from './schema.js';
 
 //#region Types
 
@@ -34,9 +35,9 @@ type AllHooks<Custom extends HookRegistry> = {
   };
 } & {
   [K in keyof Custom]: {
-    payload: zodInfer<Custom[K]['payload']>;
-    payloadIn: zodInput<Custom[K]['payload']>;
-    result: zodInfer<Custom[K]['result']>;
+    payload: InferSchemaOutput<Custom[K]['payload']>;
+    payloadIn: InferSchemaInput<Custom[K]['payload']>;
+    result: InferSchemaOutput<Custom[K]['result']>;
   };
 };
 
@@ -185,7 +186,9 @@ export class HooksManager<Custom extends HookRegistry = Record<string, never>> {
     let chainPayload = payload as unknown as AllHooks<Custom>[K]['payload'];
     const definition = this._definitionFor(hookName);
     if (definition) {
-      const parsed = safeParse(definition.payload, payload);
+      const parsed = isZodSchema(definition.payload)
+        ? safeParse(definition.payload, payload)
+        : await safeValidateSchema(definition.payload, payload);
       if (!parsed.success) {
         const err = new Error(
           `[HooksManager] Invalid payload for hook "${hookName}": ${parsed.error.message}`,
@@ -332,8 +335,8 @@ export class HooksManager<Custom extends HookRegistry = Record<string, never>> {
 
   private _definitionFor(hookName: string):
     | {
-        payload: $ZodType;
-        result: $ZodType;
+        payload: Schema;
+        result: Schema;
       }
     | undefined {
     const builtIn = (BUILT_IN_HOOKS as Record<string, HookDefinition | undefined>)[hookName];
@@ -360,13 +363,13 @@ export function getInternalRegistrar(manager: HooksManager): InternalRegistrar {
 }
 
 /**
- * Detect a `z.void()` schema (zod v4 core). Result validation is skipped for
+ * Detect a void-result schema. Result validation is skipped for
  * void-result hooks so side-effect-only handlers can return arbitrary values
  * without tripping validation -- for built-ins and custom hooks alike.
  *
- * Implementation note: `schema._zod.def.type` is zod v4's designated
- * introspection surface for library authors (every `$ZodType` carries a
- * `_zod: $ZodTypeInternals` with a stable `def.type` discriminator). A string
+ * Zod: `schema._zod.def.type` is zod v4's designated introspection surface
+ * for library authors (every zod `$ZodType` carries a `_zod:
+ * `$ZodTypeInternals` with a stable `def.type` discriminator). A string
  * check is deliberately preferred over `instanceof $ZodVoid`, which breaks
  * across duplicated zod module instances (dual-package hazard) and mixed
  * zod/v4 vs zod/v4-mini usage. Behavior is pinned by tests in
@@ -374,10 +377,21 @@ export function getInternalRegistrar(manager: HooksManager): InternalRegistrar {
  * that restructures the internals fails loudly instead of silently
  * re-enabling result validation on void hooks.
  *
+ * Standard Schema: the spec has no introspection surface, and probing
+ * values can't distinguish "accepts only undefined" from "undefined | T"
+ * (v.optional(v.object(...)) rejects every finite sentinel set). So we fail
+ * safe: non-Zod result schemas are ALWAYS validated. A side-effect-only
+ * handler that returns undefined still passes a v.void() result schema;
+ * handlers returning real values on a void hook get warned/thrown, which is
+ * stricter than the Zod path but sane.
+ *
  * Exported for the pinning tests only; NOT re-exported from the package
  * index and NOT part of the public API.
  */
-export function isVoidSchema(schema: $ZodType): boolean {
+export function isVoidSchema(schema: Schema): boolean {
+  if (!isZodSchema(schema)) {
+    return false;
+  }
   const def = (
     schema as {
       _zod?: {

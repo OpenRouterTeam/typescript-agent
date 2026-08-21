@@ -3,7 +3,7 @@ import { betaResponsesSend } from '@openrouter/sdk/funcs/betaResponsesSend';
 import type { EventStream } from '@openrouter/sdk/lib/event-streams';
 import type { RequestOptions } from '@openrouter/sdk/lib/sdks';
 import type * as models from '@openrouter/sdk/models';
-import * as z4 from 'zod/v4';
+import type { StandardSchemaV1 } from '@standard-schema/spec';
 import type { $ZodObject, $ZodShape } from 'zod/v4/core';
 import type { CallModelInput, ResolvedCallModelInput } from './async-params.js';
 import {
@@ -133,6 +133,7 @@ import {
   isServerTool,
   isToolCallOutputEvent,
   isUnifiedTool,
+  safeParseSchemaSync,
 } from './tool-types.js';
 
 /**
@@ -454,7 +455,7 @@ export interface GetResponseOptions<
   /** Typed context data passed to tools via contextSchema. `shared` key for shared context. */
   context?: ContextInput<ToolContextMapWithShared<TTools, TShared>>;
   /** Zod schema for shared context validation */
-  sharedContextSchema?: $ZodObject<$ZodShape>;
+  sharedContextSchema?: $ZodObject<$ZodShape> | StandardSchemaV1<unknown, Record<string, unknown>>;
 
   /**
    * Call-level approval check - overrides tool-level requireApproval setting
@@ -2840,7 +2841,7 @@ export class ModelResult<
     if (!tool || !isClientTool(tool)) {
       return 'ready';
     }
-    const parsed = z4.safeParse(tool.function.inputSchema, effective.arguments);
+    const parsed = safeParseSchemaSync(tool.function.inputSchema, effective.arguments);
     if (!parsed.success || !isRecord(parsed.data)) {
       await this.blockPreparedToolCall(
         effective,
@@ -4570,7 +4571,10 @@ export class ModelResult<
 
     let input: TaskToolInput;
     try {
-      input = validateToolInput(TaskToolInputSchema, toolCall.arguments ?? {}) as TaskToolInput;
+      input = (await validateToolInput(
+        TaskToolInputSchema,
+        toolCall.arguments ?? {},
+      )) as TaskToolInput;
     } catch (error) {
       return answer(null, error instanceof Error ? error : new Error(String(error)));
     }
@@ -4681,7 +4685,7 @@ export class ModelResult<
     // its check.schema when both are present.
     let customParams: Record<string, unknown> = input.params ?? {};
     if (schema && input.params !== undefined) {
-      customParams = validateToolInput(schema, input.params) as Record<string, unknown>;
+      customParams = (await validateToolInput(schema, input.params)) as Record<string, unknown>;
     }
 
     if (liveTask) {

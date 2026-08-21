@@ -1,9 +1,9 @@
 import type { OpenRouterCore } from '@openrouter/sdk/core';
 import type { RequestOptions } from '@openrouter/sdk/lib/sdks';
-import type { $ZodObject, $ZodShape, $ZodType, infer as zodInfer } from 'zod/v4/core';
 import { agentToolBuilder } from './agent-tool.js';
 import type { CallModelInput } from './async-params.js';
 import type { ModelResult } from './model-result.js';
+import type { InferSchemaOutput, InputSchemaConfig, ObjectSchema, Schema } from './schema.js';
 import { TASK_TOOL_NAME } from './tool-check.js';
 import type { TaskLogLimits } from './tool-task.js';
 import type {
@@ -40,124 +40,120 @@ import { isClientTool, SHARED_CONTEXT_KEY, ToolType } from './tool-types.js';
  * execute's `ctx.local` and the returned tool's `function.contextSchema` stay typed.
  */
 type RegularToolConfigWithOutput<
-  TInput extends $ZodObject<$ZodShape>,
-  TOutput extends $ZodType,
-  TCtx extends $ZodObject<$ZodShape> = $ZodObject<$ZodShape>,
+  TInput extends ObjectSchema,
+  TOutput extends Schema,
+  TCtx extends ObjectSchema = ObjectSchema,
   TName extends string = string,
-> = {
+> = InputSchemaConfig<TInput> & {
   name: TName;
   description?: string;
-  inputSchema: TInput;
   outputSchema: TOutput;
   eventSchema?: undefined;
   /** Strict schema adherence for tool-call generation — see {@link BaseToolFunction.strict} */
   strict?: boolean | null;
   /** Zod schema declaring the context data this tool needs */
   contextSchema?: TCtx;
-  nextTurnParams?: NextTurnParamsFunctions<zodInfer<TInput>>;
-  requireApproval?: boolean | ToolApprovalCheck<zodInfer<TInput>>;
+  nextTurnParams?: NextTurnParamsFunctions<InferSchemaOutput<TInput>>;
+  requireApproval?: boolean | ToolApprovalCheck<InferSchemaOutput<TInput>>;
   /** Doom-loop identity: computed function, or false to exempt — see {@link ToolLoopKey} */
-  loopKey?: ToolLoopKey<zodInfer<TInput>>;
+  loopKey?: ToolLoopKey<InferSchemaOutput<TInput>>;
   /** Deadline for one execution of this tool, in ms (see BaseToolFunction.timeoutMs) */
   timeoutMs?: number;
   /** Max simultaneous in-flight executions of this tool across the run */
   maxConcurrency?: number;
   execute: (
-    params: zodInfer<TInput>,
+    params: InferSchemaOutput<TInput>,
     context?: ToolExecuteContext<TName, ContextFromSchema<TCtx>>,
-  ) => Promise<zodInfer<TOutput>> | zodInfer<TOutput>;
+  ) => Promise<InferSchemaOutput<TOutput>> | InferSchemaOutput<TOutput>;
   /** Convert tool execution output to model-facing output */
-  toModelOutput?: ToModelOutputFunction<zodInfer<TInput>, zodInfer<TOutput>>;
+  toModelOutput?: ToModelOutputFunction<InferSchemaOutput<TInput>, InferSchemaOutput<TOutput>>;
 };
 
 /**
  * Configuration for a regular tool without outputSchema (infers return type from execute)
  */
 type RegularToolConfigWithoutOutput<
-  TInput extends $ZodObject<$ZodShape>,
+  TInput extends ObjectSchema,
   TReturn,
-  TCtx extends $ZodObject<$ZodShape> = $ZodObject<$ZodShape>,
+  TCtx extends ObjectSchema = ObjectSchema,
   TName extends string = string,
-> = {
+> = InputSchemaConfig<TInput> & {
   name: TName;
   description?: string;
-  inputSchema: TInput;
   outputSchema?: undefined;
   eventSchema?: undefined;
   /** Strict schema adherence for tool-call generation — see {@link BaseToolFunction.strict} */
   strict?: boolean | null;
   /** Zod schema declaring the context data this tool needs */
   contextSchema?: TCtx;
-  nextTurnParams?: NextTurnParamsFunctions<zodInfer<TInput>>;
-  requireApproval?: boolean | ToolApprovalCheck<zodInfer<TInput>>;
+  nextTurnParams?: NextTurnParamsFunctions<InferSchemaOutput<TInput>>;
+  requireApproval?: boolean | ToolApprovalCheck<InferSchemaOutput<TInput>>;
   /** Doom-loop identity: computed function, or false to exempt — see {@link ToolLoopKey} */
-  loopKey?: ToolLoopKey<zodInfer<TInput>>;
+  loopKey?: ToolLoopKey<InferSchemaOutput<TInput>>;
   /** Deadline for one execution of this tool, in ms (see BaseToolFunction.timeoutMs) */
   timeoutMs?: number;
   /** Max simultaneous in-flight executions of this tool across the run */
   maxConcurrency?: number;
   execute: (
-    params: zodInfer<TInput>,
+    params: InferSchemaOutput<TInput>,
     context?: ToolExecuteContext<TName, ContextFromSchema<TCtx>>,
   ) => Promise<TReturn> | TReturn;
   /** Convert tool execution output to model-facing output */
-  toModelOutput?: ToModelOutputFunction<zodInfer<TInput>, TReturn>;
+  toModelOutput?: ToModelOutputFunction<InferSchemaOutput<TInput>, TReturn>;
 };
 
 /**
  * Configuration for a generator tool (with eventSchema)
  */
 type GeneratorToolConfig<
-  TInput extends $ZodObject<$ZodShape>,
-  TEvent extends $ZodType,
-  TOutput extends $ZodType,
-  TCtx extends $ZodObject<$ZodShape> = $ZodObject<$ZodShape>,
+  TInput extends ObjectSchema,
+  TEvent extends Schema,
+  TOutput extends Schema,
+  TCtx extends ObjectSchema = ObjectSchema,
   TName extends string = string,
-> = {
+> = InputSchemaConfig<TInput> & {
   name: TName;
   description?: string;
-  inputSchema: TInput;
   eventSchema: TEvent;
   outputSchema: TOutput;
   /** Strict schema adherence for tool-call generation — see {@link BaseToolFunction.strict} */
   strict?: boolean | null;
   /** Zod schema declaring the context data this tool needs */
   contextSchema?: TCtx;
-  nextTurnParams?: NextTurnParamsFunctions<zodInfer<TInput>>;
-  requireApproval?: boolean | ToolApprovalCheck<zodInfer<TInput>>;
+  nextTurnParams?: NextTurnParamsFunctions<InferSchemaOutput<TInput>>;
+  requireApproval?: boolean | ToolApprovalCheck<InferSchemaOutput<TInput>>;
   /** Doom-loop identity: computed function, or false to exempt — see {@link ToolLoopKey} */
-  loopKey?: ToolLoopKey<zodInfer<TInput>>;
+  loopKey?: ToolLoopKey<InferSchemaOutput<TInput>>;
   /** Deadline for one execution of this tool, in ms (see BaseToolFunction.timeoutMs) */
   timeoutMs?: number;
   /** Max simultaneous in-flight executions of this tool across the run */
   maxConcurrency?: number;
   execute: (
-    params: zodInfer<TInput>,
+    params: InferSchemaOutput<TInput>,
     context?: ToolExecuteContext<TName, ContextFromSchema<TCtx>>,
-  ) => AsyncGenerator<zodInfer<TEvent> | zodInfer<TOutput>>;
+  ) => AsyncGenerator<InferSchemaOutput<TEvent> | InferSchemaOutput<TOutput>>;
   /** Convert tool execution output to model-facing output */
-  toModelOutput?: ToModelOutputFunction<zodInfer<TInput>, zodInfer<TOutput>>;
+  toModelOutput?: ToModelOutputFunction<InferSchemaOutput<TInput>, InferSchemaOutput<TOutput>>;
 };
 
 /**
  * Configuration for a manual tool (execute: false, no eventSchema or outputSchema)
  */
 type ManualToolConfig<
-  TInput extends $ZodObject<$ZodShape>,
-  TCtx extends $ZodObject<$ZodShape> = $ZodObject<$ZodShape>,
+  TInput extends ObjectSchema,
+  TCtx extends ObjectSchema = ObjectSchema,
   TName extends string = string,
-> = {
+> = InputSchemaConfig<TInput> & {
   name: TName;
   description?: string;
-  inputSchema: TInput;
   /** Strict schema adherence for tool-call generation — see {@link BaseToolFunction.strict} */
   strict?: boolean | null;
   /** Zod schema declaring the context data this tool needs */
   contextSchema?: TCtx;
-  nextTurnParams?: NextTurnParamsFunctions<zodInfer<TInput>>;
-  requireApproval?: boolean | ToolApprovalCheck<zodInfer<TInput>>;
+  nextTurnParams?: NextTurnParamsFunctions<InferSchemaOutput<TInput>>;
+  requireApproval?: boolean | ToolApprovalCheck<InferSchemaOutput<TInput>>;
   /** Doom-loop identity: computed function, or false to exempt — see {@link ToolLoopKey} */
-  loopKey?: ToolLoopKey<zodInfer<TInput>>;
+  loopKey?: ToolLoopKey<InferSchemaOutput<TInput>>;
   /** Deadline for one execution of this tool, in ms (see BaseToolFunction.timeoutMs) */
   timeoutMs?: number;
   /** Max simultaneous in-flight executions of this tool across the run */
@@ -177,14 +173,13 @@ type ManualToolConfig<
  * returned value replaces what the model ultimately sees.
  */
 type HITLToolConfig<
-  TInput extends $ZodObject<$ZodShape>,
-  TOutput extends $ZodType,
-  TCtx extends $ZodObject<$ZodShape> = $ZodObject<$ZodShape>,
+  TInput extends ObjectSchema,
+  TOutput extends Schema,
+  TCtx extends ObjectSchema = ObjectSchema,
   TName extends string = string,
-> = {
+> = InputSchemaConfig<TInput> & {
   name: TName;
   description?: string;
-  inputSchema: TInput;
   /**
    * Required for HITL tools. Used to validate both the `onToolCalled` return
    * value (when non-null) and the caller-supplied response that comes back via
@@ -198,24 +193,24 @@ type HITLToolConfig<
   strict?: boolean | null;
   /** Zod schema declaring the context data this tool needs */
   contextSchema?: TCtx;
-  nextTurnParams?: NextTurnParamsFunctions<zodInfer<TInput>>;
-  requireApproval?: boolean | ToolApprovalCheck<zodInfer<TInput>>;
+  nextTurnParams?: NextTurnParamsFunctions<InferSchemaOutput<TInput>>;
+  requireApproval?: boolean | ToolApprovalCheck<InferSchemaOutput<TInput>>;
   /** Doom-loop identity: computed function, or false to exempt — see {@link ToolLoopKey} */
-  loopKey?: ToolLoopKey<zodInfer<TInput>>;
+  loopKey?: ToolLoopKey<InferSchemaOutput<TInput>>;
   /** Deadline for one execution of this tool, in ms (see BaseToolFunction.timeoutMs) */
   timeoutMs?: number;
   /** Max simultaneous in-flight executions of this tool across the run */
   maxConcurrency?: number;
   onToolCalled: (
-    params: zodInfer<TInput>,
+    params: InferSchemaOutput<TInput>,
     context?: ToolExecuteContext<TName, ContextFromSchema<TCtx>>,
-  ) => Promise<zodInfer<TOutput> | null> | zodInfer<TOutput> | null;
+  ) => Promise<InferSchemaOutput<TOutput> | null> | InferSchemaOutput<TOutput> | null;
   onResponseReceived?: (
     rawResult: unknown,
     context?: ToolExecuteContext<TName, ContextFromSchema<TCtx>>,
-  ) => Promise<zodInfer<TOutput>> | zodInfer<TOutput>;
+  ) => Promise<InferSchemaOutput<TOutput>> | InferSchemaOutput<TOutput>;
   /** Convert tool execution output to model-facing output */
-  toModelOutput?: ToModelOutputFunction<zodInfer<TInput>, zodInfer<TOutput>>;
+  toModelOutput?: ToModelOutputFunction<InferSchemaOutput<TInput>, InferSchemaOutput<TOutput>>;
 };
 
 /**
@@ -224,14 +219,14 @@ type HITLToolConfig<
  */
 type ToolConfigWithSharedContext<
   TShared extends Record<string, unknown>,
-  TCtx extends $ZodObject<$ZodShape> = $ZodObject<$ZodShape>,
+  TInput extends ObjectSchema = ObjectSchema,
+  TCtx extends ObjectSchema = ObjectSchema,
   TName extends string = string,
-> = {
+> = InputSchemaConfig<TInput> & {
   name: TName;
   description?: string;
-  inputSchema: $ZodObject<$ZodShape>;
-  outputSchema?: $ZodType;
-  eventSchema?: $ZodType;
+  outputSchema?: Schema;
+  eventSchema?: Schema;
   /** Strict schema adherence for tool-call generation — see {@link BaseToolFunction.strict} */
   strict?: boolean | null;
   contextSchema?: TCtx;
@@ -261,13 +256,12 @@ type ToolConfigWithSharedContext<
  * Shared fields for unified `run` tool configs.
  */
 type RunToolConfigBase<
-  TInput extends $ZodObject<$ZodShape>,
-  TCtx extends $ZodObject<$ZodShape> = $ZodObject<$ZodShape>,
+  TInput extends ObjectSchema,
+  TCtx extends ObjectSchema = ObjectSchema,
   TName extends string = string,
-> = {
+> = InputSchemaConfig<TInput> & {
   name: TName;
   description?: string;
-  inputSchema: TInput;
   /** Never present on run configs — keeps them disjoint from legacy overloads. */
   execute?: undefined;
   onToolCalled?: undefined;
@@ -275,10 +269,10 @@ type RunToolConfigBase<
   strict?: boolean | null;
   /** Zod schema declaring the context data this tool needs */
   contextSchema?: TCtx;
-  nextTurnParams?: NextTurnParamsFunctions<zodInfer<TInput>>;
-  requireApproval?: boolean | ToolApprovalCheck<zodInfer<TInput>>;
+  nextTurnParams?: NextTurnParamsFunctions<InferSchemaOutput<TInput>>;
+  requireApproval?: boolean | ToolApprovalCheck<InferSchemaOutput<TInput>>;
   /** Doom-loop identity: computed function, or false to exempt — see {@link ToolLoopKey} */
-  loopKey?: ToolLoopKey<zodInfer<TInput>>;
+  loopKey?: ToolLoopKey<InferSchemaOutput<TInput>>;
   /** Deadline for one execution of this tool, in ms (see BaseToolFunction.timeoutMs) */
   timeoutMs?: number;
   /** Max simultaneous in-flight executions of this tool across the run */
@@ -294,10 +288,10 @@ type RunToolConfigBase<
  * outputSchema. `lifecycle` selects sync (default) / background / deferred.
  */
 type RunToolConfigWithOutput<
-  TInput extends $ZodObject<$ZodShape>,
-  TOutput extends $ZodType,
-  TEvent extends $ZodType = $ZodType<never>,
-  TCtx extends $ZodObject<$ZodShape> = $ZodObject<$ZodShape>,
+  TInput extends ObjectSchema,
+  TOutput extends Schema,
+  TEvent extends Schema = Schema<never>,
+  TCtx extends ObjectSchema = ObjectSchema,
   TName extends string = string,
 > = RunToolConfigBase<TInput, TCtx, TName> & {
   outputSchema: TOutput;
@@ -305,21 +299,24 @@ type RunToolConfigWithOutput<
   eventSchema?: TEvent;
   lifecycle?: ToolLifecycle;
   /** Model-facing acknowledgement merged into the pending placeholder. */
-  ack?: AsyncToolAck<zodInfer<TInput>>;
+  ack?: AsyncToolAck<InferSchemaOutput<TInput>>;
   /** Background: settles-fast window (ms). Default 250; 0 always placeholders. */
   graceMs?: number;
   /** Deferred: default poll-interval hint. */
   pollAfterMs?: number;
   run: (
-    params: zodInfer<TInput>,
-    context?: ToolRunContext<TName, ContextFromSchema<TCtx>, zodInfer<TOutput>>,
+    params: InferSchemaOutput<TInput>,
+    context?: ToolRunContext<TName, ContextFromSchema<TCtx>, InferSchemaOutput<TOutput>>,
   ) =>
-    | Promise<zodInfer<TOutput> | DeferredHandle<zodInfer<TOutput>>>
-    | zodInfer<TOutput>
-    | DeferredHandle<zodInfer<TOutput>>
-    | AsyncGenerator<zodInfer<TEvent>, zodInfer<TOutput> | DeferredHandle<zodInfer<TOutput>>>;
+    | Promise<InferSchemaOutput<TOutput> | DeferredHandle<InferSchemaOutput<TOutput>>>
+    | InferSchemaOutput<TOutput>
+    | DeferredHandle<InferSchemaOutput<TOutput>>
+    | AsyncGenerator<
+        InferSchemaOutput<TEvent>,
+        InferSchemaOutput<TOutput> | DeferredHandle<InferSchemaOutput<TOutput>>
+      >;
   /** Convert tool execution output to model-facing output */
-  toModelOutput?: ToModelOutputFunction<zodInfer<TInput>, zodInfer<TOutput>>;
+  toModelOutput?: ToModelOutputFunction<InferSchemaOutput<TInput>, InferSchemaOutput<TOutput>>;
 };
 
 /**
@@ -329,21 +326,21 @@ type RunToolConfigWithOutput<
  * another process), so this config pins lifecycle to 'sync'/absent.
  */
 type SyncRunToolConfigWithoutOutput<
-  TInput extends $ZodObject<$ZodShape>,
+  TInput extends ObjectSchema,
   TReturn,
-  TEvent extends $ZodType = $ZodType<never>,
-  TCtx extends $ZodObject<$ZodShape> = $ZodObject<$ZodShape>,
+  TEvent extends Schema = Schema<never>,
+  TCtx extends ObjectSchema = ObjectSchema,
   TName extends string = string,
 > = RunToolConfigBase<TInput, TCtx, TName> & {
   outputSchema?: undefined;
   eventSchema?: TEvent;
   lifecycle?: 'sync';
   run: (
-    params: zodInfer<TInput>,
+    params: InferSchemaOutput<TInput>,
     context?: ToolRunContext<TName, ContextFromSchema<TCtx>, TReturn>,
-  ) => Promise<TReturn> | TReturn | AsyncGenerator<zodInfer<TEvent>, TReturn>;
+  ) => Promise<TReturn> | TReturn | AsyncGenerator<InferSchemaOutput<TEvent>, TReturn>;
   /** Convert tool execution output to model-facing output */
-  toModelOutput?: ToModelOutputFunction<zodInfer<TInput>, TReturn>;
+  toModelOutput?: ToModelOutputFunction<InferSchemaOutput<TInput>, TReturn>;
 };
 
 //#endregion
@@ -354,10 +351,10 @@ type SyncRunToolConfigWithoutOutput<
  * Union type for all regular tool configs
  */
 type RegularToolConfig<
-  TInput extends $ZodObject<$ZodShape>,
-  TOutput extends $ZodType,
+  TInput extends ObjectSchema,
+  TOutput extends Schema,
   TReturn,
-  TCtx extends $ZodObject<$ZodShape> = $ZodObject<$ZodShape>,
+  TCtx extends ObjectSchema = ObjectSchema,
   TName extends string = string,
 > =
   | RegularToolConfigWithOutput<TInput, TOutput, TCtx, TName>
@@ -400,9 +397,10 @@ type RegularToolConfig<
 // call boundary to preserve literal names.
 export function tool<TShared extends Record<string, unknown>>(): <
   const TName extends string,
-  TCtx extends $ZodObject<$ZodShape> = $ZodObject<$ZodShape>,
+  TInput extends ObjectSchema = ObjectSchema,
+  TCtx extends ObjectSchema = ObjectSchema,
 >(
-  config: ToolConfigWithSharedContext<TShared, TCtx, TName>,
+  config: ToolConfigWithSharedContext<TShared, TInput, TCtx, TName>,
 ) => Tool & {
   function: {
     name: TName;
@@ -418,10 +416,10 @@ export function tool<TShared extends Record<string, unknown>>(): <
 // Overload for deferred unified tools — returns the tool + typed
 // .resolve()/.fail()/.cancel() completion methods.
 export function tool<
-  TInput extends $ZodObject<$ZodShape>,
-  TOutput extends $ZodType,
-  TEvent extends $ZodType = $ZodType<never>,
-  TCtx extends $ZodObject<$ZodShape> = $ZodObject<$ZodShape>,
+  TInput extends ObjectSchema,
+  TOutput extends Schema,
+  TEvent extends Schema = Schema<never>,
+  TCtx extends ObjectSchema = ObjectSchema,
   TName extends string = string,
 >(
   config: RunToolConfigWithOutput<TInput, TOutput, TEvent, TCtx, TName> & {
@@ -431,10 +429,10 @@ export function tool<
 
 // Overload for unified run tools with outputSchema (any lifecycle).
 export function tool<
-  TInput extends $ZodObject<$ZodShape>,
-  TOutput extends $ZodType,
-  TEvent extends $ZodType = $ZodType<never>,
-  TCtx extends $ZodObject<$ZodShape> = $ZodObject<$ZodShape>,
+  TInput extends ObjectSchema,
+  TOutput extends Schema,
+  TEvent extends Schema = Schema<never>,
+  TCtx extends ObjectSchema = ObjectSchema,
   TName extends string = string,
 >(
   config: RunToolConfigWithOutput<TInput, TOutput, TEvent, TCtx, TName>,
@@ -443,14 +441,14 @@ export function tool<
 // Overload for SYNC unified run tools without outputSchema (output inferred
 // from run's return — including a generator's TReturn).
 export function tool<
-  TInput extends $ZodObject<$ZodShape>,
+  TInput extends ObjectSchema,
   TReturn,
-  TEvent extends $ZodType = $ZodType<never>,
-  TCtx extends $ZodObject<$ZodShape> = $ZodObject<$ZodShape>,
+  TEvent extends Schema = Schema<never>,
+  TCtx extends ObjectSchema = ObjectSchema,
   TName extends string = string,
 >(
   config: SyncRunToolConfigWithoutOutput<TInput, TReturn, TEvent, TCtx, TName>,
-): UnifiedTool<TInput, $ZodType<TReturn>, TEvent, Record<string, unknown>, TCtx, TName>;
+): UnifiedTool<TInput, Schema<TReturn>, TEvent, Record<string, unknown>, TCtx, TName>;
 
 // Overload for generator tools (when eventSchema is provided).
 // TContext on the *returned* tool stays the wide default so specific tools remain
@@ -458,10 +456,10 @@ export function tool<
 // `ctx.local` is provided by the *config* execute signature via ContextFromSchema;
 // the concrete schema is preserved on the return via TCtx on `BaseToolFunction.contextSchema`.
 export function tool<
-  TInput extends $ZodObject<$ZodShape>,
-  TEvent extends $ZodType,
-  TOutput extends $ZodType,
-  TCtx extends $ZodObject<$ZodShape> = $ZodObject<$ZodShape>,
+  TInput extends ObjectSchema,
+  TEvent extends Schema,
+  TOutput extends Schema,
+  TCtx extends ObjectSchema = ObjectSchema,
   TName extends string = string,
 >(
   config: GeneratorToolConfig<TInput, TEvent, TOutput, TCtx, TName>,
@@ -469,9 +467,9 @@ export function tool<
 
 // Overload for HITL tools (when onToolCalled is provided)
 export function tool<
-  TInput extends $ZodObject<$ZodShape>,
-  TOutput extends $ZodType,
-  TCtx extends $ZodObject<$ZodShape> = $ZodObject<$ZodShape>,
+  TInput extends ObjectSchema,
+  TOutput extends Schema,
+  TCtx extends ObjectSchema = ObjectSchema,
   TName extends string = string,
 >(
   config: HITLToolConfig<TInput, TOutput, TCtx, TName>,
@@ -479,18 +477,16 @@ export function tool<
 
 // Overload for manual tools (execute: false)
 export function tool<
-  TInput extends $ZodObject<$ZodShape>,
-  TCtx extends $ZodObject<$ZodShape> = $ZodObject<$ZodShape>,
+  TInput extends ObjectSchema,
+  TCtx extends ObjectSchema = ObjectSchema,
   TName extends string = string,
->(
-  config: ManualToolConfig<TInput, TCtx, TName>,
-): ManualTool<TInput, $ZodType<unknown>, TCtx, TName>;
+>(config: ManualToolConfig<TInput, TCtx, TName>): ManualTool<TInput, Schema, TCtx, TName>;
 
 // Overload for regular tools with outputSchema
 export function tool<
-  TInput extends $ZodObject<$ZodShape>,
-  TOutput extends $ZodType,
-  TCtx extends $ZodObject<$ZodShape> = $ZodObject<$ZodShape>,
+  TInput extends ObjectSchema,
+  TOutput extends Schema,
+  TCtx extends ObjectSchema = ObjectSchema,
   TName extends string = string,
 >(
   config: RegularToolConfigWithOutput<TInput, TOutput, TCtx, TName>,
@@ -498,13 +494,13 @@ export function tool<
 
 // Overload for regular tools without outputSchema (infers return type)
 export function tool<
-  TInput extends $ZodObject<$ZodShape>,
+  TInput extends ObjectSchema,
   TReturn,
-  TCtx extends $ZodObject<$ZodShape> = $ZodObject<$ZodShape>,
+  TCtx extends ObjectSchema = ObjectSchema,
   TName extends string = string,
 >(
   config: RegularToolConfigWithoutOutput<TInput, TReturn, TCtx, TName>,
-): ToolWithExecute<TInput, $ZodType<TReturn>, Record<string, unknown>, TCtx, TName>;
+): ToolWithExecute<TInput, Schema<TReturn>, Record<string, unknown>, TCtx, TName>;
 
 // Backward-compatible direct explicit-TShared overload. TypeScript cannot
 // infer another type parameter after an explicit TShared, so literal-name
@@ -520,12 +516,12 @@ export function tool<TShared extends Record<string, unknown>>(
 // Implementation
 export function tool(
   config?:
-    | GeneratorToolConfig<$ZodObject<$ZodShape>, $ZodType, $ZodType>
-    | RegularToolConfig<$ZodObject<$ZodShape>, $ZodType, unknown>
-    | ManualToolConfig<$ZodObject<$ZodShape>>
-    | HITLToolConfig<$ZodObject<$ZodShape>, $ZodType>
-    | RunToolConfigWithOutput<$ZodObject<$ZodShape>, $ZodType>
-    | SyncRunToolConfigWithoutOutput<$ZodObject<$ZodShape>, unknown>
+    | GeneratorToolConfig<ObjectSchema, Schema, Schema>
+    | RegularToolConfig<ObjectSchema, Schema, unknown>
+    | ManualToolConfig<ObjectSchema>
+    | HITLToolConfig<ObjectSchema, Schema>
+    | RunToolConfigWithOutput<ObjectSchema, Schema>
+    | SyncRunToolConfigWithoutOutput<ObjectSchema, unknown>
     | ToolConfigWithSharedContext<Record<string, unknown>>,
 ): Tool | ((sharedConfig: ToolConfigWithSharedContext<Record<string, unknown>>) => Tool) {
   if (config === undefined) {
@@ -554,8 +550,8 @@ export function tool(
   if ('run' in config && typeof config.run === 'function') {
     return buildUnifiedTool(
       config as
-        | RunToolConfigWithOutput<$ZodObject<$ZodShape>, $ZodType>
-        | SyncRunToolConfigWithoutOutput<$ZodObject<$ZodShape>, unknown>,
+        | RunToolConfigWithOutput<ObjectSchema, Schema>
+        | SyncRunToolConfigWithoutOutput<ObjectSchema, unknown>,
     );
   }
 
@@ -570,9 +566,12 @@ export function tool(
       );
     }
 
-    const fn: HITLTool<$ZodObject<$ZodShape>, $ZodType>['function'] = {
+    const fn: HITLTool<ObjectSchema, Schema>['function'] = {
       name: config.name,
       inputSchema: config.inputSchema,
+      ...(config.inputJsonSchema !== undefined && {
+        inputJsonSchema: config.inputJsonSchema,
+      }),
       outputSchema: config.outputSchema,
       onToolCalled: config.onToolCalled,
     };
@@ -631,9 +630,12 @@ export function tool(
 
   // Check for manual tool first (execute === false)
   if (config.execute === false) {
-    const fn: ManualTool<$ZodObject<$ZodShape>>['function'] = {
+    const fn: ManualTool<ObjectSchema>['function'] = {
       name: config.name,
       inputSchema: config.inputSchema,
+      ...(config.inputJsonSchema !== undefined && {
+        inputJsonSchema: config.inputJsonSchema,
+      }),
     };
 
     if (config.description !== undefined) {
@@ -685,10 +687,13 @@ export function tool(
     const fn = {
       name: config.name,
       inputSchema: config.inputSchema,
+      ...(config.inputJsonSchema !== undefined && {
+        inputJsonSchema: config.inputJsonSchema,
+      }),
       eventSchema: config.eventSchema,
       outputSchema: config.outputSchema,
       execute: config.execute,
-    } as ToolWithGenerator<$ZodObject<$ZodShape>, $ZodType, $ZodType>['function'];
+    } as ToolWithGenerator<ObjectSchema, Schema, Schema>['function'];
 
     if (config.description !== undefined) {
       fn.description = config.description;
@@ -742,6 +747,9 @@ export function tool(
   const functionObj = {
     name: config.name,
     inputSchema: config.inputSchema,
+    ...(config.inputJsonSchema !== undefined && {
+      inputJsonSchema: config.inputJsonSchema,
+    }),
     execute: config.execute,
     ...(config.description !== undefined && {
       description: config.description,
@@ -857,13 +865,13 @@ export interface DeferredToolMethods<TOutput> {
  * `tools: [...]` arrays unchanged.
  */
 export type BuiltDeferredTool<
-  TInput extends $ZodObject<$ZodShape>,
-  TOutput extends $ZodType,
-  TEvent extends $ZodType = $ZodType<never>,
-  TCtx extends $ZodObject<$ZodShape> = $ZodObject<$ZodShape>,
+  TInput extends ObjectSchema,
+  TOutput extends Schema,
+  TEvent extends Schema = Schema<never>,
+  TCtx extends ObjectSchema = ObjectSchema,
   TName extends string = string,
 > = UnifiedTool<TInput, TOutput, TEvent, Record<string, unknown>, TCtx, TName> &
-  DeferredToolMethods<zodInfer<TOutput>>;
+  DeferredToolMethods<InferSchemaOutput<TOutput>>;
 
 /** Copy shared config fields onto a function object when present. */
 function assignCommonToolFields(
@@ -872,6 +880,7 @@ function assignCommonToolFields(
 ): void {
   const fields = [
     'description',
+    'inputJsonSchema',
     'strict',
     'contextSchema',
     'nextTurnParams',
@@ -953,8 +962,8 @@ function bindDeferredCompletion(
  */
 function buildUnifiedTool(
   config:
-    | RunToolConfigWithOutput<$ZodObject<$ZodShape>, $ZodType>
-    | SyncRunToolConfigWithoutOutput<$ZodObject<$ZodShape>, unknown>,
+    | RunToolConfigWithOutput<ObjectSchema, Schema>
+    | SyncRunToolConfigWithoutOutput<ObjectSchema, unknown>,
 ): Tool {
   const lifecycle: ToolLifecycle = ('lifecycle' in config ? config.lifecycle : undefined) ?? 'sync';
 

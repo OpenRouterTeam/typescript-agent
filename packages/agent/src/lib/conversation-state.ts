@@ -1,10 +1,4 @@
 import type * as models from '@openrouter/sdk/models';
-// Same zod entry point the executor validates through (see
-// `validateToolInput` in tool-executor.ts) so the approval predicate and
-// `execute` agree on parse semantics. Imported directly rather than reusing
-// that helper because tool-executor.ts imports this module — sharing it would
-// create an import cycle.
-import * as z4 from 'zod/v4';
 import type {
   ConversationState,
   ParsedToolCall,
@@ -12,7 +6,11 @@ import type {
   TurnContext,
   UnsentToolResult,
 } from './tool-types.js';
-import { isClientTool } from './tool-types.js';
+// Same validation semantics the executor uses (schema.ts's Standard Schema +
+// zod dual path, see `validateSchemaSync`) so the approval predicate and
+// `execute` agree on parse behavior. Re-exported through tool-types, whose
+// schema dependency is already part of this module's graph.
+import { isClientTool, safeParseSchemaSync } from './tool-types.js';
 
 import { normalizeInputToArray } from './turn-context.js';
 
@@ -294,7 +292,7 @@ export async function toolRequiresApproval<TTools extends readonly Tool[]>(
       return callLevelCheck(toolCall, context);
     }
 
-    const parsed = z4.safeParse(tool.function.inputSchema, toolCall.arguments);
+    const parsed = safeParseSchemaSync(tool.function.inputSchema, toolCall.arguments);
     if (!parsed.success) {
       return callLevelCheck(toolCall, context);
     }
@@ -330,7 +328,7 @@ export async function toolRequiresApproval<TTools extends readonly Tool[]>(
   // Parse with the same schema the executor uses so the predicate decides on
   // exactly the values `execute` will receive.
   if (typeof requireApproval === 'function') {
-    const parsed = z4.safeParse(tool.function.inputSchema, toolCall.arguments);
+    const parsed = safeParseSchemaSync(tool.function.inputSchema, toolCall.arguments);
     if (!parsed.success) {
       // There is no trustworthy value to pass to the predicate. Fail closed:
       // a PreToolUse hook may later replace invalid input with executable

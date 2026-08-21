@@ -9,11 +9,10 @@ import type {
 } from '@openrouter/sdk/hooks/types';
 import type { SDKOptions } from '@openrouter/sdk/lib/config';
 import type { RequestOptions } from '@openrouter/sdk/lib/sdks';
-import type { $ZodObject, $ZodShape, infer as zodInfer } from 'zod/v4/core';
-
 import { callModel } from './inner-loop/call-model.js';
 import type { CallModelInput } from './lib/async-params.js';
 import type { ModelResult } from './lib/model-result.js';
+import type { InferSchemaOutput, ObjectSchema } from './lib/schema.js';
 import type { Tool } from './lib/tool-types.js';
 
 export type { SDKOptions } from '@openrouter/sdk/lib/config';
@@ -85,9 +84,9 @@ export class OpenRouter extends OpenRouterCore {
 
   callModel = <
     TTools extends readonly Tool[],
-    TSharedSchema extends $ZodObject<$ZodShape> | undefined = undefined,
-    TShared extends Record<string, unknown> = TSharedSchema extends $ZodObject<$ZodShape>
-      ? zodInfer<TSharedSchema>
+    TSharedSchema extends ObjectSchema | undefined = undefined,
+    TShared extends Record<string, unknown> = TSharedSchema extends ObjectSchema
+      ? InferSchemaOutput<TSharedSchema>
       : Record<string, never>,
   >(
     request: CallModelInput<TTools, TShared> & {

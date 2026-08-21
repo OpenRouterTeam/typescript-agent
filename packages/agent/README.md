@@ -182,7 +182,29 @@ emit per model call, with `turnType`/`turnNumber`) or read each round's
 
 ### Tool Types
 
-The `tool()` factory creates type-safe tools with full Zod schema inference. In addition to the legacy kinds below, the unified `run` interface with `lifecycle: 'sync' | 'background' | 'deferred'` covers [async tools](#async-tools) whose results arrive after the tool round, and `tool.agent()` creates [subagent tools](#agent-tools-subagents).
+The `tool()` factory creates type-safe tools from Zod v4 or any [Standard Schema v1](https://standardschema.dev) validator, including Valibot, ArkType, and Effect Schema. In addition to the legacy kinds below, the unified `run` interface with `lifecycle: 'sync' | 'background' | 'deferred'` covers [async tools](#async-tools) whose results arrive after the tool round, and `tool.agent()` creates [subagent tools](#agent-tools-subagents).
+
+Input JSON Schema generation uses three tiers:
+
+1. Zod v4 stays on the existing `z.toJSONSchema(..., { target: 'draft-7' })` fast path, including Zod versions older than 4.2.
+2. Other validators can implement the [Standard JSON Schema v1](https://standardschema.dev/json-schema) companion trait. The agent calls `schema['~standard'].jsonSchema.input({ target: 'draft-07' })`.
+3. `inputJsonSchema` is the explicit escape hatch and overrides the trait when supplied. It is also the fallback when a trait converter throws.
+
+Zod 4.2+, ArkType 2.1.28+, Zod Mini, VineJS, and Sury implement the trait natively. Valibot schemas can opt in with `toStandardJsonSchema()`:
+
+```typescript
+import { toStandardJsonSchema } from '@valibot/to-json-schema';
+import * as v from 'valibot';
+
+const searchTool = tool({
+  name: 'search',
+  inputSchema: toStandardJsonSchema(v.object({ query: v.string() })),
+  outputSchema: v.object({ results: v.array(v.string()) }),
+  execute: async ({ query }) => ({ results: await search(query) }),
+});
+```
+
+Validation-only Standard Schema inputs must provide `inputJsonSchema`. Output, event, and context schemas are validated locally and never sent to the model. The agent sanitizes generated and supplied JSON Schema before the SDK boundary, including removing `~`-prefixed metadata keys. Standard Schema validators may validate synchronously or asynchronously. Initial context validation supports asynchronous validators; synchronous context mutation methods (`ctx.setContext()` and `ctx.setSharedContext()`) require a synchronous validator.
 
 **Regular tools** — automatically executed by the agent loop:
 
@@ -942,7 +964,7 @@ logged and skipped by default, thrown in strict mode.
 
 ### Tool Context
 
-Provide typed context data to tools without passing it through the model:
+Provide typed context data to tools without passing it through the model. `contextSchema` accepts Zod or any synchronous Standard Schema validator:
 
 ```typescript
 const dbTool = tool({
