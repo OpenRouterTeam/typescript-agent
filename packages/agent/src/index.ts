@@ -278,6 +278,7 @@ export type {
   ParsedToolCall,
   PartialResponse,
   PendingAsyncTool,
+  PendingToolCall,
   ResponseStreamEvent,
   ResponseStreamEvent as EnhancedResponseStreamEvent,
   ServerTool,

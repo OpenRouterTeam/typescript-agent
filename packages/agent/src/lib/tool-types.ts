@@ -1184,6 +1184,11 @@ export interface ParsedToolCall<T extends Tool> {
   arguments: InferToolInput<T>; // Typed based on tool's inputSchema
 }
 
+export type PendingToolCall<T extends Tool> = ParsedToolCall<T> & {
+  /** PreToolUse already ran and `arguments` contains its effective input. */
+  preToolUseApplied?: true;
+};
+
 /**
  * Result of tool execution.
  *
@@ -1884,7 +1889,7 @@ export interface ConversationState<TTools extends readonly Tool[] = readonly Too
    */
   consumedForcedToolChoiceKey?: string;
   /** Tool calls awaiting human approval */
-  pendingToolCalls?: Array<ParsedToolCall<TTools[number]>>;
+  pendingToolCalls?: Array<PendingToolCall<TTools[number]>>;
   /** Tool results executed but not yet sent to the model */
   unsentToolResults?: Array<UnsentToolResult<TTools>>;
   /** Partial response data captured during interruption */
