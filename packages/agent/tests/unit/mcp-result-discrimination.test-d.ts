@@ -10,10 +10,11 @@
  * `ToolWithExecute<…, infer O>`. Using real factory values is the point — it
  * mirrors what callers (and `wrapMcpTool`) actually build.
  *
- * Note on `toolName`: the `tool()` factory also widens the `name` literal to
- * `string` (the same widening documented in has-approval-tools.test-d.ts), so
- * discrimination is by `source`, not by `toolName`. That is exactly why the
- * discriminant added to the result types is `source`.
+ * Note on `toolName`: the `tool()` factory now preserves name literals, so
+ * stream event unions can narrow by `toolName`. MCP tools still use `source`
+ * as the primary discriminant because the MCP brand (not the name) marks
+ * result opacity — a client tool named like an MCP tool must not be treated
+ * as unknown.
  */
 
 import { expectTypeOf } from 'vitest';

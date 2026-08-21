@@ -100,7 +100,11 @@ export type {
   CallModelInputWithState,
   ResolvedCallModelInput,
 } from './lib/async-params.js';
-export { hasAsyncFunctions, resolveAsyncFunctions } from './lib/async-params.js';
+export {
+  hasAsyncFunctions,
+  resolveAsyncFunctions,
+  TOOL_SET_SNAPSHOT,
+} from './lib/async-params.js';
 // Async tool task registry types
 export type { SettledToolTask } from './lib/async-tool-registry.js';
 export { AsyncToolRegistry } from './lib/async-tool-registry.js';
@@ -237,6 +241,7 @@ export {
   uiRef,
   uiState,
 } from './lib/openui/index.js';
+export type { StreamReplay } from './lib/reusable-stream.js';
 // Stop condition helpers
 export {
   finishReasonIs,
@@ -252,7 +257,11 @@ export {
   getUnsupportedContentSummary,
   hasUnsupportedContent,
 } from './lib/stream-transformers.js';
-export type { BuiltDeferredTool, DeferredToolMethods } from './lib/tool.js';
+export type {
+  BuiltDeferredTool,
+  DeferredToolMethods,
+  ServerToolOptions,
+} from './lib/tool.js';
 // Tool creation helpers (tool also carries tool.background / tool.deferred)
 export { markMcp, serverTool, tool } from './lib/tool.js';
 // Universal task-tool helpers
@@ -277,10 +286,17 @@ export type {
 export { DEFAULT_TASK_LOG_LIMITS, ToolTask } from './lib/tool-task.js';
 export type {
   AsyncToolAck,
+  BuiltinTaskToolEvent,
   ChatStreamEvent,
   ClientTool,
   ConversationState,
   ConversationStatus,
+  CorrelatedResponseStreamEvent,
+  CorrelatedToolEventUnion,
+  CorrelatedToolPreliminaryResultEvent,
+  CorrelatedToolResultEvent,
+  CorrelatedToolStreamEvent,
+  CorrelatedToolStreamPreliminaryUnion,
   DeferOptions,
   DeferredHandle,
   HasApprovalTools,
@@ -289,6 +305,7 @@ export type {
   InferToolEvent,
   InferToolEventsUnion,
   InferToolInput,
+  InferToolName,
   InferToolOutput,
   InferToolOutputsUnion,
   ManualTool,
@@ -298,9 +315,11 @@ export type {
   ParsedToolCall,
   PartialResponse,
   PendingAsyncTool,
+  PendingToolCall,
   ResponseStreamEvent,
   ResponseStreamEvent as EnhancedResponseStreamEvent,
   ServerTool,
+  ServerToolBase,
   ServerToolConfig,
   ServerToolResultItem,
   ServerToolType,

@@ -152,8 +152,9 @@ type GeneratorToolConfig<
 type ManualToolConfig<
   TInput extends $ZodObject<$ZodShape>,
   TCtx extends $ZodObject<$ZodShape> = $ZodObject<$ZodShape>,
+  TName extends string = string,
 > = {
-  name: string; // Manual tools don't use TName since they have no execute
+  name: TName;
   description?: string;
   inputSchema: TInput;
   /** Strict schema adherence for tool-call generation — see {@link BaseToolFunction.strict} */
@@ -233,8 +234,9 @@ type HITLToolConfig<
 type ToolConfigWithSharedContext<
   TShared extends Record<string, unknown>,
   TCtx extends $ZodObject<$ZodShape> = $ZodObject<$ZodShape>,
+  TName extends string = string,
 > = {
-  name: string;
+  name: TName;
   description?: string;
   inputSchema: $ZodObject<$ZodShape>;
   outputSchema?: $ZodType;
@@ -253,11 +255,11 @@ type ToolConfigWithSharedContext<
   execute:
     | ((
         params: Record<string, unknown>,
-        context?: ToolExecuteContext<string, ContextFromSchema<TCtx>, TShared>,
+        context?: ToolExecuteContext<TName, ContextFromSchema<TCtx>, TShared>,
       ) => unknown)
     | ((
         params: Record<string, unknown>,
-        context?: ToolExecuteContext<string, ContextFromSchema<TCtx>, TShared>,
+        context?: ToolExecuteContext<TName, ContextFromSchema<TCtx>, TShared>,
       ) => AsyncGenerator<unknown>)
     | false;
   /** Convert tool execution output to model-facing output */
@@ -388,15 +390,17 @@ type RegularToolConfig<
  * - **Regular tool**: When `execute` is a function (no `eventSchema`)
  * - **Manual tool**: When `execute: false` is set
  *
- * Shared context typing: Pass a type parameter to type `ctx.shared`
- * in the execute callback. Runtime validation happens at callModel
- * via `sharedContextSchema`.
+ * Shared context typing: Use `tool<TShared>()({...})` to type `ctx.shared`
+ * and preserve the tool's literal name. The backward-compatible direct form
+ * `tool<TShared>({...})` is also supported, but its returned name is `string`
+ * because TypeScript cannot infer trailing type parameters after an explicit
+ * `TShared`. Runtime validation happens at callModel via `sharedContextSchema`.
  *
  * @example Regular tool with typed shared context:
  * ```typescript
  * type SharedCtx = z.infer<typeof SharedContextSchema>;
  *
- * const execTool = tool<SharedCtx>({
+ * const execTool = tool<SharedCtx>()({
  *   name: "sandbox_exec",
  *   inputSchema: z.object({ command: z.string() }),
  *   execute: async (params, ctx) => {
@@ -406,6 +410,20 @@ type RegularToolConfig<
  * });
  * ```
  */
+// Curried explicit-TShared overload. TypeScript cannot infer type arguments
+// that follow an explicitly supplied one, so the config gets its own generic
+// call boundary to preserve literal names.
+export function tool<TShared extends Record<string, unknown>>(): <
+  const TName extends string,
+  TCtx extends $ZodObject<$ZodShape> = $ZodObject<$ZodShape>,
+>(
+  config: ToolConfigWithSharedContext<TShared, TCtx, TName>,
+) => Tool & {
+  function: {
+    name: TName;
+  };
+};
+
 // NEW unified overloads — ordered FIRST so `run` configs never fall through
 // to a legacy-overload error message. Disjointness with the released
 // overloads is structural: run configs declare `execute?: undefined` /
@@ -424,7 +442,7 @@ export function tool<
   config: RunToolConfigWithOutput<TInput, TOutput, TEvent, TCtx, TName> & {
     lifecycle: 'deferred';
   },
-): BuiltDeferredTool<TInput, TOutput, TEvent, TCtx>;
+): BuiltDeferredTool<TInput, TOutput, TEvent, TCtx, TName>;
 
 // Overload for unified run tools with outputSchema (any lifecycle).
 export function tool<
@@ -435,7 +453,7 @@ export function tool<
   TName extends string = string,
 >(
   config: RunToolConfigWithOutput<TInput, TOutput, TEvent, TCtx, TName>,
-): UnifiedTool<TInput, TOutput, TEvent, Record<string, unknown>, TCtx>;
+): UnifiedTool<TInput, TOutput, TEvent, Record<string, unknown>, TCtx, TName>;
 
 // Overload for SYNC unified run tools without outputSchema (output inferred
 // from run's return — including a generator's TReturn).
@@ -447,7 +465,7 @@ export function tool<
   TName extends string = string,
 >(
   config: SyncRunToolConfigWithoutOutput<TInput, TReturn, TEvent, TCtx, TName>,
-): UnifiedTool<TInput, $ZodType<TReturn>, TEvent, Record<string, unknown>, TCtx>;
+): UnifiedTool<TInput, $ZodType<TReturn>, TEvent, Record<string, unknown>, TCtx, TName>;
 
 // Overload for generator tools (when eventSchema is provided).
 // TContext on the *returned* tool stays the wide default so specific tools remain
@@ -462,7 +480,7 @@ export function tool<
   TName extends string = string,
 >(
   config: GeneratorToolConfig<TInput, TEvent, TOutput, TCtx, TName>,
-): ToolWithGenerator<TInput, TEvent, TOutput, Record<string, unknown>, TCtx>;
+): ToolWithGenerator<TInput, TEvent, TOutput, Record<string, unknown>, TCtx, TName>;
 
 // Overload for HITL tools (when onToolCalled is provided)
 export function tool<
@@ -472,13 +490,16 @@ export function tool<
   TName extends string = string,
 >(
   config: HITLToolConfig<TInput, TOutput, TCtx, TName>,
-): HITLTool<TInput, TOutput, Record<string, unknown>, TCtx>;
+): HITLTool<TInput, TOutput, Record<string, unknown>, TCtx, TName>;
 
 // Overload for manual tools (execute: false)
 export function tool<
   TInput extends $ZodObject<$ZodShape>,
   TCtx extends $ZodObject<$ZodShape> = $ZodObject<$ZodShape>,
->(config: ManualToolConfig<TInput, TCtx>): ManualTool<TInput, $ZodType<unknown>, TCtx>;
+  TName extends string = string,
+>(
+  config: ManualToolConfig<TInput, TCtx, TName>,
+): ManualTool<TInput, $ZodType<unknown>, TCtx, TName>;
 
 // Overload for regular tools with outputSchema
 export function tool<
@@ -488,7 +509,7 @@ export function tool<
   TName extends string = string,
 >(
   config: RegularToolConfigWithOutput<TInput, TOutput, TCtx, TName>,
-): ToolWithExecute<TInput, TOutput, Record<string, unknown>, TCtx>;
+): ToolWithExecute<TInput, TOutput, Record<string, unknown>, TCtx, TName>;
 
 // Overload for regular tools without outputSchema (infers return type)
 export function tool<
@@ -498,19 +519,22 @@ export function tool<
   TName extends string = string,
 >(
   config: RegularToolConfigWithoutOutput<TInput, TReturn, TCtx, TName>,
-): ToolWithExecute<TInput, $ZodType<TReturn>, Record<string, unknown>, TCtx>;
+): ToolWithExecute<TInput, $ZodType<TReturn>, Record<string, unknown>, TCtx, TName>;
 
-// Overload for explicit TShared: tool<SharedContext>({...})
-// When a non-ZodObject type is provided as the first generic,
-// the specific overloads above won't match (constraint mismatch),
-// so TypeScript falls through to this catch-all.
+// Backward-compatible direct explicit-TShared overload. TypeScript cannot
+// infer another type parameter after an explicit TShared, so literal-name
+// inference uses the curried overload above.
 export function tool<TShared extends Record<string, unknown>>(
   config: ToolConfigWithSharedContext<TShared>,
-): Tool;
+): Tool & {
+  function: {
+    name: string;
+  };
+};
 
 // Implementation
 export function tool(
-  config:
+  config?:
     | GeneratorToolConfig<$ZodObject<$ZodShape>, $ZodType, $ZodType>
     | RegularToolConfig<$ZodObject<$ZodShape>, $ZodType, unknown>
     | ManualToolConfig<$ZodObject<$ZodShape>>
@@ -518,7 +542,11 @@ export function tool(
     | RunToolConfigWithOutput<$ZodObject<$ZodShape>, $ZodType>
     | SyncRunToolConfigWithoutOutput<$ZodObject<$ZodShape>, unknown>
     | ToolConfigWithSharedContext<Record<string, unknown>>,
-): Tool {
+): Tool | ((sharedConfig: ToolConfigWithSharedContext<Record<string, unknown>>) => Tool) {
+  if (config === undefined) {
+    return tool;
+  }
+
   // 'shared' is reserved for shared context — forbid it as a tool name
   if (config.name === SHARED_CONTEXT_KEY) {
     throw new Error(
@@ -860,7 +888,8 @@ export type BuiltDeferredTool<
   TOutput extends $ZodType,
   TEvent extends $ZodType = $ZodType<never>,
   TCtx extends $ZodObject<$ZodShape> = $ZodObject<$ZodShape>,
-> = UnifiedTool<TInput, TOutput, TEvent, Record<string, unknown>, TCtx> &
+  TName extends string = string,
+> = UnifiedTool<TInput, TOutput, TEvent, Record<string, unknown>, TCtx, TName> &
   DeferredToolMethods<zodInfer<TOutput>>;
 
 /** Copy shared config fields onto a function object when present. */
@@ -1015,6 +1044,18 @@ tool.agent = agentToolBuilder;
 //#region serverTool() Factory
 
 /**
+ * Options for {@link serverTool}.
+ * @template TId Stable tool-set identity used by `@openrouter/agent-tool-set`.
+ */
+export type ServerToolOptions<TId extends string = string> = {
+  /**
+   * Override the default tool-set ID (`server:${config.type}`).
+   * Useful when two server tools of the same type need distinct activation IDs.
+   */
+  id?: TId;
+};
+
+/**
  * Creates an OpenRouter server-executed tool. OpenRouter runs the tool (web
  * search, datetime, image generation, etc.) and returns the output item in
  * the response — no client-side execute function is needed.
@@ -1025,26 +1066,36 @@ tool.agent = agentToolBuilder;
  * in this SDK. Provide the `type` literal and the remaining fields narrow
  * to match the chosen tool.
  *
+ * Each server tool carries a stable tool-set `id` (default `server:${type}`)
+ * so activation APIs can address it. Override via the optional second argument.
+ *
  * @example
  * ```typescript
  * const tools = [
  *   serverTool({ type: 'web_search_2025_08_26', engine: 'exa', maxResults: 10 }),
  *   serverTool({ type: 'openrouter:datetime', parameters: { timezone: 'UTC' } }),
  *   serverTool({ type: 'image_generation', size: '1024x1024', quality: 'high' }),
+ *   serverTool({ type: 'web_search_2025_08_26' }, { id: 'server:public_search' }),
  * ];
  * ```
  */
-export function serverTool<T extends ServerToolType>(
+export function serverTool<T extends ServerToolType, TId extends string = `server:${T}`>(
   config: Extract<
     ServerToolConfig,
     {
       type: T;
     }
   >,
-): ServerTool<T> {
+  options?: ServerToolOptions<TId>,
+): ServerTool<T, TId> {
+  if (options?.id === '') {
+    throw new Error('Server tool ID must not be empty');
+  }
+  const id = (options?.id ?? (`server:${config.type}` as const)) as TId;
   return {
     _brand: 'server-tool',
     config,
+    id,
   };
 }
 

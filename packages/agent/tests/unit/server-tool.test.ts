@@ -15,8 +15,36 @@ describe('serverTool()', () => {
     });
     expect(t._brand).toBe('server-tool');
     expect(t.config.type).toBe('web_search_2025_08_26');
+    expect(t.id).toBe('server:web_search_2025_08_26');
+    expectTypeOf(t.id).toEqualTypeOf<'server:web_search_2025_08_26'>();
     expect(isServerTool(t)).toBe(true);
     expect(isClientTool(t)).toBe(false);
+  });
+
+  it('allows overriding the stable tool-set id', () => {
+    const t = serverTool(
+      {
+        type: 'web_search_2025_08_26',
+      },
+      {
+        id: 'server:public_search',
+      },
+    );
+    expect(t.id).toBe('server:public_search');
+    expectTypeOf(t.id).toEqualTypeOf<'server:public_search'>();
+  });
+
+  it('rejects an empty stable tool-set id', () => {
+    expect(() =>
+      serverTool(
+        {
+          type: 'openrouter:datetime',
+        },
+        {
+          id: '',
+        },
+      ),
+    ).toThrow(/must not be empty/);
   });
 
   it('narrows config shape based on the chosen type literal', () => {

@@ -1,20 +1,25 @@
+import type { StreamReplay } from './reusable-stream.js';
+
 /**
  * A push-based event broadcaster that supports multiple concurrent consumers.
  * Similar to ReusableReadableStream but for push-based events from tool execution.
  *
- * Each consumer gets their own position in the buffer and receives all events
- * from their join point onward. This enables real-time streaming of generator
- * tool preliminary results to multiple consumers simultaneously.
+ * Each consumer gets their own position in the buffer. Full replay is the
+ * default, and active-consumer replay can compact consumed events.
  *
  * @template T - The event type being broadcast
  */
 export class ToolEventBroadcaster<T> {
-  private buffer: T[] = [];
+  private buffer: (T | undefined)[] = [];
+  private bufferHead = 0;
+  // Consumer positions are absolute. Buffer index = bufferHead + position - trimOffset.
+  private trimOffset = 0;
   private consumers = new Map<number, ConsumerState>();
   private nextConsumerId = 0;
   private isComplete = false;
   private completionError: Error | null = null;
 
+  constructor(private readonly streamReplay: StreamReplay = 'full') {}
   /** Number of consumers currently subscribed to this broadcaster. */
   get activeConsumerCount(): number {
     return this.consumers.size;
@@ -45,22 +50,27 @@ export class ToolEventBroadcaster<T> {
     queueMicrotask(() => this.cleanup());
   }
 
-  /** Release completed history once no consumer can read it. */
+  /**
+   * Clean up resources after all consumers have finished.
+   * Called automatically after complete(), but can be called manually.
+   */
   private cleanup(): void {
-    if (this.isComplete && this.consumers.size === 0) {
+    // Only cleanup if complete and all consumers are done
+    if (this.streamReplay === 'active-consumers' && this.isComplete && this.consumers.size === 0) {
       this.buffer = [];
+      this.bufferHead = 0;
     }
   }
 
   /**
    * Create a new consumer that can independently iterate over events.
-   * Consumers can join at any time and will receive events from position 0.
-   * Multiple consumers can be created and will all receive the same events.
+   * Full-replay consumers start at position 0. Active-consumer replay starts
+   * at the current trim watermark.
    */
   createConsumer(): AsyncIterableIterator<T> {
     const consumerId = this.nextConsumerId++;
     const state: ConsumerState = {
-      position: 0,
+      position: this.trimOffset,
       waitingPromise: null,
       cancelled: false,
     };
@@ -72,24 +82,23 @@ export class ToolEventBroadcaster<T> {
     return {
       async next(): Promise<IteratorResult<T>> {
         const consumer = self.consumers.get(consumerId);
-        if (!consumer) {
+        if (!consumer || consumer.cancelled) {
           return {
             done: true,
             value: undefined,
           };
         }
 
-        if (consumer.cancelled) {
-          return {
-            done: true,
-            value: undefined,
-          };
-        }
-
-        // Return buffered event if available
-        if (consumer.position < self.buffer.length) {
-          const value = self.buffer[consumer.position]!;
+        const bufferIndex = self.bufferHead + consumer.position - self.trimOffset;
+        if (bufferIndex < self.buffer.length) {
+          const value = self.buffer[bufferIndex];
+          if (value === undefined) {
+            throw new Error(
+              'ToolEventBroadcaster buffer invariant violated: consumed slot was cleared',
+            );
+          }
           consumer.position++;
+          self.trimConsumed();
           return {
             done: false,
             value,
@@ -117,7 +126,11 @@ export class ToolEventBroadcaster<T> {
           };
 
           // Immediately check if we should resolve after setting up promise
-          if (self.isComplete || self.completionError || consumer.position < self.buffer.length) {
+          if (
+            self.isComplete ||
+            self.completionError ||
+            self.bufferHead + consumer.position - self.trimOffset < self.buffer.length
+          ) {
             resolve();
           }
         });
@@ -135,6 +148,7 @@ export class ToolEventBroadcaster<T> {
           consumer.cancelled = true;
           consumer.waitingPromise?.resolve();
           self.consumers.delete(consumerId);
+          self.trimConsumed();
           self.cleanup();
         }
         return {
@@ -149,6 +163,7 @@ export class ToolEventBroadcaster<T> {
           consumer.cancelled = true;
           consumer.waitingPromise?.resolve();
           self.consumers.delete(consumerId);
+          self.trimConsumed();
           self.cleanup();
         }
         throw e;
@@ -158,6 +173,39 @@ export class ToolEventBroadcaster<T> {
         return this;
       },
     };
+  }
+
+  private trimConsumed(): void {
+    if (this.streamReplay === 'full' || this.consumers.size === 0) {
+      return;
+    }
+
+    let min = Number.POSITIVE_INFINITY;
+    for (const consumer of this.consumers.values()) {
+      if (consumer.position < min) {
+        min = consumer.position;
+      }
+    }
+
+    const nextHead = this.bufferHead + min - this.trimOffset;
+    if (nextHead <= this.bufferHead) {
+      return;
+    }
+
+    this.trimOffset = min;
+    if (nextHead === this.buffer.length) {
+      this.buffer = [];
+      this.bufferHead = 0;
+      return;
+    }
+
+    this.buffer.fill(undefined, this.bufferHead, nextHead);
+    if (nextHead >= BUFFER_COMPACTION_MIN_HEAD && nextHead * 2 >= this.buffer.length) {
+      this.buffer = this.buffer.slice(nextHead);
+      this.bufferHead = 0;
+      return;
+    }
+    this.bufferHead = nextHead;
   }
 
   /**
@@ -185,3 +233,5 @@ interface ConsumerState {
   } | null;
   cancelled: boolean;
 }
+
+const BUFFER_COMPACTION_MIN_HEAD = 1024;

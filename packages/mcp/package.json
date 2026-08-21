@@ -1,6 +1,6 @@
 {
   "name": "@openrouter/mcp",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "engines": {
     "node": ">=20"
   },
@@ -33,12 +33,12 @@
       "default": "./esm/types.js"
     },
     "./schema": {
-      "types": "./esm/schema/json-schema-to-zod.d.ts",
-      "default": "./esm/schema/json-schema-to-zod.js"
+      "types": "./esm/schema.d.ts",
+      "default": "./esm/schema.js"
     },
     "./cache": {
-      "types": "./esm/cache/cache-store.d.ts",
-      "default": "./esm/cache/cache-store.js"
+      "types": "./esm/cache.d.ts",
+      "default": "./esm/cache.js"
     },
     "./package.json": "./package.json"
   },
@@ -60,17 +60,14 @@
   "scripts": {
     "lint": "biome check src tests",
     "lint:fix": "biome check --write src tests",
-    "gen:version": "node scripts/gen-version.mjs",
-    "build": "node scripts/gen-version.mjs && tsc",
+    "build": "tsc",
     "test": "vitest --run --project unit",
-    "test:e2e": "vitest --run --project e2e --coverage.enabled=false",
     "test:watch": "vitest --watch --project unit",
-    "typecheck": "tsc --noEmit",
-    "compile": "node scripts/gen-version.mjs && tsc"
+    "typecheck": "pnpm run build && tsc --noEmit -p tsconfig.typecheck.json",
+    "compile": "tsc"
   },
   "dependencies": {
     "@modelcontextprotocol/client": "^2.0.0",
-    "@openrouter/agent": "workspace:*",
-    "zod": "^4.0.0"
+    "@openrouter/agent": "workspace:*"
   }
 }

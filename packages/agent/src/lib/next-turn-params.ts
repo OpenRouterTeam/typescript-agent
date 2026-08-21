@@ -21,6 +21,7 @@ export function buildNextTurnParamsContext(
 ): NextTurnParamsContext {
   return {
     input: request.input ?? [],
+    toolChoice: request.toolChoice,
     model: request.model ?? '',
     models: request.models ?? [],
     temperature: request.temperature ?? null,
@@ -115,7 +116,7 @@ async function processNextTurnParamsForCall(
       if (process.env['NODE_ENV'] !== 'production') {
         console.warn(
           `Invalid nextTurnParams key "${paramKey}" in tool "${toolName}". ` +
-            'Valid keys: input, model, models, temperature, maxOutputTokens, topP, topK, instructions',
+            'Valid keys: input, toolChoice, model, models, temperature, maxOutputTokens, topP, topK, instructions',
         );
       }
       continue;
@@ -137,6 +138,7 @@ async function processNextTurnParamsForCall(
 function isValidNextTurnParamKey(key: string): key is keyof NextTurnParamsContext {
   const validKeys: ReadonlySet<string> = new Set([
     'input',
+    'toolChoice',
     'model',
     'models',
     'temperature',

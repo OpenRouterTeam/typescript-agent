@@ -1,5 +1,34 @@
 # @openrouter/mcp
 
+## 1.1.0
+
+### Minor Changes
+
+- [#102](https://github.com/OpenRouterTeam/typescript-agent/pull/102) [`787cbf8`](https://github.com/OpenRouterTeam/typescript-agent/commit/787cbf8b22bf2b8071e81e2dbf84ecd871a5e824) Thanks [@LukasParke](https://github.com/LukasParke)! - Add the full MCP integration under the canonical `@openrouter/agent/mcp` subpath. `@modelcontextprotocol/client` is an optional peer, so base agent installations and imports do not install or load MCP support. The existing `@openrouter/mcp` package remains as a compatibility facade and now re-exports the canonical agent subpaths.
+
+  ```ts
+  import { callModel, OpenRouter } from "@openrouter/agent";
+  import { createMCPTools } from "@openrouter/agent/mcp";
+
+  const mcp = await createMCPTools({ url: "https://mcp.example.com/mcp" });
+  const result = callModel(new OpenRouter(), {
+    model: "openai/gpt-4o-mini",
+    input: "Use the remote tools.",
+    tools: mcp.tools,
+  });
+  ```
+
+  Install `@modelcontextprotocol/client` alongside `@openrouter/agent` when using `/mcp`. The SDK is loaded lazily, so importing the base agent or the MCP entry point does not require the peer; the first MCP connection attempt without it throws an actionable `MCPMissingPeerDependencyError`.
+
+  Existing `@openrouter/mcp` imports continue to work as tooling-visible deprecated migration facades, but new code should prefer `@openrouter/agent/mcp`. The facade would only be removed in a future breaking release after migration notice.
+
+  The `@openrouter/mcp` facade continues to install `@modelcontextprotocol/client` transitively for backward compatibility; only direct `@openrouter/agent/mcp` users need to add the optional peer explicitly.
+
+### Patch Changes
+
+- Updated dependencies [[`787cbf8`](https://github.com/OpenRouterTeam/typescript-agent/commit/787cbf8b22bf2b8071e81e2dbf84ecd871a5e824), [`8d2ed61`](https://github.com/OpenRouterTeam/typescript-agent/commit/8d2ed61964aa063936763c7b80f6b5bf389fa144), [`66d7232`](https://github.com/OpenRouterTeam/typescript-agent/commit/66d7232d53d9881c5842c77f8bc342314724bf3b)]:
+  - @openrouter/agent@0.10.0
+
 ## 1.0.0
 
 ### Major Changes

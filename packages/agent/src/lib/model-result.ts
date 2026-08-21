@@ -3,9 +3,14 @@ import { betaResponsesSend } from '@openrouter/sdk/funcs/betaResponsesSend';
 import type { EventStream } from '@openrouter/sdk/lib/event-streams';
 import type { RequestOptions } from '@openrouter/sdk/lib/sdks';
 import type * as models from '@openrouter/sdk/models';
+import * as z4 from 'zod/v4';
 import type { $ZodObject, $ZodShape } from 'zod/v4/core';
 import type { CallModelInput, ResolvedCallModelInput } from './async-params.js';
-import { hasAsyncFunctions, resolveAsyncFunctions } from './async-params.js';
+import {
+  hasAsyncFunctions,
+  resolveAsyncFunctions,
+  stripToolSetSnapshotMetadata,
+} from './async-params.js';
 import type { SettledToolTask, TaskToolInput, ToolSemaphore, ToolTaskMode } from './async-tools.js';
 import {
   AsyncToolRegistry,
@@ -29,6 +34,7 @@ import {
   extractTextFromResponse as extractTextFromResponseState,
   normalizeInputToArray,
   partitionToolCalls,
+  toolRequiresApproval,
   unsentResultsToAPIFormat,
   updateState,
 } from './conversation-state.js';
@@ -53,6 +59,7 @@ import {
   applyNextTurnParamsToRequest,
   executeNextTurnParamsFunctions,
 } from './next-turn-params.js';
+import type { StreamReplay } from './reusable-stream.js';
 import { ReusableReadableStream } from './reusable-stream.js';
 import { isStopConditionMet } from './stop-conditions.js';
 import type { ItemInProgress, StreamableOutputItem, UiStreamEvent } from './stream-transformers.js';
@@ -98,11 +105,12 @@ import {
 import type {
   ConversationState,
   ConversationStatus,
+  CorrelatedResponseStreamEvent,
+  CorrelatedToolStreamEvent,
   InferToolEventsUnion,
   InferToolOutputsUnion,
   ParsedToolCall,
   PendingAsyncTool,
-  ResponseStreamEvent,
   ServerToolResultItem,
   StateAccessor,
   StopWhen,
@@ -112,7 +120,6 @@ import type {
   ToolCallOutputEvent,
   ToolContextMapWithShared,
   ToolResultItem,
-  ToolStreamEvent,
   ToolUiFragmentEvent,
   TurnContext,
   TurnEndEvent,
@@ -271,22 +278,22 @@ type IteratorOutcome<T> =
       error: unknown;
     };
 
-async function* mergeAsyncIterators<T>(
+async function* mergeAsyncIterators<A, B>(
   iterators: readonly [
-    AsyncIterator<T>,
-    AsyncIterator<T>,
+    AsyncIterator<A>,
+    AsyncIterator<B>,
   ],
-): AsyncGenerator<T> {
+): AsyncGenerator<A | B> {
   const active = [
     true,
     true,
   ];
-  const pending: Array<Promise<IteratorOutcome<T>> | null> = [
+  const pending: Array<Promise<IteratorOutcome<A | B>> | null> = [
     null,
     null,
   ];
   let preferred: 0 | 1 = 0;
-  const next = async (source: 0 | 1): Promise<IteratorOutcome<T>> => {
+  const next = async (source: 0 | 1): Promise<IteratorOutcome<A | B>> => {
     try {
       return {
         source,
@@ -311,11 +318,11 @@ async function* mergeAsyncIterators<T>(
         }
       }
       const other: 0 | 1 = preferred === 0 ? 1 : 0;
-      const outcome: IteratorOutcome<T> = await Promise.race(
+      const outcome: IteratorOutcome<A | B> = await Promise.race(
         [
           pending[preferred],
           pending[other],
-        ].filter((promise): promise is Promise<IteratorOutcome<T>> => promise !== null),
+        ].filter((promise): promise is Promise<IteratorOutcome<A | B>> => promise !== null),
       );
       pending[outcome.source] = null;
       if ('error' in outcome) {
@@ -332,7 +339,7 @@ async function* mergeAsyncIterators<T>(
   } finally {
     await Promise.allSettled(iterators.map((iterator) => iterator.return?.()));
     await Promise.all(
-      pending.filter((promise): promise is Promise<IteratorOutcome<T>> => !!promise),
+      pending.filter((promise): promise is Promise<IteratorOutcome<A | B>> => !!promise),
     );
   }
 }
@@ -378,6 +385,14 @@ function isEventStream(value: unknown): value is EventStream<models.StreamEvents
     getReader?: unknown;
   };
   return typeof maybeStream.getReader === 'function';
+}
+
+function isTerminalResponseStreamEvent(event: models.StreamEvents): boolean {
+  return (
+    isResponseCompletedEvent(event) ||
+    isResponseFailedEvent(event) ||
+    isResponseIncompleteEvent(event)
+  );
 }
 
 /**
@@ -524,7 +539,7 @@ export interface GetResponseOptions<
 
   /**
    * Call-level approval check - overrides tool-level requireApproval setting
-   * Receives the tool call and turn context, can be sync or async
+   * Receives normalized arguments when schema parsing succeeds and raw arguments otherwise
    */
   requireApproval?: (
     toolCall: ParsedToolCall<TTools[number]>,
@@ -537,6 +552,8 @@ export interface GetResponseOptions<
   onTurnStart?: (context: TurnContext) => void | Promise<void>;
   /** Callback invoked at the end of each tool execution turn */
   onTurnEnd?: (context: TurnContext, response: models.OpenResponsesResult) => void | Promise<void>;
+  /** Replay history retained for delayed and sequential stream consumers. */
+  streamReplay?: StreamReplay;
   /**
    * When the loop exits because `stopWhen` was met and the last response
    * still contained tool calls, make one more model request with no tools so
@@ -648,11 +665,13 @@ export class ModelResult<
     | {
         type: 'preliminary_result';
         toolCallId: string;
+        toolName: string;
         result: InferToolEventsUnion<TTools>;
       }
     | {
         type: 'tool_result';
         toolCallId: string;
+        toolName: string;
         source: 'client' | 'mcp';
         result: InferToolOutputsUnion<TTools>;
         preliminaryResults?: InferToolEventsUnion<TTools>[];
@@ -702,9 +721,8 @@ export class ModelResult<
   private isResumingFromApproval = false;
 
   // Unified turn broadcaster for multi-turn streaming
-  private turnBroadcaster: ToolEventBroadcaster<
-    ResponseStreamEvent<InferToolEventsUnion<TTools>, InferToolOutputsUnion<TTools>>
-  > | null = null;
+  private turnBroadcaster: ToolEventBroadcaster<CorrelatedResponseStreamEvent<TTools>> | null =
+    null;
   private uiBroadcaster: ToolEventBroadcaster<ToolUiFragmentEvent> | null = null;
   private pendingUiFragments = new Set<Promise<void>>();
   private queuedUiToolResults: Array<{
@@ -717,6 +735,9 @@ export class ModelResult<
   private turnBroadcasterCompletionPromise: Promise<void> | null = null;
   private initialStreamPipeStarted = false;
   private initialPipePromise: Promise<void> | null = null;
+  private initialResponse: models.OpenResponsesResult | null = null;
+  private initialResponseError: Error | null = null;
+  private readonly streamReplay: StreamReplay;
 
   // Context store for typed tool context (persists across turns)
   private contextStore: ToolContextStore | null = null;
@@ -736,6 +757,27 @@ export class ModelResult<
   // normal tool round consults this to synthesize rejected outputs instead of
   // executing the calls.
   private readonly hookDeniedCalls = new Map<string, string>();
+  // PreToolUse outcomes parked between the approval gates and execution.
+  private readonly preparedToolCalls = new Map<
+    string,
+    | {
+        type: 'ready';
+        toolCall: ParsedToolCall<Tool>;
+        mutated: boolean;
+      }
+    | {
+        type: 'blocked';
+        reason: string;
+        output: models.FunctionCallOutputItem;
+      }
+  >();
+  // Approval is idempotent per response object, tool-call occurrence, and phase.
+  // Occurrence tokens avoid content canonicalization and distinguish duplicates.
+  private readonly completedApprovalGates = new Set<string>();
+  private readonly approvalResponseOccurrences = new WeakMap<object, number>();
+  private readonly approvalCallOccurrences = new WeakMap<object, string[]>();
+  private nextApprovalResponseOccurrence = 0;
+  private nextApprovalCallOccurrence = 0;
   // Telemetry for the PostModelCall hook: the initial/resume request is
   // dispatched in initStream but its response is materialized later (stream
   // consumption), so the dispatch time and turn labeling are parked here
@@ -832,6 +874,7 @@ export class ModelResult<
 
   constructor(options: GetResponseOptions<TTools, TShared>) {
     this.options = options;
+    this.streamReplay = options.streamReplay ?? 'full';
     this.hooksManager = options.hooks;
     const doomLoopConfig = resolveDoomLoopOption(options.doomLoop);
     this.doomLoopMonitor = doomLoopConfig ? new DoomLoopMonitor(doomLoopConfig) : null;
@@ -944,11 +987,9 @@ export class ModelResult<
    * Get or create the unified turn broadcaster (lazy initialization).
    * Broadcasts all API stream events, tool events, and turn delimiters across turns.
    */
-  private ensureTurnBroadcaster(): ToolEventBroadcaster<
-    ResponseStreamEvent<InferToolEventsUnion<TTools>, InferToolOutputsUnion<TTools>>
-  > {
+  private ensureTurnBroadcaster(): ToolEventBroadcaster<CorrelatedResponseStreamEvent<TTools>> {
     if (!this.turnBroadcaster) {
-      this.turnBroadcaster = new ToolEventBroadcaster();
+      this.turnBroadcaster = new ToolEventBroadcaster(this.streamReplay);
     }
     return this.turnBroadcaster;
   }
@@ -991,7 +1032,32 @@ export class ModelResult<
         timestamp: Date.now(),
       } satisfies TurnEndEvent);
     })().catch((error) => {
-      broadcaster.complete(error instanceof Error ? error : new Error(String(error)));
+      const normalizedError = error instanceof Error ? error : new Error(String(error));
+      this.initialResponseError = normalizedError;
+      broadcaster.complete(normalizedError);
+    });
+  }
+
+  private captureInitialStreamEvent(event: models.StreamEvents): void {
+    if (isResponseCompletedEvent(event) || isResponseIncompleteEvent(event)) {
+      this.initialResponse = event.response;
+      return;
+    }
+
+    if (isResponseFailedEvent(event)) {
+      this.initialResponseError = new Error(
+        `Response failed: ${JSON.stringify(event.response.error)}`,
+      );
+    }
+  }
+
+  private setReusableStream(stream: ReadableStream<models.StreamEvents>): void {
+    this.initialResponse = null;
+    this.initialResponseError = null;
+    this.reusableStream = new ReusableReadableStream(stream, {
+      streamReplay: this.streamReplay,
+      onValue: (event) => this.captureInitialStreamEvent(event),
+      isTerminalValue: isTerminalResponseStreamEvent,
     });
   }
 
@@ -1057,6 +1123,7 @@ export class ModelResult<
    */
   private broadcastToolResult(
     toolCallId: string,
+    toolName: string,
     source: 'client' | 'mcp',
     result: InferToolOutputsUnion<TTools>,
     preliminaryResults?: InferToolEventsUnion<TTools>[],
@@ -1064,6 +1131,7 @@ export class ModelResult<
     this.toolEventBroadcaster?.push({
       type: 'tool_result' as const,
       toolCallId,
+      toolName,
       source,
       result,
       ...(preliminaryResults?.length && {
@@ -1073,13 +1141,14 @@ export class ModelResult<
     this.turnBroadcaster?.push({
       type: 'tool.result' as const,
       toolCallId,
+      toolName,
       source,
       result,
       timestamp: Date.now(),
       ...(preliminaryResults?.length && {
         preliminaryResults,
       }),
-    });
+    } as CorrelatedResponseStreamEvent<TTools>);
   }
 
   /**
@@ -1088,19 +1157,22 @@ export class ModelResult<
    */
   private broadcastPreliminaryResult(
     toolCallId: string,
+    toolName: string,
     result: InferToolEventsUnion<TTools>,
   ): void {
     this.toolEventBroadcaster?.push({
       type: 'preliminary_result' as const,
       toolCallId,
+      toolName,
       result,
     });
     this.turnBroadcaster?.push({
       type: 'tool.preliminary_result' as const,
       toolCallId,
+      toolName,
       result,
       timestamp: Date.now(),
-    });
+    } as CorrelatedResponseStreamEvent<TTools>);
   }
 
   /**
@@ -1108,9 +1180,7 @@ export class ModelResult<
    * Used by stream methods that need to iterate over all turns.
    */
   private startTurnBroadcasterExecution(): {
-    consumer: AsyncIterableIterator<
-      ResponseStreamEvent<InferToolEventsUnion<TTools>, InferToolOutputsUnion<TTools>>
-    >;
+    consumer: AsyncIterableIterator<CorrelatedResponseStreamEvent<TTools>>;
     executionPromise: Promise<void>;
   } {
     const broadcaster = this.ensureTurnBroadcaster();
@@ -1151,7 +1221,10 @@ export class ModelResult<
     turnNumber: number,
   ): Promise<models.OpenResponsesResult> {
     if (isEventStream(value)) {
-      const stream = new ReusableReadableStream(value);
+      const stream = new ReusableReadableStream(value, {
+        streamReplay: this.streamReplay,
+        isTerminalValue: isTerminalResponseStreamEvent,
+      });
       if (this.turnBroadcaster) {
         return this.pipeAndConsumeStream(stream, turnNumber);
       }
@@ -1178,12 +1251,47 @@ export class ModelResult<
     if (this.finalResponse) {
       return this.finalResponse;
     }
+
+    const initialPipePromise = this.initialPipePromise;
+    if (initialPipePromise) {
+      await initialPipePromise;
+    }
+
+    if (this.initialResponseError) {
+      throw this.initialResponseError;
+    }
+
+    if (this.initialResponse) {
+      await this.emitPendingModelCallOnce(this.initialResponse);
+      return this.initialResponse;
+    }
+
     if (this.reusableStream) {
       const response = await consumeStreamForCompletion(this.reusableStream);
       await this.emitPendingModelCallOnce(response);
       return response;
     }
     throw new Error('Neither stream nor response initialized');
+  }
+
+  private extractCachedCompletion(): models.OpenResponsesResult {
+    if (this.initialResponseError) {
+      throw this.initialResponseError;
+    }
+    if (this.initialResponse) {
+      return this.initialResponse;
+    }
+    if (!this.reusableStream) {
+      throw new Error('Stream not initialized');
+    }
+    return extractCompletionFromBuffer(this.reusableStream);
+  }
+
+  private tryExtractCachedCompletion(): models.OpenResponsesResult | undefined {
+    if (this.initialResponse) {
+      return this.initialResponse;
+    }
+    return this.reusableStream ? tryExtractCompletionFromBuffer(this.reusableStream) : undefined;
   }
 
   /**
@@ -1478,6 +1586,7 @@ export class ModelResult<
     turnContext: TurnContext,
     onPreliminaryResult?: (toolCallId: string, result: unknown) => void,
     extras?: ToolExecutionExtras,
+    runPreToolUse = true,
   ): Promise<
     | {
         type: 'parse_error';
@@ -1506,23 +1615,6 @@ export class ModelResult<
     // synthetic error without running the tool or firing hooks.
     const rawArgs: unknown = toolCall.arguments;
     if (typeof rawArgs === 'string') {
-      // Malformed calls are classic doom-loop fuel: a model stuck emitting
-      // the same invalid JSON re-triggers this parse error forever. Record
-      // the raw string as the call's identity so the streak trips the
-      // detector instead of bouncing off the parse error unbounded. The
-      // parse-error output below already prevents execution, so 'block'
-      // needs no extra handling; 'steer'/'stop' side effects are applied
-      // inside the ordered evaluation.
-      if (this.doomLoopMonitor) {
-        await this.enqueueDoomLoopEvaluation({
-          toolName: String(toolCall.name),
-          keyMaterial: rawArgs,
-          fallbackKeyMaterial: null,
-          allowBlock: true,
-          detector: 'tool-fingerprint',
-          toolCall,
-        });
-      }
       const errorMessage =
         `Failed to parse tool call arguments for "${toolCall.name}": The model provided invalid JSON. ` +
         `Raw arguments received: "${rawArgs}". ` +
@@ -1542,34 +1634,22 @@ export class ModelResult<
       };
     }
 
-    // Doom-loop checkpoint — BEFORE PreToolUse, on the arguments the MODEL
-    // issued (pre-mutation): the loop evidence is the model repeating
-    // itself, and a PreToolUse hook that rewrites input each call (e.g.
-    // injecting a nonce) must not mask that repetition. A 'block' verdict
-    // returns the same `hook_blocked` shape as a PreToolUse block, so every
-    // caller handles it identically; PreToolUse deliberately does not fire
-    // for doom-blocked calls (nothing will execute — mirrors parse_error).
-    const doomOutcome = await this.checkDoomLoopBeforeExecution(tool, toolCall);
-    if (doomOutcome.blocked) {
+    const prepared = this.preparedToolCalls.get(toolCall.id);
+    this.preparedToolCalls.delete(toolCall.id);
+    if (prepared?.type === 'blocked') {
       return {
         type: 'hook_blocked',
         toolCall,
-        reason: doomOutcome.reason,
-        output: {
-          type: 'function_call_output' as const,
-          id: `output_${toolCall.id}`,
-          callId: toolCall.id,
-          output: JSON.stringify({
-            error: doomOutcome.reason,
-          }),
-        },
+        reason: prepared.reason,
+        output: prepared.output,
       };
     }
 
-    let effectiveToolCall = toolCall;
+    let effectiveToolCall = prepared?.type === 'ready' ? prepared.toolCall : toolCall;
 
-    // Emit PreToolUse hook -- can block or mutate input.
-    if (this.hooksManager) {
+    // Emit PreToolUse here only when the approval gate has not already done
+    // so (for example, an approved call resumed from older persisted state).
+    if (this.hooksManager && !prepared && runPreToolUse) {
       // The hook payload coerces null/undefined arguments to {} for schema
       // validation, but `effectiveToolCall.arguments` only changes when the
       // chain reports an actual mutation (`emit.mutated`), so tools that
@@ -2564,7 +2644,7 @@ export class ModelResult<
           // Sync backward scan of the retained buffer — not a consumer
           // replay, which would cost one microtask hop per buffered event
           // on every hook-less streaming teardown.
-          await this.emitPendingModelCallOnce(extractCompletionFromBuffer(this.reusableStream));
+          await this.emitPendingModelCallOnce(this.extractCachedCompletion());
         } else if (this.reusableStream) {
           // Consumers stop at the terminal event (streamTerminationEvents),
           // usually before the pump reads the source close that flips
@@ -2574,7 +2654,7 @@ export class ModelResult<
           // dropping the parked telemetry. Stays silent (no emit, no
           // throw) when nothing terminal was buffered — e.g. an errored
           // mid-flight stream, where no materialized response exists.
-          const buffered = tryExtractCompletionFromBuffer(this.reusableStream);
+          const buffered = this.tryExtractCachedCompletion();
           if (buffered) {
             await this.emitPendingModelCallOnce(buffered);
           }
@@ -2692,6 +2772,208 @@ export class ModelResult<
         reason: last.reason,
       }),
     };
+  }
+
+  private async prepareToolCallForApproval(
+    toolCall: ParsedToolCall<Tool>,
+  ): Promise<ParsedToolCall<Tool>> {
+    if (!this.hooksManager || typeof toolCall.arguments === 'string') {
+      return toolCall;
+    }
+
+    const preResult = await this.hooksManager.emit(
+      'PreToolUse',
+      {
+        toolName: toolCall.name,
+        toolInput: (toolCall.arguments ?? {}) as Record<string, unknown>,
+      },
+      this.hookEmitContext(toolCall.name),
+    );
+
+    if (preResult.blocked) {
+      const block = preResult.results.find((result) => result.block)?.block;
+      const reason = typeof block === 'string' ? block : 'Blocked by PreToolUse hook';
+      this.preparedToolCalls.set(toolCall.id, {
+        type: 'blocked',
+        reason,
+        output: {
+          type: 'function_call_output',
+          id: `output_${toolCall.id}`,
+          callId: toolCall.id,
+          output: JSON.stringify({
+            error: reason,
+          }),
+        },
+      });
+      return toolCall;
+    }
+
+    const effectiveToolCall = preResult.mutated
+      ? {
+          ...toolCall,
+          arguments: preResult.finalPayload.toolInput,
+        }
+      : toolCall;
+    this.preparedToolCalls.set(toolCall.id, {
+      type: 'ready',
+      toolCall: effectiveToolCall,
+      mutated: preResult.mutated,
+    });
+    return effectiveToolCall;
+  }
+
+  private approvalResponseKey(response: models.OpenResponsesResult): string {
+    let occurrence = this.approvalResponseOccurrences.get(response);
+    if (occurrence === undefined) {
+      occurrence = this.nextApprovalResponseOccurrence++;
+      this.approvalResponseOccurrences.set(response, occurrence);
+    }
+    return `${response.id}:${occurrence}`;
+  }
+
+  private approvalGateKey(
+    phase: 'initial' | 'mutated',
+    responseKey: string,
+    occurrence: string,
+  ): string {
+    return JSON.stringify([
+      phase,
+      responseKey,
+      occurrence,
+    ]);
+  }
+
+  private assignApprovalCallOccurrences(
+    response: models.OpenResponsesResult,
+    toolCalls: ParsedToolCall<Tool>[],
+  ): Map<ParsedToolCall<Tool>, string> {
+    let identities = this.approvalCallOccurrences.get(response);
+    if (!identities) {
+      identities = [];
+      this.approvalCallOccurrences.set(response, identities);
+    }
+    const occurrences = new Map<ParsedToolCall<Tool>, string>();
+    for (const [index, toolCall] of toolCalls.entries()) {
+      const identity = identities[index] ?? `call:${this.nextApprovalCallOccurrence++}`;
+      identities[index] = identity;
+      occurrences.set(toolCall, identity);
+    }
+    return occurrences;
+  }
+
+  /** Re-check only approval sources whose answer can depend on input. */
+  private async mutatedInputRequiresApproval(
+    toolCall: ParsedToolCall<Tool>,
+    context: TurnContext,
+  ): Promise<boolean> {
+    const tools = this.options.tools;
+    if (!tools) {
+      return false;
+    }
+    const tool = tools.find(
+      (candidate) => isClientTool(candidate) && candidate.function.name === toolCall.name,
+    );
+    if (this.requireApprovalFn) {
+      return toolRequiresApproval(
+        toolCall as ParsedToolCall<TTools[number]>,
+        tools,
+        context,
+        this.requireApprovalFn,
+      );
+    }
+    if (!tool || !isClientTool(tool) || typeof tool.function.requireApproval !== 'function') {
+      return false;
+    }
+    return toolRequiresApproval(toolCall as ParsedToolCall<TTools[number]>, tools, context);
+  }
+
+  private async emitPreparedFailure(toolCall: ParsedToolCall<Tool>, reason: string): Promise<void> {
+    if (!this.hooksManager) {
+      return;
+    }
+    await this.hooksManager.emit(
+      'PostToolUseFailure',
+      {
+        toolName: toolCall.name,
+        toolInput: (toolCall.arguments ?? {}) as Record<string, unknown>,
+        error: new Error(reason),
+      },
+      this.hookEmitContext(toolCall.name),
+    );
+  }
+
+  private async blockPreparedToolCall(
+    toolCall: ParsedToolCall<Tool>,
+    reason: string,
+  ): Promise<void> {
+    this.preparedToolCalls.set(toolCall.id, {
+      type: 'blocked',
+      reason,
+      output: {
+        type: 'function_call_output',
+        id: `output_${toolCall.id}`,
+        callId: toolCall.id,
+        output: JSON.stringify({
+          error: reason,
+        }),
+      },
+    });
+    await this.emitPreparedFailure(toolCall, reason);
+  }
+
+  private async validatePreparedMutation(
+    effective: ParsedToolCall<Tool>,
+  ): Promise<'ready' | 'blocked'> {
+    const tool = this.options.tools?.find(
+      (candidate) => isClientTool(candidate) && candidate.function.name === effective.name,
+    );
+    if (!tool || !isClientTool(tool)) {
+      return 'ready';
+    }
+    const parsed = z4.safeParse(tool.function.inputSchema, effective.arguments);
+    if (!parsed.success || !isRecord(parsed.data)) {
+      await this.blockPreparedToolCall(
+        effective,
+        `PreToolUse produced invalid input for "${effective.name}"`,
+      );
+      return 'blocked';
+    }
+    return 'ready';
+  }
+
+  private async prepareAfterInitialApproval(
+    toolCall: ParsedToolCall<Tool>,
+    context: TurnContext,
+    responseKey: string,
+    occurrence: string,
+  ): Promise<'ready' | 'blocked' | 'pending'> {
+    const effective = await this.prepareToolCallForApproval(toolCall);
+    const prepared = this.preparedToolCalls.get(toolCall.id);
+    if (prepared?.type !== 'ready' || !prepared.mutated) {
+      return prepared?.type === 'blocked' ? 'blocked' : 'ready';
+    }
+
+    if ((await this.validatePreparedMutation(effective)) === 'blocked') {
+      return 'blocked';
+    }
+    const key = this.approvalGateKey('mutated', responseKey, occurrence);
+    if (this.completedApprovalGates.has(key)) {
+      return 'ready';
+    }
+    this.completedApprovalGates.add(key);
+    if (!(await this.mutatedInputRequiresApproval(effective, context))) {
+      return 'ready';
+    }
+
+    const { decision, reason } = await this.emitPermissionRequest(effective);
+    if (decision === 'allow') {
+      return 'ready';
+    }
+    if (decision === 'deny') {
+      await this.blockPreparedToolCall(effective, reason ?? 'Denied by PermissionRequest hook');
+      return 'blocked';
+    }
+    return 'pending';
   }
 
   /**
@@ -2841,9 +3123,6 @@ export class ModelResult<
     toolCalls: ParsedToolCall<TTools[number]>[],
     turnContext: TurnContext,
   ): Promise<UnsentToolResult<TTools>[]> {
-    // Auto-approved batch = one doom-loop round: identical parallel calls
-    // count once (see beginDoomLoopRound).
-    await this.beginDoomLoopRound(toolCalls as ParsedToolCall<Tool>[]);
     const toolCallPromises = toolCalls.map(async (tc) => {
       const tool = this.options.tools?.find((t) => isClientTool(t) && t.function.name === tc.name);
       if (!tool || !isAutoResolvableTool(tool)) {
@@ -2860,7 +3139,7 @@ export class ModelResult<
       );
 
       if (hookOutcome.type === 'parse_error') {
-        this.broadcastToolResult(tc.id, isMcpTool(tool) ? 'mcp' : 'client', {
+        this.broadcastToolResult(tc.id, String(tc.name), isMcpTool(tool) ? 'mcp' : 'client', {
           error: hookOutcome.errorMessage,
         } as InferToolOutputsUnion<TTools>);
         return createRejectedResult(tc.id, String(tc.name), hookOutcome.errorMessage);
@@ -2914,6 +3193,146 @@ export class ModelResult<
     return results;
   }
 
+  private async classifyInitialApprovalCalls(
+    toolCalls: ParsedToolCall<Tool>[],
+    responseKey: string,
+    occurrences: Map<ParsedToolCall<Tool>, string>,
+  ): Promise<{
+    unseenCalls: ParsedToolCall<Tool>[];
+    blockedCalls: ParsedToolCall<Tool>[];
+  }> {
+    const unseenCalls: ParsedToolCall<Tool>[] = [];
+    const blockedCalls: ParsedToolCall<Tool>[] = [];
+    const unseenKeys = toolCalls.filter(
+      (toolCall) =>
+        !this.completedApprovalGates.has(
+          this.approvalGateKey('initial', responseKey, occurrences.get(toolCall) ?? ''),
+        ),
+    );
+    await this.beginDoomLoopRound(unseenKeys);
+
+    for (const toolCall of toolCalls) {
+      const key = this.approvalGateKey('initial', responseKey, occurrences.get(toolCall) ?? '');
+      if (this.completedApprovalGates.has(key)) {
+        continue;
+      }
+      this.completedApprovalGates.add(key);
+      const tool = this.options.tools?.find(
+        (candidate) => isClientTool(candidate) && candidate.function.name === toolCall.name,
+      );
+      if (tool && isAutoResolvableTool(tool)) {
+        const rawArgs: unknown = toolCall.arguments;
+        const doomOutcome =
+          typeof rawArgs === 'string' && this.doomLoopMonitor
+            ? await this.enqueueDoomLoopEvaluation({
+                toolName: String(toolCall.name),
+                keyMaterial: rawArgs,
+                fallbackKeyMaterial: null,
+                allowBlock: true,
+                detector: 'tool-fingerprint',
+                toolCall,
+              }).then((decision) => ({
+                blocked: decision.action === 'block' || decision.action === 'stop',
+                reason: decision.message ?? 'Blocked by doom loop',
+              }))
+            : await this.checkDoomLoopBeforeExecution(tool, toolCall);
+        if (doomOutcome.blocked) {
+          this.preparedToolCalls.set(toolCall.id, {
+            type: 'blocked',
+            reason: doomOutcome.reason,
+            output: {
+              type: 'function_call_output',
+              id: `output_${toolCall.id}`,
+              callId: toolCall.id,
+              output: JSON.stringify({
+                error: doomOutcome.reason,
+              }),
+            },
+          });
+          blockedCalls.push(toolCall);
+          continue;
+        }
+      }
+      unseenCalls.push(toolCall);
+    }
+    return {
+      unseenCalls,
+      blockedCalls,
+    };
+  }
+
+  private async resolveApprovalPhases(
+    needsApproval: ParsedToolCall<TTools[number]>[],
+    autoExecute: ParsedToolCall<TTools[number]>[],
+    turnContext: TurnContext,
+    responseKey: string,
+    occurrences: Map<ParsedToolCall<Tool>, string>,
+  ): Promise<{
+    denied: {
+      tc: ParsedToolCall<TTools[number]>;
+      reason: string;
+    }[];
+    stillPending: ParsedToolCall<TTools[number]>[];
+    initialSurvivors: ParsedToolCall<Tool>[];
+  }> {
+    const denied: {
+      tc: ParsedToolCall<TTools[number]>;
+      reason: string;
+    }[] = [];
+    const stillPending: ParsedToolCall<TTools[number]>[] = [];
+
+    if (this.hooksManager) {
+      for (const tc of needsApproval) {
+        const { decision, reason } = await this.emitPermissionRequest(tc as ParsedToolCall<Tool>);
+        if (decision === 'deny') {
+          denied.push({
+            tc,
+            reason: reason ?? 'Denied by PermissionRequest hook',
+          });
+        } else if (decision !== 'allow') {
+          stillPending.push(tc);
+        }
+      }
+    } else {
+      stillPending.push(...needsApproval);
+    }
+
+    const initialSurvivors = [
+      ...autoExecute,
+      ...needsApproval.filter(
+        (tc) =>
+          !stillPending.some((pending) => pending.id === tc.id) &&
+          !denied.some((entry) => entry.tc.id === tc.id),
+      ),
+    ] as ParsedToolCall<Tool>[];
+    for (const toolCall of initialSurvivors) {
+      const tool = this.options.tools?.find(
+        (candidate) => isClientTool(candidate) && candidate.function.name === toolCall.name,
+      );
+      if (!tool || !isAutoResolvableTool(tool)) {
+        continue;
+      }
+      if (
+        (await this.prepareAfterInitialApproval(
+          toolCall,
+          turnContext,
+          responseKey,
+          occurrences.get(toolCall) ?? '',
+        )) === 'pending'
+      ) {
+        const prepared = this.preparedToolCalls.get(toolCall.id);
+        if (prepared?.type === 'ready') {
+          stillPending.push(prepared.toolCall as ParsedToolCall<TTools[number]>);
+        }
+      }
+    }
+    return {
+      denied,
+      stillPending,
+      initialSurvivors,
+    };
+  }
+
   /**
    * Check for tools requiring approval and handle accordingly.
    * Partitions tool calls into those needing approval and those that can auto-execute.
@@ -2925,7 +3344,7 @@ export class ModelResult<
    * @throws Error if approval is required but no state accessor is configured
    */
   private async handleApprovalCheck(
-    toolCalls: ParsedToolCall<Tool>[],
+    suppliedToolCalls: ParsedToolCall<Tool>[],
     currentRound: number,
     currentResponse: models.OpenResponsesResult,
   ): Promise<boolean> {
@@ -2935,57 +3354,40 @@ export class ModelResult<
 
     const turnContext: TurnContext = {
       numberOfTurns: currentRound,
-      // context is handled via contextStore, not on TurnContext
     };
+    const responseKey = this.approvalResponseKey(currentResponse);
+    // Always enumerate the complete response so subset visits find the original
+    // response-local occurrence and appended calls receive fresh identities.
+    const responseToolCalls = extractToolCallsFromResponse(currentResponse);
+    const toolCalls = responseToolCalls.length > 0 ? responseToolCalls : suppliedToolCalls;
+    const occurrences = this.assignApprovalCallOccurrences(currentResponse, toolCalls);
+
+    const { unseenCalls, blockedCalls } = await this.classifyInitialApprovalCalls(
+      toolCalls,
+      responseKey,
+      occurrences,
+    );
+
+    if (unseenCalls.length === 0 && blockedCalls.length === 0) {
+      return false;
+    }
 
     const { requiresApproval: needsApproval, autoExecute } = await partitionToolCalls(
-      toolCalls as ParsedToolCall<TTools[number]>[],
+      unseenCalls as ParsedToolCall<TTools[number]>[],
       this.options.tools,
       turnContext,
       this.requireApprovalFn ?? undefined,
     );
 
-    // Nothing needs an approval gate: return immediately WITHOUT executing
-    // anything. The main loop's executeToolRound runs every call exactly
-    // once; pre-executing here would double-run side-effecting tools.
-    if (needsApproval.length === 0) {
-      return false;
-    }
-
-    // Run the PermissionRequest hook for each tool that needs approval.
-    // This lets hooks short-circuit the approval flow in either direction:
-    // 'allow' promotes the call past the gate (executed once by the normal
-    // round), 'deny' synthesizes a rejection (recorded so the round emits a
-    // rejected output instead of executing), 'ask_user' falls through to the
-    // human approval flow.
-    const denied: {
-      tc: ParsedToolCall<TTools[number]>;
-      reason: string;
-    }[] = [];
-    const stillPending: ParsedToolCall<TTools[number]>[] = [];
-
-    if (this.hooksManager) {
-      for (const tc of needsApproval) {
-        const { decision, reason } = await this.emitPermissionRequest(tc as ParsedToolCall<Tool>);
-        if (decision === 'allow') {
-          // Promoted past the gate; the normal tool round executes it once.
-        } else if (decision === 'deny') {
-          denied.push({
-            tc,
-            reason: reason ?? 'Denied by PermissionRequest hook',
-          });
-        } else {
-          stillPending.push(tc);
-        }
-      }
-    } else {
-      stillPending.push(...needsApproval);
-    }
+    const { denied, stillPending, initialSurvivors } = await this.resolveApprovalPhases(
+      needsApproval,
+      autoExecute,
+      turnContext,
+      responseKey,
+      occurrences,
+    );
 
     if (stillPending.length === 0) {
-      // The hook resolved every gated call, so we do not pause. Record denied
-      // calls so executeToolRound synthesizes rejections instead of running
-      // them; allowed calls execute once via the normal round.
       for (const d of denied) {
         this.hookDeniedCalls.set(d.tc.id, d.reason);
       }
@@ -3004,8 +3406,13 @@ export class ModelResult<
     // We are pausing: the normal tool round will NOT run for this response,
     // so execute the auto-approved calls now and persist their results as
     // unsent so the resume path can pick them up without re-executing.
+    const pendingIds = new Set(stillPending.map((call) => call.id));
+    const executableNow = [
+      ...initialSurvivors.filter((call) => !pendingIds.has(call.id)),
+      ...blockedCalls,
+    ];
     const unsentResults = await this.executeAutoApproveTools(
-      autoExecute as ParsedToolCall<TTools[number]>[],
+      executableNow as ParsedToolCall<TTools[number]>[],
       turnContext,
     );
 
@@ -3021,7 +3428,12 @@ export class ModelResult<
     // Save state with pending approvals (only reached when stillPending > 0).
     const stateUpdates: Partial<Omit<ConversationState<TTools>, 'id' | 'createdAt' | 'updatedAt'>> =
       {
-        pendingToolCalls: stillPending,
+        pendingToolCalls: stillPending.map((toolCall) => ({
+          ...toolCall,
+          ...(this.preparedToolCalls.has(toolCall.id) && {
+            preToolUseApplied: true as const,
+          }),
+        })),
         status: 'awaiting_approval',
       };
     if (combinedResults.length > 0) {
@@ -3029,6 +3441,8 @@ export class ModelResult<
     }
     await this.saveStateSafely(stateUpdates);
 
+    this.preparedToolCalls.clear();
+    this.hookDeniedCalls.clear();
     this.finalResponse = currentResponse;
     return true; // Pause for approval
   }
@@ -3179,7 +3593,8 @@ export class ModelResult<
       if (task.status === 'completed') {
         this.broadcastToolResult(
           task.callId,
-          this.toolSourceByName(task.name),
+          String(task.name),
+          this.toolSourceByName(String(task.name)),
           task.result as InferToolOutputsUnion<TTools>,
         );
         const tool = this.options.tools?.find(
@@ -3396,7 +3811,7 @@ export class ModelResult<
       ? (callId: string, resultValue: unknown) => {
           const typedResult = resultValue as InferToolEventsUnion<TTools>;
           preliminaryResultsForCall.push(typedResult);
-          this.broadcastPreliminaryResult(callId, typedResult);
+          this.broadcastPreliminaryResult(callId, String(toolCall.name), typedResult);
         }
       : undefined;
 
@@ -3469,9 +3884,14 @@ export class ModelResult<
       }
 
       if (executed.type === 'parse_error') {
-        this.broadcastToolResult(toolCall.id, isMcpTool(tool) ? 'mcp' : 'client', {
-          error: executed.errorMessage,
-        } as InferToolOutputsUnion<TTools>);
+        this.broadcastToolResult(
+          toolCall.id,
+          String(toolCall.name),
+          isMcpTool(tool) ? 'mcp' : 'client',
+          {
+            error: executed.errorMessage,
+          } as InferToolOutputsUnion<TTools>,
+        );
         return executed;
       }
       if (executed.type === 'hook_blocked') {
@@ -3540,9 +3960,14 @@ export class ModelResult<
     preliminaryResultsForCall: InferToolEventsUnion<TTools>[];
   } {
     const message = `Tool "${toolCall.name}" timed out after ${timeoutMs}ms`;
-    this.broadcastToolResult(toolCall.id, isMcpTool(tool) ? 'mcp' : 'client', {
-      error: message,
-    } as InferToolOutputsUnion<TTools>);
+    this.broadcastToolResult(
+      toolCall.id,
+      String(toolCall.name),
+      isMcpTool(tool) ? 'mcp' : 'client',
+      {
+        error: message,
+      } as InferToolOutputsUnion<TTools>,
+    );
     return {
       type: 'execution' as const,
       toolCall,
@@ -3628,9 +4053,6 @@ export class ModelResult<
     pausedCalls: ParsedToolCall<Tool>[];
     deferredTasks: PendingAsyncTool[];
   }> {
-    // One executed batch = one doom-loop round: identical parallel calls in
-    // this batch count as ONE piece of loop evidence and share a decision.
-    await this.beginDoomLoopRound(toolCalls);
     const toolCallPromises = toolCalls.map((toolCall) =>
       this.executeSingleToolCall(toolCall, turnContext),
     );
@@ -3671,7 +4093,8 @@ export class ModelResult<
         // `runToolWithHooks` is the single point of emission for PostToolUseFailure.
         this.broadcastToolResult(
           originalToolCall.id,
-          this.toolSourceByName(originalToolCall.name),
+          String(originalToolCall.name),
+          this.toolSourceByName(String(originalToolCall.name)),
           {
             error: errorMessage,
           } as InferToolOutputsUnion<TTools>,
@@ -3745,6 +4168,7 @@ export class ModelResult<
       ) as InferToolOutputsUnion<TTools>;
       this.broadcastToolResult(
         value.toolCall.id,
+        String(value.toolCall.name),
         isMcpTool(value.tool) ? 'mcp' : 'client',
         toolResult,
         value.preliminaryResultsForCall.length > 0 ? value.preliminaryResultsForCall : undefined,
@@ -3918,6 +4342,7 @@ export class ModelResult<
         if (settled.outcome === 'ok') {
           this.broadcastToolResult(
             toolCall.id,
+            String(toolCall.name),
             source,
             settled.result as InferToolOutputsUnion<TTools>,
           );
@@ -3941,7 +4366,7 @@ export class ModelResult<
         }
         const message =
           settled.error instanceof Error ? settled.error.message : String(settled.error);
-        this.broadcastToolResult(toolCall.id, source, {
+        this.broadcastToolResult(toolCall.id, String(toolCall.name), source, {
           error: message,
         } as InferToolOutputsUnion<TTools>);
         return {
@@ -3999,7 +4424,7 @@ export class ModelResult<
       return null;
     }
     const message = `Tool "${toolCall.name}": ctx.defer() taskId "${taskId}" is already in use by another pending task in this conversation (call ${duplicate.callId}). Task ids must be unique per conversation — include a per-call component (e.g. the ticket id plus your callId).`;
-    this.broadcastToolResult(toolCall.id, source, {
+    this.broadcastToolResult(toolCall.id, String(toolCall.name), source, {
       error: message,
     } as InferToolOutputsUnion<TTools>);
     return {
@@ -4233,7 +4658,12 @@ export class ModelResult<
     const taskTool = buildTaskToolStub();
     const answer = (result: unknown, error?: Error) => {
       if (error === undefined) {
-        this.broadcastToolResult(toolCall.id, 'client', result as InferToolOutputsUnion<TTools>);
+        this.broadcastToolResult(
+          toolCall.id,
+          String(toolCall.name),
+          'client',
+          result as InferToolOutputsUnion<TTools>,
+        );
       }
       return {
         type: 'execution' as const,
@@ -4620,9 +5050,25 @@ export class ModelResult<
       this.resolvedRequest,
     );
 
-    if (Object.keys(computedParams).length > 0) {
-      this.resolvedRequest = applyNextTurnParamsToRequest(this.resolvedRequest, computedParams);
+    if (Object.keys(computedParams).length === 0) {
+      return;
     }
+
+    const nextRequest = applyNextTurnParamsToRequest(this.resolvedRequest, computedParams);
+
+    /*
+     * A tool-computed `toolChoice` becomes the new caller-level policy, not a
+     * one-turn override. Merging it onto the request alone is not enough:
+     * `makeFollowupRequest` re-derives the wire choice from
+     * `configuredToolChoice` via `applyForcedToolChoicePolicy`, which would
+     * discard the tool's value before dispatch. Re-running the resolved-policy
+     * bookkeeping re-stamps the configured choice and its forced-choice
+     * consumption key together, so relaxation stays consistent for later turns.
+     */
+    this.resolvedRequest =
+      'toolChoice' in computedParams
+        ? this.applyResolvedForcedToolChoicePolicy(nextRequest)
+        : nextRequest;
   }
 
   /**
@@ -5163,13 +5609,19 @@ export class ModelResult<
       strictFinalResponse: _sfr,
       hooks: _h,
       doomLoop: _dl,
+      streamReplay: _sr,
       signal: _sig,
       toolTimeoutMs: _ttm,
       toolConcurrency: _tc,
       asyncTools: _at,
+      activeTools: _activeTools,
       ...rest
     } = this.options.request;
-    return this.applyResolvedForcedToolChoicePolicy(rest as ResolvedCallModelInput);
+    const resolved: Record<PropertyKey, unknown> = {
+      ...rest,
+    };
+    stripToolSetSnapshotMetadata(resolved);
+    return this.applyResolvedForcedToolChoicePolicy(resolved as ResolvedCallModelInput);
   }
 
   /**
@@ -5769,7 +6221,7 @@ export class ModelResult<
       // Handle both streaming and non-streaming responses
       // The API may return a non-streaming response even when stream: true is requested
       if (isEventStream(apiResult.value)) {
-        this.reusableStream = new ReusableReadableStream(apiResult.value);
+        this.setReusableStream(apiResult.value);
       } else if (this.isNonStreamingResponse(apiResult.value)) {
         // API returned a complete response directly - use it as the final response
         this.finalResponse = apiResult.value;
@@ -5801,22 +6253,12 @@ export class ModelResult<
       // context is handled via contextStore, not on TurnContext
     };
 
+    // Calls that pause again after PreToolUse mutation remain pending without
+    // re-running the hook on the next resume.
+    const secondGatePausedIds = new Set<string>();
     // Track approved HITL calls that paused (onToolCalled returned null) —
     // these stay in pendingToolCalls so the caller can resume them later.
     const hitlPausedIds = new Set<string>();
-
-    // The approved batch is one doom-loop round: N approved duplicates of
-    // the same call count once (the sequential loop below still evaluates
-    // in order; restored streaks from the persisted state carry forward).
-    // Declared from the approved calls only — a pending call the user did not
-    // approve is not part of this round.
-    await this.beginDoomLoopRound(
-      [
-        ...this.approvedToolCalls,
-      ]
-        .map((callId) => pendingCalls.find((tc) => tc.id === callId))
-        .filter((tc): tc is ParsedToolCall<Tool> => tc !== undefined),
-    );
 
     // Process approvals - execute the approved tools. Route through
     // runToolWithHooks so PreToolUse/PostToolUse fire even on this path.
@@ -5837,16 +6279,43 @@ export class ModelResult<
         continue;
       }
 
+      if (toolCall.preToolUseApplied !== true) {
+        const prepared = await this.prepareAfterInitialApproval(
+          toolCall as ParsedToolCall<Tool>,
+          turnContext,
+          `persisted:${this.currentState.previousResponseId ?? 'unknown'}`,
+          callId,
+        );
+        if (prepared === 'pending') {
+          const ready = this.preparedToolCalls.get(callId);
+          if (ready?.type === 'ready') {
+            Object.assign(toolCall, ready.toolCall, {
+              preToolUseApplied: true as const,
+            });
+          }
+          secondGatePausedIds.add(callId);
+          continue;
+        }
+      }
+
       const hookOutcome = await this.runToolWithHooks(
         tool,
         toolCall as ParsedToolCall<Tool>,
         turnContext,
+        undefined,
+        undefined,
+        false,
       );
 
       if (hookOutcome.type === 'parse_error') {
-        this.broadcastToolResult(callId, this.toolSourceByName(String(toolCall.name)), {
-          error: hookOutcome.errorMessage,
-        } as InferToolOutputsUnion<TTools>);
+        this.broadcastToolResult(
+          callId,
+          String(toolCall.name),
+          this.toolSourceByName(String(toolCall.name)),
+          {
+            error: hookOutcome.errorMessage,
+          } as InferToolOutputsUnion<TTools>,
+        );
         unsentResults.push(
           createRejectedResult(callId, String(toolCall.name), hookOutcome.errorMessage),
         );
@@ -5893,7 +6362,13 @@ export class ModelResult<
         continue;
       }
 
-      unsentResults.push(createRejectedResult(callId, String(toolCall.name), 'Rejected by user'));
+      const reason = 'Rejected by user';
+      if (toolCall.preToolUseApplied === true) {
+        await this.emitPreparedFailure(toolCall as ParsedToolCall<Tool>, reason);
+      }
+      this.preparedToolCalls.delete(callId);
+      this.hookDeniedCalls.delete(callId);
+      unsentResults.push(createRejectedResult(callId, String(toolCall.name), reason));
     }
 
     // Remove processed calls from pending. Approved HITL calls that paused are
@@ -5903,7 +6378,7 @@ export class ModelResult<
       [
         ...this.approvedToolCalls,
         ...this.rejectedToolCalls,
-      ].filter((id) => !hitlPausedIds.has(id)),
+      ].filter((id) => !hitlPausedIds.has(id) && !secondGatePausedIds.has(id)),
     );
     const remainingPending = pendingCalls.filter((tc) => !processedIds.has(tc.id));
 
@@ -5958,6 +6433,8 @@ export class ModelResult<
     // user message between dangling function_calls and their future
     // outputs would be invalid history).
     if (nextStatus !== 'in_progress') {
+      this.preparedToolCalls.clear();
+      this.hookDeniedCalls.clear();
       return;
     }
 
@@ -6051,7 +6528,7 @@ export class ModelResult<
 
     // Handle both streaming and non-streaming responses
     if (isEventStream(apiResult.value)) {
-      this.reusableStream = new ReusableReadableStream(apiResult.value);
+      this.setReusableStream(apiResult.value);
     } else if (this.isNonStreamingResponse(apiResult.value)) {
       this.finalResponse = apiResult.value;
       await this.emitPendingModelCallOnce(this.finalResponse);
@@ -6392,6 +6869,26 @@ export class ModelResult<
           this.hasExecutableToolCalls(pendingToolCalls)
         ) {
           const turnNumber = currentRound + 1;
+
+          // Gate these calls exactly like a normal round would. This path
+          // executes real tools, so it needs the same approval check as the
+          // in-loop call sites above — without it, `stopWhen` firing on a turn
+          // that carries a `requireApproval` call would run that call
+          // unguarded, and hook-based 'deny' would never fire either (the
+          // deny bookkeeping lives inside handleApprovalCheck).
+          //
+          // On pause, handleApprovalCheck persists `pendingToolCalls` +
+          // status 'awaiting_approval', executes any auto-approved calls as
+          // unsent results, and sets `finalResponse` — so returning here is
+          // safe: nothing executed, so there is no round to record, and we
+          // must NOT fall through to markStateComplete() or the final
+          // text-coercion request. `sessionEndReason` stays 'max_turns' —
+          // accurate (the loop did stop on the stop condition) and consistent
+          // with the HITL pause return further down this same block.
+          if (await this.handleApprovalCheck(pendingToolCalls, turnNumber, currentResponse)) {
+            return;
+          }
+
           const turnContext: TurnContext = {
             numberOfTurns: turnNumber,
           };
@@ -6586,9 +7083,7 @@ export class ModelResult<
    * Multiple consumers can iterate over this stream concurrently.
    * Includes API events, tool events, and turn.start/turn.end delimiters.
    */
-  getFullResponsesStream(): AsyncIterableIterator<
-    ResponseStreamEvent<InferToolEventsUnion<TTools>, InferToolOutputsUnion<TTools>>
-  > {
+  getFullResponsesStream(): AsyncIterableIterator<CorrelatedResponseStreamEvent<TTools>> {
     return async function* (this: ModelResult<TTools, TShared>) {
       await this.initStreamGuarded();
 
@@ -7055,7 +7550,7 @@ export class ModelResult<
    * - Tool call argument deltas as { type: "delta", content: string }
    * - Preliminary results as { type: "preliminary_result", toolCallId, result }
    */
-  getToolStream(): AsyncIterableIterator<ToolStreamEvent<InferToolEventsUnion<TTools>>> {
+  getToolStream(): AsyncIterableIterator<CorrelatedToolStreamEvent<TTools>> {
     return async function* (this: ModelResult<TTools, TShared>) {
       await this.initStreamGuarded();
 
@@ -7094,19 +7589,17 @@ export class ModelResult<
           continue;
         }
         if (event.type === 'tool.preliminary_result') {
+          const prelim = event as {
+            toolCallId: string;
+            toolName: string;
+            result: InferToolEventsUnion<TTools>;
+          };
           yield {
             type: 'preliminary_result' as const,
-            toolCallId: (
-              event as {
-                toolCallId: string;
-              }
-            ).toolCallId,
-            result: (
-              event as {
-                result: InferToolEventsUnion<TTools>;
-              }
-            ).result,
-          };
+            toolCallId: prelim.toolCallId,
+            toolName: prelim.toolName,
+            result: prelim.result,
+          } as CorrelatedToolStreamEvent<TTools>;
         }
       }
 
@@ -7134,7 +7627,7 @@ export class ModelResult<
       throw new Error('Stream not initialized');
     }
 
-    const completedResponse = await consumeStreamForCompletion(this.reusableStream);
+    const completedResponse = await this.getInitialResponse();
     await this.emitPendingModelCallOnce(completedResponse);
     return extractToolCallsFromResponse(completedResponse) as ParsedToolCall<TTools[number]>[];
   }
@@ -7440,7 +7933,7 @@ export class ModelResult<
         // reusable stream is a passive observation: it buffers events
         // without executing tools or mutating conversation state, so the
         // resume generation is counted without advancing the loop.
-        await this.emitPendingModelCallOnce(await consumeStreamForCompletion(this.reusableStream));
+        await this.emitPendingModelCallOnce(await this.getInitialResponse());
       }
     } catch (error) {
       // Intentionally swallowed — see the "never rejects" note above. The

@@ -1,39 +1,39 @@
-// Main factory + rehydration
-
-// Auth
-export type { MCPAuth, MCPOAuthClientProvider } from './auth/auth-types.js';
-export type { MCPCacheStore } from './cache/cache-store.js';
-// Cache
-export { defaultCacheKey, InMemoryMCPCacheStore } from './cache/cache-store.js';
-export type {
-  SerializedMCPServer,
-  SerializedMCPToolDef,
-  SerializedTokenSet,
-} from './cache/cache-types.js';
-export { isSerializedMCPServer } from './cache/cache-types.js';
-export { createMCPTools } from './create-mcp-tools.js';
-// Errors
-export {
-  MCPCacheError,
-  MCPCacheWriteError,
-  MCPConnectionError,
-  MCPError,
-  MCPStaleSnapshotError,
-  MCPToolCallError,
-} from './errors.js';
-export type { RehydrateMCPToolsOptions } from './rehydrate.js';
-export { rehydrateMCPTools } from './rehydrate.js';
-export type { UnconvertibleSchemaMode } from './schema/json-schema-to-zod.js';
-// Schema conversion (exported for testing/reuse)
-export { convertMcpInputSchema } from './schema/json-schema-to-zod.js';
-// Public option/handle types
+/**
+ * Compatibility facade for the canonical `@openrouter/agent/mcp` integration.
+ *
+ * @deprecated Import from `@openrouter/agent/mcp` instead. This facade remains
+ * available for migration and may be removed only in a future breaking release.
+ */
 export type {
   CreateMCPToolsOptions,
   ElicitationHandler,
   ElicitationResponse,
+  MCPAuth,
+  MCPCacheStore,
+  MCPOAuthClientProvider,
   MCPProtocolNegotiation,
   MCPProtocolRevision,
   MCPToolsHandle,
   MCPTransportKind,
+  RehydrateMCPToolsOptions,
   ResourcesOption,
-} from './types.js';
+  SerializedMCPServer,
+  SerializedMCPToolDef,
+  SerializedTokenSet,
+  UnconvertibleSchemaMode,
+} from '@openrouter/agent/mcp';
+export {
+  convertMcpInputSchema,
+  createMCPTools,
+  defaultCacheKey,
+  InMemoryMCPCacheStore,
+  isSerializedMCPServer,
+  MCPCacheError,
+  MCPCacheWriteError,
+  MCPConnectionError,
+  MCPError,
+  MCPMissingPeerDependencyError,
+  MCPStaleSnapshotError,
+  MCPToolCallError,
+  rehydrateMCPTools,
+} from '@openrouter/agent/mcp';

@@ -541,7 +541,7 @@ describe('tool() with contextSchema', () => {
     type SharedCtx = {
       _sessionId?: string;
     };
-    const t = tool<SharedCtx>({
+    const t = tool<SharedCtx>()({
       name: 'typed_shared',
       inputSchema: z4.object({
         cmd: z4.string(),
