@@ -575,6 +575,15 @@ export interface ManualToolFunction<
   TCtx extends $ZodObject<$ZodShape> = $ZodObject<$ZodShape>,
   TName extends string = string,
 > extends BaseToolFunction<TInput, TCtx, TName> {
+  /**
+   * JSON Schema to serialize for this tool instead of regenerating one from
+   * `inputSchema`. Manual tools are never executed or input-validated by the
+   * SDK, so a caller that already owns a JSON Schema can forward it verbatim
+   * (sanitized of `~`-prefixed metadata keys) and skip the round trip through
+   * Zod, which both costs CPU/allocations and cannot represent constructs like
+   * `anyOf` / `oneOf`.
+   */
+  readonly wireInputSchema?: Readonly<Record<string, unknown>>;
   outputSchema?: TOutput;
 }
 
