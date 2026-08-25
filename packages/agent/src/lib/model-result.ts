@@ -220,6 +220,66 @@ interface RunBinding {
 }
 
 /**
+ * Tagged outcome of one tool call in a round, produced by
+ * `executeSingleToolCall` and consumed by the settle-time finalizers in
+ * `executeToolRound`. `null` means the call is manual (client-executed) and
+ * yields no output this round.
+ */
+type SingleToolCallOutcome<TTools extends readonly Tool[]> =
+  | null
+  | {
+      type: 'parse_error';
+      output: models.FunctionCallOutputItem;
+    }
+  | {
+      type: 'hook_blocked';
+      output: models.FunctionCallOutputItem;
+    }
+  | {
+      type: 'paused';
+      toolCall: ParsedToolCall<Tool>;
+    }
+  | {
+      type: 'async';
+      toolCall: ParsedToolCall<Tool>;
+      tool: Tool;
+      invocation: AsyncToolInvocation;
+      controller: AbortController;
+      timeoutMs: number | undefined;
+      runBinding: RunBinding;
+      preliminaryResultsForCall: InferToolEventsUnion<TTools>[];
+    }
+  | {
+      type: 'execution';
+      toolCall: ParsedToolCall<Tool>;
+      tool: Tool;
+      result: {
+        result: unknown;
+        error?: Error;
+      };
+      preliminaryResultsForCall: InferToolEventsUnion<TTools>[];
+    };
+
+/**
+ * A round call after settle-time finalization: broadcasts already emitted,
+ * model-facing output (if any) computed. `executeToolRound`'s ordered
+ * assembly loop only sorts these into the round's result arrays.
+ */
+type FinalizedRoundCall =
+  | {
+      kind: 'skipped';
+    }
+  | {
+      kind: 'paused';
+      toolCall: ParsedToolCall<Tool>;
+    }
+  | {
+      kind: 'output';
+      output: models.FunctionCallOutputItem;
+      deferredTask?: PendingAsyncTool;
+    };
+
+/**
  * Extract the call identity echoed on a server-tool output item, for
  * doom-loop fingerprinting. Server tools never pass through the client
  * execution funnel; their output items echo what was asked (a web-search
@@ -3631,41 +3691,7 @@ export class ModelResult<
   private async executeSingleToolCall(
     toolCall: ParsedToolCall<Tool>,
     turnContext: TurnContext,
-  ): Promise<
-    | null
-    | {
-        type: 'parse_error';
-        output: models.FunctionCallOutputItem;
-      }
-    | {
-        type: 'hook_blocked';
-        output: models.FunctionCallOutputItem;
-      }
-    | {
-        type: 'paused';
-        toolCall: ParsedToolCall<Tool>;
-      }
-    | {
-        type: 'async';
-        toolCall: ParsedToolCall<Tool>;
-        tool: Tool;
-        invocation: AsyncToolInvocation;
-        controller: AbortController;
-        timeoutMs: number | undefined;
-        runBinding: RunBinding;
-        preliminaryResultsForCall: InferToolEventsUnion<TTools>[];
-      }
-    | {
-        type: 'execution';
-        toolCall: ParsedToolCall<Tool>;
-        tool: Tool;
-        result: {
-          result: unknown;
-          error?: Error;
-        };
-        preliminaryResultsForCall: InferToolEventsUnion<TTools>[];
-      }
-  > {
+  ): Promise<SingleToolCallOutcome<TTools>> {
     // Universal task-tool dispatch: ONE static tool ("task") handles every
     // check/steer/result/cancel interaction with running tasks, addressed
     // by taskId — the wire surface stays constant regardless of how many
@@ -3944,144 +3970,48 @@ export class ModelResult<
     pausedCalls: ParsedToolCall<Tool>[];
     deferredTasks: PendingAsyncTool[];
   }> {
-    const toolCallPromises = toolCalls.map((toolCall) =>
-      this.executeSingleToolCall(toolCall, turnContext),
+    // Each call is finalized the moment ITS promise settles (DEV-1067): the
+    // tool.result / tool_result broadcasts and the tool.call_output event
+    // fire per call, so stream consumers see an early call complete while
+    // later calls in the round are still running. This also starts async
+    // invocations (grace-window race, registry tracking) at settle time
+    // rather than after the whole round, so N background calls never
+    // serialize into (N-1)×graceMs of stagger.
+    const finalizedPromises = toolCalls.map((toolCall) =>
+      this.executeSingleToolCall(toolCall, turnContext).then(
+        (value) => this.finalizeSettledRoundCall(value),
+        (reason: unknown) => this.finalizeRejectedRoundCall(toolCall, reason),
+      ),
     );
+    const finalizedCalls = await Promise.all(finalizedPromises);
 
-    const settledResults = await Promise.allSettled(toolCallPromises);
+    // Ordered assembly: broadcasts already happened per call above, but the
+    // MODEL-facing outputs are collected in call order so the follow-up
+    // request's input is deterministic (prompt-cache stability).
     const toolResults: models.FunctionCallOutputItem[] = [];
     const pausedCalls: ParsedToolCall<Tool>[] = [];
     const deferredTasks: PendingAsyncTool[] = [];
-
-    // Start ALL async invocations before consuming any outcome: the work
-    // (and its grace window) begins in handleAsyncInvocation, so awaiting
-    // it inside the ordered loop below would serialize N background calls
-    // into (N-1)×graceMs of stagger. Kicked off here in parallel; the
-    // ordered loop awaits the per-call promise, so OUTPUT order stays call
-    // order (prompt-cache stability).
-    const asyncOutcomes = new Map<
-      number,
-      Promise<{
-        output: models.FunctionCallOutputItem;
-        deferredTask?: PendingAsyncTool;
-      }>
-    >();
-    for (let i = 0; i < settledResults.length; i++) {
-      const settled = settledResults[i];
-      if (settled?.status === 'fulfilled' && settled.value?.type === 'async') {
-        asyncOutcomes.set(i, this.handleAsyncInvocation(settled.value));
+    for (const finalized of finalizedCalls) {
+      switch (finalized.kind) {
+        case 'skipped':
+          break;
+        case 'paused':
+          // HITL tool returned null — record the pause so the caller can
+          // break out of the outer loop before attempting a follow-up
+          // request with an incomplete set of outputs. The call will be
+          // surfaced via state (pendingToolCalls + status='awaiting_hitl')
+          // for manual resume.
+          pausedCalls.push(finalized.toolCall);
+          break;
+        case 'output':
+          toolResults.push(finalized.output);
+          if (finalized.deferredTask) {
+            deferredTasks.push(finalized.deferredTask);
+          }
+          break;
+        default:
+          finalized satisfies never;
       }
-    }
-
-    for (let i = 0; i < settledResults.length; i++) {
-      const settled = settledResults[i];
-      const originalToolCall = toolCalls[i];
-      if (!settled || !originalToolCall) {
-        continue;
-      }
-
-      if (settled.status === 'rejected') {
-        const errorMessage =
-          settled.reason instanceof Error ? settled.reason.message : String(settled.reason);
-
-        // `runToolWithHooks` is the single point of emission for PostToolUseFailure.
-        this.broadcastToolResult(
-          originalToolCall.id,
-          String(originalToolCall.name),
-          this.toolSourceByName(String(originalToolCall.name)),
-          {
-            error: errorMessage,
-          } as InferToolOutputsUnion<TTools>,
-        );
-
-        const rejectedOutput: models.FunctionCallOutputItem = {
-          type: 'function_call_output' as const,
-          id: `output_${originalToolCall.id}`,
-          callId: originalToolCall.id,
-          output: JSON.stringify({
-            error: errorMessage,
-          }),
-        };
-        toolResults.push(rejectedOutput);
-        this.turnBroadcaster?.push({
-          type: 'tool.call_output' as const,
-          output: rejectedOutput,
-          timestamp: Date.now(),
-        } satisfies ToolCallOutputEvent);
-        continue;
-      }
-
-      const value = settled.value;
-      if (!value) {
-        continue;
-      }
-
-      if (value.type === 'parse_error' || value.type === 'hook_blocked') {
-        toolResults.push(value.output);
-        this.turnBroadcaster?.push({
-          type: 'tool.call_output' as const,
-          output: value.output,
-          timestamp: Date.now(),
-        } satisfies ToolCallOutputEvent);
-        continue;
-      }
-
-      if (value.type === 'paused') {
-        // HITL tool returned null — record the pause so the caller can break
-        // out of the outer loop before attempting a follow-up request with an
-        // incomplete set of outputs. The call will be surfaced via state
-        // (pendingToolCalls + status='awaiting_hitl') for manual resume.
-        pausedCalls.push(value.toolCall);
-        continue;
-      }
-
-      if (value.type === 'async') {
-        // Background / deferred: the call escapes the round. Its handling
-        // (grace-window race, registry tracking, placeholder synthesis)
-        // was started above in parallel with the round's other async
-        // calls; awaiting here keeps outputs in call order.
-        const asyncOutcome = await (asyncOutcomes.get(i) ?? this.handleAsyncInvocation(value));
-        toolResults.push(asyncOutcome.output);
-        this.turnBroadcaster?.push({
-          type: 'tool.call_output' as const,
-          output: asyncOutcome.output,
-          timestamp: Date.now(),
-        } satisfies ToolCallOutputEvent);
-        if (asyncOutcome.deferredTask) {
-          deferredTasks.push(asyncOutcome.deferredTask);
-        }
-        continue;
-      }
-
-      const toolResult = (
-        value.result.error
-          ? {
-              error: value.result.error.message,
-            }
-          : value.result.result
-      ) as InferToolOutputsUnion<TTools>;
-      this.broadcastToolResult(
-        value.toolCall.id,
-        String(value.toolCall.name),
-        isMcpTool(value.tool) ? 'mcp' : 'client',
-        toolResult,
-        value.preliminaryResultsForCall.length > 0 ? value.preliminaryResultsForCall : undefined,
-      );
-
-      const outputForModel = await this.computeToolOutputForModel(value);
-
-      const executedOutput: models.FunctionCallOutputItem = {
-        type: 'function_call_output' as const,
-        id: `output_${value.toolCall.id}`,
-        callId: value.toolCall.id,
-        output: outputForModel,
-      };
-      toolResults.push(executedOutput);
-      this.turnBroadcaster?.push({
-        type: 'tool.call_output' as const,
-        output: executedOutput,
-        timestamp: Date.now(),
-      } satisfies ToolCallOutputEvent);
     }
 
     return {
@@ -4089,6 +4019,125 @@ export class ModelResult<
       pausedCalls,
       deferredTasks,
     };
+  }
+
+  /**
+   * Finalize one settled tool call of a round, at the moment it settles:
+   * emit its tool.result / tool.call_output events and compute the
+   * model-facing output. Runs concurrently across the round's calls;
+   * `executeToolRound` re-orders the returned outputs into call order.
+   */
+  private async finalizeSettledRoundCall(
+    value: SingleToolCallOutcome<TTools>,
+  ): Promise<FinalizedRoundCall> {
+    // Manual (client-executed) tool — no output this round.
+    if (!value) {
+      return {
+        kind: 'skipped',
+      };
+    }
+
+    if (value.type === 'parse_error' || value.type === 'hook_blocked') {
+      this.pushToolCallOutputEvent(value.output);
+      return {
+        kind: 'output',
+        output: value.output,
+      };
+    }
+
+    if (value.type === 'paused') {
+      return {
+        kind: 'paused',
+        toolCall: value.toolCall,
+      };
+    }
+
+    if (value.type === 'async') {
+      // Background / deferred: the call escapes the round (grace-window
+      // race, registry tracking, placeholder synthesis).
+      const asyncOutcome = await this.handleAsyncInvocation(value);
+      this.pushToolCallOutputEvent(asyncOutcome.output);
+      return {
+        kind: 'output',
+        output: asyncOutcome.output,
+        ...(asyncOutcome.deferredTask && {
+          deferredTask: asyncOutcome.deferredTask,
+        }),
+      };
+    }
+
+    const toolResult = (
+      value.result.error
+        ? {
+            error: value.result.error.message,
+          }
+        : value.result.result
+    ) as InferToolOutputsUnion<TTools>;
+    this.broadcastToolResult(
+      value.toolCall.id,
+      String(value.toolCall.name),
+      isMcpTool(value.tool) ? 'mcp' : 'client',
+      toolResult,
+      value.preliminaryResultsForCall.length > 0 ? value.preliminaryResultsForCall : undefined,
+    );
+
+    const outputForModel = await this.computeToolOutputForModel(value);
+
+    const executedOutput: models.FunctionCallOutputItem = {
+      type: 'function_call_output' as const,
+      id: `output_${value.toolCall.id}`,
+      callId: value.toolCall.id,
+      output: outputForModel,
+    };
+    this.pushToolCallOutputEvent(executedOutput);
+    return {
+      kind: 'output',
+      output: executedOutput,
+    };
+  }
+
+  /**
+   * Finalize one REJECTED tool call of a round: synthesize the error output
+   * and emit its events at the moment the rejection settles.
+   */
+  private finalizeRejectedRoundCall(
+    toolCall: ParsedToolCall<Tool>,
+    reason: unknown,
+  ): FinalizedRoundCall {
+    const errorMessage = reason instanceof Error ? reason.message : String(reason);
+
+    // `runToolWithHooks` is the single point of emission for PostToolUseFailure.
+    this.broadcastToolResult(
+      toolCall.id,
+      String(toolCall.name),
+      this.toolSourceByName(String(toolCall.name)),
+      {
+        error: errorMessage,
+      } as InferToolOutputsUnion<TTools>,
+    );
+
+    const rejectedOutput: models.FunctionCallOutputItem = {
+      type: 'function_call_output' as const,
+      id: `output_${toolCall.id}`,
+      callId: toolCall.id,
+      output: JSON.stringify({
+        error: errorMessage,
+      }),
+    };
+    this.pushToolCallOutputEvent(rejectedOutput);
+    return {
+      kind: 'output',
+      output: rejectedOutput,
+    };
+  }
+
+  /** Push a `tool.call_output` event to the unified turn broadcaster. */
+  private pushToolCallOutputEvent(output: models.FunctionCallOutputItem): void {
+    this.turnBroadcaster?.push({
+      type: 'tool.call_output' as const,
+      output,
+      timestamp: Date.now(),
+    } satisfies ToolCallOutputEvent);
   }
 
   /**
