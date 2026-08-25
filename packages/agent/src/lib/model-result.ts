@@ -1035,7 +1035,6 @@ export class ModelResult<
     toolName: string,
     source: 'client' | 'mcp',
     result: InferToolOutputsUnion<TTools>,
-    preliminaryResults?: InferToolEventsUnion<TTools>[],
   ): void {
     this.toolEventBroadcaster?.push({
       type: 'tool_result' as const,
@@ -1043,9 +1042,6 @@ export class ModelResult<
       toolName,
       source,
       result,
-      ...(preliminaryResults?.length && {
-        preliminaryResults,
-      }),
     });
     this.turnBroadcaster?.push({
       type: 'tool.result' as const,
@@ -1054,9 +1050,6 @@ export class ModelResult<
       source,
       result,
       timestamp: Date.now(),
-      ...(preliminaryResults?.length && {
-        preliminaryResults,
-      }),
     } as CorrelatedResponseStreamEvent<TTools>);
   }
 
@@ -3653,7 +3646,6 @@ export class ModelResult<
         controller: AbortController;
         timeoutMs: number | undefined;
         runBinding: RunBinding;
-        preliminaryResultsForCall: InferToolEventsUnion<TTools>[];
       }
     | {
         type: 'execution';
@@ -3663,7 +3655,6 @@ export class ModelResult<
           result: unknown;
           error?: Error;
         };
-        preliminaryResultsForCall: InferToolEventsUnion<TTools>[];
       }
   > {
     // Universal task-tool dispatch: ONE static tool ("task") handles every
@@ -3695,14 +3686,14 @@ export class ModelResult<
       return hookDenied;
     }
 
-    const preliminaryResultsForCall: InferToolEventsUnion<TTools>[] = [];
-
     const hasBroadcaster = this.toolEventBroadcaster || this.turnBroadcaster;
     const onPreliminaryResult = hasBroadcaster
       ? (callId: string, resultValue: unknown) => {
-          const typedResult = resultValue as InferToolEventsUnion<TTools>;
-          preliminaryResultsForCall.push(typedResult);
-          this.broadcastPreliminaryResult(callId, String(toolCall.name), typedResult);
+          this.broadcastPreliminaryResult(
+            callId,
+            String(toolCall.name),
+            resultValue as InferToolEventsUnion<TTools>,
+          );
         }
       : undefined;
 
@@ -3771,7 +3762,7 @@ export class ModelResult<
       );
 
       if (executed === 'timeout') {
-        return this.buildToolTimeoutOutcome(toolCall, tool, timeoutMs, preliminaryResultsForCall);
+        return this.buildToolTimeoutOutcome(toolCall, tool, timeoutMs);
       }
 
       if (executed.type === 'parse_error') {
@@ -3810,7 +3801,6 @@ export class ModelResult<
           controller,
           timeoutMs,
           runBinding,
-          preliminaryResultsForCall,
         };
       }
 
@@ -3819,7 +3809,6 @@ export class ModelResult<
         toolCall: executed.effectiveToolCall,
         tool,
         result,
-        preliminaryResultsForCall,
       };
     } finally {
       releaseGates();
@@ -3839,7 +3828,6 @@ export class ModelResult<
     toolCall: ParsedToolCall<Tool>,
     tool: Tool,
     timeoutMs: number | undefined,
-    preliminaryResultsForCall: InferToolEventsUnion<TTools>[],
   ): {
     type: 'execution';
     toolCall: ParsedToolCall<Tool>;
@@ -3848,7 +3836,6 @@ export class ModelResult<
       result: unknown;
       error?: Error;
     };
-    preliminaryResultsForCall: InferToolEventsUnion<TTools>[];
   } {
     const message = `Tool "${toolCall.name}" timed out after ${timeoutMs}ms`;
     this.broadcastToolResult(
@@ -3869,7 +3856,6 @@ export class ModelResult<
           code: 'tool_timeout',
         }),
       },
-      preliminaryResultsForCall,
     };
   }
 
@@ -4065,7 +4051,6 @@ export class ModelResult<
         String(value.toolCall.name),
         isMcpTool(value.tool) ? 'mcp' : 'client',
         toolResult,
-        value.preliminaryResultsForCall.length > 0 ? value.preliminaryResultsForCall : undefined,
       );
 
       const outputForModel = await this.computeToolOutputForModel(value);
@@ -4540,7 +4525,6 @@ export class ModelResult<
       result: unknown;
       error?: Error;
     };
-    preliminaryResultsForCall: InferToolEventsUnion<TTools>[];
   }> {
     const taskTool = buildTaskToolStub();
     const answer = (result: unknown, error?: Error) => {
@@ -4564,7 +4548,6 @@ export class ModelResult<
           : {
               result,
             },
-        preliminaryResultsForCall: [] as InferToolEventsUnion<TTools>[],
       };
     };
 

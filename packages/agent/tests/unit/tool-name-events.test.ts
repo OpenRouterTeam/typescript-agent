@@ -269,15 +269,8 @@ describe('toolName on runtime tool events', () => {
       result: {
         done: true,
       },
-      preliminaryResults: [
-        {
-          stage: 'one',
-        },
-        {
-          stage: 'two',
-        },
-      ],
     });
+    expect(finals[0]?.preliminaryResults).toBeUndefined();
 
     const legacyPrelims = legacyEvents.filter(
       (
