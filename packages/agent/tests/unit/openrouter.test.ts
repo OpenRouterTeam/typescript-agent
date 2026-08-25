@@ -5,8 +5,10 @@ import type {
   BeforeRequestContext,
   BeforeRequestHook,
 } from '@openrouter/sdk/hooks/types';
+import { HTTPClient } from '@openrouter/sdk/lib/http';
 import { describe, expect, it } from 'vitest';
 import { ModelResult } from '../../src/lib/model-result.js';
+import { AGENT_USER_AGENT } from '../../src/lib/user-agent.js';
 import { OpenRouter } from '../../src/openrouter.js';
 
 describe('OpenRouter', () => {
@@ -51,6 +53,45 @@ describe('OpenRouter', () => {
       serverURL: 'https://custom.endpoint.com',
     });
     expect(openrouter).toBeInstanceOf(OpenRouter);
+  });
+
+  it('should default to the Agent SDK user agent', () => {
+    const openrouter = new OpenRouter({
+      apiKey: 'test-key',
+    });
+    expect(openrouter._options.userAgent).toBe(AGENT_USER_AGENT);
+  });
+
+  it('should preserve an explicitly configured user agent', () => {
+    const openrouter = new OpenRouter({
+      apiKey: 'test-key',
+      userAgent: 'custom/1.0',
+    });
+    expect(openrouter._options.userAgent).toBe('custom/1.0');
+  });
+
+  it('should send the Agent SDK user agent on outgoing requests', async () => {
+    let capturedUserAgent: string | null = null;
+    const httpClient = new HTTPClient();
+    httpClient.request = async (request: Request): Promise<Response> => {
+      capturedUserAgent = request.headers.get('user-agent');
+      throw new Error('captured request');
+    };
+
+    const openrouter = new OpenRouter({
+      apiKey: 'test-key',
+      httpClient,
+    });
+
+    await expect(
+      openrouter
+        .callModel({
+          model: 'openai/gpt-4o',
+          input: 'Hello',
+        })
+        .getText(),
+    ).rejects.toThrow('captured request');
+    expect(capturedUserAgent).toBe(AGENT_USER_AGENT);
   });
 
   it('should be an instance of OpenRouterCore', () => {
@@ -113,11 +154,13 @@ describe('OpenRouter', () => {
     it('should wrap a single hook object into an SDKHooks instance', () => {
       const openrouter = new OpenRouter({
         apiKey: 'test-key',
+        userAgent: 'custom/1.0',
         hooks: noopBeforeRequest,
       });
       expect(openrouter._options.hooks).toBeInstanceOf(SDKHooks);
       expect(openrouter._options.hooks?.beforeRequestHooks).toHaveLength(1);
       expect(openrouter._options.hooks?.beforeRequestHooks[0]).toBe(noopBeforeRequest);
+      expect(openrouter._options.userAgent).toBe('custom/1.0');
     });
 
     it('should wrap an array of hook objects into an SDKHooks instance', () => {
