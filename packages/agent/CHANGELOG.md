@@ -1,5 +1,45 @@
 # @openrouter/agent
 
+## 1.0.0
+
+### Major Changes
+
+- [#110](https://github.com/OpenRouterTeam/typescript-agent/pull/110) [`9766f31`](https://github.com/OpenRouterTeam/typescript-agent/commit/9766f31ec2390cd294ca47dd81d0122941c0d586) Thanks [@LukasParke](https://github.com/LukasParke)! - Stop accumulating generator-tool `preliminaryResults` arrays. Yields are still broadcast live; the terminal `tool.result` event and `ToolExecutionResult` no longer carry the full yield history.
+
+### Minor Changes
+
+- [#118](https://github.com/OpenRouterTeam/typescript-agent/pull/118) [`4dce84e`](https://github.com/OpenRouterTeam/typescript-agent/commit/4dce84e4393ec36745875512d6ad1fcd8b38e502) Thanks [@sambarnes](https://github.com/sambarnes)! - Allow manual tools to provide a caller-owned JSON Schema for wire serialization.
+
+  ```ts
+  import { tool } from "@openrouter/agent";
+  import { z } from "zod";
+
+  const confirmTool = tool({
+    name: "confirm_action",
+    inputSchema: z.object({ action: z.string() }),
+    wireInputSchema: {
+      type: "object",
+      properties: {
+        action: { type: "string" },
+      },
+      required: ["action"],
+    },
+    execute: false,
+  });
+  ```
+
+### Patch Changes
+
+- [#120](https://github.com/OpenRouterTeam/typescript-agent/pull/120) [`ddab365`](https://github.com/OpenRouterTeam/typescript-agent/commit/ddab3652a47edf5ebaa842447864a3dc91b812e5) Thanks [@LukasParke](https://github.com/LukasParke)! - Identify Agent SDK requests with an Agent SDK user-agent suffix that includes the package version.
+
+  ```ts
+  import { OpenRouter } from "@openrouter/agent";
+
+  const client = new OpenRouter({ apiKey: process.env.OPENROUTER_API_KEY });
+  // Requests use the Agent SDK user agent by default.
+  // Pass userAgent to override the default identification.
+  ```
+
 ## 0.11.0
 
 ### Minor Changes
