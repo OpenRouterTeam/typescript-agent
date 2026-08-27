@@ -10,27 +10,36 @@ import type {
   ClaudeToolResultBlockParam,
   ClaudeToolUseBlockParam,
 } from '../api-shape-helpers/claude-message.js';
+import type { NewAssistantMessageItem, NewUserMessageItem } from './item-types.js';
 import { convertToClaudeMessage } from './stream-transformers.js';
 
-/**
- * Maps Claude role strings to OpenResponses role types
- */
-function mapClaudeRole(role: 'user' | 'assistant'): models.EasyInputMessageRoleUnion {
-  if (role === 'user') {
-    return EasyInputMessageRoleUser.User;
-  }
-  return EasyInputMessageRoleAssistant.Assistant;
-}
+/** An OpenResponses input item emitted by {@link fromClaudeMessages}. */
+export type ClaudeMessageInputItem =
+  | NewUserMessageItem
+  | NewAssistantMessageItem
+  | models.FunctionCallOutputItem
+  | models.OutputFunctionCallItem
+  | models.OutputImageGenerationCallItem;
 
 /**
- * Creates a properly typed EasyInputMessage with string or structured content.
+ * Creates a properly typed message item with string or structured content.
+ *
+ * The `role` is narrowed to a single literal per branch so the result is
+ * assignable to a concrete member of the `Item` union — TypeScript will not
+ * distribute a union-typed `role` across the per-role members of `Item`.
  */
 function createEasyInputMessage(
   role: 'user' | 'assistant',
   content: string | models.EasyInputMessageContentUnion1[],
-): models.EasyInputMessage {
+): NewUserMessageItem | NewAssistantMessageItem {
+  if (role === 'user') {
+    return {
+      role: EasyInputMessageRoleUser.User,
+      content,
+    };
+  }
   return {
-    role: mapClaudeRole(role),
+    role: EasyInputMessageRoleAssistant.Assistant,
     content,
   };
 }
@@ -71,14 +80,8 @@ function createFunctionCallOutput(callId: string, output: string): models.Functi
  * });
  * ```
  */
-export function fromClaudeMessages(messages: ClaudeMessageParam[]): models.InputsUnion {
-  const result: (
-    | models.EasyInputMessage
-    | models.InputMessageItem
-    | models.FunctionCallOutputItem
-    | models.FunctionCallItem
-    | models.OutputImageGenerationCallItem
-  )[] = [];
+export function fromClaudeMessages(messages: ClaudeMessageParam[]): ClaudeMessageInputItem[] {
+  const result: ClaudeMessageInputItem[] = [];
 
   for (const msg of messages) {
     const { role, content } = msg;

@@ -71,6 +71,8 @@ export type {
   FunctionProgressItem,
   FunctionResultItem,
   Item,
+  NewAssistantMessageItem,
+  NewSystemMessageItem,
   NewUserMessageItem,
   ReasoningItem,
   SystemMessageItem,
@@ -94,6 +96,7 @@ export {
 // Agent tools (tool.agent)
 export type { AgentRunSpec, AgentToolConfig } from './lib/agent-tool.js';
 export { AgentTranscriptSource } from './lib/agent-tool.js';
+export type { ClaudeMessageInputItem } from './lib/anthropic-compat.js';
 export { fromClaudeMessages, toClaudeMessage } from './lib/anthropic-compat.js';
 export type {
   CallModelInput,
@@ -108,6 +111,7 @@ export {
 // Async tool task registry types
 export type { SettledToolTask } from './lib/async-tool-registry.js';
 export { AsyncToolRegistry } from './lib/async-tool-registry.js';
+export type { ChatMessageInputItem } from './lib/chat-compat.js';
 export { fromChatMessages, toChatMessage } from './lib/chat-compat.js';
 // Claude constants and type guards
 export { ClaudeContentBlockType, NonClaudeMessageRole } from './lib/claude-constants.js';
