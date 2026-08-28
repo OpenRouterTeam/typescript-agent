@@ -30,6 +30,7 @@ import {
   isURLCitationAnnotation,
   isWebSearchCallOutputItem,
 } from './stream-type-guards.js';
+import { parseArgumentsWithWarnings } from './tool-arguments-repair.js';
 import type { ClientTool, ParsedToolCall, ServerTool, Tool } from './tool-types.js';
 
 /**
@@ -816,21 +817,14 @@ export function extractToolCallsFromResponse(
 
   for (const item of response.output) {
     if (isFunctionCallItem(item)) {
-      try {
-        const trimmedArgs = item.arguments.trim();
-        const parsedArguments = trimmedArgs ? JSON.parse(trimmedArgs) : {};
-
+      const parsed = parseArgumentsWithWarnings(item.arguments, item.name);
+      if (parsed.ok) {
         toolCalls.push({
           id: item.callId,
           name: item.name,
-          arguments: parsedArguments,
+          arguments: parsed.value,
         });
-      } catch (error) {
-        console.warn(
-          `Failed to parse tool call arguments for ${item.name}:`,
-          error instanceof Error ? error.message : String(error),
-          `\nArguments: ${item.arguments.substring(0, 100)}${item.arguments.length > 100 ? '...' : ''}`,
-        );
+      } else {
         // Include the tool call with unparsed arguments
         toolCalls.push({
           id: item.callId,
@@ -898,20 +892,14 @@ export async function* buildToolCallStream(
 
           if (toolCall) {
             // Parse complete arguments (empty string → empty object for no-param tools)
-            try {
-              const trimmedArgs = event.arguments.trim();
-              const parsedArguments = trimmedArgs ? JSON.parse(trimmedArgs) : {};
+            const parsed = parseArgumentsWithWarnings(event.arguments, event.name);
+            if (parsed.ok) {
               yield {
                 id: toolCall.id,
                 name: event.name,
-                arguments: parsedArguments,
+                arguments: parsed.value,
               };
-            } catch (error) {
-              console.warn(
-                `Failed to parse tool call arguments for ${event.name}:`,
-                error instanceof Error ? error.message : String(error),
-                `\nArguments: ${event.arguments.substring(0, 100)}${event.arguments.length > 100 ? '...' : ''}`,
-              );
+            } else {
               // Yield with unparsed arguments if parsing fails
               yield {
                 id: toolCall.id,
@@ -933,15 +921,14 @@ export async function* buildToolCallStream(
           const itemKey = event.item.id ?? event.item.callId;
           // Yield final tool call if we haven't already
           if (toolCallsInProgress.has(itemKey)) {
-            try {
-              const trimmedArgs = event.item.arguments.trim();
-              const parsedArguments = trimmedArgs ? JSON.parse(trimmedArgs) : {};
+            const parsed = parseArgumentsWithWarnings(event.item.arguments, event.item.name);
+            if (parsed.ok) {
               yield {
                 id: event.item.callId,
                 name: event.item.name,
-                arguments: parsedArguments,
+                arguments: parsed.value,
               };
-            } catch (_error) {
+            } else {
               yield {
                 id: event.item.callId,
                 name: event.item.name,
@@ -1139,22 +1126,14 @@ export function convertToClaudeMessage(response: models.OpenResponsesResult): Cl
 
       case 'function_call': {
         if (isFunctionCallItem(item)) {
-          let parsedInput: Record<string, unknown>;
-
-          try {
-            const trimmedArgs = item.arguments.trim();
-            parsedInput = trimmedArgs ? JSON.parse(trimmedArgs) : {};
-          } catch (error) {
-            console.warn(
-              `Failed to parse tool call arguments for ${item.name}:`,
-              error instanceof Error ? error.message : String(error),
-              `\nArguments: ${item.arguments.substring(0, 100)}${item.arguments.length > 100 ? '...' : ''}`,
-            );
-            // Preserve raw arguments if JSON parsing fails
-            parsedInput = {
-              _raw_arguments: item.arguments,
-            };
-          }
+          const parsed = parseArgumentsWithWarnings(item.arguments, item.name);
+          // Preserve raw arguments if JSON parsing fails
+          const parsedInput: Record<string, unknown> =
+            parsed.ok && typeof parsed.value === 'object' && parsed.value !== null
+              ? (parsed.value as Record<string, unknown>)
+              : {
+                  _raw_arguments: item.arguments,
+                };
 
           content.push({
             type: 'tool_use',
