@@ -95,13 +95,17 @@ function isZodSchema(value: unknown): value is z4.ZodType {
  * The resulting schema is sanitized to remove metadata properties (like ~standard)
  * that would cause 400 errors with downstream providers.
  */
-export function convertZodToJsonSchema(zodSchema: $ZodType): Record<string, unknown> {
+export function convertZodToJsonSchema(
+  zodSchema: $ZodType,
+  io: 'input' | 'output' = 'output',
+): Record<string, unknown> {
   if (!isZodSchema(zodSchema)) {
     throw new Error('Invalid Zod schema provided');
   }
   // Use draft-7 as it's closest to OpenAPI 3.0's JSON Schema variant
   const jsonSchema = z4.toJSONSchema(zodSchema, {
     target: 'draft-7',
+    io,
   });
   // jsonSchema is always a Record<string, unknown> from toJSONSchema
   // The overloaded sanitizeJsonSchema preserves this type

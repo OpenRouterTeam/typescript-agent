@@ -6,6 +6,8 @@ import type {
   ClaudeTextCitation,
   UnsupportedContent,
 } from '../api-shape-helpers/claude-message.js';
+import type { UiStreamEvent } from './openui/ui-stream.js';
+import { translateUiEvent } from './openui/ui-stream.js';
 import type { ReusableReadableStream } from './reusable-stream.js';
 import {
   isFileCitationAnnotation,
@@ -1301,3 +1303,14 @@ export function getUnsupportedContentSummary(message: ClaudeMessage): Record<str
 
   return summary;
 }
+
+/*
+ * The OpenUI stream translation is re-exported from here rather than imported
+ * directly by `model-result.ts`. That module already depends on this one, and it
+ * sits at the structural gate's fan-out ceiling (`no_god_files` trips above 15
+ * outbound edges) — a 16th dependency for one translation call makes it a god
+ * file. Every wire-event → stream-event translation the loop performs already
+ * lives in this module, so this is where it belongs anyway.
+ */
+export type { UiStreamEvent };
+export { translateUiEvent };

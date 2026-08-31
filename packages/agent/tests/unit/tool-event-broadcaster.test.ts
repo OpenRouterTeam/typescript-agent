@@ -42,7 +42,7 @@ describe('ToolEventBroadcaster', () => {
     it('should deliver events to a single consumer', async () => {
       const broadcaster = new ToolEventBroadcaster<number>();
       const consumer = broadcaster.createConsumer();
-
+      expect(broadcaster.activeConsumerCount).toBe(1);
       broadcaster.push(1);
       broadcaster.push(2);
       broadcaster.push(3);
@@ -88,10 +88,51 @@ describe('ToolEventBroadcaster', () => {
 
       // Cancel consumer
       await consumer.return!();
-
+      expect(broadcaster.activeConsumerCount).toBe(0);
       // Should be done now
       const after = await consumer.next();
       expect(after.done).toBe(true);
+    });
+
+    it('preserves history when the last consumer exits before completion', async () => {
+      const broadcaster = new ToolEventBroadcaster<number>();
+      const first = broadcaster.createConsumer();
+
+      broadcaster.push(1);
+      expect(await first.next()).toMatchObject({
+        value: 1,
+      });
+      await first.return?.();
+      broadcaster.push(2);
+
+      const later = broadcaster.createConsumer();
+      broadcaster.push(3);
+      broadcaster.complete();
+
+      const events: number[] = [];
+      for await (const event of later) {
+        events.push(event);
+      }
+      expect(events).toEqual([
+        1,
+        2,
+        3,
+      ]);
+    });
+
+    it('releases completed history when no consumers remain', async () => {
+      const broadcaster = new ToolEventBroadcaster<number>('active-consumers');
+      broadcaster.push(1);
+      broadcaster.complete();
+      await Promise.resolve();
+
+      expect(
+        (
+          broadcaster as unknown as {
+            buffer: number[];
+          }
+        ).buffer,
+      ).toEqual([]);
     });
   });
 

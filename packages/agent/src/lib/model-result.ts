@@ -62,7 +62,7 @@ import {
 import type { StreamReplay } from './reusable-stream.js';
 import { ReusableReadableStream } from './reusable-stream.js';
 import { isStopConditionMet } from './stop-conditions.js';
-import type { ItemInProgress, StreamableOutputItem } from './stream-transformers.js';
+import type { ItemInProgress, StreamableOutputItem, UiStreamEvent } from './stream-transformers.js';
 import {
   buildItemsStream,
   buildResponsesMessageStream,
@@ -78,6 +78,7 @@ import {
   itemsStreamHandlers,
   responseHasToolCalls,
   streamTerminationEvents,
+  translateUiEvent,
   tryExtractCompletionFromBuffer,
 } from './stream-transformers.js';
 import {
@@ -119,6 +120,7 @@ import type {
   ToolCallOutputEvent,
   ToolContextMapWithShared,
   ToolResultItem,
+  ToolUiFragmentEvent,
   TurnContext,
   TurnEndEvent,
   TurnStartEvent,
@@ -262,6 +264,85 @@ function extractServerToolIdentity(item: ServerToolResultItem): Record<string, u
 // let a hook gather a couple of follow-up actions but small enough that a
 // buggy handler fails fast with a visible warning.
 const MAX_FORCE_RESUME_OVERRIDES = 3;
+
+/** Maximum time a UI consumer waits for asynchronous fragment rendering. */
+const DEFAULT_UI_DRAIN_TIMEOUT_MS = 30_000;
+
+type IteratorOutcome<T> =
+  | {
+      source: 0 | 1;
+      result: IteratorResult<T>;
+    }
+  | {
+      source: 0 | 1;
+      error: unknown;
+    };
+
+async function* mergeAsyncIterators<A, B>(
+  iterators: readonly [
+    AsyncIterator<A>,
+    AsyncIterator<B>,
+  ],
+): AsyncGenerator<A | B> {
+  const active = [
+    true,
+    true,
+  ];
+  const pending: Array<Promise<IteratorOutcome<A | B>> | null> = [
+    null,
+    null,
+  ];
+  let preferred: 0 | 1 = 0;
+  const next = async (source: 0 | 1): Promise<IteratorOutcome<A | B>> => {
+    try {
+      return {
+        source,
+        result: await iterators[source].next(),
+      };
+    } catch (error) {
+      return {
+        source,
+        error,
+      };
+    }
+  };
+
+  try {
+    while (active[0] || active[1]) {
+      for (const source of [
+        0,
+        1,
+      ] as const) {
+        if (active[source] && !pending[source]) {
+          pending[source] = next(source);
+        }
+      }
+      const other: 0 | 1 = preferred === 0 ? 1 : 0;
+      const outcome: IteratorOutcome<A | B> = await Promise.race(
+        [
+          pending[preferred],
+          pending[other],
+        ].filter((promise): promise is Promise<IteratorOutcome<A | B>> => promise !== null),
+      );
+      pending[outcome.source] = null;
+      if ('error' in outcome) {
+        throw outcome.error;
+      }
+      if (outcome.result.done) {
+        active[outcome.source] = false;
+        preferred = outcome.source === 0 ? 1 : 0;
+        continue;
+      }
+      preferred = outcome.source === 0 ? 1 : 0;
+      yield outcome.result.value;
+    }
+  } finally {
+    await Promise.allSettled(iterators.map((iterator) => iterator.return?.()));
+    await Promise.all(
+      pending.filter((promise): promise is Promise<IteratorOutcome<A | B>> => !!promise),
+    );
+  }
+}
 
 /**
  * Sentinel marking a tool-call id that appeared MORE THAN ONCE in one batch.
@@ -642,6 +723,16 @@ export class ModelResult<
   // Unified turn broadcaster for multi-turn streaming
   private turnBroadcaster: ToolEventBroadcaster<CorrelatedResponseStreamEvent<TTools>> | null =
     null;
+  private uiBroadcaster: ToolEventBroadcaster<ToolUiFragmentEvent> | null = null;
+  private pendingUiFragments = new Set<Promise<void>>();
+  private queuedUiToolResults: Array<{
+    callId: string;
+    name: string;
+    input: Record<string, unknown>;
+    output: unknown;
+  }> = [];
+  private uiBroadcasterCompletionPromise: Promise<void> | null = null;
+  private turnBroadcasterCompletionPromise: Promise<void> | null = null;
   private initialStreamPipeStarted = false;
   private initialPipePromise: Promise<void> | null = null;
   private initialResponse: models.OpenResponsesResult | null = null;
@@ -1088,19 +1179,18 @@ export class ModelResult<
     const broadcaster = this.ensureTurnBroadcaster();
     this.startInitialStreamPipe();
     const consumer = broadcaster.createConsumer();
-    const executionPromise = this.executeToolsIfNeeded().finally(async () => {
-      // Wait for the initial stream pipe to finish pushing all events
-      // (including turn.end) before marking the broadcaster as complete.
-      // Without this, turn.end can be silently dropped if the pipe hasn't
-      // finished when executeToolsIfNeeded completes.
-      if (this.initialPipePromise) {
-        await this.initialPipePromise;
-      }
-      broadcaster.complete();
-    });
+    if (!this.turnBroadcasterCompletionPromise) {
+      this.turnBroadcasterCompletionPromise = this.executeToolsIfNeeded().finally(async () => {
+        // Preserve turn.end, but never couple non-UI stream completion to UI rendering.
+        if (this.initialPipePromise) {
+          await this.initialPipePromise;
+        }
+        broadcaster.complete();
+      });
+    }
     return {
       consumer,
-      executionPromise,
+      executionPromise: this.turnBroadcasterCompletionPromise,
     };
   }
 
@@ -2966,10 +3056,12 @@ export class ModelResult<
     }
 
     const registry = this.ensureAsyncToolRegistry();
+    const input = (tc.arguments ?? {}) as Record<string, unknown>;
     const liveTask = registry.trackDeferred({
       callId: tc.id,
       taskId: invocation.taskId,
       name: String(tc.name),
+      input,
       ...(invocation.pollAfterMs !== undefined && {
         pollAfterMs: invocation.pollAfterMs,
       }),
@@ -2984,6 +3076,7 @@ export class ModelResult<
       mode: 'defer',
       status: 'working',
       startedAt: liveTask.startedAt,
+      input,
       ...(invocation.pollAfterMs !== undefined && {
         pollAfterMs: invocation.pollAfterMs,
       }),
@@ -3497,6 +3590,22 @@ export class ModelResult<
           this.toolSourceByName(String(task.name)),
           task.result as InferToolOutputsUnion<TTools>,
         );
+        const tool = this.options.tools?.find(
+          (candidate) => isClientTool(candidate) && candidate.function.name === task.name,
+        );
+        if (tool && task.input !== undefined) {
+          this.dispatchUiFragment({
+            toolCall: {
+              id: task.callId,
+              name: task.name,
+              arguments: task.input,
+            } as ParsedToolCall<Tool>,
+            tool,
+            result: {
+              result: task.result,
+            },
+          });
+        }
       }
       // PostToolUse/PostToolUseFailure fire at SETTLEMENT for async tools —
       // the observation-only audit surface (secret scanning, output review)
@@ -3941,10 +4050,7 @@ export class ModelResult<
 
     // Start ALL async invocations before consuming any outcome: the work
     // (and its grace window) begins in handleAsyncInvocation, so awaiting
-    // it inside the ordered loop below would serialize N background calls
-    // into (N-1)×graceMs of stagger. Kicked off here in parallel; the
-    // ordered loop awaits the per-call promise, so OUTPUT order stays call
-    // order (prompt-cache stability).
+    // it inside the ordered loop below would serialize background calls.
     const asyncOutcomes = new Map<
       number,
       Promise<{
@@ -4067,6 +4173,8 @@ export class ModelResult<
         output: executedOutput,
         timestamp: Date.now(),
       } satisfies ToolCallOutputEvent);
+
+      this.dispatchUiFragment(value);
     }
 
     return {
@@ -4107,10 +4215,12 @@ export class ModelResult<
       if (collision) {
         return collision;
       }
+      const input = (toolCall.arguments ?? {}) as Record<string, unknown>;
       const liveTask = registry.trackDeferred({
         callId: toolCall.id,
         taskId: invocation.taskId,
         name: String(toolCall.name),
+        input,
         ...(invocation.expiresAt !== undefined && {
           expiresAt: invocation.expiresAt,
         }),
@@ -4126,6 +4236,7 @@ export class ModelResult<
         mode: 'defer',
         status: 'working',
         startedAt: liveTask.startedAt,
+        input,
         ...(invocation.pollAfterMs !== undefined && {
           pollAfterMs: invocation.pollAfterMs,
         }),
@@ -4220,13 +4331,15 @@ export class ModelResult<
             source,
             settled.result as InferToolOutputsUnion<TTools>,
           );
-          const outputForModel = await this.computeToolOutputForModel({
+          const settledValue = {
             toolCall,
             tool,
             result: {
               result: settled.result,
             },
-          });
+          };
+          const outputForModel = await this.computeToolOutputForModel(settledValue);
+          this.dispatchUiFragment(settledValue);
           return {
             output: {
               type: 'function_call_output' as const,
@@ -4732,6 +4845,153 @@ export class ModelResult<
       send: (message: unknown) => task.send(message),
       cancel: (reason?: string) => registry?.cancelTask(task.taskId, reason) ?? false,
     };
+  }
+
+  /** @internal Queue externally resumed tool results for the UI lifecycle. */
+  queueUiToolResults(
+    results: Array<{
+      callId: string;
+      name: string;
+      input: Record<string, unknown>;
+      output: unknown;
+    }>,
+  ): void {
+    this.queuedUiToolResults.push(...results);
+  }
+
+  private dispatchQueuedUiToolResults(): void {
+    const queued = this.queuedUiToolResults;
+    this.queuedUiToolResults = [];
+    for (const result of queued) {
+      const tool = this.options.tools?.find(
+        (candidate) => isClientTool(candidate) && candidate.function.name === result.name,
+      );
+      if (tool) {
+        this.dispatchUiFragment({
+          toolCall: {
+            id: result.callId,
+            name: result.name,
+            arguments: result.input,
+          } as ParsedToolCall<Tool>,
+          tool,
+          result: {
+            result: result.output,
+          },
+        });
+      }
+    }
+  }
+
+  private dispatchUiFragment(value: {
+    toolCall: ParsedToolCall<Tool>;
+    tool: Tool;
+    result: {
+      result: unknown;
+      error?: Error;
+    };
+  }): void {
+    if (!this.uiBroadcaster?.activeConsumerCount) {
+      return;
+    }
+    const rendering = this.broadcastUiFragment(value);
+    this.pendingUiFragments.add(rendering);
+    rendering.finally(() => this.pendingUiFragments.delete(rendering));
+  }
+
+  private async drainUiFragments(): Promise<void> {
+    if (this.pendingUiFragments.size === 0) {
+      return;
+    }
+    const timeoutMs = DEFAULT_UI_DRAIN_TIMEOUT_MS;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const deadline = new Promise<true>((resolve) => {
+      timer = setTimeout(() => resolve(true), timeoutMs);
+      if (typeof timer === 'object' && 'unref' in timer && typeof timer.unref === 'function') {
+        timer.unref();
+      }
+    });
+    try {
+      while (this.pendingUiFragments.size > 0) {
+        const pending = [
+          ...this.pendingUiFragments,
+        ];
+        try {
+          const timedOut = await Promise.race([
+            Promise.all(pending).then(() => false),
+            deadline,
+          ]);
+          if (timedOut) {
+            this.pendingUiFragments.clear();
+            return;
+          }
+        } finally {
+          for (const rendering of pending) {
+            this.pendingUiFragments.delete(rendering);
+          }
+        }
+      }
+    } finally {
+      if (timer !== undefined) {
+        clearTimeout(timer);
+      }
+    }
+  }
+
+  /**
+   * Compute and broadcast a tool-authored OpenUI fragment for a successful
+   * execution. Render-only: the fragment never reaches the model, so a
+   * throwing `toUiOutput` degrades to "no fragment" instead of failing the
+   * round — the model-facing output has already been pushed.
+   */
+  private async broadcastUiFragment(value: {
+    toolCall: ParsedToolCall<Tool>;
+    tool: Tool;
+    result: {
+      result: unknown;
+      error?: Error;
+    };
+  }): Promise<void> {
+    if (
+      value.result.error ||
+      !isAutoResolvableTool(value.tool) ||
+      !value.tool.function.toUiOutput
+    ) {
+      return;
+    }
+    const rawArgs: unknown = value.toolCall.arguments;
+    if (!isRecord(rawArgs)) {
+      return;
+    }
+    try {
+      const fragment = await value.tool.function.toUiOutput({
+        output: value.result.result,
+        input: rawArgs,
+      });
+      if (!fragment) {
+        return;
+      }
+      if (!this.uiBroadcaster?.activeConsumerCount) {
+        return;
+      }
+      this.uiBroadcaster.push({
+        type: 'tool.ui_fragment' as const,
+        toolCallId: value.toolCall.id,
+        toolName: value.toolCall.name,
+        fragment: {
+          dialect: fragment.dialect,
+          source: fragment.source,
+        },
+        timestamp: Date.now(),
+      } satisfies ToolUiFragmentEvent);
+    } catch (error) {
+      // Fragment construction failed — drop it; rendering is best-effort. But
+      // surface the cause, or a throwing toUiOutput is undebuggable ("no
+      // fragment ever arrives", with nothing in the console).
+      console.warn(
+        `toUiOutput for tool "${value.toolCall.name}" (call ${value.toolCall.id}) threw; dropping UI fragment:`,
+        error,
+      );
+    }
   }
 
   /**
@@ -7195,6 +7455,75 @@ export class ModelResult<
       }
 
       await executionPromise;
+    }.call(this);
+  }
+
+  /**
+   * Stream OpenUI events from all turns: completed OpenUI Lang statements
+   * authored by the model (`response.openui.*` wire events from the `openui`
+   * plugin) and tool-authored fragments (`tool.ui_fragment` events produced
+   * by tools declaring `toUiOutput`).
+   *
+   * Wire events not yet in the SDK's stream-event union arrive through its
+   * forward-compat catch-all; translation reads the raw payload, so this
+   * stream works both before and after the SDK regen picks them up.
+   */
+  getUiStream(): AsyncIterableIterator<UiStreamEvent> {
+    return async function* (this: ModelResult<TTools, TShared>) {
+      if (!this.options.tools?.length) {
+        await this.initStreamGuarded();
+        let streamFailed = false;
+        try {
+          if (this.reusableStream) {
+            for await (const event of this.reusableStream.createConsumer()) {
+              const uiEvent = translateUiEvent(event);
+              if (uiEvent) {
+                yield uiEvent;
+              }
+            }
+          }
+        } catch (error) {
+          streamFailed = true;
+          throw error;
+        } finally {
+          await this.finishHooksSessionForStream(streamFailed ? 'error' : 'complete');
+        }
+        return;
+      }
+
+      if (!this.uiBroadcaster) {
+        this.uiBroadcaster = new ToolEventBroadcaster();
+      }
+      const uiBroadcaster = this.uiBroadcaster;
+      const uiConsumer = uiBroadcaster.createConsumer();
+      try {
+        this.dispatchQueuedUiToolResults();
+        await this.initStreamGuarded();
+        const { consumer, executionPromise } = this.startTurnBroadcasterExecution();
+        if (!this.uiBroadcasterCompletionPromise) {
+          this.uiBroadcasterCompletionPromise = executionPromise.finally(async () => {
+            await this.drainUiFragments();
+            uiBroadcaster.complete();
+          });
+        }
+
+        for await (const event of mergeAsyncIterators([
+          consumer,
+          uiConsumer,
+        ])) {
+          const uiEvent = translateUiEvent(event);
+          if (uiEvent) {
+            yield uiEvent;
+          }
+        }
+
+        await this.uiBroadcasterCompletionPromise;
+      } finally {
+        await uiConsumer.return?.();
+        if (uiBroadcaster.activeConsumerCount === 0) {
+          this.pendingUiFragments.clear();
+        }
+      }
     }.call(this);
   }
 
