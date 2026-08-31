@@ -1518,19 +1518,7 @@ export class ModelResult<
     // synthetic error without running the tool or firing hooks.
     const rawArgs: unknown = toolCall.arguments;
     if (typeof rawArgs === 'string') {
-      // Truncated calls get targeted feedback: retrying the same call cannot
-      // succeed (it will be cut off again), and echoing the full raw payload
-      // back would burn a large slice of the next turn's context, so only a
-      // short prefix is included.
-      const errorMessage = toolCall.argumentsTruncated
-        ? `Tool call arguments for "${toolCall.name}" were cut off because the response hit the ` +
-          'output token limit (max_output_tokens) before the arguments were complete. ' +
-          `Arguments began with: "${rawArgs.substring(0, 200)}...". ` +
-          'Do not retry the same call — it will be truncated again. Make the tool call smaller, ' +
-          'for example by splitting the work into several calls with shorter arguments.'
-        : `Failed to parse tool call arguments for "${toolCall.name}": The model provided invalid JSON. ` +
-          `Raw arguments received: "${rawArgs}". ` +
-          'Please provide valid JSON arguments for this tool call.';
+      const errorMessage = buildArgumentsParseErrorFeedback(toolCall, rawArgs);
       return {
         type: 'parse_error',
         toolCall,
@@ -7670,4 +7658,32 @@ function taskToolResultIfSettled(
     };
   }
   return null;
+}
+
+/**
+ * The model-facing error for a tool call whose arguments failed to parse
+ * (`rawArgs` is the raw wire string; see `ParsedToolCall.argumentsParseFailure`).
+ *
+ * Truncated calls (`max_output_tokens`) get targeted feedback: retrying the
+ * same call cannot succeed — it will be cut off again — and echoing the full
+ * raw payload back would burn a large slice of the next turn's context, so
+ * only a short prefix is included. Genuinely malformed calls keep the
+ * established invalid-JSON message.
+ */
+function buildArgumentsParseErrorFeedback(toolCall: ParsedToolCall<Tool>, rawArgs: string): string {
+  if (toolCall.argumentsParseFailure?.reason === 'max_output_tokens') {
+    const prefix = rawArgs.length > 200 ? `${rawArgs.substring(0, 200)}...` : rawArgs;
+    return (
+      `Tool call arguments for "${toolCall.name}" were cut off because the response hit the ` +
+      'output token limit (max_output_tokens) before the arguments were complete. ' +
+      `Arguments began with: "${prefix}". ` +
+      'Do not retry the same call — it will be truncated again. Make the tool call smaller, ' +
+      'for example by splitting the work into several calls with shorter arguments.'
+    );
+  }
+  return (
+    `Failed to parse tool call arguments for "${toolCall.name}": The model provided invalid JSON. ` +
+    `Raw arguments received: "${rawArgs}". ` +
+    'Please provide valid JSON arguments for this tool call.'
+  );
 }

@@ -814,6 +814,13 @@ export function extractToolCallsFromResponse(
 ): ParsedToolCall<Tool>[] {
   const toolCalls: ParsedToolCall<Tool>[] = [];
 
+  // A max_output_tokens cutoff stops generation at one point, so only the
+  // FINAL output item can have been cut mid-arguments; earlier malformed
+  // items are genuinely malformed, not truncated.
+  const lastOutputItem = response.output.at(-1);
+  const responseHitTokenLimit =
+    response.status === 'incomplete' && response.incompleteDetails?.reason === 'max_output_tokens';
+
   for (const item of response.output) {
     if (isFunctionCallItem(item)) {
       try {
@@ -826,11 +833,12 @@ export function extractToolCallsFromResponse(
           arguments: parsedArguments,
         });
       } catch (error) {
-        const argumentsTruncated =
-          response.status === 'incomplete' &&
-          response.incompleteDetails?.reason === 'max_output_tokens';
+        const reason =
+          responseHitTokenLimit && item === lastOutputItem
+            ? ('max_output_tokens' as const)
+            : ('invalid_json' as const);
         console.warn(
-          `Failed to parse tool call arguments for ${item.name}${argumentsTruncated ? ' (truncated by max_output_tokens)' : ''}:`,
+          `Failed to parse tool call arguments for ${item.name} (${reason}):`,
           error instanceof Error ? error.message : String(error),
           `\nArguments: ${item.arguments.substring(0, 100)}${item.arguments.length > 100 ? '...' : ''}`,
         );
@@ -839,11 +847,9 @@ export function extractToolCallsFromResponse(
           id: item.callId,
           name: item.name,
           arguments: item.arguments as unknown, // Keep as string if parsing fails
-          ...(argumentsTruncated
-            ? {
-                argumentsTruncated: true as const,
-              }
-            : {}),
+          argumentsParseFailure: {
+            reason,
+          },
         } as ParsedToolCall<Tool>);
       }
     }

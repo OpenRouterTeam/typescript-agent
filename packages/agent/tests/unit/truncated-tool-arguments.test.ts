@@ -207,6 +207,38 @@ describe('tool-call arguments truncated by max_output_tokens', () => {
     expect(feedback).not.toContain('output token limit');
   });
 
+  it('only flags the final output item — an earlier malformed call in the same incomplete response gets the generic feedback', async () => {
+    // max_output_tokens cuts generation at one point, so only the last item
+    // can be truncated. The earlier call is genuinely malformed and must be
+    // told to fix its JSON, not to shrink the call.
+    scriptModelTurns(
+      baseResponse(
+        [
+          functionCallItem('run_shell', '{"commands": broken'),
+          functionCallItem('run_shell', TRUNCATED_ARGS),
+        ],
+        'incomplete',
+        'max_output_tokens',
+      ),
+      textTurn('understood'),
+    );
+
+    const result = callModel(client, {
+      model: 'test-model',
+      input: 'Run both.',
+      tools: [
+        shellTool,
+      ] as const,
+    });
+    await result.getResponse();
+
+    const outputs = sentToolErrorFeedback(1);
+    expect(outputs).toHaveLength(2);
+    expect(outputs[0] ?? '').toContain('The model provided invalid JSON');
+    expect(outputs[0] ?? '').not.toContain('output token limit');
+    expect(outputs[1] ?? '').toContain('output token limit');
+  });
+
   it('keeps the generic feedback when a response is incomplete for a different reason', async () => {
     scriptModelTurns(
       baseResponse(
