@@ -1518,10 +1518,19 @@ export class ModelResult<
     // synthetic error without running the tool or firing hooks.
     const rawArgs: unknown = toolCall.arguments;
     if (typeof rawArgs === 'string') {
-      const errorMessage =
-        `Failed to parse tool call arguments for "${toolCall.name}": The model provided invalid JSON. ` +
-        `Raw arguments received: "${rawArgs}". ` +
-        'Please provide valid JSON arguments for this tool call.';
+      // Truncated calls get targeted feedback: retrying the same call cannot
+      // succeed (it will be cut off again), and echoing the full raw payload
+      // back would burn a large slice of the next turn's context, so only a
+      // short prefix is included.
+      const errorMessage = toolCall.argumentsTruncated
+        ? `Tool call arguments for "${toolCall.name}" were cut off because the response hit the ` +
+          'output token limit (max_output_tokens) before the arguments were complete. ' +
+          `Arguments began with: "${rawArgs.substring(0, 200)}...". ` +
+          'Do not retry the same call — it will be truncated again. Make the tool call smaller, ' +
+          'for example by splitting the work into several calls with shorter arguments.'
+        : `Failed to parse tool call arguments for "${toolCall.name}": The model provided invalid JSON. ` +
+          `Raw arguments received: "${rawArgs}". ` +
+          'Please provide valid JSON arguments for this tool call.';
       return {
         type: 'parse_error',
         toolCall,

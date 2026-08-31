@@ -1191,6 +1191,15 @@ export interface ParsedToolCall<T extends Tool> {
     ? N
     : string;
   arguments: InferToolInput<T>; // Typed based on tool's inputSchema
+  /**
+   * Set when `arguments` failed to parse as JSON AND the response was cut
+   * off by the output token limit (`status: "incomplete"` with reason
+   * `max_output_tokens`) — i.e. the arguments are truncated mid-payload, not
+   * malformed by the model. Used to give the model actionable feedback
+   * (shrink the call) instead of a generic invalid-JSON error it would
+   * respond to by retrying the same oversized call.
+   */
+  argumentsTruncated?: true;
 }
 
 export type PendingToolCall<T extends Tool> = ParsedToolCall<T> & {

@@ -826,8 +826,11 @@ export function extractToolCallsFromResponse(
           arguments: parsedArguments,
         });
       } catch (error) {
+        const argumentsTruncated =
+          response.status === 'incomplete' &&
+          response.incompleteDetails?.reason === 'max_output_tokens';
         console.warn(
-          `Failed to parse tool call arguments for ${item.name}:`,
+          `Failed to parse tool call arguments for ${item.name}${argumentsTruncated ? ' (truncated by max_output_tokens)' : ''}:`,
           error instanceof Error ? error.message : String(error),
           `\nArguments: ${item.arguments.substring(0, 100)}${item.arguments.length > 100 ? '...' : ''}`,
         );
@@ -836,6 +839,11 @@ export function extractToolCallsFromResponse(
           id: item.callId,
           name: item.name,
           arguments: item.arguments as unknown, // Keep as string if parsing fails
+          ...(argumentsTruncated
+            ? {
+                argumentsTruncated: true as const,
+              }
+            : {}),
         } as ParsedToolCall<Tool>);
       }
     }
