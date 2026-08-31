@@ -807,6 +807,25 @@ export function extractTextFromResponse(response: models.OpenResponsesResult): s
 }
 
 /**
+ * Build a ParsedToolCall from wire values, parsing the arguments leniently.
+ *
+ * Single home for the engine's malformed-arguments convention: when the
+ * arguments cannot be parsed (even with repair), they are kept as the raw
+ * string, which `runToolWithHooks` later detects (`typeof arguments ===
+ * 'string'`) and turns into a parse-error tool result instead of executing
+ * the tool. The cast is what that convention costs: `arguments` is typed as
+ * the tool's input shape but transiently holds the raw string on failure.
+ */
+function toParsedToolCall(id: string, name: string, rawArguments: string): ParsedToolCall<Tool> {
+  const parsed = parseArgumentsWithWarnings(rawArguments, name);
+  return {
+    id,
+    name,
+    arguments: parsed.ok ? parsed.value : (rawArguments as unknown),
+  } as ParsedToolCall<Tool>;
+}
+
+/**
  * Extract all tool calls from a completed response
  * Returns parsed tool calls with arguments as objects (not JSON strings)
  */
@@ -817,21 +836,7 @@ export function extractToolCallsFromResponse(
 
   for (const item of response.output) {
     if (isFunctionCallItem(item)) {
-      const parsed = parseArgumentsWithWarnings(item.arguments, item.name);
-      if (parsed.ok) {
-        toolCalls.push({
-          id: item.callId,
-          name: item.name,
-          arguments: parsed.value,
-        });
-      } else {
-        // Include the tool call with unparsed arguments
-        toolCalls.push({
-          id: item.callId,
-          name: item.name,
-          arguments: item.arguments as unknown, // Keep as string if parsing fails
-        } as ParsedToolCall<Tool>);
-      }
+      toolCalls.push(toParsedToolCall(item.callId, item.name, item.arguments));
     }
   }
 
@@ -892,21 +897,7 @@ export async function* buildToolCallStream(
 
           if (toolCall) {
             // Parse complete arguments (empty string → empty object for no-param tools)
-            const parsed = parseArgumentsWithWarnings(event.arguments, event.name);
-            if (parsed.ok) {
-              yield {
-                id: toolCall.id,
-                name: event.name,
-                arguments: parsed.value,
-              };
-            } else {
-              // Yield with unparsed arguments if parsing fails
-              yield {
-                id: toolCall.id,
-                name: event.name,
-                arguments: event.arguments as unknown,
-              } as ParsedToolCall<Tool>;
-            }
+            yield toParsedToolCall(toolCall.id, event.name, event.arguments);
 
             // Clean up
             toolCallsInProgress.delete(event.itemId);
@@ -921,20 +912,7 @@ export async function* buildToolCallStream(
           const itemKey = event.item.id ?? event.item.callId;
           // Yield final tool call if we haven't already
           if (toolCallsInProgress.has(itemKey)) {
-            const parsed = parseArgumentsWithWarnings(event.item.arguments, event.item.name);
-            if (parsed.ok) {
-              yield {
-                id: event.item.callId,
-                name: event.item.name,
-                arguments: parsed.value,
-              };
-            } else {
-              yield {
-                id: event.item.callId,
-                name: event.item.name,
-                arguments: event.item.arguments as unknown,
-              } as ParsedToolCall<Tool>;
-            }
+            yield toParsedToolCall(event.item.callId, event.item.name, event.item.arguments);
 
             toolCallsInProgress.delete(itemKey);
           }

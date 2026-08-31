@@ -3,7 +3,6 @@ import * as z4 from 'zod/v4';
 import type { $ZodObject, $ZodShape, $ZodType } from 'zod/v4/core';
 import { isContentArray } from './conversation-state.js';
 import { isFunctionCallItem, isFunctionCallOutputItem } from './stream-type-guards.js';
-import { parseToolCallArgumentsLenient } from './tool-arguments-repair.js';
 import type { ToolContextStore, ToolExecutionExtras } from './tool-context.js';
 import { buildToolExecuteContext, buildToolRunContext } from './tool-context.js';
 import type {
@@ -163,21 +162,6 @@ export function validateToolOutput<T>(schema: $ZodType<T>, result: unknown): T {
 function tryValidate(schema: $ZodType, value: unknown): boolean {
   const result = z4.safeParse(schema, value);
   return result.success;
-}
-
-/**
- * Parse tool call arguments from JSON string.
- * Treats empty/whitespace-only strings as an empty object — some providers
- * return `arguments: ""` for tools that take no parameters.
- * Malformed payloads go through best-effort repair (see
- * `tool-arguments-repair.ts`) before failing.
- */
-export function parseToolCallArguments(argumentsString: string): unknown {
-  const result = parseToolCallArgumentsLenient(argumentsString);
-  if (result.status === 'unparseable') {
-    throw new Error('Failed to parse tool call arguments: not valid JSON and not repairable');
-  }
-  return result.value;
 }
 
 /**

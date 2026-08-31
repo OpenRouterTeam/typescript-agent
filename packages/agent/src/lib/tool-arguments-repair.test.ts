@@ -82,6 +82,33 @@ describe('parseToolCallArgumentsLenient', () => {
       });
     });
 
+    it('preserves a parameter value that legitimately ends in closing braces', () => {
+      // The body parses as-is; trailing-frame stripping must not run first
+      // and mutilate it into a bare string.
+      const raw = '<parameter name="config">{"nested": {"a": 1}}';
+      const result = parseToolCallArgumentsLenient(raw);
+      expect(result).toEqual({
+        status: 'repaired',
+        strategy: 'xml-scaffold',
+        value: {
+          config: {
+            nested: {
+              a: 1,
+            },
+          },
+        },
+      });
+    });
+
+    it('reports unparseable for a JSON-looking body that cannot be parsed', () => {
+      // Falling back to a bare string here would hand the tool a mutilated,
+      // wrong-typed value; unrecoverable is the safe outcome.
+      const raw = '{"action": <parameter name="commands">["echo hi", broken}}';
+      expect(parseToolCallArgumentsLenient(raw)).toEqual({
+        status: 'unparseable',
+      });
+    });
+
     it('recovers a scaffold whose command content itself contains XML', () => {
       const raw =
         '{"action": \n<parameter name="commands">["cat << \'XEOF\' > /tmp/cfg/characters.xml\\n<?xml version=\\"1.0\\"?>\\n<characters>\\n<character id=\\"1\\"></character>\\n</characters>\\nXEOF"]}';

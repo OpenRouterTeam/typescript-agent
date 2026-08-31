@@ -35,24 +35,6 @@ function isValidUnsentToolResult<TTools extends readonly Tool[]>(
 }
 
 /**
- * Type guard to verify an object is a valid ParsedToolCall
- */
-function isValidParsedToolCall<TTools extends readonly Tool[]>(
-  obj: unknown,
-): obj is ParsedToolCall<TTools[number]> {
-  if (typeof obj !== 'object' || obj === null) {
-    return false;
-  }
-  return (
-    'id' in obj &&
-    typeof obj.id === 'string' &&
-    'name' in obj &&
-    typeof obj.name === 'string' &&
-    'arguments' in obj
-  );
-}
-
-/**
  * Generate a unique ID for a conversation
  * Uses crypto.randomUUID if available, falls back to timestamp + random
  */
@@ -513,57 +495,6 @@ export function extractTextFromResponse(response: models.OpenResponsesResult): s
   }
 
   return textParts.join('');
-}
-
-/**
- * Extract tool calls from a response
- */
-export function extractToolCallsFromResponse<TTools extends readonly Tool[]>(
-  response: models.OpenResponsesResult,
-): ParsedToolCall<TTools[number]>[] {
-  if (!response.output) {
-    return [];
-  }
-
-  const outputs = Array.isArray(response.output)
-    ? response.output
-    : [
-        response.output,
-      ];
-  const toolCalls: ParsedToolCall<TTools[number]>[] = [];
-
-  for (const item of outputs) {
-    if (item.type !== 'function_call' || !('arguments' in item)) {
-      continue;
-    }
-
-    let parsedArguments: unknown;
-    if (typeof item.arguments === 'string') {
-      try {
-        parsedArguments = JSON.parse(item.arguments);
-      } catch (error) {
-        // Log warning and skip malformed tool call, similar to stream-transformers.ts
-        console.warn(
-          `Failed to parse arguments for tool call "${'name' in item ? item.name : 'unknown'}": ${error instanceof Error ? error.message : String(error)}`,
-        );
-        continue;
-      }
-    } else {
-      parsedArguments = item.arguments;
-    }
-
-    const toolCall = {
-      id: ('callId' in item ? item.callId : undefined) ?? item.id ?? '',
-      name: ('name' in item ? item.name : undefined) ?? '',
-      arguments: parsedArguments,
-    };
-    if (!isValidParsedToolCall<TTools>(toolCall)) {
-      throw new Error(`Invalid tool call structure for tool: ${toolCall.name}`);
-    }
-    toolCalls.push(toolCall);
-  }
-
-  return toolCalls;
 }
 
 /*

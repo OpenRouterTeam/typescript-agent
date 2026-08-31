@@ -137,8 +137,24 @@ export function parseArgumentsWithWarnings(
  */
 const PARAMETER_OPEN_TAG = /<parameter(?:\s+name="([^"]+)"|=([A-Za-z0-9_-]+))>/g;
 
-/** Trailing scaffold framing to strip from a parameter value. */
-const TRAILING_SCAFFOLD = /(?:\s|<\/parameter>|<\/invoke>|<\/tool_call>|\}|\))*$/;
+/**
+ * Trailing scaffold framing tokens, stripped from a parameter body one at a
+ * time (see {@link parseScaffoldParameterValue}). Braces/parens appear here
+ * because the leaked scaffold often keeps the closing brace of the JSON
+ * prefix (`{"action": <parameter ...>[...]}`)  — but a value can also
+ * legitimately end in `}`, so stripping must be incremental and validated by
+ * a real parse, never greedy.
+ */
+const TRAILING_FRAME_TOKENS = [
+  '</parameter>',
+  '</invoke>',
+  '</tool_call>',
+  '}',
+  ')',
+] as const;
+
+/** XML scaffold close tags only — safe to strip from non-JSON scalar bodies. */
+const TRAILING_CLOSE_TAGS = /(?:\s|<\/parameter>|<\/invoke>|<\/tool_call>)*$/;
 
 /**
  * Recover arguments from a Claude-style XML scaffold leak. The observed shape
@@ -152,8 +168,10 @@ const TRAILING_SCAFFOLD = /(?:\s|<\/parameter>|<\/invoke>|<\/tool_call>|\}|\))*$
  * scaffold shape or a parameter body cannot be recovered.
  */
 function tryParseXmlScaffold(input: string): Record<string, unknown> | undefined {
-  PARAMETER_OPEN_TAG.lastIndex = 0;
-  const firstTag = PARAMETER_OPEN_TAG.exec(input);
+  const tagMatches = [
+    ...input.matchAll(PARAMETER_OPEN_TAG),
+  ];
+  const firstTag = tagMatches[0];
   if (!firstTag) {
     return undefined;
   }
@@ -175,12 +193,7 @@ function tryParseXmlScaffold(input: string): Record<string, unknown> | undefined
     start: number;
     end: number;
   }[] = [];
-  PARAMETER_OPEN_TAG.lastIndex = firstTag.index;
-  for (
-    let match = PARAMETER_OPEN_TAG.exec(input);
-    match !== null;
-    match = PARAMETER_OPEN_TAG.exec(input)
-  ) {
+  for (const match of tagMatches) {
     const name = match[1] ?? match[2];
     if (!name) {
       return undefined;
@@ -198,7 +211,7 @@ function tryParseXmlScaffold(input: string): Record<string, unknown> | undefined
 
   const assembled: Record<string, unknown> = {};
   for (const param of params) {
-    const body = input.slice(param.start, param.end).replace(TRAILING_SCAFFOLD, '').trim();
+    const body = input.slice(param.start, param.end).trim();
     const value = parseScaffoldParameterValue(body);
     if (value === undefined) {
       return undefined;
@@ -217,21 +230,54 @@ function tryParseXmlScaffold(input: string): Record<string, unknown> | undefined
 }
 
 /**
- * Parse one scaffold parameter body: a JSON fragment when possible, otherwise
- * a bare string for unquoted scalar values. Returns `undefined` only for
- * empty bodies.
+ * Parse one scaffold parameter body.
+ *
+ * The body is parsed as-is first, so a value that legitimately ends in `}`
+ * or `)` (e.g. a nested JSON object) is never damaged. Only when that fails
+ * are trailing scaffold framing tokens stripped one at a time, re-validating
+ * with a real `JSON.parse` after each strip.
+ *
+ * Bodies that look like JSON (start with `{`, `[`, or `"`) but cannot be
+ * parsed even after stripping are unrecoverable (`undefined`) — falling back
+ * to a bare string would hand the tool a wrong-typed, mutilated value.
+ * Bodies that never looked like JSON are returned as bare strings (unquoted
+ * scalars like plain-text values), with only XML close tags stripped.
  */
 function parseScaffoldParameterValue(body: string): unknown {
   if (!body) {
     return undefined;
   }
-  try {
-    return JSON.parse(body);
-  } catch {
-    // Bare unquoted scalar (e.g. `<parameter name="timeout_ms">30000` already
-    // parses as JSON; this is for plain-text values).
-    return body;
+
+  let candidate = body;
+  for (;;) {
+    try {
+      return JSON.parse(candidate);
+    } catch {
+      const stripped = stripOneTrailingFrameToken(candidate);
+      if (stripped === undefined) {
+        break;
+      }
+      candidate = stripped;
+    }
   }
+
+  const looksLikeJson = /^[{["]/.test(body);
+  if (looksLikeJson) {
+    return undefined;
+  }
+  const scalar = body.replace(TRAILING_CLOSE_TAGS, '').trim();
+  return scalar || undefined;
+}
+
+/** Remove one trailing framing token (plus whitespace), or `undefined` if none matches. */
+function stripOneTrailingFrameToken(value: string): string | undefined {
+  const trimmed = value.trimEnd();
+  for (const token of TRAILING_FRAME_TOKENS) {
+    if (trimmed.endsWith(token)) {
+      return trimmed.slice(0, -token.length);
+    }
+  }
+  return undefined;
 }
 
 //#endregion
