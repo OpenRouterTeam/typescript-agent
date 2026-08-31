@@ -439,4 +439,89 @@ describe('ToolEventBroadcaster', () => {
       });
     });
   });
+  describe('lifecycle compaction (active-consumers)', () => {
+    it('drops backlog once every consumer departs, late joiner starts at watermark', async () => {
+      const broadcaster = new ToolEventBroadcaster<number>('active-consumers');
+      const only = broadcaster.createConsumer();
+      broadcaster.push(1);
+      broadcaster.push(2);
+      expect(await only.next()).toEqual({
+        done: false,
+        value: 1,
+      });
+      expect(await only.next()).toEqual({
+        done: false,
+        value: 2,
+      });
+      await only.return();
+
+      // Nobody is attached: retained history is dropped, so a fresh consumer
+      // starts at the watermark (retention would replay [1, 2] first).
+      broadcaster.push(3);
+      broadcaster.complete();
+      const late = broadcaster.createConsumer();
+      expect(await Array.fromAsync(late)).toEqual([
+        3,
+      ]);
+    });
+
+    it('backlog survives while at least one consumer remains', async () => {
+      const broadcaster = new ToolEventBroadcaster<number>('active-consumers');
+      const fast = broadcaster.createConsumer();
+      const slow = broadcaster.createConsumer();
+      broadcaster.push(1);
+      broadcaster.push(2);
+      expect(await fast.next()).toEqual({
+        done: false,
+        value: 1,
+      });
+      expect(await fast.next()).toEqual({
+        done: false,
+        value: 2,
+      });
+      await fast.return();
+
+      // The slow consumer still reads from position 0.
+      expect(await slow.next()).toEqual({
+        done: false,
+        value: 1,
+      });
+      expect(await slow.next()).toEqual({
+        done: false,
+        value: 2,
+      });
+      broadcaster.complete();
+      expect((await slow.next()).done).toBe(true);
+    });
+
+    it('return() wakes a pending next() instead of hanging', async () => {
+      const broadcaster = new ToolEventBroadcaster<number>('active-consumers');
+      const consumer = broadcaster.createConsumer();
+      broadcaster.push(1);
+      expect(await consumer.next()).toEqual({
+        done: false,
+        value: 1,
+      });
+
+      const pending = consumer.next();
+      await consumer.return();
+      await expect(pending).resolves.toEqual({
+        done: true,
+        value: undefined,
+      });
+    });
+
+    it('throw() rejects a pending next() with a normalized error', async () => {
+      const broadcaster = new ToolEventBroadcaster<number>('active-consumers');
+      const consumer = broadcaster.createConsumer();
+      broadcaster.push(1);
+      await consumer.next();
+
+      const pending = consumer.next();
+      await expect(
+        consumer.throw(new Error('boom')).catch((error: Error) => error),
+      ).resolves.toBeInstanceOf(Error);
+      await expect(pending).rejects.toThrow('boom');
+    });
+  });
 });

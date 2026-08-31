@@ -596,6 +596,15 @@ export interface ManualToolFunction<
   TCtx extends $ZodObject<$ZodShape> = $ZodObject<$ZodShape>,
   TName extends string = string,
 > extends BaseToolFunction<TInput, TCtx, TName> {
+  /**
+   * JSON Schema to serialize for this tool instead of regenerating one from
+   * `inputSchema`. Manual tools are never executed or input-validated by the
+   * SDK, so a caller that already owns a JSON Schema can forward it verbatim
+   * (sanitized of `~`-prefixed metadata keys) and skip the round trip through
+   * Zod, which both costs CPU/allocations and cannot represent constructs like
+   * `anyOf` / `oneOf`.
+   */
+  readonly wireInputSchema?: Readonly<Record<string, unknown>>;
   outputSchema?: TOutput;
 }
 
@@ -1254,7 +1263,7 @@ export interface ToolExecutionResult<T extends Tool> {
         : unknown; // Final result (sent to model)
   preliminaryResults?: T extends ToolWithGenerator<$ZodObject<$ZodShape>, infer E>
     ? zodInfer<E>[]
-    : undefined; // All yielded values from generator
+    : undefined; // Kept for type compatibility; no longer populated
   error?: Error;
 }
 
@@ -1406,6 +1415,7 @@ export type ToolResultEvent<
   source: 'client' | 'mcp';
   result: TResult;
   timestamp: number;
+  /** Kept for type compatibility; the runtime no longer copies every yield here. */
   preliminaryResults?: TPreliminaryResults[];
 };
 

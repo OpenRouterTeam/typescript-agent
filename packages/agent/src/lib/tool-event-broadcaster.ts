@@ -146,7 +146,13 @@ export class ToolEventBroadcaster<T> {
         const consumer = self.consumers.get(consumerId);
         if (consumer) {
           consumer.cancelled = true;
-          consumer.waitingPromise?.resolve();
+          // Wake a pending next() so it does not hang forever on a consumer
+          // that has just been removed; the re-run next() observes the
+          // removal and reports done.
+          if (consumer.waitingPromise) {
+            consumer.waitingPromise.resolve();
+            consumer.waitingPromise = null;
+          }
           self.consumers.delete(consumerId);
           self.trimConsumed();
           self.cleanup();
@@ -161,7 +167,12 @@ export class ToolEventBroadcaster<T> {
         const consumer = self.consumers.get(consumerId);
         if (consumer) {
           consumer.cancelled = true;
-          consumer.waitingPromise?.resolve();
+          // Reject a pending next() with the same error so it does not hang
+          // on a consumer that has just been removed.
+          if (consumer.waitingPromise) {
+            consumer.waitingPromise.reject(e instanceof Error ? e : new Error(String(e)));
+            consumer.waitingPromise = null;
+          }
           self.consumers.delete(consumerId);
           self.trimConsumed();
           self.cleanup();
@@ -176,7 +187,11 @@ export class ToolEventBroadcaster<T> {
   }
 
   private trimConsumed(): void {
-    if (this.streamReplay === 'full' || this.consumers.size === 0) {
+    if (this.streamReplay === 'full') {
+      return;
+    }
+    if (this.consumers.size === 0) {
+      this.dropUnreadBacklog();
       return;
     }
 
@@ -206,6 +221,26 @@ export class ToolEventBroadcaster<T> {
       return;
     }
     this.bufferHead = nextHead;
+  }
+
+  /**
+   * Drop the retained backlog once no consumer can ever read it again.
+   * Before the first consumer joins, the buffer IS the catch-up history late
+   * joiners replay — retain it. Once at least one consumer has existed and
+   * none remain, any future consumer starts at the watermark anyway, so the
+   * retained events would stay pinned until GC for nothing.
+   */
+  private dropUnreadBacklog(): void {
+    if (this.nextConsumerId === 0) {
+      return;
+    }
+    const dropped = this.buffer.length - this.bufferHead;
+    if (dropped === 0) {
+      return;
+    }
+    this.trimOffset += dropped;
+    this.buffer = [];
+    this.bufferHead = 0;
   }
 
   /**
