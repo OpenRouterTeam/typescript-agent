@@ -1098,6 +1098,9 @@ export class ModelResult<
       }
       broadcaster.complete();
     });
+    // Attach an immediate rejection handler so early consumer exit (such as an abort)
+    // does not leave executionPromise as an unhandled promise rejection.
+    void executionPromise.catch(() => {});
     return {
       consumer,
       executionPromise,
