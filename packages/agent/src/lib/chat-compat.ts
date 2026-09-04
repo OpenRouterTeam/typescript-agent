@@ -80,28 +80,70 @@ function contentToString(content: unknown): string {
  * ```
  */
 export function fromChatMessages(messages: models.ChatMessages[]): models.InputsUnion {
-  return messages.map((msg): models.EasyInputMessage | models.FunctionCallOutputItem => {
+  const result: (
+    | models.EasyInputMessage
+    | models.FunctionCallOutputItem
+    | models.OutputFunctionCallItem
+  )[] = [];
+
+  for (const msg of messages) {
     if (isToolResponseMessage(msg)) {
-      return {
+      result.push({
         type: 'function_call_output' as const,
-        callId: msg.toolCallId,
+        callId:
+          msg.toolCallId ??
+          (
+            msg as {
+              tool_call_id?: string;
+            }
+          ).tool_call_id ??
+          '',
         output: contentToString(msg.content),
-      };
+      });
+      continue;
     }
 
     if (isAssistantMessage(msg)) {
-      return {
-        role: mapChatRole('assistant'),
-        content: contentToString(msg.content),
-      };
+      const toolCalls =
+        msg.toolCalls ??
+        (
+          msg as {
+            tool_calls?: models.ChatToolCall[];
+          }
+        ).tool_calls;
+      const content = contentToString(msg.content);
+
+      if (content.length > 0 || !toolCalls?.length) {
+        result.push({
+          role: mapChatRole('assistant'),
+          content,
+        });
+      }
+
+      if (toolCalls?.length) {
+        for (const tc of toolCalls) {
+          result.push({
+            type: 'function_call' as const,
+            callId: tc.id,
+            name: tc.function.name,
+            arguments:
+              typeof tc.function.arguments === 'string'
+                ? tc.function.arguments
+                : JSON.stringify(tc.function.arguments),
+          });
+        }
+      }
+      continue;
     }
 
     // System, user, developer messages
-    return {
+    result.push({
       role: mapChatRole(msg.role),
       content: contentToString(msg.content),
-    };
-  });
+    });
+  }
+
+  return result;
 }
 
 /**
