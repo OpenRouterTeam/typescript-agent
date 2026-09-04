@@ -1,6 +1,7 @@
+import type { OpenRouterCore } from '@openrouter/sdk/core';
 import type * as models from '@openrouter/sdk/models';
-
 import { describe, expect, it } from 'vitest';
+import { callModel } from '../inner-loop/call-model.js';
 import { fromChatMessages, toChatMessage } from './chat-compat.js';
 
 /**
@@ -200,6 +201,195 @@ describe('fromChatMessages', () => {
           ]),
         },
       ]);
+    });
+  });
+
+  describe('assistant message tool calls conversion', () => {
+    it('converts assistant message with toolCalls and null content to function_call item', () => {
+      const messages: models.ChatMessages[] = [
+        {
+          role: 'user',
+          content: 'What is the weather?',
+        },
+        {
+          role: 'assistant',
+          content: null,
+          toolCalls: [
+            {
+              id: 'call_123',
+              type: 'function',
+              function: {
+                name: 'get_weather',
+                arguments: '{"location":"Paris"}',
+              },
+            },
+          ],
+        },
+        {
+          role: 'tool',
+          toolCallId: 'call_123',
+          content: '{"temperature": 20}',
+        },
+      ];
+
+      const result = fromChatMessages(messages);
+
+      expect(result).toEqual([
+        {
+          role: 'user',
+          content: 'What is the weather?',
+        },
+        {
+          type: 'function_call',
+          callId: 'call_123',
+          name: 'get_weather',
+          arguments: '{"location":"Paris"}',
+        },
+        {
+          type: 'function_call_output',
+          callId: 'call_123',
+          output: '{"temperature": 20}',
+        },
+      ]);
+    });
+
+    it('converts assistant message with both content and toolCalls', () => {
+      const messages: models.ChatMessages[] = [
+        {
+          role: 'assistant',
+          content: 'Let me check that for you.',
+          toolCalls: [
+            {
+              id: 'call_123',
+              type: 'function',
+              function: {
+                name: 'get_weather',
+                arguments: '{"location":"Paris"}',
+              },
+            },
+          ],
+        },
+      ];
+
+      const result = fromChatMessages(messages);
+
+      expect(result).toEqual([
+        {
+          role: 'assistant',
+          content: 'Let me check that for you.',
+        },
+        {
+          type: 'function_call',
+          callId: 'call_123',
+          name: 'get_weather',
+          arguments: '{"location":"Paris"}',
+        },
+      ]);
+    });
+
+    it('supports snake_case tool_calls and tool_call_id', () => {
+      const messages = [
+        {
+          role: 'assistant' as const,
+          content: null,
+          tool_calls: [
+            {
+              id: 'call_456',
+              type: 'function' as const,
+              function: {
+                name: 'search',
+                arguments: '{"query":"vitest"}',
+              },
+            },
+          ],
+        },
+        {
+          role: 'tool' as const,
+          tool_call_id: 'call_456',
+          content: 'Found results',
+        },
+      ];
+
+      const result = fromChatMessages(messages as unknown as models.ChatMessages[]);
+
+      expect(result).toEqual([
+        {
+          type: 'function_call',
+          callId: 'call_456',
+          name: 'search',
+          arguments: '{"query":"vitest"}',
+        },
+        {
+          type: 'function_call_output',
+          callId: 'call_456',
+          output: 'Found results',
+        },
+      ]);
+    });
+
+    it('stringifies object arguments on tool calls', () => {
+      const messages = [
+        {
+          role: 'assistant' as const,
+          content: null,
+          toolCalls: [
+            {
+              id: 'call_789',
+              type: 'function' as const,
+              function: {
+                name: 'calculate',
+                arguments: {
+                  a: 1,
+                  b: 2,
+                } as unknown as string,
+              },
+            },
+          ],
+        },
+      ];
+
+      const result = fromChatMessages(messages as unknown as models.ChatMessages[]);
+
+      expect(result).toEqual([
+        {
+          type: 'function_call',
+          callId: 'call_789',
+          name: 'calculate',
+          arguments: JSON.stringify({
+            a: 1,
+            b: 2,
+          }),
+        },
+      ]);
+    });
+
+    it('produces input accepted by callModel without type errors', () => {
+      const chatMessages: models.ChatMessages[] = [
+        {
+          role: 'system',
+          content: 'You are a helpful assistant.',
+        },
+        {
+          role: 'user',
+          content: 'Hello!',
+        },
+        {
+          role: 'assistant',
+          content: 'Hi there! How can I help you?',
+        },
+        {
+          role: 'user',
+          content: 'What is the weather like?',
+        },
+      ];
+
+      const fakeClient = {} as OpenRouterCore;
+      const result = callModel(fakeClient, {
+        model: 'openai/gpt-5-nano',
+        input: fromChatMessages(chatMessages),
+      });
+
+      expect(result).toBeDefined();
     });
   });
 

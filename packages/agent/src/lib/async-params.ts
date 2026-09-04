@@ -82,7 +82,7 @@ type BaseCallModelInput<
     models.ResponsesRequest[K]
   >;
 } & {
-  input: FieldOrAsyncFunction<Item[]> | string;
+  input: FieldOrAsyncFunction<models.InputsUnion | Item[]>;
   tools?: TTools;
   /**
    * Optional filter restricting which tools are exposed to the model for this
