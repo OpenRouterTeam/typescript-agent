@@ -391,7 +391,18 @@ export async function resolveAsyncFunctions<TTools extends readonly Tool[] = rea
     }
   }
 
-  return buildResolvedRequest(resolvedEntries);
+  const resolvedObj = buildResolvedRequest(resolvedEntries);
+
+  if (
+    resolvedObj['model'] === undefined &&
+    Array.isArray(resolvedObj['models']) &&
+    resolvedObj['models'].length > 0 &&
+    typeof resolvedObj['models'][0] === 'string'
+  ) {
+    (resolvedObj as Record<string, unknown>)['model'] = resolvedObj['models'][0];
+  }
+
+  return resolvedObj;
 }
 
 /**

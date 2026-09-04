@@ -5344,6 +5344,14 @@ export class ModelResult<
       ...rest,
     };
     stripToolSetSnapshotMetadata(resolved);
+    if (
+      resolved['model'] === undefined &&
+      Array.isArray(resolved['models']) &&
+      resolved['models'].length > 0 &&
+      typeof resolved['models'][0] === 'string'
+    ) {
+      resolved['model'] = resolved['models'][0];
+    }
     return this.applyResolvedForcedToolChoicePolicy(resolved as ResolvedCallModelInput);
   }
 

@@ -1,7 +1,7 @@
 import type * as models from '@openrouter/sdk/models';
 
 import { describe, expect, it } from 'vitest';
-import { applyNextTurnParamsToRequest } from './next-turn-params.js';
+import { applyNextTurnParamsToRequest, buildNextTurnParamsContext } from './next-turn-params.js';
 
 /**
  * Creates a minimal ResponsesRequest for testing applyNextTurnParamsToRequest.
@@ -196,5 +196,77 @@ describe('applyNextTurnParamsToRequest with allowed_tools', () => {
         'tool_search',
       ]),
     );
+  });
+});
+
+describe('buildNextTurnParamsContext with models fallback', () => {
+  it('defaults model to models[0] when model is undefined', () => {
+    const context = buildNextTurnParamsContext({
+      models: [
+        'mistralai/mistral-small-2603',
+        'mistralai/mistral-large-2512',
+      ],
+      input: 'hello',
+    });
+
+    expect(context.model).toBe('mistralai/mistral-small-2603');
+    expect(context.models).toEqual([
+      'mistralai/mistral-small-2603',
+      'mistralai/mistral-large-2512',
+    ]);
+  });
+
+  it('preserves explicit model when provided', () => {
+    const context = buildNextTurnParamsContext({
+      model: 'anthropic/claude-3',
+      models: [
+        'mistralai/mistral-large-2512',
+      ],
+      input: 'hello',
+    });
+
+    expect(context.model).toBe('anthropic/claude-3');
+    expect(context.models).toEqual([
+      'mistralai/mistral-large-2512',
+    ]);
+  });
+});
+
+describe('applyNextTurnParamsToRequest with models fallback', () => {
+  it('updates model to models[0] when models is updated without model', () => {
+    const request = createBaseRequest({
+      model: 'openai/gpt-4',
+    });
+
+    const result = applyNextTurnParamsToRequest(request, {
+      models: [
+        'mistralai/mistral-small-2603',
+        'mistralai/mistral-large-2512',
+      ],
+    });
+
+    expect(result.model).toBe('mistralai/mistral-small-2603');
+    expect(result.models).toEqual([
+      'mistralai/mistral-small-2603',
+      'mistralai/mistral-large-2512',
+    ]);
+  });
+
+  it('preserves explicit model when both model and models are updated', () => {
+    const request = createBaseRequest({
+      model: 'openai/gpt-4',
+    });
+
+    const result = applyNextTurnParamsToRequest(request, {
+      model: 'anthropic/claude-3',
+      models: [
+        'mistralai/mistral-large-2512',
+      ],
+    });
+
+    expect(result.model).toBe('anthropic/claude-3');
+    expect(result.models).toEqual([
+      'mistralai/mistral-large-2512',
+    ]);
   });
 });
