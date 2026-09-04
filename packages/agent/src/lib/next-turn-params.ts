@@ -22,8 +22,14 @@ export function buildNextTurnParamsContext(
   return {
     input: request.input ?? [],
     toolChoice: request.toolChoice,
-    model: request.model ?? '',
-    models: request.models ?? [],
+    model: request.model ?? request.models?.[0] ?? '',
+    models:
+      request.models ??
+      (request.model
+        ? [
+            request.model,
+          ]
+        : []),
     temperature: request.temperature ?? null,
     maxOutputTokens: request.maxOutputTokens ?? null,
     topP: request.topP ?? null,
@@ -181,8 +187,18 @@ export function applyNextTurnParamsToRequest(
   for (const [key, value] of Object.entries(computedParams)) {
     sanitized[key] = value === null ? undefined : value;
   }
-  return {
+  const nextRequest: models.ResponsesRequest = {
     ...request,
     ...sanitized,
   };
+  if (
+    (nextRequest.model === undefined ||
+      ('models' in computedParams && !('model' in computedParams))) &&
+    Array.isArray(nextRequest.models) &&
+    nextRequest.models.length > 0 &&
+    typeof nextRequest.models[0] === 'string'
+  ) {
+    nextRequest.model = nextRequest.models[0];
+  }
+  return nextRequest;
 }

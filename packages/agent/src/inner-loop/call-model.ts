@@ -158,6 +158,18 @@ export function callModel<
   };
   stripToolSetSnapshotMetadata(finalRequest);
 
+  // If model is not set but models is provided, default model to models[0].
+  // OpenRouter server tools and backend handlers require the primary model
+  // to be populated on the request.
+  if (
+    finalRequest['model'] === undefined &&
+    Array.isArray(finalRequest['models']) &&
+    finalRequest['models'].length > 0 &&
+    typeof finalRequest['models'][0] === 'string'
+  ) {
+    finalRequest['model'] = finalRequest['models'][0];
+  }
+
   if (apiTools !== undefined) {
     finalRequest['tools'] = apiTools;
   }
