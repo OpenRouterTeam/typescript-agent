@@ -76,6 +76,7 @@ import {
   extractToolCallsFromResponse,
   extractToolDeltas,
   itemsStreamHandlers,
+  outputItemsWithoutTruncatedCalls,
   responseHasToolCalls,
   streamTerminationEvents,
   tryExtractCompletionFromBuffer,
@@ -1208,11 +1209,7 @@ export class ModelResult<
       return;
     }
 
-    const outputItems = Array.isArray(response.output)
-      ? response.output
-      : [
-          response.output,
-        ];
+    const outputItems = outputItemsWithoutTruncatedCalls(response);
 
     // Persist pending fresh user items together with the assistant output
     // so they land atomically — if the stream failed before reaching here
@@ -4817,11 +4814,7 @@ export class ModelResult<
 
     const newInput: models.InputsUnion = [
       ...normalizedOriginalInput,
-      ...(Array.isArray(currentResponse.output)
-        ? currentResponse.output
-        : [
-            currentResponse.output,
-          ]),
+      ...outputItemsWithoutTruncatedCalls(currentResponse),
       ...toolResults,
     ];
 
@@ -4897,11 +4890,7 @@ export class ModelResult<
       ...this.resolvedRequest,
       input: [
         ...normalizedOriginalInput,
-        ...(Array.isArray(response.output)
-          ? response.output
-          : [
-              response.output,
-            ]),
+        ...outputItemsWithoutTruncatedCalls(response),
       ],
     };
   }
@@ -5127,11 +5116,7 @@ export class ModelResult<
 
     const newInput: models.InputsUnion = [
       ...normalizedOriginalInput,
-      ...(Array.isArray(currentResponse.output)
-        ? currentResponse.output
-        : [
-            currentResponse.output,
-          ]),
+      ...outputItemsWithoutTruncatedCalls(currentResponse),
       ...toolOutputs,
       ...(typeof finalDirective === 'string' && finalDirective.length > 0
         ? [
