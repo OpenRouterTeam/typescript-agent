@@ -806,13 +806,32 @@ export function extractTextFromResponse(response: models.OpenResponsesResult): s
 }
 
 /**
+ * Whether the provider stopped this response at `max_output_tokens`. The
+ * `function_call` items on such a response carry whatever argument prefix fit
+ * in the budget, so they are not calls the model made: executing them parses a
+ * fragment, and re-requesting on the same budget truncates the same way.
+ */
+function isTruncatedAtMaxOutputTokens(response: models.OpenResponsesResult): boolean {
+  return (
+    response.status === 'incomplete' && response.incompleteDetails?.reason === 'max_output_tokens'
+  );
+}
+
+/**
  * Extract all tool calls from a completed response
  * Returns parsed tool calls with arguments as objects (not JSON strings)
+ *
+ * A response truncated at `max_output_tokens` yields no tool calls: see
+ * `isTruncatedAtMaxOutputTokens`.
  */
 export function extractToolCallsFromResponse(
   response: models.OpenResponsesResult,
 ): ParsedToolCall<Tool>[] {
   const toolCalls: ParsedToolCall<Tool>[] = [];
+
+  if (isTruncatedAtMaxOutputTokens(response)) {
+    return toolCalls;
+  }
 
   for (const item of response.output) {
     if (isFunctionCallItem(item)) {
@@ -959,9 +978,14 @@ export async function* buildToolCallStream(
 }
 
 /**
- * Check if a response contains any tool calls
+ * Check if a response contains any tool calls the loop should execute. A
+ * response truncated at `max_output_tokens` has none, even when its output
+ * carries a cut-off `function_call` item.
  */
 export function responseHasToolCalls(response: models.OpenResponsesResult): boolean {
+  if (isTruncatedAtMaxOutputTokens(response)) {
+    return false;
+  }
   return response.output.some((item) => 'type' in item && item.type === 'function_call');
 }
 
