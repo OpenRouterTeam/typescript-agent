@@ -805,6 +805,12 @@ export function extractTextFromResponse(response: models.OpenResponsesResult): s
   return '';
 }
 
+/**
+ * Whether the provider stopped this response at `max_output_tokens`. The
+ * `function_call` items on such a response carry whatever argument prefix fit
+ * in the budget, so they are not calls the model made: executing them parses a
+ * fragment, and re-requesting on the same budget truncates the same way.
+ */
 function isTruncatedAtMaxOutputTokens(response: models.OpenResponsesResult): boolean {
   return (
     response.status === 'incomplete' && response.incompleteDetails?.reason === 'max_output_tokens'
@@ -812,54 +818,22 @@ function isTruncatedAtMaxOutputTokens(response: models.OpenResponsesResult): boo
 }
 
 /**
- * Whether a `function_call` on a `max_output_tokens`-truncated response was
- * cut off. The provider marks the item `incomplete`; when it omits the status
- * the arguments decide, since a fragment cannot parse.
- */
-function isTruncatedFunctionCall(item: models.OutputFunctionCallItem): boolean {
-  if (item.status !== undefined) {
-    return item.status !== 'completed';
-  }
-  try {
-    JSON.parse(item.arguments.trim() || '{}');
-    return false;
-  } catch {
-    return true;
-  }
-}
-
-/**
- * The response's output items minus any `function_call` the provider cut off
- * at `max_output_tokens`. Such an item carries whatever argument prefix fit in
- * the budget: it is not a call the model made, executing it parses a fragment,
- * and echoing it into the next request leaves a call with no output. Calls
- * that completed before the cut-off are kept and execute normally. On any
- * other response this is `response.output` unchanged.
- */
-export function outputItemsWithoutTruncatedCalls(
-  response: models.OpenResponsesResult,
-): models.OpenResponsesResult['output'] {
-  if (!isTruncatedAtMaxOutputTokens(response)) {
-    return response.output;
-  }
-  return response.output.filter(
-    (item) => !isFunctionCallItem(item) || !isTruncatedFunctionCall(item),
-  );
-}
-
-/**
  * Extract all tool calls from a completed response
  * Returns parsed tool calls with arguments as objects (not JSON strings)
  *
- * Calls cut off at `max_output_tokens` are excluded: see
- * `outputItemsWithoutTruncatedCalls`.
+ * A response truncated at `max_output_tokens` yields no tool calls: see
+ * `isTruncatedAtMaxOutputTokens`.
  */
 export function extractToolCallsFromResponse(
   response: models.OpenResponsesResult,
 ): ParsedToolCall<Tool>[] {
   const toolCalls: ParsedToolCall<Tool>[] = [];
 
-  for (const item of outputItemsWithoutTruncatedCalls(response)) {
+  if (isTruncatedAtMaxOutputTokens(response)) {
+    return toolCalls;
+  }
+
+  for (const item of response.output) {
     if (isFunctionCallItem(item)) {
       try {
         const trimmedArgs = item.arguments.trim();
@@ -1005,13 +979,14 @@ export async function* buildToolCallStream(
 
 /**
  * Check if a response contains any tool calls the loop should execute. A
- * `function_call` cut off at `max_output_tokens` does not count: see
- * `outputItemsWithoutTruncatedCalls`.
+ * response truncated at `max_output_tokens` has none, even when its output
+ * carries a cut-off `function_call` item.
  */
 export function responseHasToolCalls(response: models.OpenResponsesResult): boolean {
-  return outputItemsWithoutTruncatedCalls(response).some(
-    (item) => 'type' in item && item.type === 'function_call',
-  );
+  if (isTruncatedAtMaxOutputTokens(response)) {
+    return false;
+  }
+  return response.output.some((item) => 'type' in item && item.type === 'function_call');
 }
 
 /**
