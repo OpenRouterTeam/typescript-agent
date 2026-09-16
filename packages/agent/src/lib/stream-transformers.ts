@@ -985,6 +985,12 @@ export async function* buildToolCallStream(
  * Check if a response contains any tool calls the loop should execute. A
  * response truncated at `max_output_tokens` has none, even when its output
  * carries a cut-off `function_call` item.
+ *
+ * Scope: this and `extractToolCallsFromResponse` decide execution on the
+ * completed response. `buildToolCallStream` (`getToolCallsStream()`) is a
+ * consumer view that yields each call as its `output_item.done` arrives,
+ * before the terminal event says whether the turn was cut off, so it still
+ * reports the model's emitted calls, truncated one included.
  */
 export function responseHasToolCalls(response: models.OpenResponsesResult): boolean {
   if (isTruncatedAtMaxOutputTokens(response)) {
