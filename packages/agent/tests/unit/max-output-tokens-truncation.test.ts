@@ -23,7 +23,18 @@ import { ToolType } from '../../src/lib/tool-types.js';
  * item is present but its arguments are a fragment. The loop must treat this
  * as the end of the run, not as a call to execute or a reason to request again.
  */
-function truncatedToolCallResponse(): models.OpenResponsesResult {
+function truncatedToolCallResponse(
+  output: models.OpenResponsesResult['output'] = [
+    {
+      type: 'function_call',
+      id: 'fc_1',
+      callId: 'call_1',
+      name: 'run_shell',
+      arguments: '{"commands":',
+      status: 'incomplete',
+    },
+  ],
+): models.OpenResponsesResult {
   return {
     id: 'resp_truncated',
     object: 'response',
@@ -35,16 +46,7 @@ function truncatedToolCallResponse(): models.OpenResponsesResult {
       reason: 'max_output_tokens',
     },
     error: null,
-    output: [
-      {
-        type: 'function_call',
-        id: 'fc_1',
-        callId: 'call_1',
-        name: 'run_shell',
-        arguments: '{"commands":',
-        status: 'incomplete',
-      },
-    ],
+    output,
     usage: {
       inputTokens: 4529,
       inputTokensDetails: {
@@ -66,6 +68,38 @@ function truncatedToolCallResponse(): models.OpenResponsesResult {
     toolChoice: 'auto',
     parallelToolCalls: false,
   } as models.OpenResponsesResult;
+}
+
+/**
+ * The same cut-off after a parallel batch: three weather calls completed
+ * before the budget ran out inside the fourth call. The batch is one plan;
+ * running the three would leave the model a result set with a silent hole.
+ */
+function truncatedBatchResponse(): models.OpenResponsesResult {
+  return truncatedToolCallResponse([
+    ...[
+      'Paris',
+      'London',
+      'Tokyo',
+    ].map((city, index) => ({
+      type: 'function_call' as const,
+      id: `fc_weather_${index}`,
+      callId: `call_weather_${index}`,
+      name: 'get_weather',
+      arguments: JSON.stringify({
+        city,
+      }),
+      status: 'completed' as const,
+    })),
+    {
+      type: 'function_call',
+      id: 'fc_shell',
+      callId: 'call_shell',
+      name: 'run_shell',
+      arguments: '{"commands":',
+      status: 'incomplete',
+    },
+  ]);
 }
 
 const client = {} as OpenRouterCore;
@@ -121,5 +155,66 @@ describe('max_output_tokens truncation', () => {
     expect(mockBetaResponsesSend).toHaveBeenCalledTimes(1);
     expect(response.id).toBe('resp_truncated');
     expect(response.status).toBe('incomplete');
+  });
+
+  it('does not execute the calls that completed before the cut-off either', async () => {
+    const executed: unknown[] = [];
+    mockBetaResponsesSend.mockResolvedValue({
+      ok: true,
+      value: truncatedBatchResponse(),
+    });
+
+    const result = callModel(client, {
+      model: 'test-model',
+      input: 'Weather in three cities, then run echo hello.',
+      stopWhen: stepCountIs(3),
+      tools: [
+        {
+          type: ToolType.Function,
+          function: {
+            name: 'get_weather',
+            description: 'Get the weather.',
+            inputSchema: z.object({
+              city: z.string(),
+            }),
+            execute: async (params: { city: string }) => {
+              executed.push(params);
+              return {
+                temperature: 22,
+              };
+            },
+          },
+        },
+        {
+          type: ToolType.Function,
+          function: {
+            name: 'run_shell',
+            description: 'Run shell commands.',
+            inputSchema: z.object({
+              commands: z.array(z.string()),
+            }),
+            execute: async (params: { commands: string[] }) => {
+              executed.push(params);
+              return {
+                ok: true,
+              };
+            },
+          },
+        },
+      ] as const,
+    });
+
+    const response = await result.getResponse();
+
+    expect(executed).toEqual([]);
+    expect(mockBetaResponsesSend).toHaveBeenCalledTimes(1);
+    expect(response.status).toBe('incomplete');
+    // The caller gets the whole turn, cut-off item included, to resume from.
+    expect(response.output.map((item) => ('callId' in item ? item.callId : item.type))).toEqual([
+      'call_weather_0',
+      'call_weather_1',
+      'call_weather_2',
+      'call_shell',
+    ]);
   });
 });

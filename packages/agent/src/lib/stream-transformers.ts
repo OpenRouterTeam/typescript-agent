@@ -807,9 +807,13 @@ export function extractTextFromResponse(response: models.OpenResponsesResult): s
 
 /**
  * Whether the provider stopped this response at `max_output_tokens`. The
- * `function_call` items on such a response carry whatever argument prefix fit
- * in the budget, so they are not calls the model made: executing them parses a
- * fragment, and re-requesting on the same budget truncates the same way.
+ * `function_call` items on such a response are an unfinished batch: the model
+ * asked for the set together, and the last one carries whatever argument
+ * prefix fit in the budget. Executing the complete ones would hand the model a
+ * result set with a silent hole, and spend side effects on a turn that
+ * truncates the same way on the same budget, so none of them run. The caller
+ * sees every item and `incomplete_details`, and resumes once the budget is
+ * raised.
  */
 function isTruncatedAtMaxOutputTokens(response: models.OpenResponsesResult): boolean {
   return (
