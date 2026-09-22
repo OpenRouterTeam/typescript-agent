@@ -806,13 +806,36 @@ export function extractTextFromResponse(response: models.OpenResponsesResult): s
 }
 
 /**
+ * Whether the provider stopped this response at `max_output_tokens`. The
+ * `function_call` items on such a response are an unfinished batch: the model
+ * asked for the set together, and the last one carries whatever argument
+ * prefix fit in the budget. Executing the complete ones would hand the model a
+ * result set with a silent hole, and spend side effects on a turn that
+ * truncates the same way on the same budget, so none of them run. The caller
+ * sees every item and `incomplete_details`, and resumes once the budget is
+ * raised.
+ */
+function isTruncatedAtMaxOutputTokens(response: models.OpenResponsesResult): boolean {
+  return (
+    response.status === 'incomplete' && response.incompleteDetails?.reason === 'max_output_tokens'
+  );
+}
+
+/**
  * Extract all tool calls from a completed response
  * Returns parsed tool calls with arguments as objects (not JSON strings)
+ *
+ * A response truncated at `max_output_tokens` yields no tool calls: see
+ * `isTruncatedAtMaxOutputTokens`.
  */
 export function extractToolCallsFromResponse(
   response: models.OpenResponsesResult,
 ): ParsedToolCall<Tool>[] {
   const toolCalls: ParsedToolCall<Tool>[] = [];
+
+  if (isTruncatedAtMaxOutputTokens(response)) {
+    return toolCalls;
+  }
 
   for (const item of response.output) {
     if (isFunctionCallItem(item)) {
@@ -959,9 +982,20 @@ export async function* buildToolCallStream(
 }
 
 /**
- * Check if a response contains any tool calls
+ * Check if a response contains any tool calls the loop should execute. A
+ * response truncated at `max_output_tokens` has none, even when its output
+ * carries a cut-off `function_call` item.
+ *
+ * Scope: this and `extractToolCallsFromResponse` decide execution on the
+ * completed response. `buildToolCallStream` (`getToolCallsStream()`) is a
+ * consumer view that yields each call as its `output_item.done` arrives,
+ * before the terminal event says whether the turn was cut off, so it still
+ * reports the model's emitted calls, truncated one included.
  */
 export function responseHasToolCalls(response: models.OpenResponsesResult): boolean {
+  if (isTruncatedAtMaxOutputTokens(response)) {
+    return false;
+  }
   return response.output.some((item) => 'type' in item && item.type === 'function_call');
 }
 
