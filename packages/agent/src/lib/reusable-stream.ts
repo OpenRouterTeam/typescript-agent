@@ -166,6 +166,13 @@ export class ReusableReadableStream<T> {
         const consumer = self.consumers.get(consumerId);
         if (consumer) {
           consumer.cancelled = true;
+          // Wake a pending next() so it does not hang forever on a consumer
+          // that has just been removed; the re-run next() observes the
+          // removal and reports done.
+          if (consumer.waitingPromise) {
+            consumer.waitingPromise.resolve();
+            consumer.waitingPromise = null;
+          }
           self.consumers.delete(consumerId);
           self.trimConsumed();
         }
@@ -179,6 +186,12 @@ export class ReusableReadableStream<T> {
         const consumer = self.consumers.get(consumerId);
         if (consumer) {
           consumer.cancelled = true;
+          // Reject a pending next() with the same error so it does not hang
+          // on a consumer that has just been removed.
+          if (consumer.waitingPromise) {
+            consumer.waitingPromise.reject(e instanceof Error ? e : new Error(String(e)));
+            consumer.waitingPromise = null;
+          }
           self.consumers.delete(consumerId);
           self.trimConsumed();
         }
@@ -192,7 +205,11 @@ export class ReusableReadableStream<T> {
   }
 
   private trimConsumed(): void {
-    if (this.streamReplay === 'full' || this.consumers.size === 0) {
+    if (this.streamReplay === 'full') {
+      return;
+    }
+    if (this.consumers.size === 0) {
+      this.dropUnreadBacklog();
       return;
     }
 
@@ -222,6 +239,28 @@ export class ReusableReadableStream<T> {
       return;
     }
     this.bufferHead = nextHead;
+  }
+
+  /**
+   * Drop the retained backlog once no consumer can ever read it again.
+   * Before the first consumer joins, the backlog IS the catch-up history late
+   * joiners replay — retain it. Once at least one consumer has existed and
+   * none remain, any future consumer starts at the watermark anyway, so the
+   * retained bytes would stay pinned until GC for nothing. `findLastBuffered`
+   * callers that must observe terminal events after teardown should capture
+   * them via `onValue` instead of relying on the backlog surviving.
+   */
+  private dropUnreadBacklog(): void {
+    if (this.nextConsumerId === 0) {
+      return;
+    }
+    const dropped = this.buffer.length - this.bufferHead;
+    if (dropped === 0) {
+      return;
+    }
+    this.trimOffset += dropped;
+    this.buffer = [];
+    this.bufferHead = 0;
   }
 
   /**
@@ -313,10 +352,19 @@ export class ReusableReadableStream<T> {
     }
     this.consumers.clear();
 
+    // Cancellation is terminal: every consumer is gone, so nobody can read
+    // the buffered backlog anymore. Drop it instead of pinning it until GC.
+    this.dropUnreadBacklog();
     // Cancel the source stream
     if (this.sourceReader) {
       await this.cancelSourceReader(this.sourceReader);
     }
+    /*
+     * The pump may have landed one in-flight chunk between the synchronous
+     * section above and reader cancellation — sweep once more so the buffer
+     * is empty regardless of microtask interleaving.
+     */
+    this.dropUnreadBacklog();
   }
 }
 

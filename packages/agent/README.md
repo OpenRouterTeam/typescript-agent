@@ -221,6 +221,14 @@ const analysisTool = tool({
 const confirmTool = tool({
   name: 'confirm_action',
   inputSchema: z.object({ action: z.string() }),
+  // Forward an existing JSON Schema without converting it through Zod.
+  wireInputSchema: {
+    type: 'object',
+    properties: {
+      action: { type: 'string' },
+    },
+    required: ['action'],
+  },
   execute: false,
 });
 ```

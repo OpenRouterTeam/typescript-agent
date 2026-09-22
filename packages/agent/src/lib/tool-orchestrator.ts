@@ -186,7 +186,6 @@ export function toolResultsToMap(results: ToolExecutionResult<Tool>[]): Map<
   string,
   {
     result: unknown;
-    preliminaryResults?: unknown[];
   }
 > {
   const map = new Map();
@@ -194,7 +193,6 @@ export function toolResultsToMap(results: ToolExecutionResult<Tool>[]): Map<
   for (const result of results) {
     map.set(result.toolCallId, {
       result: result.result,
-      preliminaryResults: result.preliminaryResults,
     });
   }
 
@@ -211,9 +209,7 @@ export function summarizeToolExecutions(results: ToolExecutionResult<Tool>[]): s
     if (result.error) {
       lines.push(`❌ ${result.toolName} (${result.toolCallId}): ERROR - ${result.error.message}`);
     } else {
-      const prelimCount = result.preliminaryResults?.length ?? 0;
-      const prelimInfo = prelimCount > 0 ? ` (${prelimCount} preliminary results)` : '';
-      lines.push(`✅ ${result.toolName} (${result.toolCallId}): SUCCESS${prelimInfo}`);
+      lines.push(`✅ ${result.toolName} (${result.toolCallId}): SUCCESS`);
     }
   }
 

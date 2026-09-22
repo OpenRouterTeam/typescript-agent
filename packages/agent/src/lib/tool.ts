@@ -150,6 +150,8 @@ type ManualToolConfig<
   name: TName;
   description?: string;
   inputSchema: TInput;
+  /** JSON Schema to serialize instead of regenerating `inputSchema`; manual tools only. */
+  readonly wireInputSchema?: Readonly<Record<string, unknown>>;
   /** Strict schema adherence for tool-call generation — see {@link BaseToolFunction.strict} */
   strict?: boolean | null;
   /** Zod schema declaring the context data this tool needs */
@@ -243,19 +245,27 @@ type ToolConfigWithSharedContext<
   timeoutMs?: number;
   /** Max simultaneous in-flight executions of this tool across the run */
   maxConcurrency?: number;
-  execute:
-    | ((
-        params: Record<string, unknown>,
-        context?: ToolExecuteContext<TName, ContextFromSchema<TCtx>, TShared>,
-      ) => unknown)
-    | ((
-        params: Record<string, unknown>,
-        context?: ToolExecuteContext<TName, ContextFromSchema<TCtx>, TShared>,
-      ) => AsyncGenerator<unknown>)
-    | false;
   /** Convert tool execution output to model-facing output */
   toModelOutput?: ToModelOutputFunction<Record<string, unknown>, unknown>;
-};
+} & (
+  | {
+      execute: false;
+      /** JSON Schema to serialize instead of regenerating `inputSchema`; manual tools only. */
+      readonly wireInputSchema?: Readonly<Record<string, unknown>>;
+    }
+  | {
+      execute:
+        | ((
+            params: Record<string, unknown>,
+            context?: ToolExecuteContext<TName, ContextFromSchema<TCtx>, TShared>,
+          ) => unknown)
+        | ((
+            params: Record<string, unknown>,
+            context?: ToolExecuteContext<TName, ContextFromSchema<TCtx>, TShared>,
+          ) => AsyncGenerator<unknown>);
+      readonly wireInputSchema?: never;
+    }
+);
 
 /**
  * Shared fields for unified `run` tool configs.
@@ -672,6 +682,14 @@ export function tool(
 
     if (config.strict !== undefined) {
       fn.strict = config.strict;
+    }
+
+    if ('wireInputSchema' in config && config.wireInputSchema !== undefined) {
+      (
+        fn as {
+          wireInputSchema?: unknown;
+        }
+      ).wireInputSchema = config.wireInputSchema;
     }
 
     return {

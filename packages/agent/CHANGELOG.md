@@ -1,5 +1,61 @@
 # @openrouter/agent
 
+## 0.11.0
+
+### Minor Changes
+
+- [#109](https://github.com/OpenRouterTeam/typescript-agent/pull/109) [`17418f7`](https://github.com/OpenRouterTeam/typescript-agent/commit/17418f7c469e09efd9d61980315b9727b1d11ff6) Thanks [@devin-ai-integration](https://github.com/apps/devin-ai-integration)! - Add opt-in replay compaction and terminal response-event handling for streamed model calls.
+
+  ```ts
+  import { callModel } from "@openrouter/agent";
+
+  const result = callModel(client, {
+    model: "openai/gpt-4o",
+    input: "Summarize this document.",
+    // Retain only the history needed by currently attached consumers.
+    streamReplay: "active-consumers",
+  });
+  ```
+
+### Patch Changes
+
+- [#94](https://github.com/OpenRouterTeam/typescript-agent/pull/94) [`c610b6e`](https://github.com/OpenRouterTeam/typescript-agent/commit/c610b6ef0b880083821afd588717d635943c07ee) Thanks [@LukasParke](https://github.com/LukasParke)! - Fix two ways the tool-approval gate could be bypassed.
+
+  **`allowFinalResponse` executed pending tool calls with no approval check.** When a `stopWhen` condition halted the loop on a turn that still carried tool calls, the final-response path ran those calls directly — skipping the approval gate the normal loop applies on every round. A tool marked `requireApproval: true` (or gated by a predicate) would execute unguarded, and because the `PermissionRequest` hook's deny bookkeeping lives inside the approval check, hook-based `deny` never fired on this path either. That path now runs the same check as the in-loop call sites, so the run pauses with `status: 'awaiting_approval'` and the gated calls on `pendingToolCalls` instead of executing them.
+
+  **Function-based `requireApproval` received unvalidated arguments.** Tool-level and call-level predicates were called with the raw JSON-parsed tool arguments, while `execute` receives the arguments _after_ the tool's Zod `inputSchema` runs. Any default, coercion, or transform in the schema made them disagree — e.g. with `inputSchema: z.object({ dangerous: z.boolean().default(true) })`, a model emitting `{}` showed a predicate `dangerous: undefined` (no approval required) and then executed with `dangerous: true`. Predicates now see a parsed copy, so they decide on exactly what `execute` will receive without mutating the original executable call or parsing transformed output a second time. `PreToolUse` now runs before every auto-resolvable call is partitioned, so approval hooks and persisted pending calls see its effective arguments. Pending calls record an additive marker when preparation ran, preventing a resumed `ModelResult` from applying the hook twice while legacy state without the marker retains its prior behavior. Call-level checks remain unconditional and receive raw arguments when parsing fails; tool-level checks fail closed when schema parsing fails because a hook may later repair the input.
+
+  **Duplicate approval prompts for the same tool call.** The approval gate could run more than once over the same response — e.g. the pre-loop check plus the post-loop `allowFinalResponse` gate when a stop condition fired on the first iteration — re-emitting the `PermissionRequest` hook and re-running `requireApproval` predicates for calls that were already resolved. Each call occurrence in a response is now gated at most once per run, including responses containing duplicate call IDs and arguments.
+
+  ```ts
+  import { z } from "zod/v4";
+  import { tool, type PendingToolCall } from "@openrouter/agent";
+
+  const deploy = tool({
+    name: "deploy",
+    inputSchema: z.object({
+      environment: z.enum(["staging", "production"]).default("production"),
+    }),
+    requireApproval: ({ environment }) => environment === "production",
+    execute: async ({ environment }) => deployEnvironment(environment),
+  });
+
+  // `requireApproval` sees the normalized default: { environment: 'production' }.
+  // Persist this additive marker when PreToolUse already produced effective args.
+  const pending: PendingToolCall<typeof deploy> = {
+    id: "call_deploy",
+    name: "deploy",
+    arguments: { environment: "production" },
+    preToolUseApplied: true,
+  };
+  ```
+
+- [#112](https://github.com/OpenRouterTeam/typescript-agent/pull/112) [`8a922b5`](https://github.com/OpenRouterTeam/typescript-agent/commit/8a922b5360addf6b5670c7fc4c87780f4fdfa071) Thanks [@LukasParke](https://github.com/LukasParke)! - Add a `./reusable-stream` subpath export so consumers can import `ReusableReadableStream` directly (`@openrouter/agent/reusable-stream`) instead of going through the root barrel or patching the package. Mirrors the existing `./tool-event-broadcaster` entry; both replay classes are the units consumers need when asserting stream-retention behavior against the published package.
+
+- [#111](https://github.com/OpenRouterTeam/typescript-agent/pull/111) [`7416059`](https://github.com/OpenRouterTeam/typescript-agent/commit/7416059a3644af577ef2969b932a6614771e0c43) Thanks [@w0nche0l](https://github.com/w0nche0l)! - Remove the runtime `@openrouter/sdk/models` import from `turn-context.ts`. The namespace import existed only to read `EasyInputMessageRoleUser.User` (the string `'user'`), but it made every consumer that statically imports `@openrouter/agent/tool` (via `agent-tool` → `conversation-state` → `turn-context`) evaluate the entire Speakeasy models barrel — hundreds of modules of top-level Zod schema construction — at module load. On Cloudflare Workers this added ~200ms of startup CPU per worker and pushed large workers past the 1s script-validation ceiling (error 10021).
+
+  The import is now type-only (erased at compile time) and the role literal is inlined, keeping behavior identical. A new unit test walks the static runtime import graph of the hot subpaths (`/tool`, `/tool-types`, `/stop-conditions`) and fails if any of them ever reaches `@openrouter/sdk` at runtime again.
+
 ## 0.10.0
 
 ### Minor Changes

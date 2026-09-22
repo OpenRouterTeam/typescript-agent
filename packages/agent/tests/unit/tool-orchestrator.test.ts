@@ -437,12 +437,8 @@ describe('executeToolLoop', () => {
       result: {
         done: true,
       },
-      preliminaryResults: [
-        {
-          pct: 50,
-        },
-      ],
     });
+    expect(result.toolExecutionResults[0]?.preliminaryResults).toBeUndefined();
   });
 
   it('applies nextTurnParams input changes to the conversation', async () => {
@@ -551,9 +547,6 @@ describe('toolResultsToMap', () => {
       makeResult({
         toolCallId: 'b',
         result: 2,
-        preliminaryResults: [
-          'p',
-        ],
       }),
     ];
 
@@ -561,13 +554,9 @@ describe('toolResultsToMap', () => {
 
     expect(map.get('a')).toEqual({
       result: 1,
-      preliminaryResults: undefined,
     });
     expect(map.get('b')).toEqual({
       result: 2,
-      preliminaryResults: [
-        'p',
-      ],
     });
     expect(map.size).toBe(2);
   });
@@ -587,10 +576,6 @@ describe('summarizeToolExecutions', () => {
       makeResult({
         toolName: 'chatty',
         toolCallId: 'b',
-        preliminaryResults: [
-          1,
-          2,
-        ],
       }),
       makeResult({
         toolName: 'bad',
@@ -603,7 +588,7 @@ describe('summarizeToolExecutions', () => {
     expect(summary).toBe(
       [
         '✅ good (a): SUCCESS',
-        '✅ chatty (b): SUCCESS (2 preliminary results)',
+        '✅ chatty (b): SUCCESS',
         '❌ bad (c): ERROR - nope',
       ].join('\n'),
     );
