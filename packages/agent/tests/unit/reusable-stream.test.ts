@@ -209,4 +209,33 @@ describe('ReusableReadableStream', () => {
     expect((await fresh.next()).done).toBe(true);
     // No source.close(): cancel() already terminated the source stream.
   });
+
+  it('active-consumers: a consumer created while cancel() awaits the source reader is done', async () => {
+    const source = controlledStream<number>();
+    const stream = new ReusableReadableStream<number>(source.stream, {
+      streamReplay: 'active-consumers',
+    });
+    const first = stream.createConsumer();
+    await Promise.resolve();
+    source.push(1);
+
+    /*
+     * The pump has already read a chunk that lands in the buffer while
+     * cancel() awaits sourceReader.cancel(), so the late consumer is created
+     * between the two backlog sweeps.
+     */
+    const cancelPromise = stream.cancel();
+    const late = stream.createConsumer();
+    await cancelPromise;
+
+    expect(await first.next()).toEqual({
+      done: true,
+      value: undefined,
+    });
+    expect(await late.next()).toEqual({
+      done: true,
+      value: undefined,
+    });
+    expect(stream.findLastBuffered(() => true)).toBeUndefined();
+  });
 });

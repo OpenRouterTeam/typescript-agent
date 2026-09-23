@@ -28,6 +28,7 @@ export class ReusableReadableStream<T> {
   private sourceComplete = false;
   private sourceError: Error | null = null;
   private pumpStarted = false;
+  private cancelled = false;
   private sourceCancelPromise: Promise<void> | null = null;
   private readonly streamReplay: StreamReplay;
   private readonly onValue: ((value: T) => void) | undefined;
@@ -73,20 +74,22 @@ export class ReusableReadableStream<T> {
    * Create a new consumer that can independently iterate over the stream.
    * Full-replay consumers start at position 0. Active-consumer replay starts
    * at the current trim watermark. Multiple attached consumers advance
-   * independently in either mode.
+   * independently in either mode. Consumers created after `cancel()` are
+   * already done.
    */
   createConsumer(): AsyncIterableIterator<T> {
     const consumerId = this.nextConsumerId++;
-    const state: ConsumerState = {
-      position: this.trimOffset,
-      waitingPromise: null,
-      cancelled: false,
-    };
-    this.consumers.set(consumerId, state);
+    if (!this.cancelled) {
+      this.consumers.set(consumerId, {
+        position: this.trimOffset,
+        waitingPromise: null,
+        cancelled: false,
+      });
 
-    // Start pumping the source stream if not already started
-    if (!this.pumpStarted) {
-      this.startPump();
+      // Start pumping the source stream if not already started
+      if (!this.pumpStarted) {
+        this.startPump();
+      }
     }
 
     // eslint-disable-next-line @typescript-eslint/no-this-alias
@@ -343,6 +346,7 @@ export class ReusableReadableStream<T> {
    * Cancel the source stream and all consumers
    */
   async cancel(): Promise<void> {
+    this.cancelled = true;
     // Cancel all consumers
     for (const consumer of this.consumers.values()) {
       consumer.cancelled = true;
