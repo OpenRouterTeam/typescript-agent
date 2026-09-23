@@ -210,6 +210,27 @@ describe('ReusableReadableStream', () => {
     // No source.close(): cancel() already terminated the source stream.
   });
 
+  it('cancel() before the first consumer cancels the source and later consumers are done', async () => {
+    let sourceCancelled = false;
+    const source = new ReadableStream<number>({
+      cancel(): void {
+        sourceCancelled = true;
+      },
+    });
+    const stream = new ReusableReadableStream<number>(source);
+
+    await stream.cancel();
+
+    expect(sourceCancelled).toBe(true);
+    expect(source.locked).toBe(false);
+    await expect(source.getReader().read()).resolves.toEqual({
+      done: true,
+      value: undefined,
+    });
+    expect((await stream.createConsumer().next()).done).toBe(true);
+    await stream.cancel();
+  });
+
   it('active-consumers: a consumer created while cancel() awaits the source reader is done', async () => {
     const source = controlledStream<number>();
     const stream = new ReusableReadableStream<number>(source.stream, {
