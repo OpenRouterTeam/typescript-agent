@@ -4983,11 +4983,10 @@ export class ModelResult<
       }
     }
 
-    // Drain budget exhausted with work still in flight: cut it loose.
     if (registry.hasInFlight()) {
       registry.abortAll('Async tool drain budget exhausted at run end');
-      await this.dropSettledTasks();
     }
+    await this.dropSettledTasks();
 
     return response;
   }
