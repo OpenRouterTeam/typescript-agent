@@ -1705,8 +1705,10 @@ describe('allowFinalResponse path enforces the approval gate (#54)', () => {
               target: 'prod',
             }),
           ),
+          // Identical name and arguments; the call id must still be unique,
+          // or the batch is refused before any gate runs.
           makeFunctionCallItem(
-            'call_duplicate',
+            'call_duplicate_2',
             'danger',
             JSON.stringify({
               target: 'prod',

@@ -374,16 +374,21 @@ describe('simulated LLM repeating a distinct-argument fan-out', () => {
 });
 
 describe('simulated LLM emitting duplicate call ids', () => {
-  it('a repeat sharing its id with a varying sibling is still detected', async () => {
+  it('a repeat sharing its id with a varying sibling is refused before it can evade detection', async () => {
     /*
      * Call ids are model-emitted; nothing upstream enforces uniqueness. The
      * loop-key cache is keyed by id, and last-write-wins aliasing meant the
      * first call's checkpoint read the SECOND call's key material — its true
      * fingerprint was never recorded, so `(id=X, read a), (id=X, read b_i)`
      * each round evaded the per-call detector for `a` entirely (measured:
-     * zero detections in four rounds). A colliding id now poisons its cache
-     * entry and both calls fall through to per-call resolution.
+     * zero detections in four rounds). A colliding id poisons its cache
+     * entry, and the run loop now refuses an executable batch with a
+     * repeated id before the doom-loop round is declared, so neither call
+     * runs and the evasion pattern never gets a second round.
      */
+    const readExecute = vi.fn(async ({ path }: { path: string }) => ({
+      content: path,
+    }));
     const readTool = tool({
       name: 'read',
       inputSchema: z.object({
@@ -392,9 +397,7 @@ describe('simulated LLM emitting duplicate call ids', () => {
       outputSchema: z.object({
         content: z.string(),
       }),
-      execute: async ({ path }) => ({
-        content: path,
-      }),
+      execute: readExecute,
     });
     const detections: DoomLoopDetectedPayload[] = [];
     const hooks = new HooksManager();
@@ -428,22 +431,21 @@ describe('simulated LLM emitting duplicate call ids', () => {
       );
     scriptModelTurns(dupIdTurn(0), dupIdTurn(1), dupIdTurn(2), dupIdTurn(3), textTurn('done'));
 
-    await callModel(client, {
-      model: 'test-model',
-      input: 'go',
-      tools: [
-        readTool,
-      ] as const,
-      doomLoop: true,
-      hooks,
-    })
-      .getText()
-      .catch(() => undefined);
+    await expect(
+      callModel(client, {
+        model: 'test-model',
+        input: 'go',
+        tools: [
+          readTool,
+        ] as const,
+        doomLoop: true,
+        hooks,
+      }).getText(),
+    ).rejects.toThrow(/call_X/);
 
-    /* The repeated `a` accumulates despite the id collision. */
-    const actions = detections.map((detection) => detection.action);
-    expect(actions).toContain('observe');
-    expect(actions).toContain('block');
+    expect(readExecute).not.toHaveBeenCalled();
+    expect(detections).toEqual([]);
+    expect(mockBetaResponsesSend).toHaveBeenCalledTimes(1);
   });
 });
 
