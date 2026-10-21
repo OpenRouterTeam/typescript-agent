@@ -45,19 +45,51 @@ describe('executeGeneratorTool - return value capture', () => {
     const result = await executeGeneratorTool(generatorTool, toolCall, mockContext);
 
     expect(result.error).toBeUndefined();
-    expect(result.preliminaryResults).toHaveLength(2);
-    expect(result.preliminaryResults).toEqual([
-      {
-        status: 'working',
-      },
-      {
-        status: 'almost done',
-      },
-    ]);
+    expect(result.preliminaryResults).toBeUndefined();
     // The return value should be captured as the final result
     expect(result.result).toEqual({
       result: 'Done: test',
     });
+  });
+
+  it('broadcasts many preliminary results without retaining them on the terminal result', async () => {
+    const yieldCount = 10_000;
+    const generatorTool = tool({
+      name: 'streaming_tool',
+      inputSchema: z.object({}),
+      eventSchema: z.object({
+        index: z.number(),
+      }),
+      outputSchema: z.object({
+        done: z.boolean(),
+      }),
+      execute: async function* () {
+        for (let index = 0; index < yieldCount; index += 1) {
+          yield {
+            index,
+          };
+        }
+        return {
+          done: true,
+        };
+      },
+    });
+    const toolCall: ParsedToolCall<Tool> = {
+      id: 'streaming-call',
+      name: 'streaming_tool',
+      arguments: {},
+    };
+    let broadcasts = 0;
+
+    const result = await executeGeneratorTool(generatorTool, toolCall, mockContext, () => {
+      broadcasts += 1;
+    });
+
+    expect(broadcasts).toBe(yieldCount);
+    expect(result.result).toEqual({
+      done: true,
+    });
+    expect(result.preliminaryResults).toBeUndefined();
   });
 
   it('should capture return value even with no yields', async () => {
@@ -91,7 +123,7 @@ describe('executeGeneratorTool - return value capture', () => {
     const result = await executeGeneratorTool(generatorTool, toolCall, mockContext);
 
     expect(result.error).toBeUndefined();
-    expect(result.preliminaryResults).toHaveLength(0);
+    expect(result.preliminaryResults).toBeUndefined();
     expect(result.result).toEqual({
       result: 'Direct: test',
     });
@@ -134,7 +166,7 @@ describe('executeGeneratorTool - return value capture', () => {
     const result = await executeGeneratorTool(generatorTool, toolCall, mockContext);
 
     expect(result.error).toBeUndefined();
-    expect(result.preliminaryResults).toHaveLength(2);
+    expect(result.preliminaryResults).toBeUndefined();
     // Return value should take precedence
     expect(result.result).toEqual({
       finalValue: 'Final: test',

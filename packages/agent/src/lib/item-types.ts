@@ -41,6 +41,23 @@ export type SystemMessageItem = WithID<EasyInputMessage> & {
   role: 'system';
 };
 
+/** A new system message for input (not yet persisted, no id) */
+export type NewSystemMessageItem = EasyInputMessage & {
+  role: 'system';
+};
+
+/**
+ * A new assistant message for input (not yet persisted, no id).
+ *
+ * Distinct from `AssistantMessageItem` (= `OutputMessage`), which is what the
+ * model produces and therefore requires an `id` and structured content. This
+ * member exists so caller-supplied conversation history — e.g. the output of
+ * `fromChatMessages` / `fromClaudeMessages` — is assignable to `Item[]`.
+ */
+export type NewAssistantMessageItem = EasyInputMessage & {
+  role: 'assistant';
+};
+
 /** A developer message from conversation history (has an assigned id) */
 export type DeveloperMessageItem = WithID<EasyInputMessage> & {
   role: 'developer';
@@ -96,6 +113,8 @@ export type Item =
   | DeveloperMessageItem
   | NewDeveloperMessageItem
   | NewUserMessageItem
+  | NewSystemMessageItem
+  | NewAssistantMessageItem
   | CallFunctionToolItem
   | ReasoningItem
   | CallFileSearchItem

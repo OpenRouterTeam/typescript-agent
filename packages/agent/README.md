@@ -221,6 +221,14 @@ const analysisTool = tool({
 const confirmTool = tool({
   name: 'confirm_action',
   inputSchema: z.object({ action: z.string() }),
+  // Forward an existing JSON Schema without converting it through Zod.
+  wireInputSchema: {
+    type: 'object',
+    properties: {
+      action: { type: 'string' },
+    },
+    required: ['action'],
+  },
   execute: false,
 });
 ```
@@ -1067,16 +1075,27 @@ const searchTool = tool({
 Convert between OpenRouter and other message formats:
 
 ```typescript
-import { toClaudeMessage, fromClaudeMessages } from '@openrouter/agent';
-import { toChatMessage, fromChatMessages } from '@openrouter/agent';
+import {
+  callModel,
+  fromChatMessages,
+  fromClaudeMessages,
+  toChatMessage,
+  toClaudeMessage,
+  type Item,
+} from '@openrouter/agent';
 
-// Anthropic Claude format
+// Both converters return Item-compatible input arrays accepted by callModel.
+const claudeInput: Item[] = fromClaudeMessages(claudeMessages);
+const chatInput: Item[] = fromChatMessages(chatMessages);
+
+const result = callModel(client, {
+  model: 'openai/gpt-4o-mini',
+  input: chatInput,
+});
+
+// Assistant toolCalls become function_call items in chatInput.
 const claudeMsg = toClaudeMessage(openRouterMessage);
-const orMessages = fromClaudeMessages(claudeMessages);
-
-// Standard Chat format
 const chatMsg = toChatMessage(openRouterMessage);
-const orMessages2 = fromChatMessages(chatMessages);
 ```
 
 # Tool Sets

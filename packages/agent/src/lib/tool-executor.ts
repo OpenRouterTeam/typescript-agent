@@ -22,6 +22,7 @@ import {
   isDeferredHandle,
   isGeneratorTool,
   isHITLTool,
+  isManualTool,
   isMcpTool,
   isRegularExecuteTool,
   isServerTool,
@@ -129,7 +130,10 @@ export function convertToolsToAPIFormat(
       name: tool.function.name,
       description: tool.function.description || null,
       strict: tool.function.strict ?? null,
-      parameters: convertZodToJsonSchema(tool.function.inputSchema),
+      parameters:
+        isManualTool(tool) && tool.function.wireInputSchema !== undefined
+          ? sanitizeJsonSchema(tool.function.wireInputSchema)
+          : convertZodToJsonSchema(tool.function.inputSchema),
     };
     return apiTool;
   });
@@ -337,7 +341,6 @@ export async function executeGeneratorTool(
       extras,
     );
 
-    const preliminaryResults: unknown[] = [];
     let finalResult: unknown;
     let hasFinalResult = false;
     let lastEmittedValue: unknown;
@@ -359,7 +362,6 @@ export async function executeGeneratorTool(
         hasFinalResult = true;
       } else {
         const validatedPreliminary = validateToolOutput(tool.function.eventSchema, event);
-        preliminaryResults.push(validatedPreliminary);
         if (onPreliminaryResult) {
           onPreliminaryResult(toolCall.id, validatedPreliminary);
         }
@@ -387,7 +389,6 @@ export async function executeGeneratorTool(
       toolName: toolCall.name,
       source,
       result: finalResult,
-      preliminaryResults,
     };
   } catch (error) {
     return {
