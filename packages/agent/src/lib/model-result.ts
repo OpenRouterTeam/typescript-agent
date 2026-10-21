@@ -804,8 +804,23 @@ export class ModelResult<
     // Initialize state management
     this.stateAccessor = options.state ?? null;
     this.requireApprovalFn = options.requireApproval ?? null;
-    this.approvedToolCalls = options.approveToolCalls ?? [];
-    this.rejectedToolCalls = options.rejectToolCalls ?? [];
+    // De-duplicate decisions so a call ID listed twice cannot execute an
+    // approval-gated tool twice, and refuse contradictory input outright:
+    // an ID that is both approved and rejected has no safe interpretation.
+    this.approvedToolCalls = [
+      ...new Set(options.approveToolCalls ?? []),
+    ];
+    this.rejectedToolCalls = [
+      ...new Set(options.rejectToolCalls ?? []),
+    ];
+    const rejectedIds = new Set(this.rejectedToolCalls);
+    const conflictingIds = this.approvedToolCalls.filter((id) => rejectedIds.has(id));
+    if (conflictingIds.length > 0) {
+      throw new Error(
+        `Tool call IDs cannot be both approved and rejected: ${conflictingIds.join(', ')}. ` +
+          'Pass each pending call ID in exactly one of approveToolCalls or rejectToolCalls.',
+      );
+    }
 
     // Concurrency gates. Round default stays unbounded (existing behavior);
     // the background pool always has a cap (default 16 — detached work has
@@ -5736,6 +5751,16 @@ export class ModelResult<
             return; // Skip normal initialization, we're resuming
           }
 
+          // Paused for a human decision but none was supplied: stay paused.
+          // Falling through would flip the status to 'in_progress' and send a
+          // fresh model request, advancing the conversation past calls that
+          // still owe an approve/reject decision. getResponse()/getText()
+          // surface this as an explicit "awaiting approval" error.
+          if (isResumableStatus) {
+            this.isResumingFromApproval = true;
+            return;
+          }
+
           // Check for interruption flag and handle
           if (loadedState.interruptedBy) {
             // Clear interruption flag and continue from saved state
@@ -6763,10 +6788,31 @@ export class ModelResult<
     await this.executeToolsIfNeeded();
 
     if (!this.finalResponse) {
-      throw new Error('Response not available');
+      throw this.responseUnavailableError();
     }
 
     return extractTextFromResponse(this.finalResponse);
+  }
+
+  /**
+   * Error for getResponse()/getText() when the run produced no final
+   * response. A resume that leaves the conversation paused (no decisions
+   * supplied, or decisions for only some of the pending calls) has no
+   * response to return; say so explicitly instead of the generic message.
+   */
+  private responseUnavailableError(): Error {
+    const status = this.currentState?.status;
+    if (status === 'awaiting_approval' || status === 'awaiting_hitl') {
+      const pendingIds = (this.currentState?.pendingToolCalls ?? []).map((tc) => tc.id);
+      const what = status === 'awaiting_approval' ? 'awaiting approval' : 'awaiting HITL input';
+      return new Error(
+        `Conversation is ${what} (status '${status}'); no response is available. ` +
+          `Pending tool call IDs: ${pendingIds.length > 0 ? pendingIds.join(', ') : '(none)'}. ` +
+          'Resume with approveToolCalls and/or rejectToolCalls for the pending calls. ' +
+          'Use requiresApproval() or getPendingToolCalls() to inspect a paused conversation.',
+      );
+    }
+    return new Error('Response not available');
   }
 
   /**
@@ -6795,7 +6841,7 @@ export class ModelResult<
     await this.executeToolsIfNeeded();
 
     if (!this.finalResponse) {
-      throw new Error('Response not available');
+      throw this.responseUnavailableError();
     }
 
     return this.finalResponse;
