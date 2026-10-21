@@ -7,6 +7,7 @@ import * as z4 from 'zod/v4';
 import type { $ZodObject, $ZodShape } from 'zod/v4/core';
 import type { CallModelInput, ResolvedCallModelInput } from './async-params.js';
 import {
+  fillPrimaryModelFromModels,
   hasAsyncFunctions,
   resolveAsyncFunctions,
   stripToolSetSnapshotMetadata,
@@ -59,7 +60,6 @@ import {
   applyNextTurnParamsToRequest,
   executeNextTurnParamsFunctions,
 } from './next-turn-params.js';
-import { fillPrimaryModelFromModels } from './primary-model.js';
 import type { StreamReplay } from './reusable-stream.js';
 import { ReusableReadableStream } from './reusable-stream.js';
 import { isStopConditionMet } from './stop-conditions.js';

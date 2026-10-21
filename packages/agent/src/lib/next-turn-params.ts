@@ -1,5 +1,5 @@
 import type * as models from '@openrouter/sdk/models';
-import { fillPrimaryModelFromModels } from './primary-model.js';
+import { fillPrimaryModelFromModels } from './async-params.js';
 import type { NextTurnParamsContext, ParsedToolCall, Tool } from './tool-types.js';
 import { isClientTool } from './tool-types.js';
 
