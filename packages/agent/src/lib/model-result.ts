@@ -60,8 +60,13 @@ import {
   executeNextTurnParamsFunctions,
 } from './next-turn-params.js';
 import { isStopConditionMet } from './stop-conditions.js';
-import type { StreamReplay } from './stream-runtime.js';
-import { ReusableReadableStream, StreamFailedError } from './stream-runtime.js';
+import type { StreamReplay, StreamTimeoutOptions } from './stream-runtime.js';
+import {
+  applyResponsesStreamWatchdog,
+  hasActiveStreamTimeouts,
+  ReusableReadableStream,
+  StreamFailedError,
+} from './stream-runtime.js';
 import type { ItemInProgress, StreamableOutputItem } from './stream-transformers.js';
 import {
   buildItemsStream,
@@ -92,8 +97,6 @@ import {
   isResponseIncompleteEvent,
   isServerToolResultItem,
 } from './stream-type-guards.js';
-import type { StreamTimeoutOptions } from './stream-watchdog.js';
-import { applyResponsesStreamWatchdog, hasActiveStreamTimeouts } from './stream-watchdog.js';
 import type { ContextInput, ToolExecutionExtras } from './tool-context.js';
 import { resolveContext, ToolContextStore } from './tool-context.js';
 import { ToolEventBroadcaster } from './tool-event-broadcaster.js';
