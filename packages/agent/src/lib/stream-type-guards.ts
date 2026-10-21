@@ -47,6 +47,11 @@ export function isResponseFailedEvent(
   return 'type' in event && event.type === 'response.failed';
 }
 
+/** A stream-level `error` event (not terminal: the stream may still complete). */
+export function isErrorEvent(event: models.StreamEvents): event is models.ErrorEvent {
+  return 'type' in event && event.type === 'error';
+}
+
 export function isResponseIncompleteEvent(
   event: models.StreamEvents,
 ): event is models.StreamEventsResponseIncomplete {

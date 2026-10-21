@@ -219,6 +219,8 @@ export {
   maxTokensUsed,
   stepCountIs,
 } from './lib/stop-conditions.js';
+export type { StreamFailureKind, StreamStallPhase } from './lib/stream-errors.js';
+export { StreamFailedError, StreamStalledError } from './lib/stream-errors.js';
 export type { StreamableOutputItem } from './lib/stream-transformers.js';
 export {
   extractUnsupportedContent,

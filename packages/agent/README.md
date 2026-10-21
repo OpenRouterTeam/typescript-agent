@@ -353,6 +353,31 @@ over passing a raw `signal` through `RequestOptions` — the underlying SDK
 skips its `timeoutMs` wiring whenever a request already carries a signal,
 so the engine re-composes them for you only on the `signal` option path.
 
+#### Stream failures
+
+A response stream that fails surfaces as a typed `StreamFailedError` on every
+consumption path (`getText()`, `getResponse()` and all the stream getters):
+
+```typescript
+import { StreamFailedError } from '@openrouter/agent';
+
+try {
+  for await (const delta of result.getTextStream()) process.stdout.write(delta);
+} catch (error) {
+  if (error instanceof StreamFailedError) {
+    error.kind; // 'response_failed' | 'error_event' | 'truncated'
+    error.code; // e.g. 'server_error', when the server reported one
+    error.retryable; // true for transient codes (server_error, rate limits, ...)
+  }
+}
+```
+
+- `response_failed`: the server sent `response.failed` (`error.response` holds it).
+- `error_event`: the server sent a stream-level `error` event and the stream
+  ended without completing. An `error` event followed by a completion is not a
+  failure.
+- `truncated`: the stream ended with no terminal event at all.
+
 ### Doom-Loop Detection
 
 Catch runs that stop making progress while continuing to spend: the model
