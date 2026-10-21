@@ -1,11 +1,11 @@
 import type { OpenRouterCore } from '@openrouter/sdk/core';
 import type { RequestOptions } from '@openrouter/sdk/lib/sdks';
-import type { $ZodObject, $ZodShape, infer as zodInfer } from 'zod/v4/core';
 import type { CallModelInput } from '../lib/async-params.js';
 import { stripToolSetSnapshotMetadata } from '../lib/async-params.js';
 import { resolveHooks } from '../lib/hooks-resolve.js';
 import type { GetResponseOptions } from '../lib/model-result.js';
 import { ModelResult } from '../lib/model-result.js';
+import type { InferSchemaOutput, ObjectSchema } from '../lib/schema.js';
 import { buildTaskToolApiDefinition, needsTaskTool } from '../lib/tool-check.js';
 import { convertToolsToAPIFormat, convertZodToJsonSchema } from '../lib/tool-executor.js';
 import type { Tool } from '../lib/tool-types.js';
@@ -84,9 +84,9 @@ export type { CallModelInput } from '../lib/async-params.js';
  */
 export function callModel<
   TTools extends readonly Tool[],
-  TSharedSchema extends $ZodObject<$ZodShape> | undefined = undefined,
-  TShared extends Record<string, unknown> = TSharedSchema extends $ZodObject<$ZodShape>
-    ? zodInfer<TSharedSchema>
+  TSharedSchema extends ObjectSchema | undefined = undefined,
+  TShared extends Record<string, unknown> = TSharedSchema extends ObjectSchema
+    ? InferSchemaOutput<TSharedSchema>
     : Record<string, never>,
 >(
   client: OpenRouterCore,

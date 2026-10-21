@@ -246,7 +246,7 @@ export async function resumeToolResults<TTools extends readonly Tool[]>(
       );
     }
 
-    const envelope = buildResumeEnvelope(entry, task, request.tools);
+    const envelope = await buildResumeEnvelope(entry, task, request.tools);
 
     envelopes.push(buildTaskResultMessage(envelope));
     // Persist the entry's real terminal status. 'expired' / 'timed_out'
@@ -333,11 +333,11 @@ export async function resumeToolResults<TTools extends readonly Tool[]>(
  * tool is available; error entries carry the caller's refined status
  * (default `'failed'`).
  */
-function buildResumeEnvelope(
+async function buildResumeEnvelope(
   entry: ResumeToolResultEntry,
   task: PendingAsyncTool,
   tools: readonly Tool[] | undefined,
-): ToolTaskResultEnvelope {
+): Promise<ToolTaskResultEnvelope> {
   if ('output' in entry && entry.error === undefined) {
     const tool = tools?.find((t) => isClientTool(t) && t.function.name === task.name);
     // Fail closed: when a tools list was supplied but the owning tool is
@@ -350,7 +350,7 @@ function buildResumeEnvelope(
     }
     let output = entry.output;
     if (tool && isUnifiedTool(tool) && tool.function.outputSchema !== undefined) {
-      output = validateToolOutput(tool.function.outputSchema, output);
+      output = await validateToolOutput(tool.function.outputSchema, output);
     }
     return {
       type: 'tool_task_result',

@@ -18,8 +18,8 @@ const manualTool = tool({
 });
 void manualTool;
 
-// @ts-expect-error wireInputSchema is only accepted for manual tools
-tool({
+// Since Standard Schema support, every tool kind accepts wireInputSchema.
+const executableTool = tool({
   name: 'executable_wire_schema',
   inputSchema: z.object({
     value: z.string(),
@@ -29,3 +29,4 @@ tool({
     type: 'object',
   },
 });
+void executableTool;
