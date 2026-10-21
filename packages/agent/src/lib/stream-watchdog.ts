@@ -90,120 +90,138 @@ export function applyStreamWatchdog<T>(
   if (firstContentMs === undefined && contentIntervalMs === undefined) {
     return source;
   }
-
   const reader = source.getReader();
-  const signal = hooks.signal;
-
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  let armedPhase: StreamStallPhase = 'first_content';
-  let armedTimeoutMs = 0;
-  let armedAtMs = 0;
-  let receivedContent = false;
-  /** Set by a terminal event or an abort: deadlines stop applying. */
-  let disarmed = false;
-  /** Set once the wrapped stream has closed, errored, stalled or been cancelled. */
-  let settled = false;
-
-  const clearTimer = (): void => {
-    if (timer !== undefined) {
-      clearTimeout(timer);
-      timer = undefined;
-    }
-  };
-  const onAbort = (): void => {
-    disarmed = true;
-    clearTimer();
-  };
-  const settle = (): void => {
-    settled = true;
-    clearTimer();
-    signal?.removeEventListener('abort', onAbort);
-  };
-
+  let watchdog: StreamWatchdog<T> | undefined;
   return new ReadableStream<T>({
     start(controller) {
-      const onDeadlineExpired = (): void => {
-        timer = undefined;
-        if (settled || disarmed) {
-          return;
-        }
-        settle();
-        const error = new StreamStalledError({
-          phase: armedPhase,
-          timeoutMs: armedTimeoutMs,
-          elapsedMs: Date.now() - armedAtMs,
-          receivedAnyContent: receivedContent,
-        });
-        hooks.onStall?.(error);
-        controller.error(error);
-        // Resolves the pump's pending read; `settled` makes the pump bail
-        // without touching the (already errored) controller.
-        reader.cancel(error).catch(() => {
-          // Irrelevant once the wrapped stream has errored.
-        });
-      };
-
-      const arm = (phase: StreamStallPhase, timeoutMs: number): void => {
-        clearTimer();
-        armedPhase = phase;
-        armedTimeoutMs = timeoutMs;
-        armedAtMs = Date.now();
-        timer = setTimeout(onDeadlineExpired, timeoutMs);
-      };
-
-      if (signal?.aborted) {
-        disarmed = true;
-      } else {
-        signal?.addEventListener('abort', onAbort, {
-          once: true,
-        });
-        // The pre-first-content deadline arms the moment the stream starts.
-        if (firstContentMs !== undefined) {
-          arm('first_content', firstContentMs);
-        }
-      }
-
-      const pump = async (): Promise<void> => {
-        try {
-          while (true) {
-            const result = await reader.read();
-            if (settled) {
-              return;
-            }
-            if (result.done) {
-              settle();
-              controller.close();
-              return;
-            }
-            const event = result.value;
-            if (hooks.isTerminalEvent?.(event)) {
-              disarmed = true;
-              clearTimer();
-            } else if (!disarmed && hooks.isContentEvent(event)) {
-              receivedContent = true;
-              if (contentIntervalMs !== undefined) {
-                arm('between_content', contentIntervalMs);
-              } else {
-                clearTimer();
-              }
-            }
-            controller.enqueue(event);
-          }
-        } catch (error) {
-          if (settled) {
-            return;
-          }
-          settle();
-          controller.error(error);
-        }
-      };
-      void pump();
+      watchdog = new StreamWatchdog(reader, controller, hooks, firstContentMs, contentIntervalMs);
+      void watchdog.pump();
     },
     cancel(reason) {
-      settle();
+      watchdog?.settle();
       return reader.cancel(reason);
     },
   });
+}
+
+/** Deadline state for one watched stream. See {@link applyStreamWatchdog}. */
+class StreamWatchdog<T> {
+  private timer: ReturnType<typeof setTimeout> | undefined;
+  private armedPhase: StreamStallPhase = 'first_content';
+  private armedTimeoutMs = 0;
+  private armedAtMs = 0;
+  private receivedContent = false;
+  /** Set by a terminal event or an abort: deadlines stop applying. */
+  private disarmed = false;
+  /** Set once the wrapped stream has closed, errored, stalled or been cancelled. */
+  private settled = false;
+  private readonly onAbort = (): void => {
+    this.disarmed = true;
+    this.clearTimer();
+  };
+
+  constructor(
+    private readonly reader: ReadableStreamDefaultReader<T>,
+    private readonly controller: ReadableStreamDefaultController<T>,
+    private readonly hooks: StreamWatchdogHooks<T>,
+    firstContentMs: number | undefined,
+    private readonly contentIntervalMs: number | undefined,
+  ) {
+    const signal = hooks.signal;
+    if (signal?.aborted) {
+      this.disarmed = true;
+      return;
+    }
+    signal?.addEventListener('abort', this.onAbort, {
+      once: true,
+    });
+    // The pre-first-content deadline arms the moment the stream starts.
+    if (firstContentMs !== undefined) {
+      this.arm('first_content', firstContentMs);
+    }
+  }
+
+  settle(): void {
+    this.settled = true;
+    this.clearTimer();
+    this.hooks.signal?.removeEventListener('abort', this.onAbort);
+  }
+
+  async pump(): Promise<void> {
+    try {
+      while (true) {
+        const result = await this.reader.read();
+        if (this.settled) {
+          return;
+        }
+        if (result.done) {
+          this.settle();
+          this.controller.close();
+          return;
+        }
+        this.observe(result.value);
+        this.controller.enqueue(result.value);
+      }
+    } catch (error) {
+      if (!this.settled) {
+        this.settle();
+        this.controller.error(error);
+      }
+    }
+  }
+
+  private observe(event: T): void {
+    if (this.hooks.isTerminalEvent?.(event)) {
+      this.disarmed = true;
+      this.clearTimer();
+      return;
+    }
+    if (this.disarmed || !this.hooks.isContentEvent(event)) {
+      return;
+    }
+    this.receivedContent = true;
+    if (this.contentIntervalMs !== undefined) {
+      this.arm('between_content', this.contentIntervalMs);
+    } else {
+      this.clearTimer();
+    }
+  }
+
+  private arm(phase: StreamStallPhase, timeoutMs: number): void {
+    this.clearTimer();
+    this.armedPhase = phase;
+    this.armedTimeoutMs = timeoutMs;
+    this.armedAtMs = Date.now();
+    this.timer = setTimeout(() => this.expire(), timeoutMs);
+  }
+
+  private clearTimer(): void {
+    if (this.timer !== undefined) {
+      clearTimeout(this.timer);
+      this.timer = undefined;
+    }
+  }
+
+  private expire(): void {
+    this.timer = undefined;
+    if (this.settled || this.disarmed) {
+      return;
+    }
+    this.settle();
+    const error = new StreamStalledError({
+      phase: this.armedPhase,
+      timeoutMs: this.armedTimeoutMs,
+      elapsedMs: Date.now() - this.armedAtMs,
+      receivedAnyContent: this.receivedContent,
+    });
+    this.hooks.onStall?.(error);
+    this.controller.error(error);
+    // Resolves the pump's pending read; `settled` makes the pump bail
+    // without touching the (already errored) controller.
+    this.reader.cancel(error).catch(() => {
+      // Irrelevant once the wrapped stream has errored.
+    });
+  }
 }
 
 /**

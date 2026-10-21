@@ -59,10 +59,9 @@ import {
   applyNextTurnParamsToRequest,
   executeNextTurnParamsFunctions,
 } from './next-turn-params.js';
-import type { StreamReplay } from './reusable-stream.js';
-import { ReusableReadableStream } from './reusable-stream.js';
 import { isStopConditionMet } from './stop-conditions.js';
-import { StreamFailedError } from './stream-errors.js';
+import type { StreamReplay } from './stream-runtime.js';
+import { ReusableReadableStream, StreamFailedError } from './stream-runtime.js';
 import type { ItemInProgress, StreamableOutputItem } from './stream-transformers.js';
 import {
   buildItemsStream,
