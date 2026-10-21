@@ -881,7 +881,7 @@ export interface ServerToolBase {
    * Optional here for source compatibility with legacy hand-constructed
    * `ServerToolBase` values that predate this field. `ServerTool<T, TId>`
    * (the type returned by {@link serverTool}) still requires it as a
-   * literal `TId` via interface narrowing below.
+   * literal `TId` via the intersection below.
    */
   readonly id?: string;
 }
