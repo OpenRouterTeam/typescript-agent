@@ -3963,13 +3963,57 @@ export class ModelResult<
     // invocations (grace-window race, registry tracking) at settle time
     // rather than after the whole round, so N background calls never
     // serialize into (N-1)×graceMs of stagger.
-    const finalizedPromises = toolCalls.map((toolCall) =>
-      this.executeSingleToolCall(toolCall, turnContext).then(
-        (value) => this.finalizeSettledRoundCall(value),
-        (reason: unknown) => this.finalizeRejectedRoundCall(toolCall, reason),
-      ),
-    );
-    const finalizedCalls = await Promise.all(finalizedPromises);
+    //
+    // Exception: `ctx.defer()` registration is ordered by CALL index. A
+    // deferred call's taskId is caller-supplied, and when two calls in the
+    // same round claim the same id, `rejectDuplicateTaskId` must pick the
+    // same winner (the earlier call) regardless of which settled first. So
+    // each call opens a "claim gate" that releases once the call has either
+    // settled as a non-deferred outcome or finished registering its
+    // deferred task, and a deferred call waits for the gates of every
+    // earlier call before registering. Only deferred calls ever wait; plain
+    // and background calls still finalize the moment they settle.
+    const claimGates: Promise<void>[] = [];
+    const finalizedPromises = toolCalls.map((toolCall) => {
+      const earlierClaims = claimGates.slice();
+      let releaseClaim!: () => void;
+      claimGates.push(
+        new Promise<void>((resolve) => {
+          releaseClaim = resolve;
+        }),
+      );
+      return this.executeSingleToolCall(toolCall, turnContext).then(
+        async (value) => {
+          try {
+            if (value?.type === 'async' && value.invocation.asyncMode === 'defer') {
+              await Promise.all(earlierClaims);
+            } else {
+              releaseClaim();
+            }
+            return await this.finalizeSettledRoundCall(value);
+          } finally {
+            releaseClaim();
+          }
+        },
+        (reason: unknown) => {
+          releaseClaim();
+          return this.finalizeRejectedRoundCall(toolCall, reason);
+        },
+      );
+    });
+    // allSettled, not all: if one call's finalizer throws (e.g. its
+    // `toModelOutput` rejects), the round must still wait for its siblings
+    // before failing. Rejecting early would orphan them — their broadcasts
+    // would land after the run failed, and async calls could register
+    // background tasks on a run that has already errored. The first
+    // rejection in CALL order is rethrown so the error is deterministic.
+    const settledCalls = await Promise.allSettled(finalizedPromises);
+    const finalizedCalls = settledCalls.map((settled) => {
+      if (settled.status === 'rejected') {
+        throw settled.reason;
+      }
+      return settled.value;
+    });
 
     // Ordered assembly: broadcasts already happened per call above, but the
     // MODEL-facing outputs are collected in call order so the follow-up
@@ -4329,6 +4373,10 @@ export class ModelResult<
    * conversation would wait forever. Caller-supplied ids
    * (`ctx.defer(ticket.id)`) carry no uniqueness guarantee; reject the
    * collision at start time, when the tool can still see it.
+   *
+   * Within one round, `executeToolRound` orders deferred registration by
+   * call index, so when two calls claim the same id the EARLIER call wins
+   * regardless of which settled first.
    * @returns the error output for the colliding call, or null when unique.
    */
   private rejectDuplicateTaskId(

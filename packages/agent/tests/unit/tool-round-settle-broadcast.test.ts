@@ -309,4 +309,166 @@ describe('per-call broadcast on settlement (DEV-1067)', () => {
     broadcaster.complete();
     await drainPromise;
   });
+
+  it("waits for siblings before rejecting when one call's toModelOutput throws", async () => {
+    let releaseSlow: () => void = () => undefined;
+    const slowGate = new Promise<void>((resolve) => {
+      releaseSlow = resolve;
+    });
+    let slowFinished = false;
+
+    const slow = tool({
+      name: 'slow',
+      inputSchema: z.object({}),
+      outputSchema: z.object({
+        done: z.boolean(),
+      }),
+      execute: async () => {
+        await slowGate;
+        slowFinished = true;
+        return {
+          done: true,
+        };
+      },
+    });
+    const fast = tool({
+      name: 'fast',
+      inputSchema: z.object({}),
+      outputSchema: z.object({
+        done: z.boolean(),
+      }),
+      execute: async () => ({
+        done: true,
+      }),
+      toModelOutput: () => {
+        throw new Error('toModelOutput exploded');
+      },
+    });
+
+    const internal = buildModelResult([
+      slow,
+      fast,
+    ]);
+    internal.getInitialResponse = async () =>
+      makeResponseWithToolCalls([
+        {
+          id: 'call_slow',
+          name: 'slow',
+          arguments: '{}',
+        },
+        {
+          id: 'call_fast',
+          name: 'fast',
+          arguments: '{}',
+        },
+      ]);
+    const followup = vi.fn(async () => makeFinalResponse());
+    internal.makeFollowupRequest = followup;
+
+    const broadcaster = internal.ensureTurnBroadcaster();
+    const events: unknown[] = [];
+    const drainPromise = drainInto(broadcaster.createConsumer(), events);
+
+    let settled = false;
+    let slowFinishedAtSettle = false;
+    const executionPromise = internal.executeToolsIfNeeded().finally(() => {
+      settled = true;
+      slowFinishedAtSettle = slowFinished;
+    });
+    // Attach a handler now so the eventual rejection is never unhandled.
+    const outcome = executionPromise.then(
+      () => null,
+      (error: unknown) => error,
+    );
+
+    // The fast call settles (and its toModelOutput throws) while the slow
+    // call is still gated.
+    await vi.waitFor(() => {
+      expect(events.filter(isToolResultEvent).some((e) => e.toolCallId === 'call_fast')).toBe(true);
+    });
+    // Give an early rejection (the Promise.all regression) time to surface.
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(settled).toBe(false);
+
+    releaseSlow();
+    const error = await outcome;
+    expect(error).toBeInstanceOf(Error);
+    expect((error as Error).message).toContain('toModelOutput exploded');
+    // The round rejected only after the slow sibling finished, and the slow
+    // call's broadcast landed before the failure.
+    expect(slowFinishedAtSettle).toBe(true);
+    expect(events.filter(isToolResultEvent).some((e) => e.toolCallId === 'call_slow')).toBe(true);
+    expect(followup).not.toHaveBeenCalled();
+
+    broadcaster.complete();
+    await drainPromise;
+  });
+
+  it('resolves a duplicate ctx.defer() taskId in call order, not settlement order', async () => {
+    let releaseFirst: () => void = () => undefined;
+    const firstGate = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+
+    const deferred = tool({
+      name: 'deferred',
+      lifecycle: 'deferred',
+      inputSchema: z.object({
+        gated: z.boolean(),
+      }),
+      outputSchema: z.object({
+        ok: z.boolean(),
+      }),
+      run: async ({ gated }, ctx) => {
+        if (gated) {
+          await firstGate;
+        }
+        if (!ctx) {
+          throw new Error('run context missing');
+        }
+        return ctx.defer('ticket_dup');
+      },
+    });
+
+    const internal = buildModelResult([
+      deferred,
+    ]);
+    // call_first is FIRST in call order but settles LAST.
+    internal.getInitialResponse = async () =>
+      makeResponseWithToolCalls([
+        {
+          id: 'call_first',
+          name: 'deferred',
+          arguments: '{"gated":true}',
+        },
+        {
+          id: 'call_second',
+          name: 'deferred',
+          arguments: '{"gated":false}',
+        },
+      ]);
+    internal.makeFollowupRequest = async () => makeFinalResponse();
+
+    const broadcaster = internal.ensureTurnBroadcaster();
+    const events: unknown[] = [];
+    const drainPromise = drainInto(broadcaster.createConsumer(), events);
+
+    const executionPromise = internal.executeToolsIfNeeded();
+    // Let call_second settle well before call_first is released.
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    releaseFirst();
+    await executionPromise;
+    broadcaster.complete();
+    await drainPromise;
+
+    const outputs = new Map(
+      events.filter(isToolCallOutputEvent).map((e) => [
+        e.output.callId,
+        String(e.output.output),
+      ]),
+    );
+    // The earlier call wins the taskId; the later one is rejected.
+    expect(outputs.get('call_first')).toContain('"status":"pending"');
+    expect(outputs.get('call_second')).toContain('already in use');
+  });
 });
