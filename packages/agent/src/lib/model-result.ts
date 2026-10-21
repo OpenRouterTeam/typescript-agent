@@ -59,6 +59,7 @@ import {
   applyNextTurnParamsToRequest,
   executeNextTurnParamsFunctions,
 } from './next-turn-params.js';
+import { fillPrimaryModelFromModels } from './primary-model.js';
 import type { StreamReplay } from './reusable-stream.js';
 import { ReusableReadableStream } from './reusable-stream.js';
 import { isStopConditionMet } from './stop-conditions.js';
@@ -5312,6 +5313,7 @@ export class ModelResult<
   private async resolveRequestForContext(context: TurnContext): Promise<ResolvedCallModelInput> {
     if (hasAsyncFunctions(this.options.request)) {
       const resolved = await resolveAsyncFunctions(this.options.request, context);
+      fillPrimaryModelFromModels(resolved);
       return this.applyResolvedForcedToolChoicePolicy(resolved);
     }
     // Already resolved, extract non-function fields.
@@ -5344,14 +5346,7 @@ export class ModelResult<
       ...rest,
     };
     stripToolSetSnapshotMetadata(resolved);
-    if (
-      resolved['model'] === undefined &&
-      Array.isArray(resolved['models']) &&
-      resolved['models'].length > 0 &&
-      typeof resolved['models'][0] === 'string'
-    ) {
-      resolved['model'] = resolved['models'][0];
-    }
+    fillPrimaryModelFromModels(resolved);
     return this.applyResolvedForcedToolChoicePolicy(resolved as ResolvedCallModelInput);
   }
 

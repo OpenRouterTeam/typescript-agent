@@ -1,4 +1,5 @@
 import type * as models from '@openrouter/sdk/models';
+import { fillPrimaryModelFromModels } from './primary-model.js';
 import type { NextTurnParamsContext, ParsedToolCall, Tool } from './tool-types.js';
 import { isClientTool } from './tool-types.js';
 
@@ -23,13 +24,7 @@ export function buildNextTurnParamsContext(
     input: request.input ?? [],
     toolChoice: request.toolChoice,
     model: request.model ?? request.models?.[0] ?? '',
-    models:
-      request.models ??
-      (request.model
-        ? [
-            request.model,
-          ]
-        : []),
+    models: request.models ?? [],
     temperature: request.temperature ?? null,
     maxOutputTokens: request.maxOutputTokens ?? null,
     topP: request.topP ?? null,
@@ -173,6 +168,12 @@ function setNextTurnParam<K extends keyof NextTurnParamsContext>(
  * Apply computed nextTurnParams to the current request
  * Returns a new request object with updated parameters
  *
+ * `models` takes precedence over `model`: if `computedParams` changes
+ * `models` but not `model`, the request's `model` is reset to the new
+ * `models[0]`, even when the request already had an explicit `model`.
+ * This keeps the primary model in sync with the fallback list. To pin a
+ * different primary, set `model` in the same nextTurnParams update.
+ *
  * @param request - The current request
  * @param computedParams - Computed parameter values from nextTurnParams functions
  * @returns New request with updated parameters
@@ -191,14 +192,8 @@ export function applyNextTurnParamsToRequest(
     ...request,
     ...sanitized,
   };
-  if (
-    (nextRequest.model === undefined ||
-      ('models' in computedParams && !('model' in computedParams))) &&
-    Array.isArray(nextRequest.models) &&
-    nextRequest.models.length > 0 &&
-    typeof nextRequest.models[0] === 'string'
-  ) {
-    nextRequest.model = nextRequest.models[0];
-  }
+  fillPrimaryModelFromModels(nextRequest, {
+    overwrite: 'models' in computedParams && !('model' in computedParams),
+  });
   return nextRequest;
 }

@@ -230,6 +230,16 @@ describe('buildNextTurnParamsContext with models fallback', () => {
       'mistralai/mistral-large-2512',
     ]);
   });
+
+  it('does not synthesize models from model when models was never set', () => {
+    const context = buildNextTurnParamsContext({
+      model: 'anthropic/claude-3',
+      input: 'hello',
+    });
+
+    expect(context.model).toBe('anthropic/claude-3');
+    expect(context.models).toEqual([]);
+  });
 });
 
 describe('applyNextTurnParamsToRequest with models fallback', () => {
