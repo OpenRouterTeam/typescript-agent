@@ -379,6 +379,19 @@ consumer rejects with `StreamStalledError` (`phase`, `timeoutMs`, `elapsedMs`,
 arrived, so re-issuing the request cannot duplicate output. An abort through
 `signal` or `timeoutMs` is reported as itself, never as a stall.
 
+Add `maxStallRetries` (with `firstContentMs`) to re-issue a request that
+stalled before producing any content:
+
+```typescript
+streamTimeout: { firstContentMs: 15_000, maxStallRetries: 1 },
+```
+
+With retries on, each request's stream is held back until its first content
+event, so a discarded attempt never reaches a consumer and a retry cannot
+duplicate output. Pre-content events such as `response.created` therefore
+arrive together with the first content. Stalls after content started are
+never retried.
+
 #### Stream failures
 
 A response stream that fails surfaces as a typed `StreamFailedError` on every

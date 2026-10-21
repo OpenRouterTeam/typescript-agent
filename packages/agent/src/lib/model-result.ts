@@ -63,7 +63,11 @@ import { isStopConditionMet } from './stop-conditions.js';
 import type { StreamReplay, StreamTimeoutOptions } from './stream-runtime.js';
 import {
   applyResponsesStreamWatchdog,
+  awaitFirstContent,
   hasActiveStreamTimeouts,
+  isContentBearingStreamEvent,
+  isTerminalStreamEvent,
+  normalizeStallRetries,
   ReusableReadableStream,
   StreamFailedError,
 } from './stream-runtime.js';
@@ -5349,30 +5353,58 @@ export class ModelResult<
    * by an abort of the composed signal, so a user abort or `timeoutMs`
    * surfaces as itself.
    *
+   * With `streamTimeout.maxStallRetries`, a request that stalls BEFORE any
+   * content is transparently re-issued (see `normalizeStallRetries`). The
+   * stream is held back until its first content-bearing or terminal event,
+   * buffering metadata events, so a discarded attempt never reached any
+   * consumer and the retry cannot duplicate output. Stalls after content
+   * started are never retried.
+   *
    * Returns the raw value (stream or non-streaming response); throws the
    * SDK error on a non-ok result.
    */
   private async sendModelRequest(request: models.ResponsesRequest): Promise<unknown> {
     const timeouts = this.options.streamTimeout;
-    const turnAbort = hasActiveStreamTimeouts(timeouts) ? new AbortController() : undefined;
-    const requestOptions = this.dispatchRequestOptions(turnAbort?.signal);
-    const result = await betaResponsesSend(
-      this.options.client,
-      {
-        responsesRequest: request,
-      },
-      requestOptions,
-    );
-    if (!result.ok) {
-      throw result.error;
+    const maxStallRetries = normalizeStallRetries(timeouts);
+    for (let attempt = 0; ; attempt++) {
+      const turnAbort = hasActiveStreamTimeouts(timeouts) ? new AbortController() : undefined;
+      // Throws the abort reason when the run was aborted, so a retry never
+      // starts after a user abort.
+      const requestOptions = this.dispatchRequestOptions(turnAbort?.signal);
+      const result = await betaResponsesSend(
+        this.options.client,
+        {
+          responsesRequest: request,
+        },
+        requestOptions,
+      );
+      if (!result.ok) {
+        throw result.error;
+      }
+      if (!turnAbort || !timeouts || !isEventStream(result.value)) {
+        return result.value;
+      }
+      const watched = applyResponsesStreamWatchdog(result.value, timeouts, {
+        signal: requestOptions?.signal ?? undefined,
+        onStall: (error) => turnAbort.abort(error),
+      });
+      // Without retries, events flow to consumers in real time.
+      if (maxStallRetries === 0) {
+        return watched;
+      }
+      const outcome = await awaitFirstContent(
+        watched,
+        (event) => isContentBearingStreamEvent(event) || isTerminalStreamEvent(event),
+      );
+      if (outcome.kind === 'live') {
+        return outcome.stream;
+      }
+      if (attempt >= maxStallRetries) {
+        throw outcome.error;
+      }
+      // Pre-content stall with budget left: the watchdog already aborted
+      // this attempt's request; go again.
     }
-    if (!turnAbort || !timeouts || !isEventStream(result.value)) {
-      return result.value;
-    }
-    return applyResponsesStreamWatchdog(result.value, timeouts, {
-      signal: requestOptions?.signal ?? undefined,
-      onStall: (error) => turnAbort.abort(error),
-    });
   }
 
   /**

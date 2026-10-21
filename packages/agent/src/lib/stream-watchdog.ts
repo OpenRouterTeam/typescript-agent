@@ -44,6 +44,19 @@ export type StreamTimeoutOptions = {
    * is `firstContentMs`.
    */
   contentIntervalMs?: number | undefined;
+  /**
+   * How many times to transparently re-issue a request whose stream stalls
+   * BEFORE producing any content (a `first_content` stall). Requires
+   * `firstContentMs`; ignored without it. Stalls after content started are
+   * never retried. Defaults to 0.
+   *
+   * With retries enabled, each request's stream is held back until its
+   * first content-bearing (or terminal) event arrives, and the metadata
+   * events before it are replayed, so a discarded attempt never reaches a
+   * consumer. Pre-content events (`response.created`, item shells) are
+   * therefore delivered late, together with the first content.
+   */
+  maxStallRetries?: number | undefined;
 };
 
 /** Event classification and lifecycle hooks for {@link applyStreamWatchdog}. */
@@ -317,6 +330,113 @@ export function applyResponsesStreamWatchdog(
     onStall: hooks?.onStall,
     signal: hooks?.signal,
   });
+}
+
+/**
+ * Effective pre-content stall retry budget: a non-negative integer, and 0
+ * unless `firstContentMs` is active. Only `first_content` stalls can happen
+ * before any content, so retries without that deadline could never trigger;
+ * they would only delay events by holding the stream back.
+ */
+export function normalizeStallRetries(timeouts: StreamTimeoutOptions | undefined): number {
+  const retries = timeouts?.maxStallRetries;
+  if (
+    retries === undefined ||
+    !Number.isFinite(retries) ||
+    retries <= 0 ||
+    normalizeTimeout(timeouts?.firstContentMs) === undefined
+  ) {
+    return 0;
+  }
+  return Math.floor(retries);
+}
+
+/**
+ * Outcome of {@link awaitFirstContent}. `live` carries a stream that replays
+ * everything observed so far, then the rest of the source. `stalled` means
+ * the watchdog fired before any content: nothing was handed downstream, so
+ * the caller can safely re-issue the request.
+ */
+export type FirstContentOutcome<T> =
+  | {
+      kind: 'live';
+      stream: ReadableStream<T>;
+    }
+  | {
+      kind: 'stalled';
+      error: StreamStalledError;
+    };
+
+/**
+ * Read `source` until an event satisfying `isCommitEvent` arrives (or the
+ * stream closes), buffering everything seen. Pre-content stalls resolve as
+ * `stalled`; any other error (including post-content stalls and aborts)
+ * rejects.
+ */
+export async function awaitFirstContent<T>(
+  source: ReadableStream<T>,
+  isCommitEvent: (event: T) => boolean,
+): Promise<FirstContentOutcome<T>> {
+  const reader = source.getReader();
+  const buffered: T[] = [];
+  try {
+    while (true) {
+      const result = await reader.read();
+      if (result.done) {
+        break;
+      }
+      buffered.push(result.value);
+      if (isCommitEvent(result.value)) {
+        break;
+      }
+    }
+  } catch (error) {
+    if (error instanceof StreamStalledError && !error.receivedAnyContent) {
+      return {
+        kind: 'stalled',
+        error,
+      };
+    }
+    throw error;
+  }
+  return {
+    kind: 'live',
+    stream: replayThenPipe(buffered, reader),
+  };
+}
+
+/**
+ * A pull-based stream that replays `events`, then forwards the rest of
+ * `reader`. Cancelling it cancels the reader (and so the watched source).
+ */
+function replayThenPipe<T>(events: T[], reader: ReadableStreamDefaultReader<T>): ReadableStream<T> {
+  return new ReadableStream<T>(
+    {
+      async pull(controller) {
+        if (events.length > 0) {
+          controller.enqueue(events.shift() as T);
+          return;
+        }
+        try {
+          const result = await reader.read();
+          if (result.done) {
+            controller.close();
+          } else {
+            controller.enqueue(result.value);
+          }
+        } catch (error) {
+          controller.error(error);
+        }
+      },
+      cancel(reason) {
+        events.length = 0;
+        return reader.cancel(reason);
+      },
+    },
+    {
+      highWaterMark: 0,
+    },
+  );
 }
 
 /** True when at least one deadline is enabled (set, finite, > 0). */

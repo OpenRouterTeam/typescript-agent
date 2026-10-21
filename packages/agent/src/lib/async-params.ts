@@ -220,6 +220,12 @@ type BaseCallModelInput<
    *
    * Composes with `signal` and `RequestOptions.timeoutMs`: an abort or a
    * request timeout is reported as itself, never as a stall.
+   *
+   * - `maxStallRetries` (requires `firstContentMs`): re-issue a request that
+   *   stalled before producing any content, up to this many times. The
+   *   stream is held back until its first content event so a discarded
+   *   attempt never reaches a consumer. Stalls after content are never
+   *   retried.
    */
   streamTimeout?: StreamTimeoutOptions;
   /**

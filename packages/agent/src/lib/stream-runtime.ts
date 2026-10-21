@@ -17,4 +17,11 @@ export type { StreamReplay } from './reusable-stream.js';
 export { ReusableReadableStream } from './reusable-stream.js';
 export { StreamFailedError } from './stream-errors.js';
 export type { StreamTimeoutOptions } from './stream-watchdog.js';
-export { applyResponsesStreamWatchdog, hasActiveStreamTimeouts } from './stream-watchdog.js';
+export {
+  applyResponsesStreamWatchdog,
+  awaitFirstContent,
+  hasActiveStreamTimeouts,
+  isContentBearingStreamEvent,
+  isTerminalStreamEvent,
+  normalizeStallRetries,
+} from './stream-watchdog.js';
