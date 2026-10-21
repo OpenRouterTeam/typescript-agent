@@ -7,6 +7,7 @@ import * as z4 from 'zod/v4';
 import type { $ZodObject, $ZodShape } from 'zod/v4/core';
 import type { CallModelInput, ResolvedCallModelInput } from './async-params.js';
 import {
+  fillPrimaryModelFromModels,
   hasAsyncFunctions,
   resolveAsyncFunctions,
   stripToolSetSnapshotMetadata,
@@ -5312,6 +5313,7 @@ export class ModelResult<
   private async resolveRequestForContext(context: TurnContext): Promise<ResolvedCallModelInput> {
     if (hasAsyncFunctions(this.options.request)) {
       const resolved = await resolveAsyncFunctions(this.options.request, context);
+      fillPrimaryModelFromModels(resolved);
       return this.applyResolvedForcedToolChoicePolicy(resolved);
     }
     // Already resolved, extract non-function fields.
@@ -5344,6 +5346,7 @@ export class ModelResult<
       ...rest,
     };
     stripToolSetSnapshotMetadata(resolved);
+    fillPrimaryModelFromModels(resolved);
     return this.applyResolvedForcedToolChoicePolicy(resolved as ResolvedCallModelInput);
   }
 
