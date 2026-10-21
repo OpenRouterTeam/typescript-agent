@@ -15,6 +15,7 @@ import { callModel } from './inner-loop/call-model.js';
 import type { CallModelInput } from './lib/async-params.js';
 import type { ModelResult } from './lib/model-result.js';
 import type { Tool } from './lib/tool-types.js';
+import { AGENT_USER_AGENT } from './lib/user-agent.js';
 
 export type { SDKOptions } from '@openrouter/sdk/lib/config';
 
@@ -74,13 +75,15 @@ export class OpenRouter extends OpenRouterCore {
   constructor(options?: OpenRouterOptions) {
     const { hooks: hooksInput, ...rest } = options ?? {};
     const hooks = buildSDKHooks(hooksInput);
-    super(
-      hooks === undefined
-        ? rest
-        : Object.assign({}, rest, {
+    super({
+      ...rest,
+      userAgent: rest.userAgent ?? AGENT_USER_AGENT,
+      ...(hooks === undefined
+        ? {}
+        : {
             hooks,
           }),
-    );
+    });
   }
 
   callModel = <
