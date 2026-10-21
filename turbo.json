@@ -11,7 +11,7 @@
     "gen:version": {
       "cache": false,
       "inputs": ["package.json"],
-      "outputs": ["src/version.ts"]
+      "outputs": ["src/mcp/version.ts"]
     },
     "typecheck": {
       "dependsOn": ["^build"],

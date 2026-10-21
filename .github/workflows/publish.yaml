@@ -203,7 +203,7 @@ jobs:
           commit: 'chore: version packages'
           # `pnpm run version`, not `changeset version` directly: the bump has
           # to be followed by `turbo run gen:version` so committed generated
-          # files (packages/mcp/src/version.ts) are regenerated in the same
+          # files (packages/agent/src/mcp/version.ts) are regenerated in the same
           # commit. Otherwise the Version PR ships a package.json at the new
           # version and a version.ts at the old one, and version.test.ts fails
           # on it — turbo's `test` task uses `dependsOn: ["^build"]`, which
