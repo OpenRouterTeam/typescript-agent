@@ -52,6 +52,35 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
+      # Every alert below is a no-op when the Slack secrets are unset — it
+      # just logs "(slack not configured; would have posted)" inside a step
+      # nobody reads, which is how 15 consecutive red train runs (2026-09/10)
+      # went unnoticed. Surface that as a run annotation + job summary on
+      # every run, and (final step) a loud summary when a run fails unalerted.
+      # Warning, not failure: a missing Slack config must not itself block
+      # releases.
+      - name: Check Slack alerting config
+        id: slack-config
+        env:
+          SLACK_BOT_TOKEN: ${{ secrets.CI_RELEASE_ALERT_SLACK_BOT_TOKEN }}
+          SLACK_CHANNEL_ID: ${{ secrets.CI_RELEASE_ALERT_SLACK_CHANNEL_ID }}
+        run: |
+          set -euo pipefail
+          missing=()
+          [ -n "${SLACK_BOT_TOKEN:-}" ] || missing+=(CI_RELEASE_ALERT_SLACK_BOT_TOKEN)
+          [ -n "${SLACK_CHANNEL_ID:-}" ] || missing+=(CI_RELEASE_ALERT_SLACK_CHANNEL_ID)
+          if [ "${#missing[@]}" -eq 0 ]; then
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "configured=false" >> "$GITHUB_OUTPUT"
+          echo "::warning title=Release train alerts are disabled::Secret(s) ${missing[*]} are empty, so release-train failures will NOT be posted to Slack."
+          {
+            echo "### :warning: Release train Slack alerting is not configured"
+            echo
+            echo "Empty secret(s): \`${missing[*]}\`. Failures of this unattended workflow will not page anyone."
+          } >> "$GITHUB_STEP_SUMMARY"
+
       # Short-lived App installation token (same App as publish.yaml /
       # bump-openrouter-sdk.yaml). Replaces the old GH_TOKEN PAT, which the
       # enterprise's 366-day-lifetime policy started rejecting — that outage
@@ -268,3 +297,15 @@ jobs:
         run: |
           chmod +x .github/scripts/pr-gate.sh
           ./.github/scripts/pr-gate.sh
+
+      - name: Flag unalerted failure
+        if: failure() && steps.slack-config.outputs.configured != 'true'
+        env:
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          echo "::error title=Release train failed with no Slack alert::This run failed and Slack alerting is not configured, so nobody was paged. Releases may be stalled. ${RUN_URL}"
+          {
+            echo "### :rotating_light: Release train FAILED — nobody was alerted"
+            echo
+            echo "Slack secrets are empty, so the failure alert above was only logged. Check the failed step, and configure \`CI_RELEASE_ALERT_SLACK_BOT_TOKEN\` / \`CI_RELEASE_ALERT_SLACK_CHANNEL_ID\`."
+          } >> "$GITHUB_STEP_SUMMARY"

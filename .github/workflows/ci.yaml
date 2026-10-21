@@ -39,6 +39,12 @@ jobs:
       - name: Biome check
         run: pnpm run lint
 
+      # Offline self-test of the release train's Version PR scope gate: fails
+      # here if a gen:version output moves and the derived allowlist breaks,
+      # rather than on every unattended train run afterwards.
+      - name: Release scope gate self-test
+        run: bash .github/scripts/verify-version-pr-scope.sh --self-test
+
   typecheck:
     runs-on: ubuntu-latest
     steps:
