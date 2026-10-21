@@ -397,4 +397,49 @@ describe('openui() plugin helper', () => {
     expect(divider?.props).toBeUndefined();
     expect(divider?.description).toBeUndefined();
   });
+
+  it('reflects library mutations made after an earlier call', () => {
+    const mutable = createLibrary(
+      [
+        defineComponent({
+          name: 'Note',
+          props: z.object({
+            text: z.string(),
+          }),
+        }),
+      ],
+      {
+        dialect: 'first',
+      },
+    );
+    const first = openui(mutable);
+
+    mutable.dialect = 'second';
+    const note = mutable.components.get('Note');
+    if (note) {
+      note.description = 'Added later';
+      note.props = z.object({
+        text: z.string(),
+        tone: z.string(),
+      });
+    }
+
+    const second = openui(mutable);
+    expect(second).not.toBe(first);
+    expect(second.dialect).toBe('second');
+    expect(second.library[0]?.description).toBe('Added later');
+    expect(
+      Object.keys(
+        (
+          second.library[0]?.props as {
+            properties: object;
+          }
+        ).properties,
+      ),
+    ).toEqual([
+      'text',
+      'tone',
+    ]);
+    expect(first.dialect).toBe('first');
+  });
 });

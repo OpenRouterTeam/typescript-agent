@@ -29,16 +29,15 @@ export interface OpenUiPlugin {
   dialect?: string;
 }
 
-/*
- * Libraries are immutable after `createLibrary`, so the wire shape (including
- * the Zod→JSON-Schema conversion per component) is computed once per library
- * rather than once per request — `plugins: [openui(library)]` inline per call
- * is the documented usage.
- */
-const wireCache = new WeakMap<UiLibrary, OpenUiPlugin>();
-
 /**
  * Build the `openui` plugin preference from a component library.
+ *
+ * The wire shape is rebuilt on every call. `UiLibrary` and its component
+ * definitions are plain mutable objects, so caching the first payload would
+ * keep sending a stale library after a mutation while `fragment(library)`
+ * already sees the new one. The Zod-to-JSON-Schema conversion is cheap
+ * next to a model request. Hoist `openui(library)` out of the call site if
+ * you want to reuse one payload.
  *
  * @example
  * ```typescript
@@ -50,16 +49,6 @@ const wireCache = new WeakMap<UiLibrary, OpenUiPlugin>();
  * ```
  */
 export function openui(library: UiLibrary): OpenUiPlugin {
-  const cached = wireCache.get(library);
-  if (cached) {
-    return cached;
-  }
-  const plugin = buildPlugin(library);
-  wireCache.set(library, plugin);
-  return plugin;
-}
-
-function buildPlugin(library: UiLibrary): OpenUiPlugin {
   return {
     id: 'openui',
     library: [
