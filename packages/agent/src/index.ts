@@ -227,6 +227,7 @@ export {
   getUnsupportedContentSummary,
   hasUnsupportedContent,
 } from './lib/stream-transformers.js';
+export type { StreamTimeoutOptions } from './lib/stream-watchdog.js';
 export type {
   BuiltDeferredTool,
   DeferredToolMethods,

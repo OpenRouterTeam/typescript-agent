@@ -92,6 +92,8 @@ import {
   isResponseIncompleteEvent,
   isServerToolResultItem,
 } from './stream-type-guards.js';
+import type { StreamTimeoutOptions } from './stream-watchdog.js';
+import { applyResponsesStreamWatchdog, hasActiveStreamTimeouts } from './stream-watchdog.js';
 import type { ContextInput, ToolExecutionExtras } from './tool-context.js';
 import { resolveContext, ToolContextStore } from './tool-context.js';
 import { ToolEventBroadcaster } from './tool-event-broadcaster.js';
@@ -509,6 +511,11 @@ export interface GetResponseOptions<
    * semantics (bounds the round's wait, not the tool body).
    */
   toolTimeoutMs?: number;
+  /**
+   * Opt-in stalled-stream detection, armed per model request. See
+   * `CallModelInput.streamTimeout`.
+   */
+  streamTimeout?: StreamTimeoutOptions;
   /**
    * Concurrency limits for tool execution. A bare number is shorthand for
    * `{ round: n }`. `round` bounds simultaneous executions within a tool
@@ -1135,6 +1142,9 @@ export class ModelResult<
       }
       broadcaster.complete();
     });
+    // Attach an immediate rejection handler so early consumer exit (such as an abort)
+    // does not leave executionPromise as an unhandled promise rejection.
+    void executionPromise.catch(() => {});
     return {
       consumer,
       executionPromise,
@@ -4902,19 +4912,8 @@ export class ModelResult<
 
     this.beginToolChoiceDispatch(newRequest.toolChoice);
     const startedAt = performance.now();
-    const newResult = await betaResponsesSend(
-      this.options.client,
-      {
-        responsesRequest: newRequest,
-      },
-      this.dispatchRequestOptions(),
-    );
-
-    if (!newResult.ok) {
-      throw newResult.error;
-    }
-
-    const response = await this.materializeResponse(newResult.value, turnNumber);
+    const newValue = await this.sendModelRequest(newRequest);
+    const response = await this.materializeResponse(newValue, turnNumber);
     this.commitToolChoiceDispatch(responseHasToolCalls(response));
     await this.emitPostModelCall(response, startedAt, 'tool_round', turnNumber);
     return response;
@@ -5204,19 +5203,8 @@ export class ModelResult<
     this.resolvedRequest = finalRequest;
 
     const startedAt = performance.now();
-    const result = await betaResponsesSend(
-      this.options.client,
-      {
-        responsesRequest: finalRequest,
-      },
-      this.dispatchRequestOptions(),
-    );
-
-    if (!result.ok) {
-      throw result.error;
-    }
-
-    const response = await this.materializeResponse(result.value, turnNumber);
+    const finalValue = await this.sendModelRequest(finalRequest);
+    const response = await this.materializeResponse(finalValue, turnNumber);
     await this.emitPostModelCall(response, startedAt, 'final', turnNumber);
     return response;
   }
@@ -5290,19 +5278,8 @@ export class ModelResult<
     };
 
     const startedAt = performance.now();
-    const newResult = await betaResponsesSend(
-      this.options.client,
-      {
-        responsesRequest: newRequest,
-      },
-      this.dispatchRequestOptions(),
-    );
-
-    if (!newResult.ok) {
-      throw newResult.error;
-    }
-
-    const response = await this.materializeResponse(newResult.value, turnNumber);
+    const newValue = await this.sendModelRequest(newRequest);
+    const response = await this.materializeResponse(newValue, turnNumber);
     await this.emitPostModelCall(response, startedAt, 'retry', turnNumber);
     return response;
   }
@@ -5322,17 +5299,22 @@ export class ModelResult<
    * Also the per-request fail-fast checkpoint: an already-aborted run
    * signal throws its abort reason here, before any network I/O.
    */
-  private dispatchRequestOptions(): RequestOptions | undefined {
+  private dispatchRequestOptions(turnSignal?: AbortSignal): RequestOptions | undefined {
     const base = this.options.options;
     const runSignal = this.options.signal;
-    if (!runSignal) {
+    if (!runSignal && !turnSignal) {
       return base;
     }
-    runSignal.throwIfAborted();
+    runSignal?.throwIfAborted();
 
-    const signals: AbortSignal[] = [
-      runSignal,
-    ];
+    const signals: AbortSignal[] = [];
+    if (runSignal) {
+      signals.push(runSignal);
+    }
+    // Per-request watchdog controller (see sendModelRequest).
+    if (turnSignal) {
+      signals.push(turnSignal);
+    }
     const callerSignal = base?.signal ?? base?.fetchOptions?.signal;
     if (callerSignal) {
       signals.push(callerSignal);
@@ -5346,8 +5328,48 @@ export class ModelResult<
     }
     return {
       ...base,
-      signal: signals.length === 1 ? runSignal : AbortSignal.any(signals),
+      signal: signals.length === 1 && signals[0] ? signals[0] : AbortSignal.any(signals),
     };
+  }
+
+  /**
+   * Dispatch one model request: the single entry point for every
+   * betaResponsesSend call of the run (initial, tool-round follow-up, final,
+   * retry, resume), so stall deadlines re-arm per request.
+   *
+   * With `streamTimeout` configured, the request gets its own
+   * AbortController (composed with the run signal, caller signal and
+   * timeoutMs by `dispatchRequestOptions`), and a streaming value is wrapped
+   * in the watchdog. On a stall the watchdog aborts that controller, tearing
+   * down the hung connection, and the stream errors with StreamStalledError,
+   * which every consumer of the turn then observes. The watchdog is disarmed
+   * by an abort of the composed signal, so a user abort or `timeoutMs`
+   * surfaces as itself.
+   *
+   * Returns the raw value (stream or non-streaming response); throws the
+   * SDK error on a non-ok result.
+   */
+  private async sendModelRequest(request: models.ResponsesRequest): Promise<unknown> {
+    const timeouts = this.options.streamTimeout;
+    const turnAbort = hasActiveStreamTimeouts(timeouts) ? new AbortController() : undefined;
+    const requestOptions = this.dispatchRequestOptions(turnAbort?.signal);
+    const result = await betaResponsesSend(
+      this.options.client,
+      {
+        responsesRequest: request,
+      },
+      requestOptions,
+    );
+    if (!result.ok) {
+      throw result.error;
+    }
+    if (!turnAbort || !timeouts || !isEventStream(result.value)) {
+      return result.value;
+    }
+    return applyResponsesStreamWatchdog(result.value, timeouts, {
+      signal: requestOptions?.signal ?? undefined,
+      onStall: (error) => turnAbort.abort(error),
+    });
   }
 
   /**
@@ -5383,6 +5405,7 @@ export class ModelResult<
       streamReplay: _sr,
       signal: _sig,
       toolTimeoutMs: _ttm,
+      streamTimeout: _st,
       toolConcurrency: _tc,
       asyncTools: _at,
       activeTools: _activeTools,
@@ -5969,17 +5992,7 @@ export class ModelResult<
 
       // Make the API request
       this.beginToolChoiceDispatch(request.toolChoice);
-      const apiResult = await betaResponsesSend(
-        this.options.client,
-        {
-          responsesRequest: request,
-        },
-        this.dispatchRequestOptions(),
-      );
-
-      if (!apiResult.ok) {
-        throw apiResult.error;
-      }
+      const apiValue = await this.sendModelRequest(request);
 
       // Stash fresh user items so saveResponseToState can persist them
       // atomically with the assistant output. Writing them here would leave
@@ -5991,11 +6004,11 @@ export class ModelResult<
 
       // Handle both streaming and non-streaming responses
       // The API may return a non-streaming response even when stream: true is requested
-      if (isEventStream(apiResult.value)) {
-        this.setReusableStream(apiResult.value);
-      } else if (this.isNonStreamingResponse(apiResult.value)) {
+      if (isEventStream(apiValue)) {
+        this.setReusableStream(apiValue);
+      } else if (this.isNonStreamingResponse(apiValue)) {
         // API returned a complete response directly - use it as the final response
-        this.finalResponse = apiResult.value;
+        this.finalResponse = apiValue;
         await this.emitPendingModelCallOnce(this.finalResponse);
       } else {
         throw new Error('Unexpected response type from API');
@@ -6285,23 +6298,13 @@ export class ModelResult<
 
     // Make the API request
     this.beginToolChoiceDispatch(request.toolChoice);
-    const apiResult = await betaResponsesSend(
-      this.options.client,
-      {
-        responsesRequest: request,
-      },
-      this.dispatchRequestOptions(),
-    );
-
-    if (!apiResult.ok) {
-      throw apiResult.error;
-    }
+    const apiValue = await this.sendModelRequest(request);
 
     // Handle both streaming and non-streaming responses
-    if (isEventStream(apiResult.value)) {
-      this.setReusableStream(apiResult.value);
-    } else if (this.isNonStreamingResponse(apiResult.value)) {
-      this.finalResponse = apiResult.value;
+    if (isEventStream(apiValue)) {
+      this.setReusableStream(apiValue);
+    } else if (this.isNonStreamingResponse(apiValue)) {
+      this.finalResponse = apiValue;
       await this.emitPendingModelCallOnce(this.finalResponse);
     } else {
       throw new Error('Unexpected response type from API');

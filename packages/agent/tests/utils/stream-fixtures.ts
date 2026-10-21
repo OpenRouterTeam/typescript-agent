@@ -191,6 +191,8 @@ export interface ControlledStream<T> {
   error: (reason: unknown) => void;
   readonly cancelled: boolean;
   readonly cancelReason: unknown;
+  /** Closed, errored or cancelled: the source is torn down either way. */
+  readonly finished: boolean;
 }
 
 export function controlledStream<T = models.StreamEvents>(initial: T[] = []): ControlledStream<T> {
@@ -238,6 +240,9 @@ export function controlledStream<T = models.StreamEvents>(initial: T[] = []): Co
     },
     get cancelReason() {
       return cancelReason;
+    },
+    get finished() {
+      return done;
     },
   };
 }
