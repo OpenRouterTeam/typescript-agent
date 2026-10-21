@@ -442,11 +442,16 @@ export interface BaseToolFunction<
   /**
    * JSON Schema sent to the model. Explicit caller intent always wins: when
    * supplied, this overrides both Zod's z.toJSONSchema fast path and the
-   * StandardJSONSchemaV1 trait. Compile-time required for validation-only
-   * non-Zod input schemas (Standard Schema v1 standardizes validation and
-   * inference, but not JSON Schema generation).
+   * StandardJSONSchemaV1 trait. The SDK forwards it as-is apart from removing
+   * `~`-prefixed metadata keys. `inputSchema` still validates arguments
+   * before `execute` runs, so keep the two in agreement.
+   *
+   * Compile-time required for validation-only non-Zod input schemas
+   * (Standard Schema v1 standardizes validation and inference, but not JSON
+   * Schema generation). Also useful for constructs Zod cannot serialize, or
+   * when the caller already owns a JSON Schema and wants to skip conversion.
    */
-  inputJsonSchema?: Record<string, unknown>;
+  readonly wireInputSchema?: Readonly<Record<string, unknown>>;
   /**
    * Whether providers should enforce strict schema adherence when generating
    * this tool's call arguments (OpenAI structured-outputs style). Serialized
@@ -1242,7 +1247,7 @@ export interface ToolExecutionResult<T extends Tool> {
         : unknown; // Final result (sent to model)
   preliminaryResults?: T extends ToolWithGenerator<ObjectSchema, infer E>
     ? InferSchemaOutput<E>[]
-    : undefined; // All yielded values from generator
+    : undefined; // Kept for type compatibility; no longer populated
   error?: Error;
 }
 
@@ -1394,6 +1399,7 @@ export type ToolResultEvent<
   source: 'client' | 'mcp';
   result: TResult;
   timestamp: number;
+  /** Kept for type compatibility; the runtime no longer copies every yield here. */
   preliminaryResults?: TPreliminaryResults[];
 };
 

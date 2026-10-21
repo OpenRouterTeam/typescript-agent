@@ -188,7 +188,7 @@ Input JSON Schema generation uses three tiers:
 
 1. Zod v4 stays on the existing `z.toJSONSchema(..., { target: 'draft-7' })` fast path, including Zod versions older than 4.2.
 2. Other validators can implement the [Standard JSON Schema v1](https://standardschema.dev/json-schema) companion trait. The agent calls `schema['~standard'].jsonSchema.input({ target: 'draft-07' })`.
-3. `inputJsonSchema` is the explicit escape hatch and overrides the trait when supplied. It is also the fallback when a trait converter throws.
+3. `wireInputSchema` is the explicit escape hatch and overrides the trait when supplied. It is also the fallback when a trait converter throws.
 
 Zod 4.2+, ArkType 2.1.28+, Zod Mini, VineJS, and Sury implement the trait natively. Valibot schemas can opt in with `toStandardJsonSchema()`:
 
@@ -204,7 +204,7 @@ const searchTool = tool({
 });
 ```
 
-Validation-only Standard Schema inputs must provide `inputJsonSchema`. Output, event, and context schemas are validated locally and never sent to the model. The agent sanitizes generated and supplied JSON Schema before the SDK boundary, including removing `~`-prefixed metadata keys. Standard Schema validators may validate synchronously or asynchronously. Initial context validation supports asynchronous validators; synchronous context mutation methods (`ctx.setContext()` and `ctx.setSharedContext()`) require a synchronous validator.
+Validation-only Standard Schema inputs must provide `wireInputSchema`. Output, event, and context schemas are validated locally and never sent to the model. The agent sanitizes generated and supplied JSON Schema before the SDK boundary, including removing `~`-prefixed metadata keys. Standard Schema validators may validate synchronously or asynchronously. Initial context validation supports asynchronous validators; synchronous context mutation methods (`ctx.setContext()` and `ctx.setSharedContext()`) require a synchronous validator.
 
 **Regular tools** — automatically executed by the agent loop:
 
@@ -243,6 +243,14 @@ const analysisTool = tool({
 const confirmTool = tool({
   name: 'confirm_action',
   inputSchema: z.object({ action: z.string() }),
+  // Forward an existing JSON Schema without converting it through Zod.
+  wireInputSchema: {
+    type: 'object',
+    properties: {
+      action: { type: 'string' },
+    },
+    required: ['action'],
+  },
   execute: false,
 });
 ```
@@ -1089,16 +1097,27 @@ const searchTool = tool({
 Convert between OpenRouter and other message formats:
 
 ```typescript
-import { toClaudeMessage, fromClaudeMessages } from '@openrouter/agent';
-import { toChatMessage, fromChatMessages } from '@openrouter/agent';
+import {
+  callModel,
+  fromChatMessages,
+  fromClaudeMessages,
+  toChatMessage,
+  toClaudeMessage,
+  type Item,
+} from '@openrouter/agent';
 
-// Anthropic Claude format
+// Both converters return Item-compatible input arrays accepted by callModel.
+const claudeInput: Item[] = fromClaudeMessages(claudeMessages);
+const chatInput: Item[] = fromChatMessages(chatMessages);
+
+const result = callModel(client, {
+  model: 'openai/gpt-4o-mini',
+  input: chatInput,
+});
+
+// Assistant toolCalls become function_call items in chatInput.
 const claudeMsg = toClaudeMessage(openRouterMessage);
-const orMessages = fromClaudeMessages(claudeMessages);
-
-// Standard Chat format
 const chatMsg = toChatMessage(openRouterMessage);
-const orMessages2 = fromChatMessages(chatMessages);
 ```
 
 # Tool Sets

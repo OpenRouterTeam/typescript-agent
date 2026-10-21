@@ -18,7 +18,7 @@ export type ObjectSchema =
   | StandardSchemaV1<unknown, Record<string, unknown>>;
 
 /**
- * Tool config shape for the input schema. `inputJsonSchema` — the JSON
+ * Tool config shape for the input schema. `wireInputSchema` — the JSON
  * Schema sent to the model — is optional when the validator can produce one
  * itself (Zod via z.toJSONSchema, or the StandardJSONSchemaV1 trait) and
  * required at compile time for validation-only non-Zod input schemas. When
@@ -28,10 +28,10 @@ export type InputSchemaConfig<TInput extends ObjectSchema> = {
   inputSchema: TInput;
 } & (TInput extends $ZodObject<$ZodShape> | StandardJSONSchemaV1
   ? {
-      inputJsonSchema?: Record<string, unknown>;
+      readonly wireInputSchema?: Readonly<Record<string, unknown>>;
     }
   : {
-      inputJsonSchema: Record<string, unknown>;
+      readonly wireInputSchema: Readonly<Record<string, unknown>>;
     });
 
 /** Infer the input (pre-validation) type of a Zod or Standard Schema v1 schema. */

@@ -335,7 +335,7 @@ export function agentToolBuilder<
   };
   const optionalFields = [
     'description',
-    'inputJsonSchema',
+    'wireInputSchema',
     'strict',
     'contextSchema',
     'nextTurnParams',

@@ -47,7 +47,7 @@ const standardTool = tool({
       v.transform((value) => value.length),
     ),
   }),
-  inputJsonSchema: {
+  wireInputSchema: {
     type: 'object',
     properties: {
       value: {
@@ -95,7 +95,7 @@ expectTypeOf<InferToolInput<typeof standardTool>>().toEqualTypeOf<{
   value: number;
 }>();
 
-// Zod keeps its built-in JSON Schema conversion and needs no inputJsonSchema.
+// Zod keeps its built-in JSON Schema conversion and needs no wireInputSchema.
 const zodTool = tool({
   name: 'zod',
   inputSchema: z.object({

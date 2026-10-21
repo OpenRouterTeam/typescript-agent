@@ -27,7 +27,7 @@ const inputSchema = v.object({
 const outputSchema = v.object({
   greeting: v.string(),
 });
-const inputJsonSchema = {
+const wireInputSchema = {
   type: 'object',
   properties: {
     name: {
@@ -94,7 +94,7 @@ describe('Standard Schema tool support', () => {
     const valibotTool = tool({
       name: 'valibot_tool',
       inputSchema,
-      inputJsonSchema,
+      wireInputSchema,
       outputSchema,
       execute: ({ name }) => ({
         greeting: `Hello ${name}`,
@@ -119,7 +119,7 @@ describe('Standard Schema tool support', () => {
     const valibotTool = tool({
       name: 'valibot_tool',
       inputSchema,
-      inputJsonSchema,
+      wireInputSchema,
       execute: () => null,
     });
 
@@ -137,7 +137,7 @@ describe('Standard Schema tool support', () => {
     );
   });
 
-  it('converts the StandardJSONSchemaV1 trait without inputJsonSchema', () => {
+  it('converts the StandardJSONSchemaV1 trait without wireInputSchema', () => {
     const schema = toStandardJsonSchema(inputSchema);
     const valibotTool = tool({
       name: 'standard_json_schema',
@@ -183,10 +183,10 @@ describe('Standard Schema tool support', () => {
       convertToolsToAPIFormat([
         valibotTool,
       ]),
-    ).toThrow('must implement StandardJSONSchemaV1 or provide inputJsonSchema');
+    ).toThrow('must implement StandardJSONSchemaV1 or provide wireInputSchema');
   });
 
-  it('accepts explicit inputJsonSchema when the trait converter would throw', () => {
+  it('accepts explicit wireInputSchema when the trait converter would throw', () => {
     const schema = {
       ...inputSchema,
       '~standard': {
@@ -204,7 +204,7 @@ describe('Standard Schema tool support', () => {
     const valibotTool = tool({
       name: 'throwing_standard_json_schema',
       inputSchema: schema,
-      inputJsonSchema,
+      wireInputSchema,
       execute: () => null,
     });
 
@@ -220,7 +220,7 @@ describe('Standard Schema tool support', () => {
     });
   });
 
-  it('prefers explicit inputJsonSchema over the trait', () => {
+  it('prefers explicit wireInputSchema over the trait', () => {
     let converted = false;
     const schema = {
       ...inputSchema,
@@ -243,7 +243,7 @@ describe('Standard Schema tool support', () => {
     const valibotTool = tool({
       name: 'overridden_standard_json_schema',
       inputSchema: schema,
-      inputJsonSchema: {
+      wireInputSchema: {
         type: 'object',
         title: 'explicit',
       },
@@ -265,7 +265,7 @@ describe('Standard Schema tool support', () => {
     const valibotTool = tool({
       name: 'valibot_tool',
       inputSchema,
-      inputJsonSchema,
+      wireInputSchema,
       execute: () => null,
     });
 
@@ -303,7 +303,7 @@ describe('Standard Schema tool support', () => {
       convertToolsToAPIFormat([
         valibotTool,
       ]),
-    ).toThrow('must implement StandardJSONSchemaV1 or provide inputJsonSchema');
+    ).toThrow('must implement StandardJSONSchemaV1 or provide wireInputSchema');
   });
 
   it('awaits async Standard Schema validation', async () => {
@@ -330,7 +330,7 @@ describe('Standard Schema tool support', () => {
     const asyncTool = tool({
       name: 'async_validator',
       inputSchema: asyncSchema,
-      inputJsonSchema: {
+      wireInputSchema: {
         type: 'string',
       },
       execute: (length) => length * 2,
@@ -344,7 +344,7 @@ describe('Standard Schema tool support', () => {
     const invalidOutputTool = tool({
       name: 'invalid_output',
       inputSchema,
-      inputJsonSchema,
+      wireInputSchema,
       outputSchema,
       execute: () => ({
         greeting: 123 as unknown as string,
@@ -400,7 +400,7 @@ describe('Standard Schema tool support', () => {
     const contextTool = tool({
       name: 'async_context',
       inputSchema,
-      inputJsonSchema,
+      wireInputSchema,
       contextSchema,
       execute: (_input, ctx) => ctx!.local.token,
     });
@@ -458,7 +458,7 @@ describe('Standard Schema tool support', () => {
     const generator = tool({
       name: 'generator',
       inputSchema,
-      inputJsonSchema,
+      wireInputSchema,
       eventSchema: v.object({
         progress: v.number(),
       }),
@@ -473,14 +473,16 @@ describe('Standard Schema tool support', () => {
       },
     });
 
+    const preliminary: unknown[] = [];
     const result = await executeGeneratorTool(
       generator,
       call('generator', {
         name: 'luke',
       }),
       context,
+      (_id, value) => preliminary.push(value),
     );
-    expect(result.preliminaryResults).toEqual([
+    expect(preliminary).toEqual([
       {
         progress: 1,
       },
@@ -525,7 +527,7 @@ describe('Standard Schema tool support', () => {
     const asyncTool = tool({
       name: 'thenable_tool',
       inputSchema: thenableSchema,
-      inputJsonSchema: {
+      wireInputSchema: {
         type: 'object',
       },
       execute: () => 'ok',
@@ -594,7 +596,7 @@ describe('Standard Schema tool support', () => {
     const contextTool = tool({
       name: 'convert',
       inputSchema,
-      inputJsonSchema,
+      wireInputSchema,
       contextSchema,
       execute: (_input, execCtx) => execCtx!.local.n,
     });
@@ -669,13 +671,13 @@ describe('Standard Schema tool support', () => {
     });
   });
 
-  it('prefers an explicit inputJsonSchema for Zod tools too', () => {
+  it('prefers an explicit wireInputSchema for Zod tools too', () => {
     const zodTool = tool({
       name: 'zod_explicit',
       inputSchema: z.object({
         value: z.string(),
       }),
-      inputJsonSchema: {
+      wireInputSchema: {
         type: 'object',
         title: 'explicit',
       },

@@ -569,8 +569,8 @@ export function tool(
     const fn: HITLTool<ObjectSchema, Schema>['function'] = {
       name: config.name,
       inputSchema: config.inputSchema,
-      ...(config.inputJsonSchema !== undefined && {
-        inputJsonSchema: config.inputJsonSchema,
+      ...(config.wireInputSchema !== undefined && {
+        wireInputSchema: config.wireInputSchema,
       }),
       outputSchema: config.outputSchema,
       onToolCalled: config.onToolCalled,
@@ -633,8 +633,8 @@ export function tool(
     const fn: ManualTool<ObjectSchema>['function'] = {
       name: config.name,
       inputSchema: config.inputSchema,
-      ...(config.inputJsonSchema !== undefined && {
-        inputJsonSchema: config.inputJsonSchema,
+      ...(config.wireInputSchema !== undefined && {
+        wireInputSchema: config.wireInputSchema,
       }),
     };
 
@@ -687,8 +687,8 @@ export function tool(
     const fn = {
       name: config.name,
       inputSchema: config.inputSchema,
-      ...(config.inputJsonSchema !== undefined && {
-        inputJsonSchema: config.inputJsonSchema,
+      ...(config.wireInputSchema !== undefined && {
+        wireInputSchema: config.wireInputSchema,
       }),
       eventSchema: config.eventSchema,
       outputSchema: config.outputSchema,
@@ -747,8 +747,8 @@ export function tool(
   const functionObj = {
     name: config.name,
     inputSchema: config.inputSchema,
-    ...(config.inputJsonSchema !== undefined && {
-      inputJsonSchema: config.inputJsonSchema,
+    ...(config.wireInputSchema !== undefined && {
+      wireInputSchema: config.wireInputSchema,
     }),
     execute: config.execute,
     ...(config.description !== undefined && {
@@ -880,7 +880,7 @@ function assignCommonToolFields(
 ): void {
   const fields = [
     'description',
-    'inputJsonSchema',
+    'wireInputSchema',
     'strict',
     'contextSchema',
     'nextTurnParams',

@@ -5,6 +5,7 @@
     "src/**/*.ts",
     "tests/unit/context-schema-inference.test-d.ts",
     "tests/unit/standard-schema-inference.test-d.ts",
+    "tests/unit/manual-tool-wire-schema.test-d.ts",
     "tests/unit/message-compat-types.test-d.ts",
     "tests/unit/filter-tools-by-ids.test-d.ts",
     "tests/unit/has-approval-tools.test-d.ts",

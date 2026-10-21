@@ -100,7 +100,7 @@ export function convertZodToJsonSchema(zodSchema: Schema): Record<string, unknow
 
 export function convertSchemaToJsonSchema(
   schema: Schema,
-  jsonSchema?: Record<string, unknown>,
+  jsonSchema?: Readonly<Record<string, unknown>>,
 ): Record<string, unknown> {
   // Explicit caller intent always wins — including for Zod, where
   // z4.toJSONSchema throws on unrepresentable constructs (z.custom(),
@@ -116,7 +116,7 @@ export function convertSchemaToJsonSchema(
     return sanitizeJsonSchema(standardJsonSchema);
   }
   throw new Error(
-    'Non-Zod inputSchema must implement StandardJSONSchemaV1 or provide inputJsonSchema.',
+    'Non-Zod inputSchema must implement StandardJSONSchemaV1 or provide wireInputSchema.',
   );
 }
 
@@ -144,7 +144,7 @@ export function convertToolsToAPIFormat(
       strict: tool.function.strict ?? null,
       parameters: convertSchemaToJsonSchema(
         tool.function.inputSchema,
-        tool.function.inputJsonSchema,
+        tool.function.wireInputSchema,
       ),
     };
     return apiTool;
@@ -359,7 +359,6 @@ export async function executeGeneratorTool(
       extras,
     );
 
-    const preliminaryResults: unknown[] = [];
     let finalResult: unknown;
     let hasFinalResult = false;
     let lastEmittedValue: unknown;
@@ -381,7 +380,6 @@ export async function executeGeneratorTool(
         hasFinalResult = true;
       } else {
         const validatedPreliminary = await validateToolOutput(tool.function.eventSchema, event);
-        preliminaryResults.push(validatedPreliminary);
         if (onPreliminaryResult) {
           onPreliminaryResult(toolCall.id, validatedPreliminary);
         }
@@ -409,7 +407,6 @@ export async function executeGeneratorTool(
       toolName: toolCall.name,
       source,
       result: finalResult,
-      preliminaryResults,
     };
   } catch (error) {
     return {

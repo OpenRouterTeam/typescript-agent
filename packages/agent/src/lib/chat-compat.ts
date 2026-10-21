@@ -6,7 +6,22 @@ import {
   EasyInputMessageRoleSystem,
   EasyInputMessageRoleUser,
 } from '@openrouter/sdk/models/easyinputmessage';
+import type {
+  NewAssistantMessageItem,
+  NewDeveloperMessageItem,
+  NewSystemMessageItem,
+  NewUserMessageItem,
+} from './item-types.js';
 import { extractMessageFromResponse } from './stream-transformers.js';
+
+/** An OpenResponses input item emitted by {@link fromChatMessages}. */
+export type ChatMessageInputItem =
+  | NewUserMessageItem
+  | NewSystemMessageItem
+  | NewAssistantMessageItem
+  | NewDeveloperMessageItem
+  | models.FunctionCallOutputItem
+  | models.OutputFunctionCallItem;
 
 /**
  * Type guard for ChatToolMessage
@@ -23,20 +38,37 @@ function isAssistantMessage(msg: models.ChatMessages): msg is models.ChatAssista
 }
 
 /**
- * Maps chat role strings to OpenResponses role types
+ * Builds a new (id-less) message item with its `role` narrowed to a single
+ * literal, so the result is assignable to a concrete member of the `Item`
+ * union. Mapping to the wide `EasyInputMessageRoleUnion` is not enough:
+ * TypeScript will not distribute a union-typed `role` across the per-role
+ * members of `Item`.
  */
-function mapChatRole(
+function createMessageItem(
   role: 'user' | 'system' | 'assistant' | 'developer',
-): models.EasyInputMessageRoleUnion {
+  content: string,
+): NewUserMessageItem | NewSystemMessageItem | NewAssistantMessageItem | NewDeveloperMessageItem {
   switch (role) {
     case 'user':
-      return EasyInputMessageRoleUser.User;
+      return {
+        role: EasyInputMessageRoleUser.User,
+        content,
+      };
     case 'system':
-      return EasyInputMessageRoleSystem.System;
+      return {
+        role: EasyInputMessageRoleSystem.System,
+        content,
+      };
     case 'assistant':
-      return EasyInputMessageRoleAssistant.Assistant;
+      return {
+        role: EasyInputMessageRoleAssistant.Assistant,
+        content,
+      };
     case 'developer':
-      return EasyInputMessageRoleDeveloper.Developer;
+      return {
+        role: EasyInputMessageRoleDeveloper.Developer,
+        content,
+      };
     default: {
       const exhaustiveCheck: never = role;
       throw new Error(`Unhandled role type: ${exhaustiveCheck}`);
@@ -79,29 +111,53 @@ function contentToString(content: unknown): string {
  * });
  * ```
  */
-export function fromChatMessages(messages: models.ChatMessages[]): models.InputsUnion {
-  return messages.map((msg): models.EasyInputMessage | models.FunctionCallOutputItem => {
+export function fromChatMessages(messages: models.ChatMessages[]): ChatMessageInputItem[] {
+  const result: ChatMessageInputItem[] = [];
+
+  for (const msg of messages) {
     if (isToolResponseMessage(msg)) {
-      return {
+      result.push({
         type: 'function_call_output' as const,
         callId: msg.toolCallId,
         output: contentToString(msg.content),
-      };
+      });
+      continue;
     }
 
     if (isAssistantMessage(msg)) {
-      return {
-        role: mapChatRole('assistant'),
-        content: contentToString(msg.content),
-      };
+      const content = contentToString(msg.content);
+      const toolCalls = msg.toolCalls ?? [];
+
+      // Skip the message item only when there is no content AND we have tool
+      // calls to emit in its place. A content-less assistant message with no
+      // tool calls still round-trips as an empty message (pre-existing
+      // behavior) rather than disappearing entirely.
+      if (content.length > 0 || toolCalls.length === 0) {
+        result.push(createMessageItem('assistant', content));
+      }
+
+      // One function_call item per tool call. `tc.function.arguments` is
+      // already a JSON string in the chat format, so it is forwarded as-is
+      // (unlike the Claude path, which stringifies a structured `input`).
+      for (const tc of toolCalls) {
+        result.push({
+          type: 'function_call' as const,
+          callId: tc.id,
+          id: tc.id,
+          name: tc.function.name,
+          arguments: tc.function.arguments,
+          status: 'completed' as const,
+        });
+      }
+
+      continue;
     }
 
     // System, user, developer messages
-    return {
-      role: mapChatRole(msg.role),
-      content: contentToString(msg.content),
-    };
-  });
+    result.push(createMessageItem(msg.role, contentToString(msg.content)));
+  }
+
+  return result;
 }
 
 /**
