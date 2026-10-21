@@ -1,0 +1,25 @@
+{
+  "name": "@openrouter/openui-playground",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Local playground to test, bench, and eval OpenUI generative-UI support in the Agent SDK (DEV-773/DEV-765).",
+  "type": "module",
+  "scripts": {
+    "lint": "biome check src tests public",
+    "lint:fix": "biome check --write src tests public",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest --run",
+    "dev": "tsx watch src/server.ts",
+    "start": "tsx src/server.ts"
+  },
+  "dependencies": {
+    "@openrouter/agent": "workspace:*",
+    "@openrouter/sdk": "^0.13.7",
+    "zod": "^4.0.0"
+  },
+  "devDependencies": {
+    "tsx": "^4.19.0",
+    "typescript": "~5.8.3",
+    "vitest": "^4.1.5"
+  }
+}

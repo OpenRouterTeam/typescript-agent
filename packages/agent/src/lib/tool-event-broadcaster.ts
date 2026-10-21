@@ -20,6 +20,10 @@ export class ToolEventBroadcaster<T> {
   private completionError: Error | null = null;
 
   constructor(private readonly streamReplay: StreamReplay = 'full') {}
+  /** Number of consumers currently subscribed to this broadcaster. */
+  get activeConsumerCount(): number {
+    return this.consumers.size;
+  }
 
   /**
    * Push a new event to all consumers.

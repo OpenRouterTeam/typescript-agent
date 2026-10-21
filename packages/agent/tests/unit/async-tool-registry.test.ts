@@ -84,6 +84,35 @@ describe('AsyncToolRegistry — timeout settlement', () => {
   });
 });
 
+describe('AsyncToolRegistry — deferred input', () => {
+  it('retains input in settlement and persistence snapshots', () => {
+    const registry = new AsyncToolRegistry();
+    const task = registry.trackDeferred({
+      callId: 'call_d1',
+      taskId: 'task_d1',
+      name: 'weather',
+      input: {
+        city: 'Lisbon',
+      },
+    });
+
+    expect(task.input).toEqual({
+      city: 'Lisbon',
+    });
+    expect(registry.snapshot()[0]).toMatchObject({
+      input: {
+        city: 'Lisbon',
+      },
+    });
+    registry.cancelTask('task_d1');
+    expect(registry.takeSettled()[0]).toMatchObject({
+      input: {
+        city: 'Lisbon',
+      },
+    });
+  });
+});
+
 describe('AsyncToolRegistry — grace-window visibility (register/untrack)', () => {
   it('a registered (not yet tracked) task is reachable by steer and cancel', () => {
     const registry = new AsyncToolRegistry();

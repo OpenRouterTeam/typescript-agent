@@ -2,6 +2,7 @@ import type * as models from '@openrouter/sdk/models';
 import type { StreamEvents } from '@openrouter/sdk/models';
 import type { $ZodObject, $ZodShape, $ZodType, infer as zodInfer } from 'zod/v4/core';
 import type { DoomLoopSerializedState } from './doom-loop.js';
+import type { UiFragment } from './openui/document.js';
 import type { TaskLogLimits, ToolTaskMode, ToolTaskStatus } from './tool-task.js';
 
 /**
@@ -427,6 +428,22 @@ export type ToModelOutputFunction<TInput, TOutput> = {
 }['bivarianceHack'];
 
 /**
+ * Function to convert tool execution output to a renderable UI fragment
+ * (OpenUI). Runs after a successful execution alongside `toModelOutput`; the
+ * fragment is broadcast as a `tool.ui_fragment` stream event and never sent
+ * to the model. Returning `null`/`undefined` emits nothing for this call.
+ * @template TInput - The tool's input type
+ * @template TOutput - The tool's output type
+ */
+// Object-with-method form for bivariant param checking — see ToModelOutputFunction.
+export type ToUiOutputFunction<TInput, TOutput> = {
+  bivarianceHack(params: {
+    output: TOutput;
+    input: TInput;
+  }): UiFragment | null | undefined | Promise<UiFragment | null | undefined>;
+}['bivarianceHack'];
+
+/**
  * Base tool function interface with inputSchema
  * @template TInput - Zod schema for tool input
  * @template TCtx - Zod schema for tool context (optional; default = erased wide type)
@@ -523,6 +540,8 @@ export interface ToolFunctionWithExecute<
   ): Promise<zodInfer<TOutput>> | zodInfer<TOutput>;
   /** Convert tool execution output to model-facing output */
   toModelOutput?: ToModelOutputFunction<zodInfer<TInput>, zodInfer<TOutput>>;
+  /** Convert tool execution output to a renderable OpenUI fragment */
+  toUiOutput?: ToUiOutputFunction<zodInfer<TInput>, zodInfer<TOutput>>;
 }
 
 /**
@@ -564,6 +583,8 @@ export interface ToolFunctionWithGenerator<
   ): AsyncGenerator<zodInfer<TEvent> | zodInfer<TOutput>, zodInfer<TOutput> | undefined>;
   /** Convert tool execution output to model-facing output */
   toModelOutput?: ToModelOutputFunction<zodInfer<TInput>, zodInfer<TOutput>>;
+  /** Convert tool execution output to a renderable OpenUI fragment */
+  toUiOutput?: ToUiOutputFunction<zodInfer<TInput>, zodInfer<TOutput>>;
 }
 
 /**
@@ -623,6 +644,8 @@ export interface HITLToolFunction<
     context?: ToolExecuteContext<TName, TContext>,
   ): Promise<zodInfer<TOutput>> | zodInfer<TOutput>;
   toModelOutput?: ToModelOutputFunction<zodInfer<TInput>, zodInfer<TOutput>>;
+  /** Convert tool execution output to a renderable OpenUI fragment */
+  toUiOutput?: ToUiOutputFunction<zodInfer<TInput>, zodInfer<TOutput>>;
 }
 
 /**
@@ -750,6 +773,8 @@ export interface UnifiedToolFunction<
    * output verbatim.
    */
   toModelOutput?: ToModelOutputFunction<zodInfer<TInput>, zodInfer<TOutput>>;
+  /** Convert a settled result to a renderable OpenUI fragment. */
+  toUiOutput?: ToUiOutputFunction<zodInfer<TInput>, zodInfer<TOutput>>;
   /** Absent on unified tools — keeps them disjoint from legacy kinds. */
   readonly execute?: undefined;
   readonly onToolCalled?: undefined;
@@ -1544,29 +1569,27 @@ export type ToolCallOutputEvent = {
   timestamp: number;
 };
 
-/**
- * Emitted when an async tool call escapes the round: a background tool's
- * execute outlived its grace window, or a deferred tool's start returned a
- * task handle. The model has received a pending placeholder output.
- */
+/** Tool-authored OpenUI fragment. Client-render only; never sent to the model. */
+export type ToolUiFragmentEvent = {
+  type: 'tool.ui_fragment';
+  toolCallId: string;
+  toolName: string;
+  fragment: UiFragment;
+  timestamp: number;
+};
+
+/** Emitted when an async tool call escapes the round. */
 export type ToolAsyncStartedEvent = {
   type: 'tool.async_started';
   toolCallId: string;
   toolName: string;
   taskId: string;
   mode: ToolTaskMode;
-  /** The model-facing acknowledgement carried in the placeholder, if any. */
   ack?: unknown;
   timestamp: number;
 };
 
-/**
- * Emitted when an async tool task settles — completed, failed, cancelled,
- * timed out, or expired. `delivery` reports how (or whether) the outcome
- * reached the model: `'injected'` into this run's conversation,
- * `'pending_resume'` recorded on state for the next run, or `'dropped'`
- * (run ended under `onRunEnd: 'detach'`).
- */
+/** Emitted when an async tool task settles. */
 export type ToolAsyncSettledEvent<TResult = unknown> = {
   type: 'tool.async_settled';
   toolCallId: string;
@@ -1614,6 +1637,7 @@ export type ResponseStreamEvent<
   | ToolPreliminaryResultEvent<TEvent, TName>
   | ToolResultEvent<TResult, TEvent, TName>
   | ToolCallOutputEvent
+  | ToolUiFragmentEvent
   | ToolAsyncStartedEvent
   | ToolAsyncSettledEvent<TResult>
   | TurnStartEvent
@@ -1679,6 +1703,13 @@ export function isToolResultEvent<
  */
 export function isToolCallOutputEvent(event: ResponseStreamEvent): event is ToolCallOutputEvent {
   return event.type === 'tool.call_output';
+}
+
+/**
+ * Type guard to check if an event is a tool UI fragment event
+ */
+export function isToolUiFragmentEvent(event: ResponseStreamEvent): event is ToolUiFragmentEvent {
+  return event.type === 'tool.ui_fragment';
 }
 
 /**
@@ -1848,6 +1879,8 @@ export interface PendingAsyncTool {
   status: ToolTaskStatus;
   /** Unix ms when the task started. */
   startedAt: number;
+  /** The original call arguments, retained for deferred UI rendering. */
+  input?: Record<string, unknown>;
   /** Unix ms after which the task is considered expired. */
   expiresAt?: number;
   /** Poll-interval hint surfaced to the model and external pollers. */
