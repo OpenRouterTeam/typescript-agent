@@ -178,7 +178,7 @@
     "gen:version": "node scripts/gen-version.mjs"
   },
   "dependencies": {
-    "@openrouter/sdk": "^0.13.7",
+    "@openrouter/sdk": "^0.13.59",
     "zod": "^4.0.0"
   },
   "peerDependencies": {
