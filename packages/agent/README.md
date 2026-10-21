@@ -353,6 +353,32 @@ over passing a raw `signal` through `RequestOptions` — the underlying SDK
 skips its `timeoutMs` wiring whenever a request already carries a signal,
 so the engine re-composes them for you only on the `signal` option path.
 
+#### Stalled streams
+
+`timeoutMs` cannot catch a stream that returns headers and then stalls: the
+router's SSE keep-alive comments keep the connection busy while no content
+flows. `streamTimeout` adds opt-in deadlines measured on parsed events:
+
+```typescript
+const result = callModel(client, {
+  model: 'openai/gpt-4o',
+  input: 'Research this topic',
+  streamTimeout: {
+    firstContentMs: 15_000, // response stream start -> first content event
+    contentIntervalMs: 30_000, // max gap between content events afterwards
+  },
+});
+```
+
+Content means text, refusal and reasoning deltas, tool-call arguments and
+completed output items. Keep-alives, `response.created`, empty item shells and
+`error` events neither satisfy nor reset a deadline. The deadlines re-arm for
+every model request in the run. On expiry the request is aborted and every
+consumer rejects with `StreamStalledError` (`phase`, `timeoutMs`, `elapsedMs`,
+`receivedAnyContent`). Its `retryable` getter is true only when no content had
+arrived, so re-issuing the request cannot duplicate output. An abort through
+`signal` or `timeoutMs` is reported as itself, never as a stall.
+
 #### Stream failures
 
 A response stream that fails surfaces as a typed `StreamFailedError` on every

@@ -1,7 +1,7 @@
 /**
  * The response-stream runtime's façade: multi-consumer buffering
- * (`ReusableReadableStream`) and typed stream failures (`StreamFailedError`,
- * `StreamStalledError`).
+ * (`ReusableReadableStream`), the stall watchdog, and typed stream failures
+ * (`StreamFailedError`, `StreamStalledError`).
  *
  * These modules are one feature and the engine uses them together, so
  * `model-result.ts` imports them through here rather than reaching into
@@ -16,3 +16,5 @@
 export type { StreamReplay } from './reusable-stream.js';
 export { ReusableReadableStream } from './reusable-stream.js';
 export { StreamFailedError } from './stream-errors.js';
+export type { StreamTimeoutOptions } from './stream-watchdog.js';
+export { applyResponsesStreamWatchdog, hasActiveStreamTimeouts } from './stream-watchdog.js';

@@ -115,6 +115,7 @@ export function callModel<
     doomLoop,
     signal,
     toolTimeoutMs,
+    streamTimeout,
     toolConcurrency,
     asyncTools,
     ...apiRequest
@@ -197,6 +198,7 @@ export function callModel<
     doomLoop,
     signal,
     toolTimeoutMs,
+    streamTimeout,
     toolConcurrency,
     asyncTools,
   };

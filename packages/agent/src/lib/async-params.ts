@@ -5,6 +5,7 @@ import type { HooksManager } from './hooks-manager.js';
 import type { InlineHookConfig } from './hooks-types.js';
 import type { Item } from './item-types.js';
 import type { StreamReplay } from './reusable-stream.js';
+import type { StreamTimeoutOptions } from './stream-watchdog.js';
 import type { ContextInput } from './tool-context.js';
 import type {
   ParsedToolCall,
@@ -199,6 +200,29 @@ type BaseCallModelInput<
    */
   toolTimeoutMs?: number;
   /**
+   * Opt-in stalled-stream detection: fail fast on a response stream that
+   * returned headers but never produces content (keep-alives and metadata
+   * events only), instead of hanging.
+   *
+   * - `firstContentMs`: max milliseconds between a turn's response stream
+   *   starting and its first content-bearing event (text / reasoning delta,
+   *   tool-call arguments, completed output item, ...). Keep-alive comments
+   *   and status events (`response.created`, empty item shells) neither
+   *   satisfy nor reset it.
+   * - `contentIntervalMs`: max gap between content-bearing events once
+   *   content has started.
+   *
+   * Deadlines re-arm for every model request of the run (initial, each tool
+   * round, final and retry turns, resumes). On expiry the in-flight request
+   * is aborted and the run rejects with `StreamStalledError` on every
+   * consumption path; its `retryable` getter is true only when no content
+   * had been received. Unset by default: no watchdog runs.
+   *
+   * Composes with `signal` and `RequestOptions.timeoutMs`: an abort or a
+   * request timeout is reported as itself, never as a stall.
+   */
+  streamTimeout?: StreamTimeoutOptions;
+  /**
    * Concurrency limits for tool execution. A bare number is shorthand for
    * `{ round: n }`.
    * - `round`: max simultaneous tool executions within one tool round.
@@ -347,6 +371,7 @@ export async function resolveAsyncFunctions<TTools extends readonly Tool[] = rea
     'doomLoop', // Client-side doom-loop detection config
     'signal', // Client-side run cancellation
     'toolTimeoutMs', // Client-side per-tool deadline default
+    'streamTimeout', // Client-side stalled-stream watchdog deadlines
     'toolConcurrency', // Client-side tool concurrency limits
     'asyncTools', // Client-side async tool (background/deferred) behavior
     'activeTools', // Applied client-side to filter tools before conversion
