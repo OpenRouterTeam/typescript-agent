@@ -59,9 +59,9 @@ import {
   applyNextTurnParamsToRequest,
   executeNextTurnParamsFunctions,
 } from './next-turn-params.js';
-import type { StreamReplay } from './reusable-stream.js';
-import { ReusableReadableStream } from './reusable-stream.js';
 import { isStopConditionMet } from './stop-conditions.js';
+import type { StreamReplay } from './stream-runtime.js';
+import { ReusableReadableStream, StreamFailedError } from './stream-runtime.js';
 import type { ItemInProgress, StreamableOutputItem } from './stream-transformers.js';
 import {
   buildItemsStream,
@@ -82,6 +82,7 @@ import {
 } from './stream-transformers.js';
 import {
   hasTypeProperty,
+  isErrorEvent,
   isFunctionCallItem,
   isFunctionCallOutputItem,
   isOutputTextDeltaEvent,
@@ -646,6 +647,11 @@ export class ModelResult<
   private initialPipePromise: Promise<void> | null = null;
   private initialResponse: models.OpenResponsesResult | null = null;
   private initialResponseError: Error | null = null;
+  // Last stream-level `error` event seen on the initial stream. Surfaced as
+  // a StreamFailedError only if the stream ends without a terminal event.
+  private initialErrorEvent: models.ErrorEvent | null = null;
+  // Set by cancel(): a deliberately cancelled stream is not a failure.
+  private streamCancelled = false;
   private readonly streamReplay: StreamReplay;
 
   // Context store for typed tool context (persists across turns)
@@ -954,15 +960,38 @@ export class ModelResult<
     }
 
     if (isResponseFailedEvent(event)) {
-      this.initialResponseError = new Error(
-        `Response failed: ${JSON.stringify(event.response.error)}`,
-      );
+      this.initialResponseError = StreamFailedError.fromFailedResponse(event.response);
+      return;
+    }
+
+    if (isErrorEvent(event)) {
+      this.initialErrorEvent = event;
+    }
+  }
+
+  /**
+   * No-tools stream getters iterate the initial stream directly, and their
+   * consumers end cleanly on any terminal event or source close, including a
+   * failed response or a truncated stream. Re-surface those failures so the
+   * getters reject exactly like `getText()` does instead of ending silently.
+   * Call only after the consumer ran to its natural end (not after `break`).
+   */
+  private throwIfInitialStreamFailed(): void {
+    if (this.streamCancelled || this.finalResponse || !this.reusableStream) {
+      return;
+    }
+    if (this.initialResponseError) {
+      throw this.initialResponseError;
+    }
+    if (!this.initialResponse) {
+      throw StreamFailedError.fromStreamEnd(this.initialErrorEvent);
     }
   }
 
   private setReusableStream(stream: ReadableStream<models.StreamEvents>): void {
     this.initialResponse = null;
     this.initialResponseError = null;
+    this.initialErrorEvent = null;
     this.reusableStream = new ReusableReadableStream(stream, {
       streamReplay: this.streamReplay,
       onValue: (event) => this.captureInitialStreamEvent(event),
@@ -988,6 +1017,9 @@ export class ModelResult<
 
     const consumer = stream.createConsumer();
     let completedResponse: models.OpenResponsesResult | null = null;
+    // Recorded, not thrown: the stream may still complete after an error
+    // event. Surfaced only when it ends without a completed response.
+    let errorEvent: models.ErrorEvent | null = null;
 
     for await (const event of consumer) {
       broadcaster.push(event);
@@ -995,11 +1027,13 @@ export class ModelResult<
         completedResponse = event.response;
       }
       if (isResponseFailedEvent(event)) {
-        const errorMsg = 'message' in event ? String(event.message) : 'Response failed';
-        throw new Error(errorMsg);
+        throw StreamFailedError.fromFailedResponse(event.response);
       }
       if (isResponseIncompleteEvent(event)) {
         completedResponse = event.response;
+      }
+      if (isErrorEvent(event)) {
+        errorEvent = event;
       }
     }
 
@@ -1010,7 +1044,10 @@ export class ModelResult<
     } satisfies TurnEndEvent);
 
     if (!completedResponse) {
-      throw new Error('Follow-up stream ended without a completed response');
+      throw StreamFailedError.fromStreamEnd(
+        errorEvent,
+        'Follow-up stream ended without a completed response',
+      );
     }
 
     return completedResponse;
@@ -1170,7 +1207,18 @@ export class ModelResult<
     }
 
     if (this.reusableStream) {
-      const response = await consumeStreamForCompletion(this.reusableStream);
+      const response = await consumeStreamForCompletion(this.reusableStream).catch((error) => {
+        // With `streamReplay: 'active-consumers'` the replay may no longer
+        // hold the error event; the onValue capture still does.
+        if (
+          error instanceof StreamFailedError &&
+          error.kind === 'truncated' &&
+          this.initialErrorEvent
+        ) {
+          throw StreamFailedError.fromErrorEvent(this.initialErrorEvent);
+        }
+        throw error;
+      });
       await this.emitPendingModelCallOnce(response);
       return response;
     }
@@ -6819,6 +6867,7 @@ export class ModelResult<
               yield event;
             }
           }
+          this.throwIfInitialStreamFailed();
         } catch (error) {
           streamFailed = true;
           throw error;
@@ -6853,6 +6902,7 @@ export class ModelResult<
           if (this.reusableStream) {
             yield* extractTextDeltas(this.reusableStream);
           }
+          this.throwIfInitialStreamFailed();
         } catch (error) {
           streamFailed = true;
           throw error;
@@ -6942,6 +6992,7 @@ export class ModelResult<
               }
             }
           }
+          this.throwIfInitialStreamFailed();
         } catch (error) {
           streamFailed = true;
           throw error;
@@ -7177,6 +7228,7 @@ export class ModelResult<
           if (this.reusableStream) {
             yield* extractReasoningDeltas(this.reusableStream);
           }
+          this.throwIfInitialStreamFailed();
         } catch (error) {
           streamFailed = true;
           throw error;
@@ -7219,6 +7271,7 @@ export class ModelResult<
               };
             }
           }
+          this.throwIfInitialStreamFailed();
         } catch (error) {
           streamFailed = true;
           throw error;
@@ -7300,6 +7353,7 @@ export class ModelResult<
           ParsedToolCall<TTools[number]>
         >;
       }
+      this.throwIfInitialStreamFailed();
     }.call(this);
   }
 
@@ -7386,6 +7440,7 @@ export class ModelResult<
    * new with async tool support.
    */
   async cancel(): Promise<void> {
+    this.streamCancelled = true;
     this.abortAllToolWork('Cancelled via ModelResult.cancel()');
     if (this.reusableStream) {
       await this.reusableStream.cancel();

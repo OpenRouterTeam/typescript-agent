@@ -424,9 +424,20 @@ describe('PostModelCall hook', () => {
       input: 'hi',
       hooks,
     });
-    for await (const _chunk of result.getTextStream()) {
-      // drain
+    // The truncated stream itself surfaces as a typed StreamFailedError
+    // (DEV-723) instead of the getter ending silently.
+    let streamError: unknown;
+    try {
+      for await (const _chunk of result.getTextStream()) {
+        // drain
+      }
+    } catch (error) {
+      streamError = error;
     }
+    expect(streamError).toMatchObject({
+      name: 'StreamFailedError',
+      kind: 'truncated',
+    });
 
     expect(calls).toHaveLength(0);
     expect(ends).toHaveLength(1);
