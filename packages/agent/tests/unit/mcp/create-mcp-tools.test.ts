@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import type { SerializedMCPServer } from '../../../src/mcp/cache/cache-types.js';
 import type { ConnectOptions, MCPConnection } from '../../../src/mcp/mcp-connection.js';
 
 // A controllable fake connection: tests set how `listTools` behaves and inspect
@@ -13,6 +14,8 @@ interface FakeState {
   }>;
   closed: number;
   listChangedHandler: (() => void) | undefined;
+  connectedUrls: string[];
+  connectedAuth: ConnectOptions['auth'][];
 }
 
 const state: FakeState = {
@@ -22,10 +25,14 @@ const state: FakeState = {
     }),
   closed: 0,
   listChangedHandler: undefined,
+  connectedUrls: [],
+  connectedAuth: [],
 };
 
 vi.mock('../../../src/mcp/mcp-connection.js', () => ({
-  connect: (_options: ConnectOptions): Promise<MCPConnection> => {
+  connect: (options: ConnectOptions): Promise<MCPConnection> => {
+    state.connectedUrls.push(options.url.href);
+    state.connectedAuth.push(options.auth);
     const connection: MCPConnection = {
       client: {
         getServerVersion: () => undefined,
@@ -51,6 +58,8 @@ describe('createMCPTools setup teardown', () => {
   beforeEach(() => {
     state.closed = 0;
     state.listChangedHandler = undefined;
+    state.connectedUrls = [];
+    state.connectedAuth = [];
     state.listTools = () =>
       Promise.resolve({
         tools: [],
@@ -338,5 +347,233 @@ describe('createMCPTools setup teardown', () => {
     // Tools were never swapped, so silence is correct here.
     expect(seen).toEqual([]);
     expect(handle.tools).toHaveLength(0);
+  });
+
+  /**
+   * A custom cache key (e.g. `mcp:${userId}`) can outlive the URL it was written
+   * for. Replaying such an entry would dial the OLD server with the NEW server's
+   * credentials, so a URL mismatch must be a miss that connects to the requested
+   * URL and overwrites the entry.
+   */
+  it('treats a snapshot for a different URL as a miss and never dials it', async () => {
+    const { InMemoryMCPCacheStore } = await import('../../../src/mcp/cache/cache-store.js');
+    const store = new InMemoryMCPCacheStore();
+    const oldUrl = 'https://old.example.com/mcp';
+    const newUrl = 'https://new.example.com/mcp';
+    store.set('mcp:user-123', {
+      version: 1,
+      url: oldUrl,
+      transport: 'streamableHttp',
+      tools: [],
+      cachedAt: Date.now(),
+    });
+
+    await createMCPTools({
+      url: newUrl,
+      auth: {
+        kind: 'bearer',
+        token: 'new-server-token',
+      },
+      cache: {
+        store,
+        key: 'mcp:user-123',
+      },
+    });
+
+    expect(state.connectedUrls).toEqual([
+      newUrl,
+    ]);
+    expect(store.get('mcp:user-123')?.url).toBe(newUrl);
+  });
+
+  it('still replays a snapshot whose URL matches the requested URL', async () => {
+    const { InMemoryMCPCacheStore } = await import('../../../src/mcp/cache/cache-store.js');
+    const store = new InMemoryMCPCacheStore();
+    const url = 'https://mcp.example.com/mcp';
+    store.set('k', {
+      version: 1,
+      url,
+      transport: 'streamableHttp',
+      tools: [
+        {
+          name: 'cached_tool',
+          inputSchema: {
+            type: 'object',
+          },
+        },
+      ],
+      cachedAt: Date.now(),
+    });
+    state.listTools = () => Promise.reject(new Error('listTools must not run on a replay'));
+
+    const handle = await createMCPTools({
+      url,
+      auth: {
+        kind: 'bearer',
+        token: 't',
+      },
+      cache: {
+        store,
+        key: 'k',
+      },
+    });
+
+    expect(state.connectedUrls).toEqual([
+      url,
+    ]);
+    expect(handle.tools).toHaveLength(1);
+  });
+
+  it('still replays when the requested URL is an equivalent spelling of the cached one', async () => {
+    const { InMemoryMCPCacheStore } = await import('../../../src/mcp/cache/cache-store.js');
+    const store = new InMemoryMCPCacheStore();
+    store.set('k', {
+      version: 1,
+      url: 'https://mcp.example.com/mcp',
+      transport: 'streamableHttp',
+      tools: [
+        {
+          name: 'cached_tool',
+          inputSchema: {
+            type: 'object',
+          },
+        },
+      ],
+      cachedAt: Date.now(),
+    });
+    state.listTools = () => Promise.reject(new Error('listTools must not run on a replay'));
+
+    const handle = await createMCPTools({
+      url: 'HTTPS://MCP.EXAMPLE.COM:443/mcp',
+      auth: {
+        kind: 'bearer',
+        token: 't',
+      },
+      cache: {
+        store,
+        key: 'k',
+      },
+    });
+
+    expect(handle.tools).toHaveLength(1);
+  });
+
+  it('treats a cached entry with an unparseable URL as a miss', async () => {
+    const { InMemoryMCPCacheStore } = await import('../../../src/mcp/cache/cache-store.js');
+    const store = new InMemoryMCPCacheStore();
+    const url = 'https://mcp.example.com/mcp';
+    store.set('k', {
+      version: 1,
+      url: 'not a url',
+      transport: 'streamableHttp',
+      tools: [],
+      cachedAt: Date.now(),
+    });
+
+    await createMCPTools({
+      url,
+      cache: {
+        store,
+        key: 'k',
+      },
+    });
+
+    expect(state.connectedUrls).toEqual([
+      url,
+    ]);
+    expect(store.get('k')?.url).toBe(url);
+  });
+
+  /**
+   * An old-URL entry that carries cached credentials must not lend them to the
+   * new URL either: with no caller auth, the miss connects to the requested URL
+   * unauthenticated rather than reusing the old server's secret.
+   */
+  it("does not reuse an old URL entry's cached credentials for a new URL", async () => {
+    const { InMemoryMCPCacheStore } = await import('../../../src/mcp/cache/cache-store.js');
+    const store = new InMemoryMCPCacheStore();
+    const newUrl = 'https://new.example.com/mcp';
+    store.set('mcp:user-123', {
+      version: 1,
+      url: 'https://old.example.com/mcp',
+      transport: 'streamableHttp',
+      tools: [],
+      auth: {
+        headers: {
+          Authorization: 'Bearer old-server-token',
+        },
+      },
+      cachedAt: Date.now(),
+    });
+
+    await createMCPTools({
+      url: newUrl,
+      cacheCredentials: true,
+      cache: {
+        store,
+        key: 'mcp:user-123',
+      },
+    });
+
+    expect(state.connectedUrls).toEqual([
+      newUrl,
+    ]);
+    expect(state.connectedAuth).toEqual([
+      undefined,
+    ]);
+  });
+
+  /**
+   * Two servers sharing one custom key: a call for A passes the URL check on its
+   * first read, then a concurrent call for B rewrites the key before A's
+   * credential graft reads back. A's credentials must not be grafted onto B's
+   * entry, or B's next credential-bearing rehydrate would dial B with them.
+   */
+  it('does not graft credentials onto an entry rewritten for another URL mid-replay', async () => {
+    const urlA = 'https://a.example.com/mcp';
+    const urlB = 'https://b.example.com/mcp';
+    const entryFor = (url: string, token: string): SerializedMCPServer => ({
+      version: 1,
+      url,
+      transport: 'streamableHttp',
+      tools: [],
+      auth: {
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+      },
+      cachedAt: Date.now(),
+    });
+    let reads = 0;
+    const writes: unknown[] = [];
+    const racingStore = {
+      // First read (the cache-hit lookup) sees A; the graft's read-back sees B.
+      get: () => {
+        reads += 1;
+        return reads === 1 ? entryFor(urlA, 'A-old') : entryFor(urlB, 'B-secret');
+      },
+      set: (_key: string, value: unknown) => {
+        writes.push(value);
+      },
+      delete: () => {},
+    };
+
+    await createMCPTools({
+      url: urlA,
+      auth: {
+        kind: 'bearer',
+        token: 'A-new',
+      },
+      cacheCredentials: true,
+      cache: {
+        store: racingStore,
+        key: 'mcp:user-123',
+      },
+    });
+
+    expect(state.connectedUrls).toEqual([
+      urlA,
+    ]);
+    expect(writes).toHaveLength(0);
   });
 });
