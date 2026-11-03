@@ -112,10 +112,14 @@ const store = new InMemoryMCPCacheStore(); // or your own Redis/DB-backed MCPCac
 const mcp = await createMCPTools({
   url,
   auth,
-  cache: { store, key: `mcp:${userId}` },
+  cache: { store, key: `mcp:${userId}:${url}` },
   staleness: { maxAgeMs: 60 * 60 * 1000 },
 });
 ```
+
+Give each server its own key: include the server URL alongside the principal. An entry is only
+reused for the URL it was written for, so servers sharing one key would evict each other on every
+call.
 
 > **Security:** `cacheCredentials` is `false` by default. When enabled, snapshots contain bearer
 > tokens/headers — treat the store as a secret store and namespace cache keys by principal in
