@@ -16,6 +16,20 @@ export function normalizeUrl(url: string | URL): URL {
   return url instanceof URL ? url : new URL(url);
 }
 
+/**
+ * True when a cached snapshot was written for the same (normalized) server URL.
+ * A custom `cache.key` can be shared by entries for different servers, so any
+ * code that pairs a stored entry with a live caller's credentials must check
+ * this first. An unparseable stored URL never matches.
+ */
+export function snapshotMatchesUrl(snapshot: SerializedMCPServer, url: string | URL): boolean {
+  try {
+    return normalizeUrl(snapshot.url).href === normalizeUrl(url).href;
+  } catch {
+    return false;
+  }
+}
+
 // Hard cap on pagination pages. A well-behaved server terminates the cursor
 // chain by omitting `nextCursor`; this bounds a misbehaving one that never does.
 const MAX_LIST_PAGES = 1000;

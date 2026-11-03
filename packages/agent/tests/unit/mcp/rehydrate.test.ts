@@ -1080,6 +1080,77 @@ describe('replay preserves snapshot age', () => {
   });
 
   /**
+   * A shared custom key can hold ANOTHER server's entry by the time the graft
+   * reads back (a concurrent call for a different URL rewrote it, or a direct
+   * rehydrate's snapshot came from elsewhere). Grafting this call's credentials
+   * onto that entry would hand them to the other server on its next
+   * credential-bearing rehydrate, so a foreign entry is never written.
+   */
+  it('does not graft credentials onto a stored entry for a different URL', async () => {
+    const foreign: SerializedMCPServer = {
+      ...snapshotWithHeaders(),
+      url: 'https://other.example.com/mcp',
+    };
+    const writes: unknown[] = [];
+    const store = {
+      get: () => Promise.resolve(foreign),
+      set: (_key: string, value: unknown) => {
+        writes.push(value);
+        return Promise.resolve();
+      },
+      delete: () => Promise.resolve(),
+    };
+
+    await rehydrateMCPTools({
+      snapshot: snapshotWithHeaders(),
+      cacheCredentials: true,
+      cache: {
+        store,
+        key: 'shared',
+      },
+      auth: {
+        kind: 'headers',
+        headers: {
+          'X-Api-Key': 'rotated-secret',
+        },
+      },
+    });
+
+    expect(writes).toHaveLength(0);
+  });
+
+  /** The legacy-sessionId scrub must not rewrite another server's entry either. */
+  it('does not scrub a stored entry for a different URL', async () => {
+    const foreign: SerializedMCPServer = {
+      ...snapshotWithHeaders(),
+      url: 'https://other.example.com/mcp',
+      sessionId: 'foreign-session',
+    };
+    const writes: unknown[] = [];
+    const store = {
+      get: () => Promise.resolve(foreign),
+      set: (_key: string, value: unknown) => {
+        writes.push(value);
+        return Promise.resolve();
+      },
+      delete: () => Promise.resolve(),
+    };
+
+    await rehydrateMCPTools({
+      snapshot: {
+        ...snapshotWithHeaders(),
+        sessionId: 'own-session',
+      },
+      cache: {
+        store,
+        key: 'shared',
+      },
+    });
+
+    expect(writes).toHaveLength(0);
+  });
+
+  /**
    * A warm hit with a modern (sessionId-free) snapshot performs ZERO store
    * operations — no write (the no-op skip) and no read (the scrub gate keys on
    * the input snapshot, which on the warm path IS the store's entry). Only
