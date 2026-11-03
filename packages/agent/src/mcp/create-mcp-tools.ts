@@ -12,8 +12,9 @@ import type { CreateMCPToolsOptions, MCPToolsHandle } from './types.js';
  * `.tools` can be passed straight into `callModel({ tools })`. Auth is supplied
  * once and reused for discovery and every subsequent tool call.
  *
- * When `cache` is provided, a valid non-stale snapshot is rehydrated instead of
- * re-listing; otherwise the fresh result is written back to the cache.
+ * When `cache` is provided, a valid non-stale snapshot for the same URL is
+ * rehydrated instead of re-listing; otherwise (including an entry written for a
+ * different URL) the fresh result is written back to the cache.
  */
 export async function createMCPTools(options: CreateMCPToolsOptions): Promise<MCPToolsHandle> {
   const url = normalizeUrl(options.url);

@@ -73,7 +73,14 @@ export interface CreateMCPToolsOptions {
   excludeTools?: readonly string[];
   /** Behavior when a tool's JSON Schema can't be fully represented in Zod. */
   onUnconvertibleSchema?: UnconvertibleSchemaMode;
-  /** Cache store + key for automatic rehydrate-on-hit / write-on-miss. */
+  /**
+   * Cache store + key for automatic rehydrate-on-hit / write-on-miss.
+   *
+   * An entry is only a hit for the URL it was written for (compared after URL
+   * normalization). If `key` holds an entry for a different URL, the call
+   * connects to the requested `url` and overwrites that entry. Include the
+   * server URL in a custom key so each server keeps its own entry.
+   */
   cache?: {
     store: MCPCacheStore;
     key?: string;
