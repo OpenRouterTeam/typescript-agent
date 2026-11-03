@@ -1,5 +1,122 @@
 # @openrouter/agent
 
+## 1.0.0
+
+### Major Changes
+
+- [#110](https://github.com/OpenRouterTeam/typescript-agent/pull/110) [`9766f31`](https://github.com/OpenRouterTeam/typescript-agent/commit/9766f31ec2390cd294ca47dd81d0122941c0d586) Thanks [@LukasParke](https://github.com/LukasParke)! - Stop accumulating generator-tool `preliminaryResults` arrays. Yields are still broadcast live; the terminal `tool.result` event and `ToolExecutionResult` no longer carry the full yield history.
+
+### Minor Changes
+
+- [#118](https://github.com/OpenRouterTeam/typescript-agent/pull/118) [`4dce84e`](https://github.com/OpenRouterTeam/typescript-agent/commit/4dce84e4393ec36745875512d6ad1fcd8b38e502) Thanks [@sambarnes](https://github.com/sambarnes)! - Allow manual tools to provide a caller-owned JSON Schema for wire serialization.
+
+  ```ts
+  import { tool } from "@openrouter/agent";
+  import { z } from "zod";
+
+  const confirmTool = tool({
+    name: "confirm_action",
+    inputSchema: z.object({ action: z.string() }),
+    wireInputSchema: {
+      type: "object",
+      properties: {
+        action: { type: "string" },
+      },
+      required: ["action"],
+    },
+    execute: false,
+  });
+  ```
+
+- [#93](https://github.com/OpenRouterTeam/typescript-agent/pull/93) [`dacf4d1`](https://github.com/OpenRouterTeam/typescript-agent/commit/dacf4d166a8ece1c2aff77727e2db1da5417391b) Thanks [@LukasParke](https://github.com/LukasParke)! - Fix `fromChatMessages` dropping assistant tool calls and give both message converters precise array return types that work with `callModel`, `Item[]`, and the SDK's `InputsUnion`.
+
+  Assistant `toolCalls` now become `function_call` items, preserving their already-serialized `arguments`. A message containing both text and tool calls emits both items; an empty assistant message is omitted only when tool calls replace it.
+
+  ```ts
+  import {
+    callModel,
+    fromChatMessages,
+    type ChatMessages,
+    type Item,
+  } from "@openrouter/agent";
+
+  const messages: ChatMessages[] = [
+    {
+      role: "assistant",
+      content: null,
+      toolCalls: [
+        {
+          id: "call_1",
+          type: "function",
+          function: { name: "get_weather", arguments: '{"city":"Austin"}' },
+        },
+      ],
+    },
+  ];
+
+  const input: Item[] = fromChatMessages(messages);
+  const result = callModel(client, { model: "openai/gpt-4o-mini", input });
+  ```
+
+### Patch Changes
+
+- [#140](https://github.com/OpenRouterTeam/typescript-agent/pull/140) [`db16748`](https://github.com/OpenRouterTeam/typescript-agent/commit/db16748ba096769540e105e494b376ef8569f873) Thanks [@mattapperson](https://github.com/mattapperson)! - MCP cache entries are now only reused for the server URL they were written for. When a custom `cache.key` holds an entry for a different URL, `createMCPTools` treats it as a cache miss and connects to the requested URL, replacing the entry. Credential maintenance on replay likewise leaves entries for other URLs untouched.
+
+  ```ts
+  import { createMCPTools, InMemoryMCPCacheStore } from "@openrouter/agent/mcp";
+
+  const store = new InMemoryMCPCacheStore();
+
+  // Writes an entry for server A under the user's key.
+  await createMCPTools({
+    url: "https://a.example.com/mcp",
+    auth: authA,
+    cache: { store, key: "mcp:user-123" },
+  });
+
+  // Same key, different server. Before: replayed A's cached entry.
+  // Now: a cache miss — connects to B and replaces the entry with B's tools.
+  await createMCPTools({
+    url: "https://b.example.com/mcp",
+    auth: authB,
+    cache: { store, key: "mcp:user-123" },
+  });
+
+  // Recommended: include the server URL so each server keeps its own entry.
+  const url = "https://b.example.com/mcp";
+  await createMCPTools({
+    url,
+    auth: authB,
+    cache: { store, key: `mcp:user-123:${url}` },
+  });
+  ```
+
+- [#120](https://github.com/OpenRouterTeam/typescript-agent/pull/120) [`ddab365`](https://github.com/OpenRouterTeam/typescript-agent/commit/ddab3652a47edf5ebaa842447864a3dc91b812e5) Thanks [@LukasParke](https://github.com/LukasParke)! - Identify Agent SDK requests with an Agent SDK user-agent suffix that includes the package version.
+
+  ```ts
+  import { OpenRouter } from "@openrouter/agent";
+
+  const client = new OpenRouter({ apiKey: process.env.OPENROUTER_API_KEY });
+  // Requests use the Agent SDK user agent by default.
+  // Pass userAgent to override the default identification.
+  ```
+
+- [#125](https://github.com/OpenRouterTeam/typescript-agent/pull/125) [`ddd60df`](https://github.com/OpenRouterTeam/typescript-agent/commit/ddd60dffab8018363dc42ad20ebf2d57e33c2809) Thanks [@w0nche0l](https://github.com/w0nche0l)! - Do not execute tool calls from a response truncated at `max_output_tokens`. A turn that hits the token budget mid-tool-call now finalizes with `status: 'incomplete'` instead of running the cut-off call (and re-requesting on the same exhausted budget).
+
+  ```ts
+  import { callModel } from "@openrouter/agent";
+
+  const result = callModel(client, {
+    model: "anthropic/claude-sonnet-4.5",
+    maxOutputTokens: 512, // budget exhausted mid tool call
+    tools: [myTool],
+  });
+  const response = await result.getResponse();
+  // response.status === 'incomplete'
+  // response.incompleteDetails.reason === 'max_output_tokens'
+  // The cut-off call is NOT executed; raise the budget and re-request.
+  ```
+
 ## 0.11.0
 
 ### Minor Changes
