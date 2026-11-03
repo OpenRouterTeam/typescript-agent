@@ -2,7 +2,7 @@ import type { MCPCacheStore } from './cache/cache-store.js';
 import { defaultCacheKey } from './cache/cache-store.js';
 import type { SerializedMCPServer } from './cache/cache-types.js';
 import { isSerializedMCPServer } from './cache/cache-types.js';
-import { freshConnect, normalizeUrl } from './handle.js';
+import { freshConnect, normalizeUrl, snapshotMatchesUrl } from './handle.js';
 import type { RehydrateMCPToolsOptions } from './rehydrate.js';
 import { rehydrateMCPTools } from './rehydrate.js';
 import type { CreateMCPToolsOptions, MCPToolsHandle } from './types.js';
@@ -82,6 +82,13 @@ async function tryCacheHit(
     snapshot = undefined;
   }
   if (snapshot === null || snapshot === undefined || !isSerializedMCPServer(snapshot)) {
+    return undefined;
+  }
+  // A custom `cache.key` (e.g. one per user) can outlive the server URL it was
+  // written for. Rehydrate dials `snapshot.url` with THIS call's auth, so
+  // replaying an entry for a different server would send these credentials to
+  // that server. Treat it as a miss; the fresh connect overwrites the entry.
+  if (!snapshotMatchesUrl(snapshot, options.url)) {
     return undefined;
   }
   const maxAge = options.staleness?.maxAgeMs;

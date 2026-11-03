@@ -7,7 +7,7 @@ import type { SerializedMCPServer } from './cache/cache-types.js';
 import { isSerializedMCPServer } from './cache/cache-types.js';
 import { closeQuietly } from './close-quietly.js';
 import { MCPCacheError, MCPCacheWriteError, MCPStaleSnapshotError } from './errors.js';
-import { freshConnect, makeHandle } from './handle.js';
+import { freshConnect, makeHandle, snapshotMatchesUrl } from './handle.js';
 import type { ConnectOptions, MCPConnection } from './mcp-connection.js';
 import { connect, isAuthFailure } from './mcp-connection.js';
 import { loadMcpSdk } from './mcp-sdk.js';
@@ -477,6 +477,14 @@ async function maintainReplayedEntry(args: {
     // price.
     const stored = await store.get(cacheKey);
     if (stored === null || stored === undefined || !isSerializedMCPServer(stored)) {
+      return;
+    }
+    // The key may now hold another server's entry (a shared custom key that a
+    // concurrent call for a different URL just rewrote, or a direct rehydrate
+    // whose input snapshot came from elsewhere). Grafting this call's
+    // credentials onto it would hand them to that server on its next
+    // credential-bearing rehydrate, so leave a foreign entry untouched.
+    if (!snapshotMatchesUrl(stored, args.snapshot.url)) {
       return;
     }
     const grafted = mayGraft
