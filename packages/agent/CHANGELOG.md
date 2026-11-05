@@ -1,5 +1,11 @@
 # @openrouter/agent
 
+## 1.0.1
+
+### Patch Changes
+
+- [#143](https://github.com/OpenRouterTeam/typescript-agent/pull/143) [`844845f`](https://github.com/OpenRouterTeam/typescript-agent/commit/844845fcb3a5ce679d8b8e18fc38b4870bb3aa9a) Thanks [@alexb-openrouter](https://github.com/alexb-openrouter)! - Security hardening: when `stopWhen` is already met on the first response and `allowFinalResponse` is `false`, pausing for an approval-gated tool call no longer executes its auto-approved sibling calls. They are saved as skipped results instead.
+
 ## 1.0.0
 
 ### Major Changes
