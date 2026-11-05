@@ -75,7 +75,7 @@ jobs:
         with:
           persist-credentials: false
 
-      - uses: pnpm/action-setup@v6
+      - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
 
       # npm trusted publishing (OIDC) requires npm >= 11.5.1, which means Node
       # 24 — Node 22 ships npm 10.x, which has no OIDC token-exchange support at
