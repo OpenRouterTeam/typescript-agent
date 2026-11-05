@@ -3240,6 +3240,8 @@ export class ModelResult<
    * @param toolCalls - The tool calls to check
    * @param currentRound - The current execution round (1-indexed)
    * @param currentResponse - The current response to save if pausing
+   * @param skipAutoExecution - When true, auto-approved calls are not executed;
+   *   they are saved as skipped results so the paused turn stays well-formed
    * @returns True if execution should pause for approval, false to continue
    * @throws Error if approval is required but no state accessor is configured
    */
@@ -3247,6 +3249,7 @@ export class ModelResult<
     suppliedToolCalls: ParsedToolCall<Tool>[],
     currentRound: number,
     currentResponse: models.OpenResponsesResult,
+    skipAutoExecution = false,
   ): Promise<boolean> {
     if (!this.options.tools) {
       return false;
@@ -3311,10 +3314,19 @@ export class ModelResult<
       ...initialSurvivors.filter((call) => !pendingIds.has(call.id)),
       ...blockedCalls,
     ];
-    const unsentResults = await this.executeAutoApproveTools(
-      executableNow as ParsedToolCall<TTools[number]>[],
-      turnContext,
-    );
+    const unsentResults: UnsentToolResult<TTools>[] = skipAutoExecution
+      ? executableNow.map(
+          (call) =>
+            createRejectedResult(
+              call.id,
+              String(call.name),
+              'Tool execution skipped: stop condition met',
+            ) as UnsentToolResult<TTools>,
+        )
+      : await this.executeAutoApproveTools(
+          executableNow as ParsedToolCall<TTools[number]>[],
+          turnContext,
+        );
 
     // Combine pre-denied results (from hook "deny") with executed results.
     const combinedResults: UnsentToolResult<TTools>[] = [
@@ -6335,8 +6347,16 @@ export class ModelResult<
         // Extract and check tool calls
         const toolCalls = extractToolCallsFromResponse(currentResponse);
 
+        // With allowFinalResponse: false, a met stopWhen means no tool from
+        // this response runs (the post-loop stop path skips them). Evaluate it
+        // before the approval check so pausing for an approval-gated call does
+        // not execute its auto-approved siblings. With allowFinalResponse on,
+        // the stop path runs these calls anyway, so the check is not needed.
+        const skipAutoExecution =
+          this.options.allowFinalResponse === false && (await this.shouldStopExecution());
+
         // Check for approval requirements
-        if (await this.handleApprovalCheck(toolCalls, 0, currentResponse)) {
+        if (await this.handleApprovalCheck(toolCalls, 0, currentResponse, skipAutoExecution)) {
           return; // Paused for approval
         }
 
