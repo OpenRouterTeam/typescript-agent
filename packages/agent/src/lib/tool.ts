@@ -1100,21 +1100,31 @@ export function serverTool<T extends ServerToolType, TId extends string = `serve
  * the only injection point for MCP tools, whose remote definitions cannot
  * carry client-side functions. Like every other tool hook it is a computed
  * function over the call's arguments (or `false` to exempt).
+ *
+ * `options.wireInputSchema` is the server's own JSON Schema for the tool's
+ * arguments; it is serialized to the model in place of one regenerated from
+ * the Zod `inputSchema`, which keeps validating the call.
  */
 export function markMcp<T extends Tool>(
   toolToMark: T,
   options?: {
     loopKey?: ToolLoopKey<Record<string, unknown>>;
+    wireInputSchema?: Readonly<Record<string, unknown>>;
   },
 ): McpBranded<T> {
   const marked = {
     ...toolToMark,
     _mcp: true as const,
   };
-  if (options?.loopKey !== undefined && isClientTool(marked)) {
+  if (options !== undefined && isClientTool(marked)) {
     marked.function = {
       ...marked.function,
-      loopKey: options.loopKey,
+      ...(options.loopKey !== undefined && {
+        loopKey: options.loopKey,
+      }),
+      ...(options.wireInputSchema !== undefined && {
+        wireInputSchema: options.wireInputSchema,
+      }),
     };
   }
   return marked;

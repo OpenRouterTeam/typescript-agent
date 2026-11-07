@@ -87,8 +87,9 @@ async function invokeTool(invokeArgs: InvokeToolArgs): Promise<unknown> {
  * Wrap one discovered MCP tool as an `@openrouter/agent` tool. Emits a
  * generator tool (streaming progress events) when `emitProgress` is on,
  * otherwise a regular tool. The input schema (and output schema, when declared)
- * are converted to Zod so the model sees faithful parameters. The abort signal,
- * if supplied, is threaded into the underlying `callTool`.
+ * are converted to Zod to validate the call; the model is sent the server's
+ * own input schema, not one regenerated from Zod. The abort signal, if
+ * supplied, is threaded into the underlying `callTool`.
  */
 export function wrapMcpTool(def: McpToolDef, options: WrapToolOptions): McpBranded {
   const name = `${options.namePrefix ?? ''}${def.name}`;
@@ -103,12 +104,16 @@ export function wrapMcpTool(def: McpToolDef, options: WrapToolOptions): McpBrand
     options.loopKeys !== undefined && Object.hasOwn(options.loopKeys, def.name)
       ? options.loopKeys[def.name]
       : def.loopKey;
-  const markOptions =
-    loopKey !== undefined
-      ? {
-          loopKey,
-        }
-      : undefined;
+  const markOptions = {
+    ...(loopKey !== undefined && {
+      loopKey,
+    }),
+    // A non-object root is not a usable tool schema; the Zod conversion
+    // degrades it to an object, so that one is serialized instead.
+    ...(def.inputSchema['type'] === 'object' && {
+      wireInputSchema: def.inputSchema,
+    }),
+  };
 
   if (options.emitProgress === true) {
     return markMcp(
