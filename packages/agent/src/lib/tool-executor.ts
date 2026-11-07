@@ -22,7 +22,6 @@ import {
   isDeferredHandle,
   isGeneratorTool,
   isHITLTool,
-  isManualTool,
   isMcpTool,
   isRegularExecuteTool,
   isServerTool,
@@ -131,7 +130,7 @@ export function convertToolsToAPIFormat(
       description: tool.function.description || null,
       strict: tool.function.strict ?? null,
       parameters:
-        isManualTool(tool) && tool.function.wireInputSchema !== undefined
+        tool.function.wireInputSchema !== undefined
           ? sanitizeJsonSchema(tool.function.wireInputSchema)
           : convertZodToJsonSchema(tool.function.inputSchema),
     };
