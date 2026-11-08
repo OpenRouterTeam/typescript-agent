@@ -125,6 +125,7 @@ What each stream emits:
 | `getToolStream()` | tool-call **argument deltas**; `preliminary_result` events for generator tools — *not* execution results |
 | `getToolCallsStream()` | parsed tool calls as they complete |
 | `getItemsStream()` | all output items (messages, function calls, …) — output items **only**, no usage/response metadata |
+| `getUiStream()` | OpenUI events — `statement` / `fragment` / `document` — from tools declaring `toUiOutput` and from the `openui` plugin |
 | `getFullResponsesStream()` | every response event, including `tool.result` / `tool.call_output` execution events, and each round's `response.completed` (with that round's usage block) |
 
 #### Replay history for stream consumers
@@ -179,7 +180,6 @@ Same `SessionUsageTotals` shape and numbers as the `SessionEnd` hook's
 `totalUsage`. For **per-call** granularity use the `PostModelCall` hook (one
 emit per model call, with `turnType`/`turnNumber`) or read each round's
 `response.completed` off `getFullResponsesStream()`.
-
 ### Tool Types
 
 The `tool()` factory creates type-safe tools with full Zod schema inference. In addition to the legacy kinds below, the unified `run` interface with `lifecycle: 'sync' | 'background' | 'deferred'` covers [async tools](#async-tools) whose results arrive after the tool round, and `tool.agent()` creates [subagent tools](#agent-tools-subagents).

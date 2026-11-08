@@ -209,6 +209,42 @@ export {
   buildNextTurnParamsContext,
   executeNextTurnParamsFunctions,
 } from './lib/next-turn-params.js';
+export type {
+  ComponentDefinition,
+  CreateLibraryOptions,
+  FragmentArg,
+  FragmentBuilder,
+  FragmentNode,
+  OpenUiPlugin,
+  OpenUiWireComponent,
+  PropSignature,
+  UiBuiltinOptions,
+  UiDocumentEvent,
+  UiExpr,
+  UiFragment,
+  UiFragmentEvent,
+  UiLibrary,
+  UiLiteralValue,
+  UiStatementEvent,
+  UiStreamEvent,
+} from './lib/openui/index.js';
+// OpenUI (generative UI) bindings: library model, fragment builder, plugin helper
+export {
+  componentProps,
+  createLibrary,
+  defineComponent,
+  fragment,
+  OPENUI_BUILTIN_COMPONENTS,
+  OPENUI_LANG_DIALECT,
+  OPENUI_ROOT_REF,
+  OPENUI_WIRE_EVENT,
+  openui,
+  serializeExpr,
+  translateUiEvent,
+  uiBuiltin,
+  uiRef,
+  uiState,
+} from './lib/openui/index.js';
 export type { StreamReplay } from './lib/reusable-stream.js';
 // Stop condition helpers
 export {
@@ -317,8 +353,10 @@ export type {
   ToolStreamEvent,
   ToolTaskHandle,
   ToolTaskStatus,
+  ToolUiFragmentEvent,
   ToolWithExecute,
   ToolWithGenerator,
+  ToUiOutputFunction,
   TurnContext,
   TurnEndEvent,
   TurnStartEvent,
@@ -348,6 +386,7 @@ export {
   isToolCallOutputEvent,
   isToolPreliminaryResultEvent,
   isToolResultEvent,
+  isToolUiFragmentEvent,
   isTurnEndEvent,
   isTurnStartEvent,
   isUnifiedTool,

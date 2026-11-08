@@ -221,6 +221,12 @@ export async function resumeToolResults<TTools extends readonly Tool[]>(
   const settledIds = new Set(state.settledAsyncCallIds ?? []);
 
   const envelopes: models.BaseInputsUnion[] = [];
+  const uiToolResults: Array<{
+    callId: string;
+    name: string;
+    input: Record<string, unknown>;
+    output: unknown;
+  }> = [];
   /** callId → the terminal lifecycle status persisted for that entry. */
   const settledNow = new Map<string, ToolTaskStatus>();
 
@@ -249,6 +255,7 @@ export async function resumeToolResults<TTools extends readonly Tool[]>(
     const envelope = buildResumeEnvelope(entry, task, request.tools);
 
     envelopes.push(buildTaskResultMessage(envelope));
+    collectUiToolResult(uiToolResults, envelope, task);
     // Persist the entry's real terminal status. 'expired' / 'timed_out'
     // have no ToolTaskStatus member — they persist as 'failed'.
     settledNow.set(
@@ -313,7 +320,7 @@ export async function resumeToolResults<TTools extends readonly Tool[]>(
 
   // Continue the conversation: the envelopes are already in persisted
   // history, so no fresh input is supplied.
-  return callModel(
+  const result = callModel(
     client,
     {
       ...request.run,
@@ -325,6 +332,28 @@ export async function resumeToolResults<TTools extends readonly Tool[]>(
     },
     options,
   );
+  result.queueUiToolResults(uiToolResults);
+  return result;
+}
+
+function collectUiToolResult(
+  results: Array<{
+    callId: string;
+    name: string;
+    input: Record<string, unknown>;
+    output: unknown;
+  }>,
+  envelope: ToolTaskResultEnvelope,
+  task: PendingAsyncTool,
+): void {
+  if (envelope.status === 'completed' && task.input !== undefined) {
+    results.push({
+      callId: task.callId,
+      name: task.name,
+      input: task.input,
+      output: envelope.result,
+    });
+  }
 }
 
 /**

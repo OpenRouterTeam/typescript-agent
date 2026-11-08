@@ -147,6 +147,7 @@ export class AsyncToolRegistry {
     callId: string;
     taskId: string;
     name: string;
+    input: Record<string, unknown>;
     expiresAt?: number;
     pollAfterMs?: number;
   }): ToolTask {
@@ -155,6 +156,7 @@ export class AsyncToolRegistry {
       callId: entry.callId,
       toolName: entry.name,
       mode: 'defer',
+      input: entry.input,
       ...(entry.expiresAt !== undefined && {
         expiresAt: entry.expiresAt,
       }),
@@ -301,6 +303,9 @@ export class AsyncToolRegistry {
       mode: t.mode,
       status: t.status,
       startedAt: t.startedAt,
+      ...(t.input !== undefined && {
+        input: t.input,
+      }),
       ...(t.expiresAt !== undefined && {
         expiresAt: t.expiresAt,
       }),

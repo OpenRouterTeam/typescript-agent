@@ -152,6 +152,9 @@ describe('tool.deferred — pause & placeholder', () => {
       name: 'request_legal_review',
       mode: 'defer',
       status: 'working',
+      input: {
+        contractId: 'c-9',
+      },
     });
 
     // No follow-up request — the loop paused after the placeholder.
@@ -724,6 +727,9 @@ describe('tool.deferred — cross-process resume', () => {
       callId: 'call_d1',
       taskId: 'ticket_c-9',
       mode: 'defer',
+      input: {
+        contractId: 'c-9',
+      },
     });
   });
 

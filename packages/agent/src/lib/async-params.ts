@@ -4,6 +4,7 @@ import type { DoomLoopOption } from './doom-loop.js';
 import type { HooksManager } from './hooks-manager.js';
 import type { InlineHookConfig } from './hooks-types.js';
 import type { Item } from './item-types.js';
+import type { OpenUiPlugin } from './openui/plugin.js';
 import type { StreamReplay } from './reusable-stream.js';
 import type { ContextInput } from './tool-context.js';
 import type {
@@ -78,11 +79,16 @@ type BaseCallModelInput<
   TTools extends readonly Tool[] = readonly Tool[],
   TShared extends Record<string, unknown> = Record<string, never>,
 > = {
-  [K in keyof Omit<models.ResponsesRequest, 'stream' | 'tools' | 'input'>]?: FieldOrAsyncFunction<
-    models.ResponsesRequest[K]
-  >;
+  [K in keyof Omit<
+    models.ResponsesRequest,
+    'stream' | 'tools' | 'input' | 'plugins'
+  >]?: FieldOrAsyncFunction<models.ResponsesRequest[K]>;
 } & {
   input: FieldOrAsyncFunction<Item[]> | string;
+  /** Responses plugins, including the OpenUI binding pending SDK schema regeneration. */
+  plugins?: FieldOrAsyncFunction<
+    Array<NonNullable<models.ResponsesRequest['plugins']>[number] | OpenUiPlugin>
+  >;
   tools?: TTools;
   /**
    * Optional filter restricting which tools are exposed to the model for this
