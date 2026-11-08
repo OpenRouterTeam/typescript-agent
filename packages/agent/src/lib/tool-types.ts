@@ -300,8 +300,12 @@ export type NextTurnParamsContext = {
   toolChoice: models.ResponsesRequest['toolChoice'];
   /** Current model selection */
   model: string;
-  /** Current models array */
-  models: string[];
+  /**
+   * Current models array (fallback model IDs, or reason-gated fallback
+   * entries once the SDK spec includes them). Derived from the SDK request
+   * type so it tracks the generated shape.
+   */
+  models: NonNullable<models.ResponsesRequest['models']>;
   /** Current temperature */
   temperature: number | null;
   /** Current maxOutputTokens */
