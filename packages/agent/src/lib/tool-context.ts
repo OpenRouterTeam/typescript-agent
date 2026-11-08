@@ -1,5 +1,6 @@
 import * as z4 from 'zod/v4';
-import type { $ZodObject, $ZodShape } from 'zod/v4/core';
+import type { ObjectSchema } from './schema.js';
+import { isZodSchema, validateSchemaSync } from './schema.js';
 import type { ToolExecuteContext, TurnContext } from './tool-types.js';
 import { SHARED_CONTEXT_KEY } from './tool-types.js';
 
@@ -107,29 +108,44 @@ export class ToolContextStore {
 //#region buildToolExecuteContext
 
 /**
- * Validate a partial update against a schema's shape, filtering to known keys
- * and validating each key individually. Returns the filtered partial.
+ * Validate a partial update against a schema. Zod keeps the legacy per-field
+ * path (filter to shape keys, parse each individually). Standard Schema
+ * validators only see the merged object, so we validate the merge and use
+ * the validator's output to filter unknown keys — but persist the raw
+ * caller-supplied values like the Zod branch. Storing transformed output
+ * would let a type-changing transform poison the store: every other context
+ * path validates the raw stored value and discards the parse output.
  */
 function validatePartialAgainstSchema(
   partial: Record<string, unknown>,
-  schema: $ZodObject<$ZodShape>,
+  current: Record<string, unknown>,
+  schema: ObjectSchema,
 ): Record<string, unknown> {
-  const schemaKeys = Object.keys(schema._zod.def.shape);
-  const filteredPartial: Record<string, unknown> = {};
-  for (const [key, value] of Object.entries(partial)) {
-    if (schemaKeys.includes(key)) {
-      filteredPartial[key] = value;
-    }
+  if (!isZodSchema(schema)) {
+    const validated = validateSchemaSync(schema, {
+      ...current,
+      ...partial,
+    }) as Record<string, unknown>;
+    return Object.fromEntries(
+      Object.keys(partial)
+        .filter((key) => Object.hasOwn(validated, key))
+        .map((key) => [
+          key,
+          partial[key],
+        ]),
+    );
   }
 
   const shape = schema._zod.def.shape;
+  const filteredPartial = Object.fromEntries(
+    Object.entries(partial).filter(([key]) => Object.hasOwn(shape, key)),
+  );
   for (const [key, value] of Object.entries(filteredPartial)) {
     const keySchema = shape[key];
     if (keySchema) {
       z4.parse(keySchema, value);
     }
   }
-
   return filteredPartial;
 }
 
@@ -140,6 +156,8 @@ function validatePartialAgainstSchema(
  */
 export interface ToolExecutionExtras {
   signal?: AbortSignal;
+  /** Internal: context schemas were already validated asynchronously by the executor. */
+  contextValidated?: boolean;
   callId?: string;
   conversationId?: string;
   /** The parent run's client — agent tools use it to start child runs. */
@@ -206,16 +224,20 @@ export function buildToolExecuteContext<
   turnContext: TurnContext,
   store: ToolContextStore | undefined,
   toolName: TName,
-  schema: $ZodObject<$ZodShape> | undefined,
-  sharedSchema?: $ZodObject<$ZodShape> | undefined,
+  schema: ObjectSchema | undefined,
+  sharedSchema?: ObjectSchema | undefined,
   extras?: ToolExecutionExtras,
 ): ToolExecuteContext<TName, TContext, TShared> {
-  // Validate initial context eagerly (throws on bad data)
-  if (store && schema) {
-    extractToolContext(store, toolName, schema);
-  }
-  if (store && sharedSchema) {
-    extractToolContext(store, SHARED_CONTEXT_KEY, sharedSchema);
+  // Validate initial context eagerly (throws on bad data). Tool execution does
+  // this asynchronously before calling us so Promise-returning Standard Schema
+  // validators work; direct callers retain this synchronous validation path.
+  if (!extras?.contextValidated) {
+    if (store && schema) {
+      extractToolContext(store, toolName, schema);
+    }
+    if (store && sharedSchema) {
+      extractToolContext(store, SHARED_CONTEXT_KEY, sharedSchema);
+    }
   }
 
   const ctx: ToolExecuteContext<TName, TContext, TShared> = {
@@ -240,6 +262,7 @@ export function buildToolExecuteContext<
       }
       const filteredPartial = validatePartialAgainstSchema(
         partial as Record<string, unknown>,
+        store.getToolContext(toolName),
         schema,
       );
       store.mergeToolContext(toolName, filteredPartial);
@@ -256,6 +279,7 @@ export function buildToolExecuteContext<
       }
       const filteredPartial = validatePartialAgainstSchema(
         partial as Record<string, unknown>,
+        store.getToolContext(SHARED_CONTEXT_KEY),
         sharedSchema,
       );
       store.mergeToolContext(SHARED_CONTEXT_KEY, filteredPartial);
@@ -279,8 +303,8 @@ export function buildToolRunContext<
   turnContext: TurnContext,
   store: ToolContextStore | undefined,
   toolName: TName,
-  schema: $ZodObject<$ZodShape> | undefined,
-  sharedSchema?: $ZodObject<$ZodShape> | undefined,
+  schema: ObjectSchema | undefined,
+  sharedSchema?: ObjectSchema | undefined,
   extras?: ToolExecutionExtras,
 ): ToolExecuteContext<TName, TContext, TShared> & {
   defer: (taskId: string, options?: Record<string, unknown>) => unknown;
@@ -369,7 +393,7 @@ export async function resolveContext<T extends Record<string, Record<string, unk
 export function extractToolContext(
   store: ToolContextStore,
   toolName: string,
-  schema: $ZodObject<$ZodShape> | undefined,
+  schema: ObjectSchema | undefined,
 ): Record<string, unknown> {
   if (!schema) {
     return {};
@@ -377,8 +401,8 @@ export function extractToolContext(
 
   const toolData = store.getToolContext(toolName);
 
-  // Validate the extracted values against the schema
-  z4.parse(schema, toolData);
+  // Context mutation APIs are synchronous, so async validators cannot be used here.
+  validateSchemaSync(schema, toolData);
 
   // getToolContext already returns a shallow copy
   return toolData;
