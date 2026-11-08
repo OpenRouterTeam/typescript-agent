@@ -7,7 +7,9 @@ import type {
   UnsupportedContent,
 } from '../api-shape-helpers/claude-message.js';
 import type { ReusableReadableStream } from './reusable-stream.js';
+import { StreamFailedError } from './stream-errors.js';
 import {
+  isErrorEvent,
   isFileCitationAnnotation,
   isFilePathAnnotation,
   isFileSearchCallOutputItem,
@@ -662,12 +664,13 @@ export function extractCompletionFromBuffer(
   const terminal = findBufferedTerminalEvent(stream);
 
   if (terminal && isResponseFailedEvent(terminal)) {
-    throw new Error(`Response failed: ${JSON.stringify(terminal.response.error)}`);
+    throw StreamFailedError.fromFailedResponse(terminal.response);
   }
   if (terminal && (isResponseCompletedEvent(terminal) || isResponseIncompleteEvent(terminal))) {
     return terminal.response;
   }
-  throw new Error('Stream ended without completion event');
+  const errorEvent = stream.findLastBuffered((event) => isErrorEvent(event));
+  throw StreamFailedError.fromStreamEnd(errorEvent && isErrorEvent(errorEvent) ? errorEvent : null);
 }
 
 /**
@@ -697,6 +700,9 @@ export async function consumeStreamForCompletion(
   stream: ReusableReadableStream<models.StreamEvents>,
 ): Promise<models.OpenResponsesResult> {
   const consumer = stream.createConsumer();
+  // Stream-level `error` events are recorded, not thrown: the stream may
+  // still complete after one. Surfaced only if it ends without a terminal.
+  let errorEvent: models.ErrorEvent | null = null;
 
   for await (const event of consumer) {
     if (!('type' in event)) {
@@ -709,16 +715,20 @@ export async function consumeStreamForCompletion(
 
     if (isResponseFailedEvent(event)) {
       // The failed event contains the full response with error information
-      throw new Error(`Response failed: ${JSON.stringify(event.response.error)}`);
+      throw StreamFailedError.fromFailedResponse(event.response);
     }
 
     if (isResponseIncompleteEvent(event)) {
       // Return the incomplete response
       return event.response;
     }
+
+    if (isErrorEvent(event)) {
+      errorEvent = event;
+    }
   }
 
-  throw new Error('Stream ended without completion event');
+  throw StreamFailedError.fromStreamEnd(errorEvent);
 }
 
 /**
