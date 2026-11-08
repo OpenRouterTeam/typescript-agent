@@ -23,6 +23,7 @@ const REPORTED = {
   search: {
     title: 'Search',
     readOnlyHint: true,
+    idempotentHint: true,
     openWorldHint: false,
   },
   delete_record: {
@@ -59,6 +60,8 @@ const { createMCPTools } = await import('../../../src/mcp/create-mcp-tools.js');
 const { rehydrateMCPTools } = await import('../../../src/mcp/rehydrate.js');
 const { isSerializedMCPServer } = await import('../../../src/mcp/cache/cache-types.js');
 const { isMcpTool } = await import('../../../src/lib/tool-types.js');
+const { convertToolsToAPIFormat } = await import('../../../src/lib/tool-executor.js');
+const { MCPCacheError } = await import('../../../src/mcp/errors.js');
 
 function annotationsByName(
   tools: readonly import('../../../src/lib/tool-types.js').Tool[],
@@ -103,6 +106,7 @@ describe('MCP tool annotations', () => {
         annotations: {
           title: 'Search',
           readOnlyHint: true,
+          idempotentHint: true,
           openWorldHint: false,
         },
       },
@@ -120,13 +124,34 @@ describe('MCP tool annotations', () => {
     ];
   });
 
-  it('exposes each tool with the hints its server reported, and none when it reported none', async () => {
+  it.each([
+    [
+      'progress-emitting',
+      true,
+    ],
+    [
+      'plain',
+      false,
+    ],
+  ])('exposes each %s tool with the hints its server reported, and none when it reported none', async (_kind, emitProgress) => {
+    const handle = await createMCPTools({
+      url: 'https://mcp.example.com/mcp',
+      resources: false,
+      emitProgress,
+    });
+
+    expect(annotationsByName(handle.tools)).toStrictEqual(REPORTED);
+  });
+
+  it('keeps the hints out of the tool definitions sent to the model', async () => {
     const handle = await createMCPTools({
       url: 'https://mcp.example.com/mcp',
       resources: false,
     });
 
-    expect(annotationsByName(handle.tools)).toEqual(REPORTED);
+    expect(JSON.stringify(convertToolsToAPIFormat(handle.tools))).not.toMatch(
+      /annotations|readOnlyHint|destructiveHint/,
+    );
   });
 
   it('restores the same hints from a snapshot without listing the tools again', async () => {
@@ -144,7 +169,20 @@ describe('MCP tool annotations', () => {
     });
 
     expect(listToolsCalls).toBe(0);
-    expect(annotationsByName(replayed.tools)).toEqual(REPORTED);
+    expect(annotationsByName(replayed.tools)).toStrictEqual(REPORTED);
+  });
+
+  it('refuses to build tools from a snapshot whose hint is not a boolean', async () => {
+    await expect(
+      rehydrateMCPTools({
+        // @ts-expect-error a snapshot read from a store is untrusted; this one is malformed
+        snapshot: snapshotWith({
+          readOnlyHint: 'false',
+        }),
+        reconnectOnExpiry: false,
+        resources: false,
+      }),
+    ).rejects.toBeInstanceOf(MCPCacheError);
   });
 
   it.each([

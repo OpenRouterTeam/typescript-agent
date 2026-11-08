@@ -100,7 +100,9 @@ function snapshotToToolDefs(snapshot: SerializedMCPServer): McpToolDef[] {
       },
     }),
     ...(t.annotations !== undefined && {
-      annotations: t.annotations,
+      annotations: {
+        ...t.annotations,
+      },
     }),
     ...(t.loopKey !== undefined && {
       loopKey: t.loopKey,
