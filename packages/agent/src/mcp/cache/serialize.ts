@@ -105,6 +105,9 @@ export async function serializeServer(input: SerializeInput): Promise<Serialized
     ...(def.outputSchema !== undefined && {
       outputSchema: def.outputSchema,
     }),
+    ...(def.annotations !== undefined && {
+      annotations: def.annotations,
+    }),
     ...(def.loopKey !== undefined && {
       loopKey: def.loopKey,
     }),

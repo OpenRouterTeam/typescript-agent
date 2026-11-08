@@ -1,7 +1,7 @@
 import type { Client, Progress } from '@modelcontextprotocol/client';
 import * as z from 'zod';
 import { markMcp, tool } from '../lib/tool.js';
-import type { McpBranded, ToolLoopKey } from '../lib/tool-types.js';
+import type { McpBranded, McpToolAnnotations, ToolLoopKey } from '../lib/tool-types.js';
 import type { RawCallToolResult } from './result-mapper.js';
 import { mapCallToolResult } from './result-mapper.js';
 import { isJsonSchemaObject } from './schema/json-schema-guards.js';
@@ -14,6 +14,8 @@ export interface McpToolDef {
   description?: string;
   inputSchema: Record<string, unknown>;
   outputSchema?: Record<string, unknown>;
+  /** The server's behaviour hints for the tool, as reported by `tools/list`. */
+  annotations?: McpToolAnnotations;
   /**
    * Doom-loop identity advertised by the server via
    * `_meta['openrouter/loopKey']` on the tool definition: a field-name
@@ -103,12 +105,14 @@ export function wrapMcpTool(def: McpToolDef, options: WrapToolOptions): McpBrand
     options.loopKeys !== undefined && Object.hasOwn(options.loopKeys, def.name)
       ? options.loopKeys[def.name]
       : def.loopKey;
-  const markOptions =
-    loopKey !== undefined
-      ? {
-          loopKey,
-        }
-      : undefined;
+  const markOptions = {
+    ...(loopKey !== undefined && {
+      loopKey,
+    }),
+    ...(def.annotations !== undefined && {
+      annotations: def.annotations,
+    }),
+  };
 
   if (options.emitProgress === true) {
     return markMcp(

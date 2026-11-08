@@ -13,6 +13,7 @@ import type {
   HITLTool,
   ManualTool,
   McpBranded,
+  McpToolAnnotations,
   NextTurnParamsFunctions,
   ServerTool,
   ServerToolConfig,
@@ -1100,16 +1101,23 @@ export function serverTool<T extends ServerToolType, TId extends string = `serve
  * the only injection point for MCP tools, whose remote definitions cannot
  * carry client-side functions. Like every other tool hook it is a computed
  * function over the call's arguments (or `false` to exempt).
+ *
+ * `options.annotations` records the server's `tools/list` annotations on the
+ * branded tool, so a consumer can read them back after discovery.
  */
 export function markMcp<T extends Tool>(
   toolToMark: T,
   options?: {
     loopKey?: ToolLoopKey<Record<string, unknown>>;
+    annotations?: McpToolAnnotations;
   },
 ): McpBranded<T> {
   const marked = {
     ...toolToMark,
     _mcp: true as const,
+    ...(options?.annotations !== undefined && {
+      annotations: options.annotations,
+    }),
   };
   if (options?.loopKey !== undefined && isClientTool(marked)) {
     marked.function = {

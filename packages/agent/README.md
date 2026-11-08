@@ -67,6 +67,8 @@ pnpm add @openrouter/agent @modelcontextprotocol/client
 
 Existing `@openrouter/mcp` imports remain supported as compatibility facades.
 
+A tool built by `createMCPTools` or `rehydrateMCPTools` carries the `annotations` its server reported in `tools/list` (`readOnlyHint`, `destructiveHint`, `idempotentHint`, `openWorldHint`, `title`), and a cache snapshot keeps them. The field is absent when the server sent none. They are hints from the server, not guarantees.
+
 ## Features
 
 ### Multiple Response Consumption Patterns
