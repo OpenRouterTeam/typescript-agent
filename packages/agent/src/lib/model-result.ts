@@ -6292,6 +6292,13 @@ export class ModelResult<
       try {
         await this.initStream();
 
+        // Pipe turn 0 into the turn broadcaster before the loop runs. A
+        // full-responses consumer that attaches after another consumer drove
+        // the loop then still receives every turn from the broadcaster.
+        if (this.reusableStream && this.options.tools?.length) {
+          this.startInitialStreamPipe();
+        }
+
         // If resuming from approval or HITL pause and still pending, don't continue.
         // `processApprovalDecisions` runs in initStream for resumes; if it left us
         // paused (any remaining pending calls), the outer loop should not execute.
