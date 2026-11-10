@@ -10,4 +10,4 @@ coverage/
 bun.lock
 
 # Claude Code local settings can store secrets from approved commands
-.claude/settings.local.json
+**/.claude/settings.local.json
