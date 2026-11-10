@@ -1104,12 +1104,17 @@ export function serverTool<T extends ServerToolType, TId extends string = `serve
  *
  * `options.annotations` records the server's `tools/list` annotations on the
  * branded tool, so a consumer can read them back after discovery.
+ *
+ * `options.wireInputSchema` is the server's own JSON Schema for the tool's
+ * arguments; it is serialized to the model in place of one regenerated from
+ * the Zod `inputSchema`, which keeps validating the call.
  */
 export function markMcp<T extends Tool>(
   toolToMark: T,
   options?: {
     loopKey?: ToolLoopKey<Record<string, unknown>>;
     annotations?: McpToolAnnotations;
+    wireInputSchema?: Readonly<Record<string, unknown>>;
   },
 ): McpBranded<T> {
   const marked = {
@@ -1119,10 +1124,15 @@ export function markMcp<T extends Tool>(
       annotations: options.annotations,
     }),
   };
-  if (options?.loopKey !== undefined && isClientTool(marked)) {
+  if (options !== undefined && isClientTool(marked)) {
     marked.function = {
       ...marked.function,
-      loopKey: options.loopKey,
+      ...(options.loopKey !== undefined && {
+        loopKey: options.loopKey,
+      }),
+      ...(options.wireInputSchema !== undefined && {
+        wireInputSchema: options.wireInputSchema,
+      }),
     };
   }
   return marked;

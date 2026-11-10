@@ -441,6 +441,16 @@ export interface BaseToolFunction<
   description?: string;
   inputSchema: TInput;
   /**
+   * JSON Schema to serialize for this tool instead of regenerating one from
+   * `inputSchema`. A tool whose definition already is a JSON Schema (a manual
+   * tool, an MCP tool) forwards it verbatim, sanitized of `~`-prefixed
+   * metadata keys. Regenerating it from Zod costs CPU/allocations, cannot
+   * represent every construct, and adds constraints the source never declared
+   * (a `pattern` per string `format`, safe-integer bounds). `inputSchema`
+   * still validates the call's arguments.
+   */
+  readonly wireInputSchema?: Readonly<Record<string, unknown>>;
+  /**
    * Whether providers should enforce strict schema adherence when generating
    * this tool's call arguments (OpenAI structured-outputs style). Serialized
    * onto the wire tool definition; `null`/absent leaves provider default.
@@ -575,15 +585,6 @@ export interface ManualToolFunction<
   TCtx extends $ZodObject<$ZodShape> = $ZodObject<$ZodShape>,
   TName extends string = string,
 > extends BaseToolFunction<TInput, TCtx, TName> {
-  /**
-   * JSON Schema to serialize for this tool instead of regenerating one from
-   * `inputSchema`. Manual tools are never executed or input-validated by the
-   * SDK, so a caller that already owns a JSON Schema can forward it verbatim
-   * (sanitized of `~`-prefixed metadata keys) and skip the round trip through
-   * Zod, which both costs CPU/allocations and cannot represent constructs like
-   * `anyOf` / `oneOf`.
-   */
-  readonly wireInputSchema?: Readonly<Record<string, unknown>>;
   outputSchema?: TOutput;
 }
 
