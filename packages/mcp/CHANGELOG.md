@@ -1,5 +1,12 @@
 # @openrouter/mcp
 
+## 1.1.4
+
+### Patch Changes
+
+- Updated dependencies [[`907beec`](https://github.com/OpenRouterTeam/typescript-agent/commit/907beecd6de46f7c01dff6516c25d22f8d95af64)]:
+  - @openrouter/agent@1.1.0
+
 ## 1.1.3
 
 ### Patch Changes
