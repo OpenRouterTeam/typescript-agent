@@ -1,5 +1,15 @@
 # @openrouter/agent
 
+## 1.1.0
+
+### Minor Changes
+
+- [#146](https://github.com/OpenRouterTeam/typescript-agent/pull/146) [`907beec`](https://github.com/OpenRouterTeam/typescript-agent/commit/907beecd6de46f7c01dff6516c25d22f8d95af64) Thanks [@w0nche0l](https://github.com/w0nche0l)! - Send an MCP tool's own JSON Schema to the model instead of one regenerated from Zod.
+
+  `wrapMcpTool` converts the server's `inputSchema` to Zod to validate call arguments, and the model-facing `parameters` were then regenerated from that Zod schema. The round trip rewrote the schema: every string `format` gained a `pattern` (about 400 characters for `date-time`), every `integer` gained safe-integer bounds, `$ref`/`$defs` were inlined, and open objects gained `additionalProperties: {}`.
+
+  MCP tools now keep both. The server's schema is stored as `function.wireInputSchema` and serialized verbatim (sanitized of `~`-prefixed keys); the Zod `inputSchema` still validates the call. `wireInputSchema` moves from `ManualToolFunction` to `BaseToolFunction`, and `markMcp` accepts it as an option. A server schema whose root is not an object still serializes the Zod-derived object schema.
+
 ## 1.0.1
 
 ### Patch Changes
