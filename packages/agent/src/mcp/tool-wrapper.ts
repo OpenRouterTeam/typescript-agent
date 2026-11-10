@@ -85,6 +85,31 @@ async function invokeTool(invokeArgs: InvokeToolArgs): Promise<unknown> {
   return mapCallToolResult(mcpName, result);
 }
 
+/** What `markMcp` attaches to the wrapped tool; the same for every tool kind. */
+function markOptionsFor(
+  def: McpToolDef,
+  options: WrapToolOptions,
+): NonNullable<Parameters<typeof markMcp>[1]> {
+  // Client-side config wins over the server-advertised declaration.
+  const loopKey =
+    options.loopKeys !== undefined && Object.hasOwn(options.loopKeys, def.name)
+      ? options.loopKeys[def.name]
+      : def.loopKey;
+  return {
+    ...(loopKey !== undefined && {
+      loopKey,
+    }),
+    ...(def.annotations !== undefined && {
+      annotations: def.annotations,
+    }),
+    // A non-object root is not a usable tool schema; the Zod conversion
+    // degrades it to an object, so that one is serialized instead.
+    ...(def.inputSchema['type'] === 'object' && {
+      wireInputSchema: def.inputSchema,
+    }),
+  };
+}
+
 /**
  * Wrap one discovered MCP tool as an `@openrouter/agent` tool. Emits a
  * generator tool (streaming progress events) when `emitProgress` is on,
@@ -100,25 +125,7 @@ export function wrapMcpTool(def: McpToolDef, options: WrapToolOptions): McpBrand
     def.outputSchema !== undefined
       ? convertMcpInputSchema(def.outputSchema, options.schemaMode)
       : undefined;
-  // Client-side config wins over the server-advertised declaration; both
-  // ride markMcp's injection point so every tool kind gets the same wiring.
-  const loopKey =
-    options.loopKeys !== undefined && Object.hasOwn(options.loopKeys, def.name)
-      ? options.loopKeys[def.name]
-      : def.loopKey;
-  const markOptions = {
-    ...(loopKey !== undefined && {
-      loopKey,
-    }),
-    ...(def.annotations !== undefined && {
-      annotations: def.annotations,
-    }),
-    // A non-object root is not a usable tool schema; the Zod conversion
-    // degrades it to an object, so that one is serialized instead.
-    ...(def.inputSchema['type'] === 'object' && {
-      wireInputSchema: def.inputSchema,
-    }),
-  };
+  const markOptions = markOptionsFor(def, options);
 
   if (options.emitProgress === true) {
     return markMcp(
