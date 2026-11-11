@@ -2,7 +2,7 @@ import type { MCPCacheStore } from './cache/cache-store.js';
 import { defaultCacheKey } from './cache/cache-store.js';
 import type { SerializedMCPServer } from './cache/cache-types.js';
 import { isSerializedMCPServer } from './cache/cache-types.js';
-import { freshConnect, normalizeUrl } from './handle.js';
+import { freshConnect, normalizeUrl, snapshotMatchesUrl } from './handle.js';
 import type { RehydrateMCPToolsOptions } from './rehydrate.js';
 import { rehydrateMCPTools } from './rehydrate.js';
 import type { CreateMCPToolsOptions, MCPToolsHandle } from './types.js';
@@ -12,8 +12,9 @@ import type { CreateMCPToolsOptions, MCPToolsHandle } from './types.js';
  * `.tools` can be passed straight into `callModel({ tools })`. Auth is supplied
  * once and reused for discovery and every subsequent tool call.
  *
- * When `cache` is provided, a valid non-stale snapshot is rehydrated instead of
- * re-listing; otherwise the fresh result is written back to the cache.
+ * When `cache` is provided, a valid non-stale snapshot for the same URL is
+ * rehydrated instead of re-listing; otherwise (including an entry written for a
+ * different URL) the fresh result is written back to the cache.
  */
 export async function createMCPTools(options: CreateMCPToolsOptions): Promise<MCPToolsHandle> {
   const url = normalizeUrl(options.url);
@@ -82,6 +83,13 @@ async function tryCacheHit(
     snapshot = undefined;
   }
   if (snapshot === null || snapshot === undefined || !isSerializedMCPServer(snapshot)) {
+    return undefined;
+  }
+  // A custom `cache.key` (e.g. one per user) can outlive the server URL it was
+  // written for. Rehydrate dials `snapshot.url` with THIS call's auth, so
+  // replaying an entry for a different server would send these credentials to
+  // that server. Treat it as a miss; the fresh connect overwrites the entry.
+  if (!snapshotMatchesUrl(snapshot, options.url)) {
     return undefined;
   }
   const maxAge = options.staleness?.maxAgeMs;

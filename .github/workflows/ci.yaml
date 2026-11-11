@@ -27,11 +27,11 @@ jobs:
         with:
           fetch-depth: 2
 
-      - uses: pnpm/action-setup@v6
+      - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
 
       - uses: actions/setup-node@v6
         with:
-          node-version: 22
+          node-version: 24
           cache: pnpm
 
       - run: pnpm install --frozen-lockfile
@@ -46,11 +46,11 @@ jobs:
         with:
           fetch-depth: 2
 
-      - uses: pnpm/action-setup@v6
+      - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
 
       - uses: actions/setup-node@v6
         with:
-          node-version: 22
+          node-version: 24
           cache: pnpm
 
       - run: pnpm install --frozen-lockfile
@@ -65,11 +65,11 @@ jobs:
         with:
           fetch-depth: 2
 
-      - uses: pnpm/action-setup@v6
+      - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
 
       - uses: actions/setup-node@v6
         with:
-          node-version: 22
+          node-version: 24
           cache: pnpm
 
       - run: pnpm install --frozen-lockfile
@@ -101,11 +101,11 @@ jobs:
         with:
           fetch-depth: 2
 
-      - uses: pnpm/action-setup@v6
+      - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
 
       - uses: actions/setup-node@v6
         with:
-          node-version: 22
+          node-version: 24
           cache: pnpm
 
       - run: pnpm install --frozen-lockfile
@@ -140,13 +140,13 @@ jobs:
           echo "::error::OPENROUTER_API_KEY secret is not set; refusing to skip e2e tests outside of fork PRs."
           exit 1
 
-      - uses: pnpm/action-setup@v6
+      - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
         if: env.SKIP_E2E != '1'
 
       - uses: actions/setup-node@v6
         if: env.SKIP_E2E != '1'
         with:
-          node-version: 22
+          node-version: 24
           cache: pnpm
 
       - if: env.SKIP_E2E != '1'

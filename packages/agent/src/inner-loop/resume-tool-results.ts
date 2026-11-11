@@ -82,11 +82,11 @@ export interface ToolTaskResultEnvelope {
 }
 
 /** Build the user-role message carrying a task-result envelope. */
-export function buildTaskResultMessage(envelope: ToolTaskResultEnvelope): models.BaseInputsUnion {
+export function buildTaskResultMessage(envelope: ToolTaskResultEnvelope): models.InputsUnion1 {
   return {
     role: 'user',
     content: `${TASK_RESULT_BOUNDARY}\n${JSON.stringify(envelope)}`,
-  } as models.BaseInputsUnion;
+  };
 }
 
 /**
@@ -220,7 +220,7 @@ export async function resumeToolResults<TTools extends readonly Tool[]>(
   const pending: PendingAsyncTool[] = state.pendingAsyncTools ?? [];
   const settledIds = new Set(state.settledAsyncCallIds ?? []);
 
-  const envelopes: models.BaseInputsUnion[] = [];
+  const envelopes: models.InputsUnion1[] = [];
   /** callId → the terminal lifecycle status persisted for that entry. */
   const settledNow = new Map<string, ToolTaskStatus>();
 

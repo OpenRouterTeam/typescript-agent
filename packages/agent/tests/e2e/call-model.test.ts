@@ -899,7 +899,7 @@ describe('callModel E2E Tests', () => {
   describe('response.reasoningStream - Streaming reasoning deltas', () => {
     it('should successfully stream reasoning deltas for reasoning models', async () => {
       const response = client.callModel({
-        model: 'minimax/minimax-m2',
+        model: 'anthropic/claude-haiku-4.5',
         input: fromChatMessages([
           {
             role: 'user',

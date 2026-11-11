@@ -1,6 +1,6 @@
 {
   "name": "@openrouter/agent",
-  "version": "0.11.0",
+  "version": "1.1.0",
   "author": "OpenRouter",
   "description": "Agent toolkit for building AI applications with OpenRouter — tool orchestration, streaming, multi-turn conversations, and format compatibility.",
   "keywords": [
@@ -178,7 +178,7 @@
     "gen:version": "node scripts/gen-version.mjs"
   },
   "dependencies": {
-    "@openrouter/sdk": "^0.13.7",
+    "@openrouter/sdk": "^1.5.85",
     "zod": "^4.0.0"
   },
   "peerDependencies": {

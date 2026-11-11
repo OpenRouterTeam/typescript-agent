@@ -33,6 +33,7 @@ import {
   createUnsentResult,
   extractTextFromResponse as extractTextFromResponseState,
   normalizeInputToArray,
+  outputToInputItems,
   partitionToolCalls,
   toolRequiresApproval,
   unsentResultsToAPIFormat,
@@ -622,7 +623,7 @@ export class ModelResult<
   private dispatchedToolChoiceCommit: ToolChoiceStateCommit | null = null;
   private dispatchedCallerToolChoice = false;
   // Fresh user items to persist atomically with the assistant response
-  private pendingFreshItems: models.BaseInputsUnion[] | undefined;
+  private pendingFreshItems: models.InputsUnion1[] | undefined;
   private resumingFromClientTools = false;
   private resumingFromAsyncTools = false;
 
@@ -1240,7 +1241,7 @@ export class ModelResult<
 
     const stateUpdates: Partial<Omit<ConversationState<TTools>, 'id' | 'createdAt' | 'updatedAt'>> =
       {
-        messages: appendToMessages(messages, outputItems as models.BaseInputsUnion[]),
+        messages: appendToMessages(messages, outputToInputItems(outputItems)),
         previousResponseId: response.id,
       };
     if (this.resumingFromClientTools) {
@@ -1339,10 +1340,10 @@ export class ModelResult<
    * iteration of the execution loop is not a no-op.
    */
   private async injectAppendPromptMessage(prompt: string): Promise<void> {
-    const injectedMessage: models.BaseInputsUnion = {
+    const injectedMessage: models.InputsUnion1 = {
       role: 'user',
       content: prompt,
-    } as models.BaseInputsUnion;
+    };
 
     if (this.currentState) {
       // Mutate the in-memory state directly so loop progress is observable
@@ -1371,7 +1372,7 @@ export class ModelResult<
               {
                 role: 'user',
                 content: currentInput,
-              } as models.BaseInputsUnion,
+              },
               injectedMessage,
             ]
           : [
@@ -3255,6 +3256,8 @@ export class ModelResult<
    * @param toolCalls - The tool calls to check
    * @param currentRound - The current execution round (1-indexed)
    * @param currentResponse - The current response to save if pausing
+   * @param skipAutoExecution - When true, auto-approved calls are not executed;
+   *   they are saved as skipped results so the paused turn stays well-formed
    * @returns True if execution should pause for approval, false to continue
    * @throws Error if approval is required but no state accessor is configured
    */
@@ -3262,6 +3265,7 @@ export class ModelResult<
     suppliedToolCalls: ParsedToolCall<Tool>[],
     currentRound: number,
     currentResponse: models.OpenResponsesResult,
+    skipAutoExecution = false,
   ): Promise<boolean> {
     if (!this.options.tools) {
       return false;
@@ -3326,10 +3330,19 @@ export class ModelResult<
       ...initialSurvivors.filter((call) => !pendingIds.has(call.id)),
       ...blockedCalls,
     ];
-    const unsentResults = await this.executeAutoApproveTools(
-      executableNow as ParsedToolCall<TTools[number]>[],
-      turnContext,
-    );
+    const unsentResults: UnsentToolResult<TTools>[] = skipAutoExecution
+      ? executableNow.map(
+          (call) =>
+            createRejectedResult(
+              call.id,
+              String(call.name),
+              'Tool execution skipped: stop condition met',
+            ) as UnsentToolResult<TTools>,
+        )
+      : await this.executeAutoApproveTools(
+          executableNow as ParsedToolCall<TTools[number]>[],
+          turnContext,
+        );
 
     // Combine pre-denied results (from hook "deny") with executed results.
     const combinedResults: UnsentToolResult<TTools>[] = [
@@ -4819,7 +4832,7 @@ export class ModelResult<
     turnNumber: number,
   ): Promise<models.OpenResponsesResult> {
     const originalInput = this.resolvedRequest?.input;
-    const normalizedOriginalInput: models.BaseInputsUnion[] = Array.isArray(originalInput)
+    const normalizedOriginalInput: models.InputsUnion1[] = Array.isArray(originalInput)
       ? originalInput
       : originalInput
         ? [
@@ -4832,11 +4845,7 @@ export class ModelResult<
 
     const newInput: models.InputsUnion = [
       ...normalizedOriginalInput,
-      ...(Array.isArray(currentResponse.output)
-        ? currentResponse.output
-        : [
-            currentResponse.output,
-          ]),
+      ...outputToInputItems(currentResponse.output),
       ...toolResults,
     ];
 
@@ -4898,7 +4907,7 @@ export class ModelResult<
       return;
     }
     const originalInput = this.resolvedRequest.input;
-    const normalizedOriginalInput: models.BaseInputsUnion[] = Array.isArray(originalInput)
+    const normalizedOriginalInput: models.InputsUnion1[] = Array.isArray(originalInput)
       ? originalInput
       : originalInput
         ? [
@@ -4912,11 +4921,7 @@ export class ModelResult<
       ...this.resolvedRequest,
       input: [
         ...normalizedOriginalInput,
-        ...(Array.isArray(response.output)
-          ? response.output
-          : [
-              response.output,
-            ]),
+        ...outputToInputItems(response.output),
       ],
     };
   }
@@ -5059,7 +5064,7 @@ export class ModelResult<
         {
           role: 'user',
           content: `${TASK_RESULT_BOUNDARY}\n${envelopes.join('\n')}`,
-        } as models.BaseInputsUnion,
+        },
       ]),
       ...(this.currentState.pendingAsyncTools?.length && {
         pendingAsyncTools: this.currentState.pendingAsyncTools.map((entry) => {
@@ -5121,7 +5126,7 @@ export class ModelResult<
     }
 
     const originalInput = this.resolvedRequest.input;
-    const normalizedOriginalInput: models.BaseInputsUnion[] = Array.isArray(originalInput)
+    const normalizedOriginalInput: models.InputsUnion1[] = Array.isArray(originalInput)
       ? originalInput
       : originalInput
         ? [
@@ -5142,11 +5147,7 @@ export class ModelResult<
 
     const newInput: models.InputsUnion = [
       ...normalizedOriginalInput,
-      ...(Array.isArray(currentResponse.output)
-        ? currentResponse.output
-        : [
-            currentResponse.output,
-          ]),
+      ...outputToInputItems(currentResponse.output),
       ...toolOutputs,
       ...(typeof finalDirective === 'string' && finalDirective.length > 0
         ? [
@@ -5492,10 +5493,10 @@ export class ModelResult<
    *   `onResponseReceived`.
    */
   private async applyHooksToFreshItems(
-    freshItems: models.BaseInputsUnion[],
+    freshItems: models.InputsUnion1[],
     historicalItems: models.InputsUnion,
     turnContext: TurnContext,
-  ): Promise<models.BaseInputsUnion[]> {
+  ): Promise<models.InputsUnion1[]> {
     if (freshItems.length === 0) {
       return freshItems;
     }
@@ -5507,7 +5508,7 @@ export class ModelResult<
       : [
           historicalItems,
         ];
-    const functionCallItems: models.BaseInputsUnion[] = [];
+    const functionCallItems: models.InputsUnion1[] = [];
     for (const item of historyArray) {
       if (isFunctionCallItem(item)) {
         functionCallItems.push(item);
@@ -5538,16 +5539,11 @@ export class ModelResult<
 
     // Drop the leading function_call items we prepended; what remains is
     // the fresh items in their original order (some with rewritten outputs).
-    const hookedArray = Array.isArray(hookedInput)
-      ? hookedInput
-      : [
-          hookedInput,
-        ];
-    if (hookedArray.length !== syntheticInput.length) {
+    if (!Array.isArray(hookedInput) || hookedInput.length !== syntheticInput.length) {
       // Shouldn't happen (hooks only rewrite in-place), but be conservative.
       return freshItems;
     }
-    return hookedArray.slice(functionCallItems.length);
+    return hookedInput.slice(functionCallItems.length);
   }
 
   /**
@@ -5869,7 +5865,7 @@ export class ModelResult<
         Array.isArray(this.currentState.messages) &&
         this.currentState.messages.length > 0;
 
-      let freshItemsForState: models.BaseInputsUnion[] | undefined;
+      let freshItemsForState: models.InputsUnion1[] | undefined;
 
       if (hasLoadedHistory && this.currentState) {
         // `currentState.messages` is InputsUnion — keep it as that union so
@@ -5877,19 +5873,13 @@ export class ModelResult<
         const historicalMessages: models.InputsUnion = this.currentState.messages;
 
         // Normalize the caller-supplied input for this turn into an array of
-        // fresh items. Undefined stays undefined (no new items). The widening
-        // to BaseInputsUnion[] matches the signature of appendToMessages and
-        // mirrors the pre-existing pattern elsewhere in this file; the two
-        // union shapes (InputsUnion1 vs BaseInputsUnion1) describe the same
-        // SDK input items with different nominal types, and BaseInputsUnion
-        // already includes `any` in its element type, so the runtime shape
-        // is preserved either way.
+        // fresh items. Undefined stays undefined (no new items).
         // Normalize (not just wrap): bare strings must become EasyInputMessage
         // items, exactly as the no-history branch does via
         // normalizeInputToArray. Passing a raw string through to the request
         // input array is rejected by OpenResponses validation (400).
         const newInput = baseRequest.input;
-        const freshItems: models.BaseInputsUnion[] | undefined =
+        const freshItems: models.InputsUnion1[] | undefined =
           newInput !== undefined ? normalizeInputToArray(newInput) : undefined;
 
         // Hook fresh items only (historical function_calls serve as
@@ -6360,8 +6350,16 @@ export class ModelResult<
         // Extract and check tool calls
         const toolCalls = extractToolCallsFromResponse(currentResponse);
 
+        // With allowFinalResponse: false, a met stopWhen means no tool from
+        // this response runs (the post-loop stop path skips them). Evaluate it
+        // before the approval check so pausing for an approval-gated call does
+        // not execute its auto-approved siblings. With allowFinalResponse on,
+        // the stop path runs these calls anyway, so the check is not needed.
+        const skipAutoExecution =
+          this.options.allowFinalResponse === false && (await this.shouldStopExecution());
+
         // Check for approval requirements
-        if (await this.handleApprovalCheck(toolCalls, 0, currentResponse)) {
+        if (await this.handleApprovalCheck(toolCalls, 0, currentResponse, skipAutoExecution)) {
           return; // Paused for approval
         }
 

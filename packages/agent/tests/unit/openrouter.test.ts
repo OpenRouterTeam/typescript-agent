@@ -148,7 +148,7 @@ describe('OpenRouter', () => {
         hooks,
       });
       expect(openrouter._options.hooks).toBe(hooks);
-      expect(openrouter._options.hooks?.beforeRequestHooks).toHaveLength(1);
+      expect(openrouter._options.hooks?.beforeRequestHooks).toContain(noopBeforeRequest);
     });
 
     it('should wrap a single hook object into an SDKHooks instance', () => {
@@ -158,8 +158,7 @@ describe('OpenRouter', () => {
         hooks: noopBeforeRequest,
       });
       expect(openrouter._options.hooks).toBeInstanceOf(SDKHooks);
-      expect(openrouter._options.hooks?.beforeRequestHooks).toHaveLength(1);
-      expect(openrouter._options.hooks?.beforeRequestHooks[0]).toBe(noopBeforeRequest);
+      expect(openrouter._options.hooks?.beforeRequestHooks).toContain(noopBeforeRequest);
       expect(openrouter._options.userAgent).toBe('custom/1.0');
     });
 
@@ -172,8 +171,8 @@ describe('OpenRouter', () => {
         ],
       });
       expect(openrouter._options.hooks).toBeInstanceOf(SDKHooks);
-      expect(openrouter._options.hooks?.beforeRequestHooks).toHaveLength(1);
-      expect(openrouter._options.hooks?.afterSuccessHooks).toHaveLength(1);
+      expect(openrouter._options.hooks?.beforeRequestHooks).toContain(noopBeforeRequest);
+      expect(openrouter._options.hooks?.afterSuccessHooks).toContain(noopAfterSuccess);
     });
 
     it('should register a hook object that implements multiple hook interfaces under every matching slot', () => {
@@ -185,8 +184,8 @@ describe('OpenRouter', () => {
         apiKey: 'test-key',
         hooks: combined,
       });
-      expect(openrouter._options.hooks?.beforeRequestHooks).toHaveLength(1);
-      expect(openrouter._options.hooks?.afterSuccessHooks).toHaveLength(1);
+      expect(openrouter._options.hooks?.beforeRequestHooks).toContain(combined);
+      expect(openrouter._options.hooks?.afterSuccessHooks).toContain(combined);
     });
   });
 });

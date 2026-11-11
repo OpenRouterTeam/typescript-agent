@@ -11,7 +11,7 @@ import { isToolPreliminaryResultEvent, isToolResultEvent } from '../../src/lib/t
 type Internal = {
   currentState: {
     id: string;
-    messages: models.BaseInputsUnion[];
+    messages: models.InputsUnion1[];
     status: 'in_progress';
     createdAt: number;
     updatedAt: number;

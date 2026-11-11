@@ -4,12 +4,14 @@
 # mechanical `changeset version` output before an unattended merge.
 #
 # Two layers, both fail-closed:
-#   1. Path allowlist: consumed changesets (.changeset/*.md) and per-package
-#      package.json / CHANGELOG.md / src/version.ts. No root package.json
-#      (private, unversioned), no lockfile (workspace:* deps don't touch it).
-#      src/version.ts is the committed gen:version output (see publish.yaml's
-#      `pnpm run version` note) — a Version PR bumping @openrouter/mcp always
-#      carries it, so excluding it would fail every such train run.
+#   1. Path allowlist: consumed changesets (.changeset/*.md), per-package
+#      package.json / CHANGELOG.md, and the committed gen:version outputs
+#      listed in GENERATED_VERSION_FILES below (see publish.yaml's
+#      `pnpm run version` note). No root package.json (private, unversioned),
+#      no lockfile (workspace:* deps don't touch it). A Version PR bumping
+#      @openrouter/agent always carries packages/agent/src/mcp/version.ts, so
+#      leaving it off the list fails every such train run (it moved there from
+#      packages/mcp/src/version.ts in #102, which stalled the train).
 #   2. Content vet for package.json: paths alone are not enough — a smuggled
 #      `"postinstall"` script in packages/*/package.json passes a path check,
 #      survives `pnpm install --frozen-lockfile` (script-only edits don't
@@ -17,9 +19,11 @@
 #      npm OIDC id-token is in scope. So every changed line in a package.json
 #      must be a version bump or an internal @openrouter/* dependency range
 #      bump — exactly what `changeset version` emits (cf. Version PR #57).
-#      src/version.ts gets the same treatment: every changed line must match
-#      the fixed gen-version.mjs output shape (comments or the PACKAGE_VERSION
-#      constant), so a smuggled statement can't ride the auto-merge either.
+#      Generated version files get the same treatment: every changed line must
+#      match the fixed gen-version.mjs output shape (comments or the
+#      PACKAGE_VERSION constant), so a smuggled statement can't ride the
+#      auto-merge either. Path allowlist and content vet share one list, so a
+#      file can never be allowed without also being vetted.
 #
 # File list is paginated via the REST API: `gh pr view --json files` caps at
 # 100 entries and sorts .changeset/ first, so a padded PR could hide an
@@ -70,7 +74,12 @@ fi
 printf '%s\n' "$FILES_NDJSON" | python3 -c '
 import json, re, sys
 
-ALLOW = re.compile(r"^(\.changeset/[^/]+\.md|packages/[^/]+/(package\.json|CHANGELOG\.md|src/version\.ts))$")
+# Exact paths of committed gen:version outputs (packages/*/scripts/gen-version.mjs).
+# Add a path here when a package starts committing one.
+GENERATED_VERSION_FILES = frozenset({
+    "packages/agent/src/mcp/version.ts",
+})
+ALLOW = re.compile(r"^(\.changeset/[^/]+\.md|packages/[^/]+/(package\.json|CHANGELOG\.md))$")
 # The only lines `changeset version` changes in a package.json: the version
 # field, and internal dependency ranges when updateInternalDependencies fires.
 OK_LINE = re.compile(
@@ -91,11 +100,12 @@ for raw in sys.stdin:
         continue
     f = json.loads(raw)
     name = f["filename"]
-    if not ALLOW.match(name):
+    is_version_file = name in GENERATED_VERSION_FILES
+    if not (is_version_file or ALLOW.match(name)):
         bad.append(f"path outside allowlist: {name}")
         continue
-    if name.endswith("package.json") or name.endswith("src/version.ts"):
-        ok_line = OK_VERSION_TS_LINE if name.endswith(".ts") else OK_LINE
+    if is_version_file or name.endswith("package.json"):
+        ok_line = OK_VERSION_TS_LINE if is_version_file else OK_LINE
         patch = f.get("patch")
         if patch is None:
             # No inline patch (file too large / binary flag) — cannot vet.
