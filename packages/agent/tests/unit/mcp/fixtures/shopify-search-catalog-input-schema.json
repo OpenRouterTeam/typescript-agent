@@ -1,0 +1,367 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "meta": {
+      "type": "object",
+      "description": "Metadata for UCP agent profile discovery.",
+      "properties": {
+        "ucp-agent": {
+          "type": "object",
+          "properties": {
+            "profile": {
+              "type": "string",
+              "format": "uri",
+              "description": "Agent profile URI for UCP discovery."
+            }
+          },
+          "required": [
+            "profile"
+          ]
+        }
+      },
+      "required": [
+        "ucp-agent"
+      ]
+    },
+    "catalog": {
+      "type": "object",
+      "description": "Catalog search parameters.",
+      "properties": {
+        "query": {
+          "type": "string",
+          "description": "Search query string."
+        },
+        "context": {
+          "type": "object",
+          "description": "Buyer signals for localization and personalization.",
+          "additionalProperties": true,
+          "properties": {
+            "address_country": {
+              "type": "string",
+              "description": "Country code in ISO 3166-1 alpha-2 format."
+            },
+            "address_region": {
+              "type": "string",
+              "description": "Region or state."
+            },
+            "postal_code": {
+              "type": "string",
+              "description": "Postal code."
+            },
+            "language": {
+              "type": "string",
+              "description": "Language tag in IETF BCP 47 format."
+            },
+            "currency": {
+              "type": "string",
+              "description": "Currency code in ISO 4217 format."
+            },
+            "intent": {
+              "type": "string",
+              "description": "Buyer intent."
+            }
+          }
+        },
+        "signals": {
+          "type": "object",
+          "description": "Platform environment data.",
+          "additionalProperties": true,
+          "properties": {
+            "dev.ucp.buyer_ip": {
+              "type": "string",
+              "description": "Buyer IP address."
+            },
+            "dev.ucp.user_agent": {
+              "type": "string",
+              "description": "Buyer user agent."
+            }
+          }
+        },
+        "filters": {
+          "type": "object",
+          "description": "Narrowing criteria for catalog results.",
+          "additionalProperties": true,
+          "properties": {
+            "categories": {
+              "type": "array",
+              "description": "Category filters combined with OR logic.",
+              "items": {
+                "type": "string"
+              }
+            },
+            "price": {
+              "type": "object",
+              "description": "Price range filter.",
+              "properties": {
+                "min": {
+                  "type": "integer",
+                  "description": "Minimum price in minor currency units."
+                },
+                "max": {
+                  "type": "integer",
+                  "description": "Maximum price in minor currency units."
+                }
+              }
+            },
+            "available": {
+              "type": "boolean",
+              "default": true,
+              "description": "Filter by availability. Default true (only sale-ready items)."
+            },
+            "shops": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "maxItems": 1000,
+              "description": "Restrict results to specific shops by GID. Maximum 1000 entries per request."
+            },
+            "condition": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "Filter by product condition. Known values: 'new', 'secondhand'. Absent means no condition filter (all conditions returned). Multiple values use OR logic."
+            },
+            "ships_to": {
+              "type": "object",
+              "description": "Shipping destination filter. When absent, implementation falls back to context address fields. When country matches context, implementation MAY enrich with context region/postal_code for delivery estimates.",
+              "required": [
+                "country"
+              ],
+              "properties": {
+                "country": {
+                  "type": "string",
+                  "pattern": "^[A-Z]{2}$",
+                  "description": "ISO 3166-1 alpha-2 country code."
+                },
+                "region": {
+                  "type": "string",
+                  "description": "State, province, or region. Improves delivery estimate fidelity."
+                },
+                "postal_code": {
+                  "type": "string",
+                  "description": "Postal or ZIP code. Improves delivery estimate fidelity."
+                }
+              }
+            },
+            "ships_from": {
+              "type": "array",
+              "description": "Shipping origin filter. Matches variants offered from any listed origin. Absent means no origin filter. Multiple entries use OR logic.",
+              "items": {
+                "type": "object",
+                "required": [
+                  "country"
+                ],
+                "properties": {
+                  "country": {
+                    "type": "string",
+                    "pattern": "^[A-Z]{2}$",
+                    "description": "ISO 3166-1 alpha-2 country code."
+                  }
+                }
+              }
+            },
+            "attributes": {
+              "type": "array",
+              "maxItems": 25,
+              "description": "Filter by Shopify taxonomy attributes on products and variants. Entries combine with AND; values within an entry combine with OR. Unrecognized attribute names are ignored and surfaced via result.messages[]. Maximum 25 entries per request.",
+              "items": {
+                "type": "object",
+                "required": [
+                  "name",
+                  "values"
+                ],
+                "properties": {
+                  "name": {
+                    "type": "string",
+                    "description": "Taxonomy attribute. Currently supported attributes are 'Color', 'Size', 'Target gender'."
+                  },
+                  "values": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    },
+                    "minItems": 1,
+                    "maxItems": 50,
+                    "description": "Taxonomy values (e.g. 'Red'). Values within an entry combine with OR. Maximum 50 values per attribute."
+                  }
+                }
+              }
+            },
+            "rating": {
+              "type": "object",
+              "description": "Filter by variant rating.",
+              "properties": {
+                "variant": {
+                  "type": "object",
+                  "description": "Matches products with at least one variant whose rating field meets these thresholds.",
+                  "properties": {
+                    "min": {
+                      "type": "number",
+                      "minimum": 0,
+                      "maximum": 5,
+                      "description": "Minimum rating value. Ratings are on a 0–5 scale."
+                    },
+                    "min_count": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 2147483647,
+                      "description": "Minimum number of reviews."
+                    }
+                  }
+                }
+              }
+            },
+            "price_tier": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "Filter by relative price tier within each product's category. Multiple values use OR logic. Well-known values: `low`, `medium`, `high`. Unrecognized values are ignored and surfaced via result.messages[]."
+            },
+            "media": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "required": [
+                  "type"
+                ],
+                "properties": {
+                  "type": {
+                    "type": "string",
+                    "description": "Media type to require. Well-known values: `image`, `video`, `external_video`, `model_3d`."
+                  }
+                }
+              },
+              "description": "Filter by product media. Each entry asserts the product has at least one media item of the given type. Entries combine with AND. Entries with an unrecognized type are ignored and surfaced via result.messages[]."
+            }
+          }
+        },
+        "pagination": {
+          "type": "object",
+          "description": "Pagination parameters.",
+          "properties": {
+            "cursor": {
+              "type": "string",
+              "description": "Pagination cursor."
+            },
+            "limit": {
+              "type": "integer",
+              "description": "Number of results to return.",
+              "default": 10,
+              "minimum": 1
+            }
+          }
+        },
+        "view": {
+          "type": "string",
+          "description": "Predefined output shape. When absent, returns the operation's default representation. Well-known values: `compact`."
+        },
+        "catalog_id": {
+          "type": "string",
+          "description": "Identifier of a saved catalog whose configuration supplies search constraints and may enable affiliate placement."
+        },
+        "like": {
+          "type": "array",
+          "description": "Similar items to search by — results should resemble these inputs.",
+          "minItems": 1,
+          "maxItems": 1,
+          "items": {
+            "title": "Like Item",
+            "description": "An item specified by product ID or by inline image data.",
+            "type": "object",
+            "oneOf": [
+              {
+                "title": "Item Reference",
+                "description": "Reference to a catalog item by GID.",
+                "required": [
+                  "id"
+                ],
+                "properties": {
+                  "id": {
+                    "type": "string",
+                    "pattern": "^gid://shopify/",
+                    "description": "GID of a product or product variant."
+                  }
+                },
+                "additionalProperties": false
+              },
+              {
+                "title": "Image Content",
+                "description": "Inline image for visual similarity search.",
+                "required": [
+                  "image"
+                ],
+                "properties": {
+                  "image": {
+                    "type": "object",
+                    "description": "Base64-encoded image with MIME type.",
+                    "required": [
+                      "content_type",
+                      "data"
+                    ],
+                    "properties": {
+                      "content_type": {
+                        "type": "string",
+                        "description": "MIME type of the encoded image (e.g., image/jpeg, image/webp)."
+                      },
+                      "data": {
+                        "type": "string",
+                        "contentEncoding": "base64",
+                        "description": "Base64-encoded image bytes."
+                      }
+                    },
+                    "additionalProperties": false
+                  }
+                },
+                "additionalProperties": false
+              }
+            ]
+          }
+        },
+        "sources": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1,
+          "uniqueItems": true,
+          "description": "Catalog sources the search ranks over. Well-known values: `shopify` (offers published by Shopify merchants) and `external` (offers from merchants not on Shopify, purchased at the merchant's site via the variant `url`). Absent means the saved catalog's configured sources when `catalog_id` is present, otherwise [\"shopify\"]. Unrecognized values are ignored and surfaced via result.messages[]."
+        }
+      },
+      "anyOf": [
+        {
+          "required": [
+            "query"
+          ],
+          "properties": {
+            "query": {
+              "pattern": "\\S"
+            }
+          }
+        },
+        {
+          "required": [
+            "like"
+          ]
+        },
+        {
+          "required": [
+            "filters"
+          ],
+          "properties": {
+            "filters": {
+              "minProperties": 1
+            }
+          }
+        }
+      ]
+    }
+  },
+  "required": [
+    "meta",
+    "catalog"
+  ]
+}
