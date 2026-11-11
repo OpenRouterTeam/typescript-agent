@@ -23,6 +23,9 @@ export type {
   // Message & item types
   ChatAssistantMessage,
   ChatMessages,
+  CodeInterpreterImageOutput,
+  CodeInterpreterImageOutput as OutputImage,
+  CodeInterpreterImageOutput as OutputInputImage,
   EasyInputMessage,
   EasyInputMessageContentInputImage,
   EasyInputMessageContentUnion1,
@@ -37,6 +40,7 @@ export type {
   InputImage,
   InputMessageItem,
   InputsUnion,
+  InputsUnion1,
   InputText,
   InputVideo,
   OpenAIResponsesToolChoiceUnion,
@@ -44,8 +48,6 @@ export type {
   // Output item types (StreamableOutputItem members)
   OutputFileSearchCallItem,
   OutputFunctionCallItem,
-  OutputImage,
-  OutputImage as OutputInputImage,
   OutputImageGenerationCallItem,
   OutputItems,
   OutputMessage,
