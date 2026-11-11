@@ -265,6 +265,13 @@ function extractServerToolIdentity(item: ServerToolResultItem): Record<string, u
 const MAX_FORCE_RESUME_OVERRIDES = 3;
 
 /**
+ * Most pending call IDs listed in a "conversation is paused" error. A state
+ * can hold any number of pending calls; the message stays readable and the
+ * full list is available from `getPendingToolCalls()`.
+ */
+const MAX_PENDING_IDS_IN_ERROR = 10;
+
+/**
  * Sentinel marking a tool-call id that appeared MORE THAN ONCE in one batch.
  * Ids are model-emitted and nothing upstream enforces uniqueness; a colliding
  * id must poison the loop-key cache entry rather than let the last write win,
@@ -639,6 +646,7 @@ export class ModelResult<
   private approvedToolCalls: string[] = [];
   private rejectedToolCalls: string[] = [];
   private isResumingFromApproval = false;
+  private initialRequestPromise: Promise<ResolvedCallModelInput> | null = null;
 
   // Unified turn broadcaster for multi-turn streaming
   private turnBroadcaster: ToolEventBroadcaster<CorrelatedResponseStreamEvent<TTools>> | null =
@@ -805,8 +813,23 @@ export class ModelResult<
     // Initialize state management
     this.stateAccessor = options.state ?? null;
     this.requireApprovalFn = options.requireApproval ?? null;
-    this.approvedToolCalls = options.approveToolCalls ?? [];
-    this.rejectedToolCalls = options.rejectToolCalls ?? [];
+    // De-duplicate decisions so a call ID listed twice cannot execute an
+    // approval-gated tool twice, and refuse contradictory input outright:
+    // an ID that is both approved and rejected has no safe interpretation.
+    this.approvedToolCalls = [
+      ...new Set(options.approveToolCalls ?? []),
+    ];
+    this.rejectedToolCalls = [
+      ...new Set(options.rejectToolCalls ?? []),
+    ];
+    const rejectedIds = new Set(this.rejectedToolCalls);
+    const conflictingIds = this.approvedToolCalls.filter((id) => rejectedIds.has(id));
+    if (conflictingIds.length > 0) {
+      throw new Error(
+        `Tool call IDs cannot be both approved and rejected: ${conflictingIds.join(', ')}. ` +
+          'Pass each pending call ID in exactly one of approveToolCalls or rejectToolCalls.',
+      );
+    }
 
     // Concurrency gates. Round default stays unbounded (existing behavior);
     // the background pool always has a cap (default 16 — detached work has
@@ -2596,7 +2619,7 @@ export class ModelResult<
     try {
       await this.initStream();
       if (requireStream && !this.reusableStream && !this.finalResponse) {
-        throw new Error('Stream not initialized');
+        throw this.responseUnavailableError('Stream not initialized');
       }
     } catch (error) {
       await this.finishHooksSessionForStream('error');
@@ -5654,6 +5677,61 @@ export class ModelResult<
   // =========================================================================
 
   /**
+   * Initialize the context store and resolve the turn-0 request exactly once.
+   * Caller-supplied async parameter functions (including a function-valued
+   * `input`) must not run twice when the paused-resume check needs the
+   * resolved input before the normal initialization path does.
+   */
+  private resolveInitialRequest(initialContext: TurnContext): Promise<ResolvedCallModelInput> {
+    this.initialRequestPromise ??= this.resolveInitialRequestUncached(initialContext);
+    return this.initialRequestPromise;
+  }
+
+  private async resolveInitialRequestUncached(
+    initialContext: TurnContext,
+  ): Promise<ResolvedCallModelInput> {
+    if (this.options.context !== undefined) {
+      const resolvedCtx = await resolveContext(this.options.context, initialContext);
+      this.contextStore = new ToolContextStore(resolvedCtx);
+    }
+    return this.resolveRequestForContext(initialContext);
+  }
+
+  /**
+   * Whether a state loaded as `awaiting_approval` / `awaiting_hitl` stays
+   * paused when the caller supplied no approve/reject decisions.
+   *
+   * - No pending calls: nothing is owed a decision, so there is nothing to
+   *   wait for. Continue with a normal request instead of stranding the
+   *   conversation behind a pause nobody can resolve.
+   * - `awaiting_approval`: always paused. Only a recorded approve/reject
+   *   decision releases an approval gate; a caller-supplied
+   *   `function_call_output` for the gated call does not.
+   * - `awaiting_hitl`: paused unless `input` carries a `function_call_output`
+   *   for a pending call. That is the documented way to resume a HITL tool
+   *   (see `HITLToolFunction`): the output goes through `onResponseReceived`
+   *   and on to the model via the normal request path.
+   */
+  private async staysPausedWithoutDecisions(
+    loadedState: ConversationState<TTools>,
+  ): Promise<boolean> {
+    const pendingIds = new Set((loadedState.pendingToolCalls ?? []).map((tc) => tc.id));
+    if (pendingIds.size === 0) {
+      return false;
+    }
+    if (loadedState.status !== 'awaiting_hitl') {
+      return true;
+    }
+    const { input } = await this.resolveInitialRequest({
+      numberOfTurns: 0,
+    });
+    if (!Array.isArray(input)) {
+      return true;
+    }
+    return !input.some((item) => isFunctionCallOutputItem(item) && pendingIds.has(item.callId));
+  }
+
+  /**
    * Initialize the stream if not already started
    * This is idempotent - multiple calls will return the same promise
    */
@@ -5732,6 +5810,16 @@ export class ModelResult<
             return; // Skip normal initialization, we're resuming
           }
 
+          // Paused for a human decision but none was supplied: stay paused.
+          // Falling through would flip the status to 'in_progress' and send a
+          // fresh model request, advancing the conversation past calls that
+          // still owe a decision. Every response/stream getter surfaces this
+          // as an explicit "awaiting ..." error (see pausedError()).
+          if (isResumableStatus && (await this.staysPausedWithoutDecisions(loadedState))) {
+            this.isResumingFromApproval = true;
+            return;
+          }
+
           // Check for interruption flag and handle
           if (loadedState.interruptedBy) {
             // Clear interruption flag and continue from saved state
@@ -5770,14 +5858,10 @@ export class ModelResult<
         numberOfTurns: 0,
       };
 
-      // Initialize context store from the context option
-      if (this.options.context !== undefined) {
-        const resolvedCtx = await resolveContext(this.options.context, initialContext);
-        this.contextStore = new ToolContextStore(resolvedCtx);
-      }
-
-      // Resolve any async functions first
-      let baseRequest = await this.resolveRequestForContext(initialContext);
+      // Initialize the context store and resolve any async functions first.
+      // Memoized: an `awaiting_hitl` resume already resolved the request to
+      // look for caller-supplied outputs (staysPausedWithoutDecisions).
+      let baseRequest = await this.resolveInitialRequest(initialContext);
 
       // Emit SessionStart hook. The `config` payload carries a stable, small
       // summary of session-level options so handlers can make routing/auditing
@@ -6761,10 +6845,56 @@ export class ModelResult<
     await this.executeToolsIfNeeded();
 
     if (!this.finalResponse) {
-      throw new Error('Response not available');
+      throw this.responseUnavailableError();
     }
 
     return extractTextFromResponse(this.finalResponse);
+  }
+
+  /**
+   * Error for a getter that has nothing to return. A resume that leaves the
+   * conversation paused (no decisions supplied, or decisions for only some of
+   * the pending calls) produces neither a response nor a stream; say so
+   * explicitly instead of the generic message.
+   */
+  private responseUnavailableError(fallbackMessage = 'Response not available'): Error {
+    return this.pausedError() ?? new Error(fallbackMessage);
+  }
+
+  /**
+   * Describes the pause when the conversation is waiting on the caller
+   * (`awaiting_approval` / `awaiting_hitl`), or null when it is not paused.
+   */
+  private pausedError(): Error | null {
+    const status = this.currentState?.status;
+    if (status !== 'awaiting_approval' && status !== 'awaiting_hitl') {
+      return null;
+    }
+    const pendingIds = (this.currentState?.pendingToolCalls ?? []).map((tc) => tc.id);
+    const shownIds = pendingIds.slice(0, MAX_PENDING_IDS_IN_ERROR).join(', ');
+    const hiddenCount = pendingIds.length - MAX_PENDING_IDS_IN_ERROR;
+    const idList = hiddenCount > 0 ? `${shownIds}, ... (${hiddenCount} more)` : shownIds;
+    const [what, howToResume] =
+      status === 'awaiting_approval'
+        ? [
+            'awaiting approval',
+            'Resume with approveToolCalls and/or rejectToolCalls for the pending calls.',
+          ]
+        : [
+            'awaiting HITL input',
+            'Resume by passing a function_call_output for a pending call ID in input, ' +
+              'or with approveToolCalls / rejectToolCalls (approving re-runs onToolCalled).',
+          ];
+    const input = this.options.request.input;
+    const inputSupplied = typeof input === 'function' || (input?.length ?? 0) > 0;
+    return new Error(
+      `Conversation is ${what} (status '${status}'); no response is available. ` +
+        `Pending tool call IDs: ${idList}. ${howToResume} ` +
+        'Use requiresApproval() or getPendingToolCalls() to inspect a paused conversation.' +
+        (inputSupplied
+          ? ' The input supplied with this call was not sent to the model and was not saved to state.'
+          : ''),
+    );
   }
 
   /**
@@ -6793,7 +6923,7 @@ export class ModelResult<
     await this.executeToolsIfNeeded();
 
     if (!this.finalResponse) {
-      throw new Error('Response not available');
+      throw this.responseUnavailableError();
     }
 
     return this.finalResponse;
@@ -7276,7 +7406,7 @@ export class ModelResult<
     }
 
     if (!this.reusableStream) {
-      throw new Error('Stream not initialized');
+      throw this.responseUnavailableError('Stream not initialized');
     }
 
     const completedResponse = await this.getInitialResponse();

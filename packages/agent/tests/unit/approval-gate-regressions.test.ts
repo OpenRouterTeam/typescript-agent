@@ -1993,3 +1993,683 @@ describe('allowFinalResponse path enforces the approval gate (#54)', () => {
     expect(text).toBe('Done.');
   });
 });
+
+// ---------------------------------------------------------------------------
+// Approval decisions are validated before anything runs (typescript-sdk#518),
+// and a paused conversation resumed without decisions stays paused
+// (typescript-sdk#517).
+// ---------------------------------------------------------------------------
+describe('approval decision validation and paused resumes (#517, #518)', () => {
+  const doneResponse = (id: string) =>
+    makeResponse(id, [
+      {
+        type: 'message',
+        id: `msg_${id}`,
+        role: 'assistant',
+        status: 'completed',
+        content: [
+          {
+            type: 'output_text',
+            text: 'Done.',
+            annotations: [],
+          },
+        ],
+      },
+    ]);
+
+  const request = {
+    model: 'test-model',
+    input: 'run the gated action',
+    tools: [
+      {
+        type: 'function' as const,
+        name: 'gated',
+        description: null,
+        strict: null,
+        parameters: {},
+      },
+    ],
+  };
+
+  function functionCallOutputs(callIndex: number): Array<{
+    type?: string;
+    callId?: string;
+    output?: unknown;
+  }> {
+    const sent = mockBetaResponsesSend.mock.calls[callIndex]?.[1]?.responsesRequest;
+    const input = (sent?.input ?? []) as Array<{
+      type?: string;
+      callId?: string;
+      output?: unknown;
+    }>;
+    return input.filter((item) => item?.type === 'function_call_output');
+  }
+
+  function callerOutput(callId: string, output: unknown): models.FunctionCallOutputItem {
+    return {
+      type: 'function_call_output',
+      id: `output_${callId}`,
+      callId,
+      output: JSON.stringify(output),
+    };
+  }
+
+  /** Runs one turn in which a HITL tool pauses on `call_hitl`; returns the tool + state. */
+  async function pauseOnHitlCall() {
+    const onToolCalled = vi.fn(async (_input: { v: string }) => null);
+    const onResponseReceived = vi.fn(async (raw: unknown) => ({
+      answer: String(
+        (
+          raw as {
+            answer?: unknown;
+          }
+        ).answer,
+      ).toUpperCase(),
+    }));
+    const review = tool({
+      name: 'gated',
+      inputSchema: z.object({
+        v: z.string(),
+      }),
+      outputSchema: z.object({
+        answer: z.string(),
+      }),
+      onToolCalled,
+      onResponseReceived,
+    });
+    const tools = [
+      review,
+    ] as const;
+    mockBetaResponsesSend.mockResolvedValueOnce({
+      ok: true,
+      value: makeResponse('resp_hitl', [
+        makeFunctionCallItem('call_hitl', 'gated', '{"v":"x"}'),
+      ]),
+    });
+    const memory = createMemoryAccessor<typeof tools>();
+    await new ModelResult<typeof tools>({
+      request,
+      client: {} as OpenRouterCore,
+      tools,
+      state: memory.accessor,
+    }).getResponse();
+    expect(memory.get()?.status).toBe('awaiting_hitl');
+    expect(onToolCalled).toHaveBeenCalledTimes(1);
+    mockBetaResponsesSend.mockClear();
+    return {
+      onToolCalled,
+      onResponseReceived,
+      tools,
+      ...memory,
+    };
+  }
+
+  /** Runs one turn that pauses on gated calls with `callIds`; returns the tool + state. */
+  async function pauseOnGatedCalls(callIds: string[]) {
+    const execute = vi.fn(async (_input: { v: string }) => ({
+      ok: true,
+    }));
+    const gated = tool({
+      name: 'gated',
+      inputSchema: z.object({
+        v: z.string(),
+      }),
+      outputSchema: z.object({
+        ok: z.boolean(),
+      }),
+      requireApproval: true,
+      execute,
+    });
+    const tools = [
+      gated,
+    ] as const;
+    mockBetaResponsesSend.mockResolvedValueOnce({
+      ok: true,
+      value: makeResponse(
+        'resp_pause',
+        callIds.map((id) => makeFunctionCallItem(id, 'gated', '{"v":"x"}')),
+      ),
+    });
+    const memory = createMemoryAccessor<typeof tools>();
+    await new ModelResult<typeof tools>({
+      request,
+      client: {} as OpenRouterCore,
+      tools,
+      state: memory.accessor,
+    }).getResponse();
+    expect(memory.get()?.status).toBe('awaiting_approval');
+    expect(execute).not.toHaveBeenCalled();
+    mockBetaResponsesSend.mockClear();
+    return {
+      execute,
+      tools,
+      ...memory,
+    };
+  }
+
+  beforeEach(() => {
+    mockBetaResponsesSend.mockReset();
+  });
+
+  it('executes an approved call once when its ID is listed twice', async () => {
+    const paused = await pauseOnGatedCalls([
+      'call_1',
+    ]);
+    mockBetaResponsesSend.mockResolvedValueOnce({
+      ok: true,
+      value: doneResponse('resp_done'),
+    });
+
+    const text = await new ModelResult<typeof paused.tools>({
+      request,
+      client: {} as OpenRouterCore,
+      tools: paused.tools,
+      state: paused.accessor,
+      approveToolCalls: [
+        'call_1',
+        'call_1',
+      ],
+    }).getText();
+
+    expect(text).toBe('Done.');
+    expect(paused.execute).toHaveBeenCalledTimes(1);
+    expect(functionCallOutputs(0).map((item) => item.callId)).toEqual([
+      'call_1',
+    ]);
+  });
+
+  it('records a rejection once when its ID is listed twice', async () => {
+    const paused = await pauseOnGatedCalls([
+      'call_1',
+    ]);
+    mockBetaResponsesSend.mockResolvedValueOnce({
+      ok: true,
+      value: doneResponse('resp_done'),
+    });
+
+    await new ModelResult<typeof paused.tools>({
+      request,
+      client: {} as OpenRouterCore,
+      tools: paused.tools,
+      state: paused.accessor,
+      rejectToolCalls: [
+        'call_1',
+        'call_1',
+      ],
+    }).getResponse();
+
+    expect(paused.execute).not.toHaveBeenCalled();
+    expect(functionCallOutputs(0).map((item) => item.callId)).toEqual([
+      'call_1',
+    ]);
+  });
+
+  it('refuses an ID that is both approved and rejected before anything runs', async () => {
+    const paused = await pauseOnGatedCalls([
+      'call_1',
+      'call_2',
+    ]);
+    const before = structuredClone(paused.get());
+
+    expect(
+      () =>
+        new ModelResult<typeof paused.tools>({
+          request,
+          client: {} as OpenRouterCore,
+          tools: paused.tools,
+          state: paused.accessor,
+          approveToolCalls: [
+            'call_1',
+            'call_2',
+          ],
+          rejectToolCalls: [
+            'call_2',
+          ],
+        }),
+    ).toThrow(/both approved and rejected: call_2/);
+
+    expect(paused.execute).not.toHaveBeenCalled();
+    expect(mockBetaResponsesSend).not.toHaveBeenCalled();
+    expect(paused.get()).toEqual(before);
+  });
+
+  it('stays awaiting_approval and sends no request when resumed without decisions', async () => {
+    const paused = await pauseOnGatedCalls([
+      'call_1',
+    ]);
+    const before = structuredClone(paused.get());
+    mockBetaResponsesSend.mockResolvedValueOnce({
+      ok: true,
+      value: doneResponse('resp_should_not_be_requested'),
+    });
+
+    const result = new ModelResult<typeof paused.tools>({
+      request,
+      client: {} as OpenRouterCore,
+      tools: paused.tools,
+      state: paused.accessor,
+    });
+
+    await expect(result.getResponse()).rejects.toThrow(/awaiting approval.*call_1/);
+    await expect(result.getText()).rejects.toThrow(/awaiting approval/);
+    expect(await result.requiresApproval()).toBe(true);
+    expect((await result.getPendingToolCalls()).map((tc) => tc.id)).toEqual([
+      'call_1',
+    ]);
+
+    expect(mockBetaResponsesSend).not.toHaveBeenCalled();
+    expect(paused.execute).not.toHaveBeenCalled();
+    expect(paused.get()?.status).toBe('awaiting_approval');
+    expect(paused.get()).toEqual(before);
+
+    // The pause still resolves normally once a decision is supplied.
+    await new ModelResult<typeof paused.tools>({
+      request,
+      client: {} as OpenRouterCore,
+      tools: paused.tools,
+      state: paused.accessor,
+      approveToolCalls: [
+        'call_1',
+      ],
+    }).getResponse();
+    expect(paused.execute).toHaveBeenCalledTimes(1);
+    expect(paused.get()?.status).toBe('complete');
+  });
+
+  it('stays awaiting_hitl and sends no request when resumed without decisions', async () => {
+    const onToolCalled = vi.fn(async () => null);
+    const review = tool({
+      name: 'gated',
+      inputSchema: z.object({
+        v: z.string(),
+      }),
+      outputSchema: z.object({
+        ok: z.boolean(),
+      }),
+      onToolCalled,
+    });
+    const tools = [
+      review,
+    ] as const;
+    mockBetaResponsesSend.mockResolvedValueOnce({
+      ok: true,
+      value: makeResponse('resp_hitl', [
+        makeFunctionCallItem('call_hitl', 'gated', '{"v":"x"}'),
+      ]),
+    });
+    const { accessor, get } = createMemoryAccessor<typeof tools>();
+    await new ModelResult<typeof tools>({
+      request,
+      client: {} as OpenRouterCore,
+      tools,
+      state: accessor,
+    }).getResponse();
+    expect(get()?.status).toBe('awaiting_hitl');
+    mockBetaResponsesSend.mockClear();
+    mockBetaResponsesSend.mockResolvedValueOnce({
+      ok: true,
+      value: doneResponse('resp_should_not_be_requested'),
+    });
+
+    const result = new ModelResult<typeof tools>({
+      request,
+      client: {} as OpenRouterCore,
+      tools,
+      state: accessor,
+    });
+
+    await expect(result.getResponse()).rejects.toThrow(/awaiting HITL input.*call_hitl/);
+    expect(mockBetaResponsesSend).not.toHaveBeenCalled();
+    expect(onToolCalled).toHaveBeenCalledTimes(1);
+    expect(get()?.status).toBe('awaiting_hitl');
+  });
+
+  it('reports the pause, not a generic error, when decisions cover only some pending calls', async () => {
+    const paused = await pauseOnGatedCalls([
+      'call_1',
+      'call_2',
+    ]);
+
+    const result = new ModelResult<typeof paused.tools>({
+      request,
+      client: {} as OpenRouterCore,
+      tools: paused.tools,
+      state: paused.accessor,
+      approveToolCalls: [
+        'call_1',
+      ],
+    });
+
+    await expect(result.getResponse()).rejects.toThrow(/awaiting approval.*call_2/);
+    expect(paused.execute).toHaveBeenCalledTimes(1);
+    expect(mockBetaResponsesSend).not.toHaveBeenCalled();
+    expect(paused.get()?.status).toBe('awaiting_approval');
+  });
+
+  // The documented way to resume a HITL tool: the caller supplies a
+  // function_call_output for the paused call through `input`, with no
+  // approve/reject decision. That must keep working on persisted state.
+  it('resumes awaiting_hitl when input carries a function_call_output for the paused call', async () => {
+    const paused = await pauseOnHitlCall();
+    mockBetaResponsesSend.mockResolvedValueOnce({
+      ok: true,
+      value: doneResponse('resp_done'),
+    });
+
+    const text = await new ModelResult<typeof paused.tools>({
+      request: {
+        ...request,
+        input: [
+          callerOutput('call_hitl', {
+            answer: 'yes',
+          }),
+        ],
+      },
+      client: {} as OpenRouterCore,
+      tools: paused.tools,
+      state: paused.accessor,
+    }).getText();
+
+    expect(text).toBe('Done.');
+    expect(paused.onResponseReceived).toHaveBeenCalledTimes(1);
+    expect(paused.onResponseReceived.mock.calls[0]?.[0]).toEqual({
+      answer: 'yes',
+    });
+    // The paused call was not re-run; the model got the hook-transformed output.
+    expect(paused.onToolCalled).toHaveBeenCalledTimes(1);
+    expect(mockBetaResponsesSend).toHaveBeenCalledTimes(1);
+    expect(functionCallOutputs(0)).toEqual([
+      expect.objectContaining({
+        callId: 'call_hitl',
+        output: JSON.stringify({
+          answer: 'YES',
+        }),
+      }),
+    ]);
+    expect(paused.get()?.status).toBe('complete');
+  });
+
+  it('resolves a function-valued input once when it resumes awaiting_hitl', async () => {
+    const paused = await pauseOnHitlCall();
+    mockBetaResponsesSend.mockResolvedValueOnce({
+      ok: true,
+      value: doneResponse('resp_done'),
+    });
+    const input = vi.fn(async () => [
+      callerOutput('call_hitl', {
+        answer: 'yes',
+      }),
+    ]);
+
+    const text = await new ModelResult<typeof paused.tools>({
+      request: {
+        ...request,
+        input,
+      },
+      client: {} as OpenRouterCore,
+      tools: paused.tools,
+      state: paused.accessor,
+    }).getText();
+
+    expect(text).toBe('Done.');
+    expect(input).toHaveBeenCalledTimes(1);
+    expect(paused.onResponseReceived).toHaveBeenCalledTimes(1);
+  });
+
+  it('stays awaiting_hitl when input has no output for a pending call, and says the input was dropped', async () => {
+    const paused = await pauseOnHitlCall();
+    const before = structuredClone(paused.get());
+
+    for (const input of [
+      'a new user message',
+      [
+        callerOutput('call_other', {
+          answer: 'yes',
+        }),
+      ],
+    ]) {
+      const result = new ModelResult<typeof paused.tools>({
+        request: {
+          ...request,
+          input,
+        },
+        client: {} as OpenRouterCore,
+        tools: paused.tools,
+        state: paused.accessor,
+      });
+      await expect(result.getResponse()).rejects.toThrow(
+        /awaiting HITL input.*call_hitl.*function_call_output.*input supplied with this call was not sent/,
+      );
+    }
+
+    expect(mockBetaResponsesSend).not.toHaveBeenCalled();
+    expect(paused.onResponseReceived).not.toHaveBeenCalled();
+    expect(paused.get()).toEqual(before);
+  });
+
+  // An approval gate is released only by a recorded decision. A caller-made
+  // output for the gated call is not one, so it must not advance the run.
+  it('stays awaiting_approval when input carries a function_call_output for the gated call', async () => {
+    const paused = await pauseOnGatedCalls([
+      'call_1',
+    ]);
+    const before = structuredClone(paused.get());
+
+    const result = new ModelResult<typeof paused.tools>({
+      request: {
+        ...request,
+        input: [
+          callerOutput('call_1', {
+            ok: true,
+          }),
+        ],
+      },
+      client: {} as OpenRouterCore,
+      tools: paused.tools,
+      state: paused.accessor,
+    });
+
+    await expect(result.getResponse()).rejects.toThrow(
+      /awaiting approval.*call_1.*input supplied with this call was not sent/,
+    );
+    expect(mockBetaResponsesSend).not.toHaveBeenCalled();
+    expect(paused.execute).not.toHaveBeenCalled();
+    expect(paused.get()).toEqual(before);
+  });
+
+  it('rejects every response and stream getter with the awaiting error on a paused resume', async () => {
+    const paused = await pauseOnGatedCalls([
+      'call_1',
+    ]);
+    const before = structuredClone(paused.get());
+    const result = new ModelResult<typeof paused.tools>({
+      request,
+      client: {} as OpenRouterCore,
+      tools: paused.tools,
+      state: paused.accessor,
+    });
+
+    const consumers: Record<string, () => Promise<unknown>> = {
+      getResponse: () => result.getResponse(),
+      getText: () => result.getText(),
+      getToolCalls: () => result.getToolCalls(),
+      getTextStream: () => result.getTextStream().next(),
+      getReasoningStream: () => result.getReasoningStream().next(),
+      getFullResponsesStream: () => result.getFullResponsesStream().next(),
+      getItemsStream: () => result.getItemsStream().next(),
+      getNewMessagesStream: () => result.getNewMessagesStream().next(),
+      getToolStream: () => result.getToolStream().next(),
+      getToolCallsStream: () => result.getToolCallsStream().next(),
+    };
+    for (const [name, consume] of Object.entries(consumers)) {
+      await expect(consume(), name).rejects.toThrow(/awaiting approval.*call_1/);
+    }
+
+    // Inspection APIs still work on the paused conversation.
+    expect(await result.requiresApproval()).toBe(true);
+    expect((await result.getPendingToolCalls()).map((tc) => tc.id)).toEqual([
+      'call_1',
+    ]);
+    expect((await result.getState()).status).toBe('awaiting_approval');
+
+    expect(mockBetaResponsesSend).not.toHaveBeenCalled();
+    expect(paused.get()).toEqual(before);
+  });
+
+  // A paused status with nothing pending has no decision to wait for. Pausing
+  // there would strand the conversation; it continues with a normal request.
+  it.each([
+    [
+      'awaiting_approval',
+      [],
+    ],
+    [
+      'awaiting_approval',
+      undefined,
+    ],
+    [
+      'awaiting_hitl',
+      [],
+    ],
+  ] as const)('continues a %s state whose pendingToolCalls is %j', async (status, pendingToolCalls) => {
+    const paused = await pauseOnGatedCalls([
+      'call_1',
+    ]);
+    const stranded = structuredClone(paused.get());
+    if (!stranded) {
+      throw new Error('expected a paused state');
+    }
+    stranded.status = status;
+    if (pendingToolCalls === undefined) {
+      delete stranded.pendingToolCalls;
+    } else {
+      stranded.pendingToolCalls = [
+        ...pendingToolCalls,
+      ];
+    }
+    const { accessor, get } = createMemoryAccessor<typeof paused.tools>(stranded);
+    mockBetaResponsesSend.mockResolvedValueOnce({
+      ok: true,
+      value: doneResponse('resp_done'),
+    });
+
+    const text = await new ModelResult<typeof paused.tools>({
+      request,
+      client: {} as OpenRouterCore,
+      tools: paused.tools,
+      state: accessor,
+    }).getText();
+
+    expect(text).toBe('Done.');
+    expect(mockBetaResponsesSend).toHaveBeenCalledTimes(1);
+    expect(paused.execute).not.toHaveBeenCalled();
+    expect(get()?.status).toBe('complete');
+  });
+
+  it('caps the pending IDs listed in the awaiting error and omits the input note when no input was supplied', async () => {
+    const callIds = Array.from(
+      {
+        length: 25,
+      },
+      (_, index) => `call_${index + 1}`,
+    );
+    const paused = await pauseOnGatedCalls(callIds);
+
+    const error = await new ModelResult<typeof paused.tools>({
+      request: {
+        ...request,
+        input: [],
+      },
+      client: {} as OpenRouterCore,
+      tools: paused.tools,
+      state: paused.accessor,
+    })
+      .getResponse()
+      .then(
+        () => undefined,
+        (caught: unknown) => caught,
+      );
+
+    expect(error).toBeInstanceOf(Error);
+    const message = (error as Error).message;
+    expect(message).toContain('call_1, call_2,');
+    expect(message).toContain('call_10, ... (15 more)');
+    expect(message).not.toContain('call_11');
+    expect(message).not.toContain('was not sent');
+  });
+
+  // Before de-duplication, the second copy of a duplicated ID skipped the
+  // re-approval that a PreToolUse argument mutation requires: the first copy
+  // re-gated the call (marking it preToolUseApplied), the second executed it.
+  it('does not let a duplicated ID bypass re-approval after a PreToolUse mutation', async () => {
+    const execute = vi.fn(async (_input: { v: string }) => ({
+      ok: true,
+    }));
+    const gated = tool({
+      name: 'gated',
+      inputSchema: z.object({
+        v: z.string(),
+      }),
+      outputSchema: z.object({
+        ok: z.boolean(),
+      }),
+      requireApproval: () => true,
+      execute,
+    });
+    const tools = [
+      gated,
+    ] as const;
+    mockBetaResponsesSend.mockResolvedValueOnce({
+      ok: true,
+      value: makeResponse('resp_pause', [
+        makeFunctionCallItem('call_1', 'gated', '{"v":"reviewed"}'),
+      ]),
+    });
+    const { accessor, get } = createMemoryAccessor<typeof tools>();
+    await new ModelResult<typeof tools>({
+      request,
+      client: {} as OpenRouterCore,
+      tools,
+      state: accessor,
+    }).getResponse();
+    expect(get()?.status).toBe('awaiting_approval');
+    mockBetaResponsesSend.mockClear();
+
+    const hooks = new HooksManager();
+    hooks.on('PreToolUse', {
+      handler: () => ({
+        mutatedInput: {
+          v: 'mutated',
+        },
+      }),
+    });
+    const result = new ModelResult<typeof tools>({
+      request,
+      client: {} as OpenRouterCore,
+      tools,
+      hooks,
+      state: accessor,
+      approveToolCalls: [
+        'call_1',
+        'call_1',
+      ],
+    });
+
+    // The human approved {"v":"reviewed"}; the mutated arguments need their
+    // own approval, so nothing executes and the call is pending again.
+    await expect(result.getResponse()).rejects.toThrow(/awaiting approval.*call_1/);
+    expect(execute).not.toHaveBeenCalled();
+    expect(mockBetaResponsesSend).not.toHaveBeenCalled();
+    expect(get()?.status).toBe('awaiting_approval');
+    expect(get()?.pendingToolCalls).toEqual([
+      {
+        id: 'call_1',
+        name: 'gated',
+        arguments: {
+          v: 'mutated',
+        },
+        preToolUseApplied: true,
+      },
+    ]);
+  });
+});
