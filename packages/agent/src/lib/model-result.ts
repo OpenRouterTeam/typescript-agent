@@ -33,6 +33,7 @@ import {
   createUnsentResult,
   extractTextFromResponse as extractTextFromResponseState,
   normalizeInputToArray,
+  outputToInputItems,
   partitionToolCalls,
   toolRequiresApproval,
   unsentResultsToAPIFormat,
@@ -134,7 +135,6 @@ import {
   isToolCallOutputEvent,
   isUnifiedTool,
 } from './tool-types.js';
-import { outputToInputItems } from './turn-context.js';
 
 /**
  * Default directive appended as a final user message on the forced final
