@@ -474,6 +474,12 @@ export interface GetResponseOptions<
   /** Replay history retained for delayed and sequential stream consumers. */
   streamReplay?: StreamReplay;
   /**
+   * Whether model requests are sent with `stream: true`. `false` sends every
+   * request (initial, tool-round follow-ups, final, retry, resume) as
+   * non-streaming. Defaults to `true`.
+   */
+  stream?: boolean;
+  /**
    * When the loop exits because `stopWhen` was met and the last response
    * still contained tool calls, make one more model request with no tools so
    * the model produces a final text response. A string value is appended as
@@ -647,6 +653,7 @@ export class ModelResult<
   private initialResponse: models.OpenResponsesResult | null = null;
   private initialResponseError: Error | null = null;
   private readonly streamReplay: StreamReplay;
+  private readonly streamRequests: boolean;
 
   // Context store for typed tool context (persists across turns)
   private contextStore: ToolContextStore | null = null;
@@ -784,6 +791,7 @@ export class ModelResult<
   constructor(options: GetResponseOptions<TTools, TShared>) {
     this.options = options;
     this.streamReplay = options.streamReplay ?? 'full';
+    this.streamRequests = options.stream ?? true;
     this.hooksManager = options.hooks;
     const doomLoopConfig = resolveDoomLoopOption(options.doomLoop);
     this.doomLoopMonitor = doomLoopConfig ? new DoomLoopMonitor(doomLoopConfig) : null;
@@ -4861,7 +4869,7 @@ export class ModelResult<
     const newRequest: models.ResponsesRequest = {
       ...this.resolvedRequest,
       ...(escalationOverrides ?? {}),
-      stream: true,
+      stream: this.streamRequests,
     };
 
     this.beginToolChoiceDispatch(newRequest.toolChoice);
@@ -5163,7 +5171,7 @@ export class ModelResult<
         toolChoice: 'none' as const,
       }),
       input: newInput,
-      stream: true,
+      stream: this.streamRequests,
     };
     this.resolvedRequest = finalRequest;
 
@@ -5250,7 +5258,7 @@ export class ModelResult<
       ...(this.resolvedRequest.tools !== undefined && {
         toolChoice: 'none' as const,
       }),
-      stream: true,
+      stream: this.streamRequests,
     };
 
     const startedAt = performance.now();
@@ -5345,6 +5353,7 @@ export class ModelResult<
       hooks: _h,
       doomLoop: _dl,
       streamReplay: _sr,
+      stream: _st,
       signal: _sig,
       toolTimeoutMs: _ttm,
       toolConcurrency: _tc,
@@ -5913,13 +5922,12 @@ export class ModelResult<
         };
       }
 
-      // Store resolved request with stream mode
+      // Store resolved request with the configured stream mode
       this.resolvedRequest = {
         ...baseRequest,
-        stream: true as const,
+        stream: this.streamRequests,
       };
 
-      // Force stream mode for initial request
       const request = this.resolvedRequest;
 
       // Park PostModelCall telemetry for this dispatch: the response is
@@ -5953,8 +5961,9 @@ export class ModelResult<
         this.pendingFreshItems = freshItemsForState;
       }
 
-      // Handle both streaming and non-streaming responses
-      // The API may return a non-streaming response even when stream: true is requested
+      // Handle both streaming and non-streaming responses. Non-streaming is
+      // what `stream: false` requests, and the API may also return one when
+      // stream: true is requested.
       if (isEventStream(apiResult.value)) {
         this.setReusableStream(apiResult.value);
       } else if (this.isNonStreamingResponse(apiResult.value)) {
@@ -6235,7 +6244,7 @@ export class ModelResult<
     const request: models.ResponsesRequest = {
       ...baseRequest,
       input: newInput,
-      stream: true,
+      stream: this.streamRequests,
     };
 
     this.resolvedRequest = request;

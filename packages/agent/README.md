@@ -145,6 +145,35 @@ const result = callModel(client, {
 });
 ```
 
+#### Non-streaming requests
+
+`callModel` sends every model request with `stream: true` by default. Set
+`stream: false` to send them all non-streaming: the initial request, each
+tool-round follow-up, the `allowFinalResponse` final turn, the empty-final
+retry, and approval-resume requests.
+
+OpenRouter can only fail over to another provider, or fall back to the next
+entry in `models`, before it has started a response. A streaming request
+commits once the stream opens, so a provider error mid-stream (for example an
+overload) fails the run. A non-streaming request gets that error back before
+anything is committed, so failover and fallback still apply.
+
+```typescript
+const result = callModel(client, {
+  model: 'anthropic/claude-sonnet-4.5',
+  models: ['openai/gpt-5-mini'], // fallback can engage on every turn
+  input,
+  tools: [searchTool],
+  stream: false,
+});
+const text = await result.getText();
+```
+
+With `stream: false`, the awaitable getters (`getText()`, `getResponse()`,
+`getToolCalls()`, `getUsage()`, ...) work as usual. The delta-based stream
+getters (`getTextStream()`, `getReasoningStream()`, `getFullResponsesStream()`,
+...) yield no model deltas, because none are streamed.
+
 #### Usage across a multi-round tool loop
 
 `getResponse()` resolves to the **final** round's response, so in a

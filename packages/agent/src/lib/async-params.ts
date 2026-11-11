@@ -123,6 +123,26 @@ type BaseCallModelInput<
    */
   streamReplay?: StreamReplay;
   /**
+   * Whether model requests are sent to the API with `stream: true`.
+   *
+   * Set `false` to send every request in the run (initial, tool-round
+   * follow-ups, final, retry, resume) as non-streaming. OpenRouter can only
+   * fail over to another provider, or fall back to the next entry in
+   * `models`, while it has not yet started a response. A streaming request
+   * commits as soon as the stream opens, so a provider error mid-stream
+   * (for example an overload) fails the run instead of failing over. A
+   * non-streaming request returns that error before anything is committed,
+   * so failover and fallback still apply.
+   *
+   * With `false`, no model events are streamed: `getText()`, `getResponse()`,
+   * `getToolCalls()` and the other awaitable getters work as usual, while the
+   * delta-based stream getters (`getTextStream`, `getReasoningStream`,
+   * `getFullResponsesStream`, ...) yield no model deltas.
+   *
+   * @default true
+   */
+  stream?: boolean;
+  /**
    * When the loop exits because `stopWhen` was met and the last response
    * still contained tool calls, execute those pending tool calls (so they
    * have matching outputs) and then make one more model request with
@@ -341,6 +361,7 @@ export async function resolveAsyncFunctions<TTools extends readonly Tool[] = rea
     'onTurnStart', // Client-side turn start callback
     'onTurnEnd', // Client-side turn end callback
     'streamReplay', // Client-side stream replay policy
+    'stream', // Client-side: applied per request by ModelResult
     'allowFinalResponse', // Client-side: tunes the default toolChoice:'none' final turn when stopWhen breaks the loop
     'strictFinalResponse', // Client-side: restore throw on empty final after tool rounds
     'hooks', // Client-side hook system
