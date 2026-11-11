@@ -67,7 +67,7 @@ export function buildTurnContext(options: BuildTurnContextOptions): TurnContext 
  * // Returns: [{ role: "user", content: "Hello!" }]
  * ```
  */
-export function normalizeInputToArray(input: models.InputsUnion): Array<models.BaseInputsUnion> {
+export function normalizeInputToArray(input: models.InputsUnion): Array<models.InputsUnion1> {
   if (typeof input === 'string') {
     // Construct object with all required fields - type is optional
     const message: models.EasyInputMessage = {
@@ -79,4 +79,34 @@ export function normalizeInputToArray(input: models.InputsUnion): Array<models.B
     ];
   }
   return input;
+}
+
+/**
+ * Whether a value is shaped like a single item of a Responses `input` array:
+ * an object carrying an item `type` or a message `role`.
+ *
+ * Response output items are fed back as input on the next turn. The SDK types
+ * the two directions separately, so this guard is how an output item crosses
+ * over.
+ */
+export function isInputItem(value: unknown): value is models.InputsUnion1 {
+  if (typeof value !== 'object' || value === null) {
+    return false;
+  }
+  return (
+    ('type' in value && typeof value.type === 'string') ||
+    ('role' in value && typeof value.role === 'string')
+  );
+}
+
+/**
+ * Convert a response's output into input items for the next request.
+ */
+export function outputToInputItems(output: unknown): Array<models.InputsUnion1> {
+  const items: unknown[] = Array.isArray(output)
+    ? output
+    : [
+        output,
+      ];
+  return items.filter(isInputItem);
 }
