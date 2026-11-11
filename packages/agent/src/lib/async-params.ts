@@ -248,9 +248,27 @@ type BaseCallModelInput<
 type ApprovalParamsWithState<TTools extends readonly Tool[] = readonly Tool[]> = {
   /** State accessor for multi-turn persistence and approval gates */
   state: StateAccessor<TTools>;
-  /** Tool call IDs to approve (for resuming from awaiting_approval status) */
+  /**
+   * Tool call IDs to approve when resuming a paused conversation
+   * (`awaiting_approval`, or `awaiting_hitl` to re-run `onToolCalled`).
+   *
+   * Duplicate IDs are ignored: each approved call executes once. An ID that
+   * also appears in `rejectToolCalls` makes `callModel` throw before any
+   * state is loaded or any tool runs.
+   *
+   * Resuming an `awaiting_approval` conversation without any decision leaves
+   * it paused: no model request is sent, and `input` passed with that call is
+   * neither sent nor saved.
+   */
   approveToolCalls?: string[];
-  /** Tool call IDs to reject (for resuming from awaiting_approval status) */
+  /**
+   * Tool call IDs to reject when resuming a paused conversation. The model
+   * receives a rejection output for each.
+   *
+   * Duplicate IDs are ignored: each rejection is recorded once. An ID that
+   * also appears in `approveToolCalls` makes `callModel` throw before any
+   * state is loaded or any tool runs.
+   */
   rejectToolCalls?: string[];
 };
 
