@@ -2955,7 +2955,11 @@ export class ModelResult<
     if (invocation.asyncMode === 'background') {
       try {
         const result = await invocation.run();
-        return createUnsentResult(tc.id, String(tc.name), result);
+        return createUnsentResult(
+          tc.id,
+          String(tc.name),
+          await this.unsentModelOutput(tc as ParsedToolCall<Tool>, result),
+        );
       } catch (error) {
         return createRejectedResult(
           tc.id,
@@ -3063,7 +3067,11 @@ export class ModelResult<
       if (result.error) {
         return createRejectedResult(tc.id, String(tc.name), result.error.message);
       }
-      return createUnsentResult(tc.id, String(tc.name), result.result);
+      return createUnsentResult(
+        tc.id,
+        String(tc.name),
+        await this.unsentModelOutput(tc as ParsedToolCall<Tool>, result.result),
+      );
     });
 
     const settledResults = await Promise.allSettled(toolCallPromises);
@@ -3576,6 +3584,31 @@ export class ModelResult<
    * `JSON.stringify(result)` otherwise, and emits an error envelope when the
    * executor itself reported an error.
    */
+  /**
+   * Unsent results are serialized by `unsentResultsToAPIFormat`, which does
+   * not know about `toModelOutput`. Apply it here so resumed and approved
+   * calls send the model the same output as the main loop.
+   */
+  private async unsentModelOutput(
+    toolCall: ParsedToolCall<Tool>,
+    output: unknown,
+  ): Promise<unknown> {
+    const tool = this.options.tools?.find(
+      (t) => isClientTool(t) && t.function.name === toolCall.name,
+    );
+    if (!tool || !isAutoResolvableTool(tool) || !tool.function.toModelOutput) {
+      return output;
+    }
+    const modelOutput = await this.computeToolOutputForModel({
+      toolCall,
+      tool,
+      result: {
+        result: output,
+      },
+    });
+    return Array.isArray(modelOutput) ? modelOutput : output;
+  }
+
   private async computeToolOutputForModel(value: {
     toolCall: ParsedToolCall<Tool>;
     tool: Tool;
@@ -3594,20 +3627,21 @@ export class ModelResult<
       return JSON.stringify(value.result.result);
     }
 
-    // Arguments have already been validated upstream by the tool's Zod
-    // inputSchema (which must be a ZodObject), so the runtime shape is
-    // always a record here. A non-record value here signals a real upstream
-    // bug we want surfaced, not a case to paper over with `{}`.
-    const rawArgs: unknown = value.toolCall.arguments;
-    if (!isRecord(rawArgs)) {
+    // `toolCall.arguments` is the JSON-parsed wire payload. Parse it with the
+    // tool's inputSchema so the mapper sees the same input `execute` got. A
+    // non-record value here signals a real upstream bug we want surfaced, not
+    // a case to paper over with `{}`.
+    const parsed = z4.safeParse(value.tool.function.inputSchema, value.toolCall.arguments);
+    const input: unknown = parsed.success ? parsed.data : value.toolCall.arguments;
+    if (!isRecord(input)) {
       throw new Error(
-        `toolCall.arguments for "${value.toolCall.name}" must be an object after Zod validation, got ${describeNonRecord(rawArgs)}`,
+        `toolCall.arguments for "${value.toolCall.name}" must be an object after Zod validation, got ${describeNonRecord(input)}`,
       );
     }
 
     const modelOutputResult = await value.tool.function.toModelOutput({
       output: value.result.result,
-      input: rawArgs,
+      input,
     });
     if (modelOutputResult.type === 'content') {
       return modelOutputResult.value;
@@ -6086,7 +6120,13 @@ export class ModelResult<
           createRejectedResult(callId, String(toolCall.name), result.error.message),
         );
       } else {
-        unsentResults.push(createUnsentResult(callId, String(toolCall.name), result.result));
+        unsentResults.push(
+          createUnsentResult(
+            callId,
+            String(toolCall.name),
+            await this.unsentModelOutput(toolCall as ParsedToolCall<Tool>, result.result),
+          ),
+        );
       }
     }
 
