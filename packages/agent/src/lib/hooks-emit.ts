@@ -65,7 +65,8 @@ function isPlainMutableObject(value: unknown): value is Record<string, unknown> 
  * - Cooperative abort via `context.signal`: the chain checks
  *   `signal.aborted` between handlers and bails out when set so
  *   `abortInflight()` has a deterministic effect on the chain itself (not just
- *   on handlers that happen to consult the signal).
+ *   on handlers that happen to consult the signal). For hooks with a block
+ *   field, bailing out before every handler ran reports `blocked: true`.
  *
  * Payload isolation: the initial payload is shallow-cloned before entering the
  * chain so mutation piping (via {@link HOOK_BEHAVIOR}) doesn't mutate the
@@ -109,6 +110,12 @@ export async function executeHandlerChain<P, R>(
     // Checked before each handler so synchronous chains stop promptly instead
     // of running to completion with only advisory notice to each handler.
     if (context.signal.aborted) {
+      // A hook that can block (PreToolUse, UserPromptSubmit) fails closed:
+      // the handlers left unrun may include the guard that would have
+      // blocked, so an aborted chain must not read as an approval.
+      if (behavior?.blockField) {
+        blocked = true;
+      }
       break;
     }
 
