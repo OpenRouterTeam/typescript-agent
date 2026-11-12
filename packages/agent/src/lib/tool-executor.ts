@@ -784,6 +784,31 @@ export function findToolByName(tools: Tool[], name: string): ClientTool | undefi
 }
 
 /**
+ * Throw when two client tools share a name. Calls are dispatched by name, so a
+ * duplicate would let whichever tool is listed first receive arguments the
+ * model (or an approver) meant for the other.
+ */
+export function assertUniqueClientToolNames(tools: readonly Tool[] | undefined): void {
+  if (!tools) {
+    return;
+  }
+  const seen = new Set<string>();
+  for (const tool of tools) {
+    if (isServerTool(tool)) {
+      continue;
+    }
+    const name = tool.function.name;
+    if (seen.has(name)) {
+      throw new Error(
+        `Duplicate tool name "${name}": every tool passed to callModel must have a unique name. ` +
+          'Rename one, or use toolNamePrefix when combining MCP tools with local tools.',
+      );
+    }
+    seen.add(name);
+  }
+}
+
+/**
  * Format tool execution result as a string for sending to the model
  */
 export function formatToolResultForModel(result: ToolExecutionResult<Tool>): string {
