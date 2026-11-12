@@ -1453,6 +1453,32 @@ export class ModelResult<
   }
 
   /**
+   * Refuse a batch the loop would execute when two of its `function_call`
+   * items share a `call_id`. Every result is correlated by that id — the
+   * follow-up `function_call_output`, approval and HITL pendings, resumed
+   * results — so running both calls would send two outputs for one id and
+   * leave the model unable to tell which result answers which call. Like a
+   * truncated batch, the ambiguous batch runs nothing; it fails before any
+   * tool body or follow-up request. Batches with no executable calls are left
+   * to the caller, who owns correlation for manual tools.
+   */
+  private assertUniqueCallIds(toolCalls: ParsedToolCall<Tool>[]): void {
+    if (!this.hasExecutableToolCalls(toolCalls)) {
+      return;
+    }
+    const seen = new Set<string>();
+    for (const toolCall of toolCalls) {
+      if (seen.has(toolCall.id)) {
+        throw new Error(
+          `Response contains more than one function_call with call_id "${toolCall.id}"; ` +
+            'refusing to execute the batch because tool outputs are matched to calls by call_id.',
+        );
+      }
+      seen.add(toolCall.id);
+    }
+  }
+
+  /**
    * Check if any tool calls can be auto-resolved in the current turn.
    * Used to determine if automatic tool execution should be attempted.
    *
@@ -6408,6 +6434,7 @@ export class ModelResult<
 
         // Extract and check tool calls
         const toolCalls = extractToolCallsFromResponse(currentResponse);
+        this.assertUniqueCallIds(toolCalls);
 
         // With allowFinalResponse: false, a met stopWhen means no tool from
         // this response runs (the post-loop stop path skips them). Evaluate it
@@ -6488,6 +6515,7 @@ export class ModelResult<
           if (currentToolCalls.length === 0) {
             break;
           }
+          this.assertUniqueCallIds(currentToolCalls);
 
           // Check for approval requirements
           if (await this.handleApprovalCheck(currentToolCalls, currentRound + 1, currentResponse)) {
@@ -6674,6 +6702,7 @@ export class ModelResult<
           this.hasExecutableToolCalls(pendingToolCalls)
         ) {
           const turnNumber = currentRound + 1;
+          this.assertUniqueCallIds(pendingToolCalls);
 
           // Gate these calls exactly like a normal round would. This path
           // executes real tools, so it needs the same approval check as the
