@@ -1,5 +1,6 @@
 import type { Client } from '@modelcontextprotocol/client';
 import type { Tool, ToolLoopKey } from '../lib/tool-types.js';
+import { findDuplicateClientToolName } from '../lib/tool-types.js';
 import { MCPError } from './errors.js';
 import { buildResourceTools } from './resource-tools.js';
 import type { UnconvertibleSchemaMode } from './schema/json-schema-to-zod.js';
@@ -93,25 +94,11 @@ export function buildTools(options: BuildToolsOptions): Tool[] {
   return tools;
 }
 
-function toolName(tool: Tool): string | undefined {
-  if ('function' in tool && typeof tool.function.name === 'string') {
-    return tool.function.name;
-  }
-  return undefined;
-}
-
 function assertNoDuplicateNames(tools: readonly Tool[]): void {
-  const seen = new Set<string>();
-  for (const tool of tools) {
-    const name = toolName(tool);
-    if (name === undefined) {
-      continue;
-    }
-    if (seen.has(name)) {
-      throw new MCPError(
-        `Duplicate tool name "${name}". Use toolNamePrefix or excludeTools to disambiguate.`,
-      );
-    }
-    seen.add(name);
+  const name = findDuplicateClientToolName(tools);
+  if (name !== undefined) {
+    throw new MCPError(
+      `Duplicate tool name "${name}". Use toolNamePrefix or excludeTools to disambiguate.`,
+    );
   }
 }

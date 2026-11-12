@@ -18,6 +18,7 @@ import type {
   UnifiedTool,
 } from './tool-types.js';
 import {
+  findDuplicateClientToolName,
   hasExecuteFunction,
   isDeferredHandle,
   isGeneratorTool,
@@ -792,19 +793,12 @@ export function assertUniqueClientToolNames(tools: readonly Tool[] | undefined):
   if (!tools) {
     return;
   }
-  const seen = new Set<string>();
-  for (const tool of tools) {
-    if (isServerTool(tool)) {
-      continue;
-    }
-    const name = tool.function.name;
-    if (seen.has(name)) {
-      throw new Error(
-        `Duplicate tool name "${name}": every tool passed to callModel must have a unique name. ` +
-          'Rename one, or use toolNamePrefix when combining MCP tools with local tools.',
-      );
-    }
-    seen.add(name);
+  const name = findDuplicateClientToolName(tools);
+  if (name !== undefined) {
+    throw new Error(
+      `Duplicate tool name "${name}": every tool passed to callModel must have a unique name. ` +
+        'Rename one, or use toolNamePrefix when combining MCP tools with local tools.',
+    );
   }
 }
 
