@@ -1,5 +1,34 @@
 # @openrouter/agent
 
+## 1.2.0
+
+### Minor Changes
+
+- [#158](https://github.com/OpenRouterTeam/typescript-agent/pull/158) [`c93423b`](https://github.com/OpenRouterTeam/typescript-agent/commit/c93423bd4abfe09c21ffb3514d2d3aabab97c731) Thanks [@mattapperson](https://github.com/mattapperson)! - Upgrade `@openrouter/sdk` from `^0.13.7` to `^1.5.85`.
+
+  The SDK renamed the code-interpreter image output type to `CodeInterpreterImageOutput`. It is re-exported under that name, and the existing `OutputImage` and `OutputInputImage` exports remain as aliases of it.
+
+  `BaseInputsUnion` no longer includes `any` in the SDK, so it now describes only the `instructions` field it is used for. Functions that took or returned a single input item typed as `BaseInputsUnion` (`appendToMessages`, `normalizeInputToArray`, `buildTaskResultMessage`) are typed with the SDK's `InputsUnion1` instead.
+
+### Patch Changes
+
+- [#131](https://github.com/OpenRouterTeam/typescript-agent/pull/131) [`1601bff`](https://github.com/OpenRouterTeam/typescript-agent/commit/1601bff00f9091ef55daa3718b3ae2c3b3d386d8) Thanks [@LukasParke](https://github.com/LukasParke)! - Harden approval resumes.
+
+  `approveToolCalls` / `rejectToolCalls` are now de-duplicated, so a call ID listed twice no longer executes an approval-gated tool twice (or skips the re-approval a `PreToolUse` argument mutation requires), and passing the same ID in both lists throws before anything runs.
+
+  Resuming an `awaiting_approval` conversation without any decision now leaves it paused instead of sending a new model request. Any `input` passed with that call is not sent to the model and not saved to state, including a `function_call_output` for the gated call: only an approve/reject decision releases an approval gate.
+
+  An `awaiting_hitl` conversation still resumes the documented way, by passing a `function_call_output` for a paused call in `input` (which runs `onResponseReceived`). Without one, and without decisions, it now stays paused too. A paused status with no pending tool calls continues with a normal request, as before.
+
+  While a resume leaves the conversation paused, `getResponse()`, `getText()`, `getToolCalls()` and the stream getters reject with an explicit error that names the pause, lists up to 10 pending call IDs, and says when supplied `input` was dropped (previously the generic "Response not available" / "Stream not initialized"). `requiresApproval()`, `getPendingToolCalls()` and `getState()` keep working.
+
+  ```ts
+  const result = callModel(client, { model, input: [], tools, state });
+  // state is awaiting_approval and no decisions were passed:
+  await result.requiresApproval(); // true, and no request was sent
+  await result.getResponse(); // throws: Conversation is awaiting approval ... Pending tool call IDs: call_1
+  ```
+
 ## 1.1.0
 
 ### Minor Changes
