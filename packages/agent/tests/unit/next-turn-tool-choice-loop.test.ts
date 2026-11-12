@@ -246,4 +246,56 @@ describe('nextTurnParams.toolChoice through the callModel loop', () => {
       );
     }
   });
+
+  it('sends the follow-up request with the caller tool choice when the call arguments are truncated JSON', async () => {
+    const truncated = {
+      id: 'resp_tool',
+      output: [
+        {
+          type: 'function_call',
+          id: 'out_1',
+          callId: 'call_1',
+          name: 'tool_search',
+          arguments: '{"pattern": "weath',
+          status: 'completed',
+        },
+      ],
+    } as unknown as models.OpenResponsesResult;
+
+    mockBetaResponsesSend
+      .mockResolvedValueOnce({
+        ok: true,
+        value: truncated,
+      })
+      .mockResolvedValue({
+        ok: true,
+        value: textResponse(),
+      });
+
+    const text = await callModel(client, {
+      model: 'test-model',
+      input: 'hi',
+      tools: [
+        makeSearchTool([
+          'tool_search',
+          'get_weather',
+        ]),
+        getWeather,
+      ],
+      toolChoice: allowed([
+        'tool_search',
+      ]),
+    }).getText();
+
+    expect(text).toBe('done');
+    // The hook did not run for the malformed call, so turn 2 keeps the caller's set.
+    expect(dispatchedToolChoices()).toEqual([
+      allowed([
+        'tool_search',
+      ]),
+      allowed([
+        'tool_search',
+      ]),
+    ]);
+  });
 });
