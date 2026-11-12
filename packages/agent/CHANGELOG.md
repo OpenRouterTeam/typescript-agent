@@ -1,5 +1,11 @@
 # @openrouter/agent
 
+## 1.2.1
+
+### Patch Changes
+
+- [#162](https://github.com/OpenRouterTeam/typescript-agent/pull/162) [`94bff57`](https://github.com/OpenRouterTeam/typescript-agent/commit/94bff57199202f49a3cc714b73c6185dc5092430) Thanks [@alexb-openrouter](https://github.com/alexb-openrouter)! - `callModel` now throws when two client tools in `tools` share a name. Tool calls are dispatched by name, so with a duplicate the first tool in the list received the call, including a call that was approved while a different tool with that name was registered. Rename one of the tools, or pass `toolNamePrefix` to `createMCPTools` when combining MCP tools with local tools.
+
 ## 1.2.0
 
 ### Minor Changes
