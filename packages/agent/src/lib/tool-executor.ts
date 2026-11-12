@@ -18,6 +18,7 @@ import type {
   UnifiedTool,
 } from './tool-types.js';
 import {
+  findDuplicateClientToolName,
   hasExecuteFunction,
   isDeferredHandle,
   isGeneratorTool,
@@ -781,6 +782,24 @@ export function findToolByName(tools: Tool[], name: string): ClientTool | undefi
   return tools.find(
     (tool): tool is ClientTool => !isServerTool(tool) && tool.function.name === name,
   );
+}
+
+/**
+ * Throw when two client tools share a name. Calls are dispatched by name, so a
+ * duplicate would let whichever tool is listed first receive arguments the
+ * model (or an approver) meant for the other.
+ */
+export function assertUniqueClientToolNames(tools: readonly Tool[] | undefined): void {
+  if (!tools) {
+    return;
+  }
+  const name = findDuplicateClientToolName(tools);
+  if (name !== undefined) {
+    throw new Error(
+      `Duplicate tool name "${name}": every tool passed to callModel must have a unique name. ` +
+        'Rename one, or use toolNamePrefix when combining MCP tools with local tools.',
+    );
+  }
 }
 
 /**

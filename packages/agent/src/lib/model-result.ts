@@ -98,6 +98,7 @@ import { ToolEventBroadcaster } from './tool-event-broadcaster.js';
 import type { AsyncToolInvocation } from './tool-executor.js';
 import {
   applyOnResponseReceivedHooks,
+  assertUniqueClientToolNames,
   executeTool,
   isAsyncToolInvocation,
   validateToolInput,
@@ -797,6 +798,8 @@ export class ModelResult<
     const doomLoopConfig = resolveDoomLoopOption(options.doomLoop);
     this.doomLoopMonitor = doomLoopConfig ? new DoomLoopMonitor(doomLoopConfig) : null;
     this.doomLoopEscalation = doomLoopConfig?.escalation ?? null;
+
+    assertUniqueClientToolNames(options.tools);
 
     // Runtime validation: approval decisions require state
     const hasApprovalDecisions =

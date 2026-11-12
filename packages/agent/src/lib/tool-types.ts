@@ -1053,6 +1053,25 @@ export function isServerTool(tool: Tool): tool is ServerToolBase {
 }
 
 /**
+ * Return the first client tool name that appears more than once, or
+ * `undefined`. Server tools have no client name and are skipped.
+ */
+export function findDuplicateClientToolName(tools: readonly Tool[]): string | undefined {
+  const seen = new Set<string>();
+  for (const tool of tools) {
+    if (isServerTool(tool)) {
+      continue;
+    }
+    const name = tool.function.name;
+    if (seen.has(name)) {
+      return name;
+    }
+    seen.add(name);
+  }
+  return undefined;
+}
+
+/**
  * A client tool additionally branded as originating from an MCP server. The
  * `_mcp` marker is purely informational: it does NOT change how the tool is
  * executed (MCP tools keep their local `execute` fn and run through the normal
