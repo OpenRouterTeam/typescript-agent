@@ -1082,7 +1082,22 @@ export function findDuplicateClientToolName(tools: readonly Tool[]): string | un
  */
 export type McpBranded<T extends Tool = Tool> = T & {
   readonly _mcp: true;
+  /** The server's `annotations` for this tool from `tools/list`; absent when it sent none. */
+  readonly annotations?: McpToolAnnotations;
 };
+
+/**
+ * Behaviour hints an MCP server may attach to a tool definition (MCP
+ * `ToolAnnotations`). Hints, not guarantees: a server can misreport them, so
+ * treat them as untrusted unless the server is.
+ */
+export interface McpToolAnnotations {
+  title?: string;
+  readOnlyHint?: boolean;
+  destructiveHint?: boolean;
+  idempotentHint?: boolean;
+  openWorldHint?: boolean;
+}
 
 /**
  * Type guard: true if the tool carries the additive MCP brand (see

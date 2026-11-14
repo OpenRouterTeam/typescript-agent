@@ -67,6 +67,18 @@ pnpm add @openrouter/agent @modelcontextprotocol/client
 
 Existing `@openrouter/mcp` imports remain supported as compatibility facades.
 
+A tool built by `createMCPTools` or `rehydrateMCPTools` carries the `annotations` its server reported in `tools/list`, and a cache snapshot keeps them. Only the five standard fields are kept (`readOnlyHint`, `destructiveHint`, `idempotentHint`, `openWorldHint`, `title`); any other key a server adds is dropped. The field is absent when the server sent none. They are hints from the server, not guarantees, and they are not sent to the model.
+
+```typescript
+import { isMcpTool } from '@openrouter/agent';
+import { createMCPTools } from '@openrouter/agent/mcp';
+
+const handle = await createMCPTools({ url: 'https://mcp.example.com/mcp' });
+const readOnlyTools = handle.tools.filter(
+  (tool) => isMcpTool(tool) && tool.annotations?.readOnlyHint === true,
+);
+```
+
 ## Features
 
 ### Multiple Response Consumption Patterns

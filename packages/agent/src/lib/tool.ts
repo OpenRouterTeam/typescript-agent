@@ -13,6 +13,7 @@ import type {
   HITLTool,
   ManualTool,
   McpBranded,
+  McpToolAnnotations,
   NextTurnParamsFunctions,
   ServerTool,
   ServerToolConfig,
@@ -1101,6 +1102,9 @@ export function serverTool<T extends ServerToolType, TId extends string = `serve
  * carry client-side functions. Like every other tool hook it is a computed
  * function over the call's arguments (or `false` to exempt).
  *
+ * `options.annotations` records the server's `tools/list` annotations on the
+ * branded tool, so a consumer can read them back after discovery.
+ *
  * `options.wireInputSchema` is the server's own JSON Schema for the tool's
  * arguments; it is serialized to the model in place of one regenerated from
  * the Zod `inputSchema`, which keeps validating the call.
@@ -1109,12 +1113,16 @@ export function markMcp<T extends Tool>(
   toolToMark: T,
   options?: {
     loopKey?: ToolLoopKey<Record<string, unknown>>;
+    annotations?: McpToolAnnotations;
     wireInputSchema?: Readonly<Record<string, unknown>>;
   },
 ): McpBranded<T> {
   const marked = {
     ...toolToMark,
     _mcp: true as const,
+    ...(options?.annotations !== undefined && {
+      annotations: options.annotations,
+    }),
   };
   if (options !== undefined && isClientTool(marked)) {
     marked.function = {

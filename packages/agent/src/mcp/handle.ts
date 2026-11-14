@@ -1,4 +1,4 @@
-import type { Tool } from '../lib/tool-types.js';
+import type { McpToolAnnotations, Tool } from '../lib/tool-types.js';
 import type { BuildToolsOptions } from './build-tools.js';
 import { buildTools } from './build-tools.js';
 import type { SerializedMCPServer } from './cache/cache-types.js';
@@ -111,6 +111,9 @@ export async function listToolDefs(
         ...(t.outputSchema !== undefined && {
           outputSchema: t.outputSchema,
         }),
+        ...(t.annotations !== undefined && {
+          annotations: toToolAnnotations(t.annotations),
+        }),
         ...(loopKey !== undefined && {
           loopKey,
         }),
@@ -125,6 +128,31 @@ export async function listToolDefs(
     cursor = next;
   }
   return collected;
+}
+
+/** Copies the defined hints only, so an absent hint stays absent on the tool and in a snapshot. */
+function toToolAnnotations(
+  reported: {
+    [K in keyof McpToolAnnotations]?: McpToolAnnotations[K] | undefined;
+  },
+): McpToolAnnotations {
+  return {
+    ...(reported.title !== undefined && {
+      title: reported.title,
+    }),
+    ...(reported.readOnlyHint !== undefined && {
+      readOnlyHint: reported.readOnlyHint,
+    }),
+    ...(reported.destructiveHint !== undefined && {
+      destructiveHint: reported.destructiveHint,
+    }),
+    ...(reported.idempotentHint !== undefined && {
+      idempotentHint: reported.idempotentHint,
+    }),
+    ...(reported.openWorldHint !== undefined && {
+      openWorldHint: reported.openWorldHint,
+    }),
+  };
 }
 
 function serverHasResources(connection: MCPConnection): boolean {

@@ -280,6 +280,7 @@ export type {
   InferToolOutputsUnion,
   ManualTool,
   McpBranded,
+  McpToolAnnotations,
   NextTurnParamsContext,
   NextTurnParamsFunctions,
   ParsedToolCall,
