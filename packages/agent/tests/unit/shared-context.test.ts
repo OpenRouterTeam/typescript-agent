@@ -336,3 +336,115 @@ describe('SHARED_CONTEXT_KEY', () => {
 });
 
 //#endregion
+
+//#region Context setters store schema-validated values
+
+describe('context setters store schema-validated values', () => {
+  const turnContext: TurnContext = {
+    numberOfTurns: 1,
+  };
+
+  it('setSharedContext stores the parsed output of field transforms', () => {
+    const store = new ToolContextStore({
+      [SHARED_CONTEXT_KEY]: {
+        level: 0,
+      },
+    });
+    const sharedSchema = z4.object({
+      level: z4.number().transform((n) => Math.min(n, 0)),
+    });
+
+    const ctx = buildToolExecuteContext<
+      'my_tool',
+      Record<string, unknown>,
+      {
+        level: number;
+      }
+    >(turnContext, store, 'my_tool', undefined, sharedSchema);
+
+    ctx.setSharedContext({
+      level: 1,
+    });
+
+    expect(ctx.shared).toEqual({
+      level: 0,
+    });
+  });
+
+  it('setContext stores the parsed output of field transforms', () => {
+    const store = new ToolContextStore({
+      my_tool: {
+        mode: 'read',
+      },
+    });
+    const schema = z4.object({
+      mode: z4.string().transform((s) => s.trim().toLowerCase()),
+    });
+
+    const ctx = buildToolExecuteContext<
+      'my_tool',
+      {
+        mode: string;
+      }
+    >(turnContext, store, 'my_tool', schema);
+
+    ctx.setContext({
+      mode: '  WRITE ',
+    });
+
+    expect(ctx.local).toEqual({
+      mode: 'write',
+    });
+  });
+
+  it('setSharedContext rejects an update that breaks an object-level refinement', () => {
+    const initial = {
+      role: 'guest',
+      access: 'read',
+    };
+    const store = new ToolContextStore({
+      [SHARED_CONTEXT_KEY]: initial,
+    });
+    const sharedSchema = z4
+      .object({
+        role: z4.enum([
+          'guest',
+          'staff',
+        ]),
+        access: z4.enum([
+          'read',
+          'write',
+        ]),
+      })
+      .refine((v) => v.access !== 'write' || v.role === 'staff');
+
+    const ctx = buildToolExecuteContext<
+      'my_tool',
+      Record<string, unknown>,
+      {
+        role: 'guest' | 'staff';
+        access: 'read' | 'write';
+      }
+    >(turnContext, store, 'my_tool', undefined, sharedSchema);
+
+    expect(() =>
+      ctx.setSharedContext({
+        access: 'write',
+      }),
+    ).toThrow();
+    expect(ctx.shared).toEqual(initial);
+
+    ctx.setSharedContext({
+      role: 'staff',
+    });
+    ctx.setSharedContext({
+      access: 'write',
+    });
+    expect(ctx.shared).toEqual({
+      role: 'staff',
+      access: 'write',
+    });
+  });
+});
+
+//#endregion

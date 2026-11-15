@@ -108,29 +108,32 @@ export class ToolContextStore {
 
 /**
  * Validate a partial update against a schema's shape, filtering to known keys
- * and validating each key individually. Returns the filtered partial.
+ * and parsing each key individually. Returns the parsed partial, so field
+ * transforms, defaults and coercions apply to the stored value. The merged
+ * result (existing values plus the update) is then validated as a whole so
+ * object-level refinements are enforced before the update is stored.
  */
 function validatePartialAgainstSchema(
   partial: Record<string, unknown>,
   schema: $ZodObject<$ZodShape>,
+  existing: Record<string, unknown>,
 ): Record<string, unknown> {
-  const schemaKeys = Object.keys(schema._zod.def.shape);
-  const filteredPartial: Record<string, unknown> = {};
-  for (const [key, value] of Object.entries(partial)) {
-    if (schemaKeys.includes(key)) {
-      filteredPartial[key] = value;
-    }
-  }
-
   const shape = schema._zod.def.shape;
-  for (const [key, value] of Object.entries(filteredPartial)) {
+  const schemaKeys = Object.keys(shape);
+  const parsedPartial: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(partial)) {
     const keySchema = shape[key];
-    if (keySchema) {
-      z4.parse(keySchema, value);
+    if (schemaKeys.includes(key) && keySchema) {
+      parsedPartial[key] = z4.parse(keySchema, value);
     }
   }
 
-  return filteredPartial;
+  z4.parse(schema, {
+    ...existing,
+    ...parsedPartial,
+  });
+
+  return parsedPartial;
 }
 
 /**
@@ -238,11 +241,12 @@ export function buildToolExecuteContext<
       if (!store || !schema) {
         return;
       }
-      const filteredPartial = validatePartialAgainstSchema(
+      const parsedPartial = validatePartialAgainstSchema(
         partial as Record<string, unknown>,
         schema,
+        store.getToolContext(toolName),
       );
-      store.mergeToolContext(toolName, filteredPartial);
+      store.mergeToolContext(toolName, parsedPartial);
     },
 
     get shared(): Readonly<TShared> {
@@ -254,11 +258,12 @@ export function buildToolExecuteContext<
       if (!store || !sharedSchema) {
         return;
       }
-      const filteredPartial = validatePartialAgainstSchema(
+      const parsedPartial = validatePartialAgainstSchema(
         partial as Record<string, unknown>,
         sharedSchema,
+        store.getToolContext(SHARED_CONTEXT_KEY),
       );
-      store.mergeToolContext(SHARED_CONTEXT_KEY, filteredPartial);
+      store.mergeToolContext(SHARED_CONTEXT_KEY, parsedPartial);
     },
   };
 
