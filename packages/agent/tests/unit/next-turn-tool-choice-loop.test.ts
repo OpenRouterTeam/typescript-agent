@@ -247,3 +247,181 @@ describe('nextTurnParams.toolChoice through the callModel loop', () => {
     }
   });
 });
+
+describe('nextTurnParams only runs for calls whose tool body succeeded', () => {
+  const widened = [
+    'tool_search',
+    'get_weather',
+  ];
+
+  async function runWithSearchTool(
+    searchTool: ReturnType<typeof makeSearchTool>,
+    extra: Partial<Parameters<typeof callModel>[1]> = {},
+  ): Promise<unknown[]> {
+    mockBetaResponsesSend
+      .mockResolvedValueOnce({
+        ok: true,
+        value: toolCallResponse(),
+      })
+      .mockResolvedValue({
+        ok: true,
+        value: textResponse(),
+      });
+
+    await callModel(client, {
+      model: 'test-model',
+      input: 'hi',
+      tools: [
+        searchTool,
+        getWeather,
+      ],
+      toolChoice: allowed([
+        'tool_search',
+      ]),
+      ...extra,
+    }).getText();
+
+    return dispatchedToolChoices();
+  }
+
+  it('does not widen toolChoice when PreToolUse blocks the call', async () => {
+    const execute = vi.fn(() => ({
+      found: widened,
+    }));
+    const nextToolChoice = vi.fn(() => allowed(widened));
+    const searchTool = tool({
+      name: 'tool_search',
+      inputSchema: z.object({
+        pattern: z.string(),
+      }),
+      execute,
+      nextTurnParams: {
+        toolChoice: nextToolChoice,
+      },
+    });
+
+    const choices = await runWithSearchTool(searchTool, {
+      hooks: {
+        PreToolUse: [
+          {
+            matcher: 'tool_search',
+            handler: () => ({
+              block: 'blocked by policy',
+            }),
+          },
+        ],
+      },
+    });
+
+    expect(execute).not.toHaveBeenCalled();
+    expect(nextToolChoice).not.toHaveBeenCalled();
+    expect(choices.length).toBeGreaterThanOrEqual(2);
+    expect(choices[1]).toEqual(
+      allowed([
+        'tool_search',
+      ]),
+    );
+  });
+
+  it('does not widen toolChoice when the arguments fail inputSchema', async () => {
+    const execute = vi.fn(() => ({
+      found: widened,
+    }));
+    const nextToolChoice = vi.fn(() => allowed(widened));
+    const searchTool = tool({
+      name: 'tool_search',
+      inputSchema: z.object({
+        pattern: z.enum([
+          'news',
+        ]),
+      }),
+      execute,
+      nextTurnParams: {
+        toolChoice: nextToolChoice,
+      },
+    });
+
+    const choices = await runWithSearchTool(
+      searchTool as unknown as ReturnType<typeof makeSearchTool>,
+    );
+
+    expect(execute).not.toHaveBeenCalled();
+    expect(nextToolChoice).not.toHaveBeenCalled();
+    expect(choices.length).toBeGreaterThanOrEqual(2);
+    expect(choices[1]).toEqual(
+      allowed([
+        'tool_search',
+      ]),
+    );
+  });
+
+  it('does not widen toolChoice when execute throws', async () => {
+    const nextToolChoice = vi.fn(() => allowed(widened));
+    const searchTool = tool({
+      name: 'tool_search',
+      inputSchema: z.object({
+        pattern: z.string(),
+      }),
+      execute: () => {
+        throw new Error('search backend unavailable');
+      },
+      nextTurnParams: {
+        toolChoice: nextToolChoice,
+      },
+    });
+
+    const choices = await runWithSearchTool(searchTool);
+
+    expect(nextToolChoice).not.toHaveBeenCalled();
+    expect(choices.length).toBeGreaterThanOrEqual(2);
+    expect(choices[1]).toEqual(
+      allowed([
+        'tool_search',
+      ]),
+    );
+  });
+
+  it('passes the PreToolUse-mutated input that the tool ran on', async () => {
+    const nextToolChoice = vi.fn((params: { pattern: string }) =>
+      allowed([
+        'tool_search',
+        params.pattern,
+      ]),
+    );
+    const searchTool = tool({
+      name: 'tool_search',
+      inputSchema: z.object({
+        pattern: z.string(),
+      }),
+      execute: ({ pattern }) => ({
+        found: [
+          pattern,
+        ],
+      }),
+      nextTurnParams: {
+        toolChoice: nextToolChoice,
+      },
+    });
+
+    const choices = await runWithSearchTool(
+      searchTool as unknown as ReturnType<typeof makeSearchTool>,
+      {
+        hooks: {
+          PreToolUse: [
+            {
+              matcher: 'tool_search',
+              handler: () => ({
+                mutatedInput: {
+                  pattern: 'get_weather',
+                },
+              }),
+            },
+          ],
+        },
+      },
+    );
+
+    expect(nextToolChoice).toHaveBeenCalledTimes(1);
+    expect(choices[1]).toEqual(allowed(widened));
+  });
+});

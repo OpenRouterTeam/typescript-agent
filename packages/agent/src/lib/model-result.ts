@@ -4002,6 +4002,7 @@ export class ModelResult<
     toolResults: models.FunctionCallOutputItem[];
     pausedCalls: ParsedToolCall<Tool>[];
     deferredTasks: PendingAsyncTool[];
+    executedCalls: ParsedToolCall<Tool>[];
   }> {
     const toolCallPromises = toolCalls.map((toolCall) =>
       this.executeSingleToolCall(toolCall, turnContext),
@@ -4011,6 +4012,11 @@ export class ModelResult<
     const toolResults: models.FunctionCallOutputItem[] = [];
     const pausedCalls: ParsedToolCall<Tool>[] = [];
     const deferredTasks: PendingAsyncTool[] = [];
+    // Calls whose tool body ran and returned without error, with the input it
+    // ran on. Only these may drive nextTurnParams: a call that was blocked by
+    // a hook, failed input validation, timed out, or threw must not change
+    // the next request.
+    const executedCalls: ParsedToolCall<Tool>[] = [];
 
     // Start ALL async invocations before consuming any outcome: the work
     // (and its grace window) begins in handleAsyncInvocation, so awaiting
@@ -4100,6 +4106,7 @@ export class ModelResult<
         // was started above in parallel with the round's other async
         // calls; awaiting here keeps outputs in call order.
         const asyncOutcome = await (asyncOutcomes.get(i) ?? this.handleAsyncInvocation(value));
+        executedCalls.push(value.toolCall);
         toolResults.push(asyncOutcome.output);
         this.turnBroadcaster?.push({
           type: 'tool.call_output' as const,
@@ -4110,6 +4117,10 @@ export class ModelResult<
           deferredTasks.push(asyncOutcome.deferredTask);
         }
         continue;
+      }
+
+      if (!value.result.error) {
+        executedCalls.push(value.toolCall);
       }
 
       const toolResult = (
@@ -4146,6 +4157,7 @@ export class ModelResult<
       toolResults,
       pausedCalls,
       deferredTasks,
+      executedCalls,
     };
   }
 
@@ -6562,6 +6574,7 @@ export class ModelResult<
             toolResults,
             pausedCalls,
             deferredTasks = [],
+            executedCalls = [],
           } = await this.executeToolRound(currentToolCalls, turnContext);
 
           // A tool round with observable progress resets the consecutive
@@ -6678,7 +6691,7 @@ export class ModelResult<
           await this.flushAsyncToolDeliveries();
 
           // Apply nextTurnParams
-          await this.applyNextTurnParams(currentToolCalls);
+          await this.applyNextTurnParams(executedCalls);
 
           currentResponse = await this.makeFollowupRequest(
             currentResponse,
@@ -6748,6 +6761,7 @@ export class ModelResult<
             toolResults,
             pausedCalls,
             deferredTasks: finalDeferredTasks = [],
+            executedCalls = [],
           } = await this.executeToolRound(pendingToolCalls, turnContext);
 
           // Track the executed round and persist real outputs BEFORE the HITL
@@ -6789,7 +6803,7 @@ export class ModelResult<
           } else {
             // Apply any nextTurnParams from the executed tools so they affect
             // the final text-coercion request (mirrors the in-loop behavior).
-            await this.applyNextTurnParams(pendingToolCalls);
+            await this.applyNextTurnParams(executedCalls);
 
             // Pair any manual tool calls (no execute fn) with stub outputs so
             // every function_call in the *request* has a matching output.
