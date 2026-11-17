@@ -382,3 +382,140 @@ describe('asyncTimeout and abortInflight semantics', () => {
     expect(signal?.aborted).toBe(false);
   });
 });
+
+describe('blocking hooks fail closed when the chain is aborted', () => {
+  function registerTimeoutThenGuard(manager: HooksManager, guard: () => void) {
+    manager.on('PreToolUse', {
+      handler: () => ({
+        async: true as const,
+        work: new Promise<never>(() => {}),
+        asyncTimeout: 10,
+      }),
+    });
+    manager.on('PreToolUse', {
+      handler: () => new Promise<void>((resolve) => setTimeout(resolve, 50)),
+    });
+    manager.on('PreToolUse', {
+      handler: () => {
+        guard();
+        return {
+          block: 'policy forbids this call',
+        };
+      },
+    });
+  }
+
+  it('reports PreToolUse as blocked when a detached timeout skips a later guard', async () => {
+    vi.useFakeTimers();
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const manager = new HooksManager();
+    const guard = vi.fn();
+    registerTimeoutThenGuard(manager, guard);
+
+    const pending = manager.emit(
+      'PreToolUse',
+      {
+        toolName: 't',
+        toolInput: {},
+      },
+      {
+        toolName: 't',
+      },
+    );
+    await vi.advanceTimersByTimeAsync(60);
+    const result = await pending;
+
+    expect(guard).not.toHaveBeenCalled();
+    expect(result.blocked).toBe(true);
+  });
+
+  it('reports PreToolUse as blocked when abortInflight() fires mid-chain', async () => {
+    const manager = new HooksManager();
+    const guard = vi.fn();
+    manager.on('PreToolUse', {
+      handler: () => {
+        manager.abortInflight('shutdown');
+      },
+    });
+    manager.on('PreToolUse', {
+      handler: () => {
+        guard();
+        return {
+          block: 'policy forbids this call',
+        };
+      },
+    });
+
+    const result = await manager.emit(
+      'PreToolUse',
+      {
+        toolName: 't',
+        toolInput: {},
+      },
+      {
+        toolName: 't',
+      },
+    );
+
+    expect(guard).not.toHaveBeenCalled();
+    expect(result.blocked).toBe(true);
+  });
+
+  it('still runs every PreToolUse handler when detached work settles in time', async () => {
+    const manager = new HooksManager();
+    const guard = vi.fn();
+    manager.on('PreToolUse', {
+      handler: () => ({
+        async: true as const,
+        work: Promise.resolve(),
+        asyncTimeout: 10,
+      }),
+    });
+    manager.on('PreToolUse', {
+      handler: () => {
+        guard();
+      },
+    });
+
+    const result = await manager.emit(
+      'PreToolUse',
+      {
+        toolName: 't',
+        toolInput: {},
+      },
+      {
+        toolName: 't',
+      },
+    );
+
+    expect(guard).toHaveBeenCalledOnce();
+    expect(result.blocked).toBe(false);
+  });
+
+  it('does not mark non-blocking hooks as blocked when aborted', async () => {
+    const manager = new HooksManager();
+    manager.on('PostToolUse', {
+      handler: () => {
+        manager.abortInflight('shutdown');
+      },
+    });
+    manager.on('PostToolUse', {
+      handler: () => {},
+    });
+
+    const result = await manager.emit(
+      'PostToolUse',
+      {
+        toolName: 't',
+        toolInput: {},
+        toolOutput: null,
+        durationMs: 1,
+      },
+      {
+        toolName: 't',
+      },
+    );
+
+    expect(result.blocked).toBe(false);
+  });
+});
