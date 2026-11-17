@@ -1,5 +1,17 @@
 # @openrouter/agent
 
+## 1.2.2
+
+### Patch Changes
+
+- [#153](https://github.com/OpenRouterTeam/typescript-agent/pull/153) [`6a8c4ea`](https://github.com/OpenRouterTeam/typescript-agent/commit/6a8c4eab2b7b52bdc1613a58fecc426926de72c6) Thanks [@alexb-openrouter](https://github.com/alexb-openrouter)! - Run a tool's `nextTurnParams` only for calls whose tool body ran and returned without error.
+
+  Previously `nextTurnParams` ran for every function call in the model response, with the call's raw arguments. A call blocked by a `PreToolUse` hook or a `PermissionRequest` denial, a call whose arguments failed `inputSchema`, a call that timed out, and a call whose `execute` threw could still change the next request, for example widening `toolChoice: { type: 'allowed_tools' }` to a tool the application meant to keep out of reach. Those calls now leave the request parameters unchanged, and `nextTurnParams` receives the input the tool actually ran on, including any `PreToolUse` `mutatedInput`.
+
+- [#155](https://github.com/OpenRouterTeam/typescript-agent/pull/155) [`4a440c6`](https://github.com/OpenRouterTeam/typescript-agent/commit/4a440c69c72f72695e311dcbed6219e9d984ff03) Thanks [@alexb-openrouter](https://github.com/alexb-openrouter)! - `toModelOutput` now receives the tool input after `inputSchema` parsing (the same value `execute` gets), and it now runs for results produced on the approval-resume path, so approved tool calls send the model the mapped output instead of the raw `execute` result.
+
+- [#161](https://github.com/OpenRouterTeam/typescript-agent/pull/161) [`efba739`](https://github.com/OpenRouterTeam/typescript-agent/commit/efba73911a20412cdccaccff927c16bddeb17e78) Thanks [@alexb-openrouter](https://github.com/alexb-openrouter)! - `setContext` and `setSharedContext` now store the schema's parsed output for each updated field, so field transforms, defaults and coercions apply to stored context, and they validate the merged context against the full schema before storing it, so object-level refinements are enforced at write time. An update that fails validation throws and leaves the stored context unchanged.
+
 ## 1.2.1
 
 ### Patch Changes
