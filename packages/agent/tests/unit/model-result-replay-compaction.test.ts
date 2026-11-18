@@ -245,4 +245,77 @@ describe('ModelResult replay compaction', () => {
 
     await expect(modelResult.getResponse()).rejects.toThrow();
   });
+
+  it.each([
+    'full',
+    'active-consumers',
+  ] as const)('gives a full-responses consumer that attaches after the tool loop ran both turns in order (%s replay)', async (streamReplay) => {
+    const initial = response('tool', [
+      {
+        type: 'function_call',
+        id: 'call-item',
+        callId: 'call-id',
+        name: 'echo',
+        arguments: '{}',
+        status: 'completed',
+      },
+    ]);
+    const followUp = response('follow-up', [
+      message,
+    ]);
+    mockBetaResponsesSend
+      .mockResolvedValueOnce({
+        ok: true,
+        value: completedStream(initial),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        value: completedStream(followUp),
+      });
+
+    const modelResult = callModel(client(), {
+      model: 'test-model',
+      input: 'hello',
+      streamReplay,
+      tools: [
+        {
+          type: 'function',
+          function: {
+            name: 'echo',
+            description: 'Echo input.',
+            inputSchema: z.object({}),
+            outputSchema: z.string(),
+            execute: async () => 'ok',
+          },
+        },
+      ],
+    });
+
+    // Another consumer drives the whole tool loop before the stream consumer attaches.
+    await expect(modelResult.getResponse()).resolves.toEqual(followUp);
+    expect(mockBetaResponsesSend).toHaveBeenCalledTimes(2);
+
+    const seen: string[] = [];
+    for await (const event of modelResult.getFullResponsesStream()) {
+      if (event.type === 'turn.start' || event.type === 'turn.end') {
+        seen.push(`${event.type}:${event.turnNumber}`);
+      }
+      if (event.type === 'response.completed') {
+        seen.push(`response.completed:${event.response.id}`);
+      }
+      if (event.type === 'tool.result') {
+        seen.push('tool.result');
+      }
+    }
+
+    expect(seen).toEqual([
+      'turn.start:0',
+      'response.completed:tool',
+      'turn.end:0',
+      'tool.result',
+      'turn.start:1',
+      'response.completed:follow-up',
+      'turn.end:1',
+    ]);
+  });
 });
