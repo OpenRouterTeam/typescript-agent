@@ -1,6 +1,7 @@
 import * as z from 'zod';
 import type { $ZodObject, $ZodType } from 'zod/v4/core';
 import { MCPError } from '../errors.js';
+import { inheritSubschemaTypes } from './inherit-subschema-types.js';
 import { getSchemaProperties, isJsonSchemaObject } from './json-schema-guards.js';
 
 /**
@@ -64,12 +65,14 @@ function buildObjectFromProperties(
  *
  * Strategy: attempt a holistic `z.fromJSONSchema` conversion first (handles
  * `$ref`/`$defs`, `anyOf`, formats, nesting); on failure, fall back per the
- * chosen `mode`.
+ * chosen `mode`. Both work on a copy in which combinator branches state the
+ * type their enclosing schema implies (see {@link inheritSubschemaTypes}).
  */
 export function convertMcpInputSchema(
-  jsonSchema: Record<string, unknown>,
+  serverSchema: Record<string, unknown>,
   mode: UnconvertibleSchemaMode = 'looseLeaf',
 ): $ZodObject {
+  const jsonSchema = inheritSubschemaTypes(serverSchema);
   try {
     const converted = z.fromJSONSchema(jsonSchema);
     if (isZodObject(converted)) {
