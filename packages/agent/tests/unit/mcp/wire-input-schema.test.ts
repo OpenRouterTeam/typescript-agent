@@ -171,8 +171,9 @@ describe('MCP tool wire input schema', () => {
 
     expect(emitted.parameters).toMatchObject({
       type: 'object',
-      additionalProperties: {},
     });
+    // Asserted on its own: `toMatchObject` accepts `false` for an expected `{}`.
+    expect(emitted.parameters?.['additionalProperties']).toEqual({});
     // An open object is only a problem under OpenAI-style strict mode, which
     // demands `additionalProperties: false`. MCP tools leave `strict` unset.
     expect(emitted.strict).toBeNull();
