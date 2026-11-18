@@ -46,7 +46,13 @@ export type ResourcesOption =
 export interface CreateMCPToolsOptions {
   /** Remote MCP server endpoint. */
   url: string | URL;
-  /** Transport to use; defaults to `streamableHttp` with SSE fallback. */
+  /**
+   * Transport to use; defaults to `streamableHttp` with SSE fallback.
+   *
+   * Applies on a cache hit too. Unset, a hit dials the transport recorded in the
+   * cached entry first and, if the server no longer accepts it, falls back to a
+   * fresh connect over the default ladder and rewrites the entry.
+   */
   transport?: MCPTransportKind;
   /** Authentication, supplied once and reused for discovery + every call. */
   auth?: MCPAuth;

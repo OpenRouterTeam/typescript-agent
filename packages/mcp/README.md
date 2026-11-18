@@ -121,6 +121,11 @@ Give each server its own key: include the server URL alongside the principal. An
 reused for the URL it was written for, so servers sharing one key would evict each other on every
 call.
 
+A cache hit dials the transport recorded in the entry first. If the server no longer accepts it, the
+call falls back to a fresh connect over the default Streamable HTTP → SSE ladder and rewrites the
+entry. `transport` pins the transport on a hit as it does on a cold connect, and
+`rehydrateMCPTools` takes the same option.
+
 > **Security:** `cacheCredentials` is `false` by default. When enabled, snapshots contain bearer
 > tokens/headers — treat the store as a secret store and namespace cache keys by principal in
 > multi-tenant setups.
