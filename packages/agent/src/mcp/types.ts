@@ -106,7 +106,15 @@ export interface CreateMCPToolsOptions {
    * lists where possible.
    */
   loopKeys?: Readonly<Record<string, ToolLoopKey<Record<string, unknown>>>>;
-  /** Auto-refresh tools on `tools/list_changed`. Default true when connected. */
+  /**
+   * Auto-refresh tools on `tools/list_changed`. Default true when connected.
+   *
+   * A 2026-07-28 server can only deliver that notification on a stream the
+   * client opens, so against one this holds a `subscriptions/listen` stream
+   * open (when the server advertises `tools.listChanged`) until `close()`, and
+   * re-opens it if it drops. Opening it never delays or fails the connect. Set
+   * `false` to open no stream and call `refresh()` yourself.
+   */
   autoRefreshOnListChanged?: boolean;
   /** Handler for server-initiated elicitation; auto-declines when omitted. */
   onElicitation?: ElicitationHandler;
@@ -133,7 +141,11 @@ export interface MCPToolsHandle {
   serialize(): Promise<import('./cache/cache-types.js').SerializedMCPServer>;
   /** Force a fresh `listTools()` and rebuild the tool set. */
   refresh(): Promise<readonly Tool[]>;
-  /** Subscribe to auto-refreshes triggered by `tools/list_changed`. */
+  /**
+   * Subscribe to auto-refreshes: a `tools/list_changed` from the server, or a
+   * lost notification stream being re-established (the tools are re-listed
+   * then, since changes made while it was down were never announced).
+   */
   onToolsChanged(listener: (tools: readonly Tool[]) => void): () => void;
   /** Close the transport and underlying client. */
   close(): Promise<void>;

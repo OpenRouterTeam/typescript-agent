@@ -9,6 +9,8 @@ import { isOAuthAuth } from './auth/auth-types.js';
 import { closeQuietly } from './close-quietly.js';
 import { makeElicitationRequestHandler } from './elicitation.js';
 import { MCPConnectionError } from './errors.js';
+import type { ToolListChangedWatch } from './list-changed-subscription.js';
+import { watchToolListChanged } from './list-changed-subscription.js';
 import type { MCPSdk } from './mcp-sdk.js';
 import { loadMcpSdk } from './mcp-sdk.js';
 import type { MCPProtocolNegotiation, MCPTransportKind } from './transport-types.js';
@@ -103,6 +105,14 @@ export interface MCPConnection {
   /**
    * Register a callback for `tools/list_changed`. Settable after connect so the
    * handle can wire it to its own `refresh()`. Replaces any prior handler.
+   *
+   * Registering is also what opts the connection in to *receiving* the
+   * notification from a 2026-07-28 server, which can only deliver it on a
+   * `subscriptions/listen` stream. The first call opens that stream in the
+   * background — it never delays or fails the caller — and `close()` tears it
+   * down. A connection nobody registers on opens no stream. The callback also
+   * runs when a lost stream is re-established, since changes made in between
+   * were never delivered.
    */
   setToolListChangedHandler(handler: () => void): void;
   close(): Promise<void>;
@@ -167,8 +177,12 @@ interface MutableListChanged {
  * `InMemoryTransport`: the notification method name is compile-checked (it is a
  * `NotificationMethod` literal union, so a typo fails `tsc`), but the *dispatch*
  * — that an inbound notification actually reaches `setToolListChangedHandler`'s
- * callback — is only observable end to end. Without this seam, default-on
- * `autoRefreshOnListChanged` could be silently dead with every test green.
+ * callback — is only observable end to end.
+ *
+ * Dispatch is all it covers. Whether a server can *deliver* the notification is
+ * a separate question this seam cannot answer — `InMemoryTransport` lets a fake
+ * push one unsolicited, which a 2026-07-28 server over HTTP cannot do. That half
+ * is `watchToolListChanged`, tested over the real HTTP transport.
  *
  * @internal
  */
@@ -211,9 +225,19 @@ function makeClient(sdk: MCPSdk, options: ConnectOptions, listChanged: MutableLi
     makeElicitationRequestHandler(options.onElicitation),
   );
 
-  // Kept as a notification handler rather than `ClientOptions.listChanged`: the
-  // latter re-lists tools itself, duplicating the handle's own `refresh()` and
-  // its cache write. Notification handlers are era-transparent.
+  // One handler for both protocol eras — but only *dispatch* is era-transparent.
+  // A 2026-07-28 server delivers this notification solely on a
+  // `subscriptions/listen` stream, which `wrap()` opens once a callback is
+  // registered (see `watchToolListChanged`).
+  //
+  // Deliberately not `ClientOptions.listChanged`, which would open that stream
+  // for us: it does so inside `connect()` and awaits the server's
+  // acknowledgement there, putting a best-effort subscription on the critical
+  // path of every connect — a server that accepts the request and never
+  // acknowledges would stall `createMCPTools()` for a full request timeout. It
+  // also never re-listens after the stream ends, and on 2025-era connections
+  // it only registers for servers that advertise `tools.listChanged`, where
+  // this handler also serves the ones that notify without advertising.
   client.setNotificationHandler('notifications/tools/list_changed', () => {
     listChanged.handler?.();
   });
@@ -261,6 +285,7 @@ async function connectWithNegotiation(
       client,
       transport: 'sse',
       listChanged,
+      signal: options.signal,
     });
   }
 
@@ -273,6 +298,7 @@ async function connectWithNegotiation(
       client,
       transport: 'streamableHttp',
       listChanged,
+      signal: options.signal,
       ...(http.sessionId !== undefined && {
         sessionId: http.sessionId,
       }),
@@ -325,6 +351,7 @@ async function connectWithNegotiation(
         client: sseClient,
         transport: 'sse',
         listChanged,
+        signal: options.signal,
       });
     } catch (sseErr) {
       await closeQuietly(sseClient);
@@ -601,11 +628,15 @@ interface WrapArgs {
   client: Client;
   transport: MCPTransportKind;
   listChanged: MutableListChanged;
+  /** The connect signal; also ends the `tools/list_changed` subscription. */
+  signal: AbortSignal | undefined;
   sessionId?: string;
 }
 
 function wrap(args: WrapArgs): MCPConnection {
-  const { client, transport, listChanged, sessionId } = args;
+  const { client, transport, listChanged, signal, sessionId } = args;
+  let subscribed = false;
+  let watch: ToolListChangedWatch | undefined;
   return {
     client,
     transport,
@@ -614,7 +645,24 @@ function wrap(args: WrapArgs): MCPConnection {
     }),
     setToolListChangedHandler: (handler: () => void) => {
       listChanged.handler = handler;
+      // Opened here rather than at connect so that a handle with
+      // `autoRefreshOnListChanged: false` — which never registers — holds no
+      // stream open. Once only: a replaced handler reuses the subscription.
+      if (subscribed) {
+        return;
+      }
+      subscribed = true;
+      watch = watchToolListChanged({
+        client,
+        signal,
+        onResubscribed: () => listChanged.handler?.(),
+      });
     },
-    close: () => client.close(),
+    close: () => {
+      // Before the client closes: the SDK reports a stream ended by its own
+      // close as a remote drop, which the watch would try to recover from.
+      watch?.stop();
+      return client.close();
+    },
   };
 }

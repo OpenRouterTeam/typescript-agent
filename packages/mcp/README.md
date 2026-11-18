@@ -153,7 +153,7 @@ const result = callModel(client, {
 | `cache` / `cacheCredentials` / `staleness` | Caching controls. |
 | `resources` | Expose synthetic `list_resources` / `read_resource` tools (default on). |
 | `emitProgress` | Stream MCP progress as generator-tool events (default on). |
-| `autoRefreshOnListChanged` | Re-list on `tools/list_changed` (default on). |
+| `autoRefreshOnListChanged` | Re-list on `tools/list_changed` (default on). On 2026-07-28 servers this keeps a `subscriptions/listen` stream open until `close()`. |
 | `onElicitation` | Handle server elicitation requests; auto-declines when omitted. |
 | `signal` | Abort signal threaded into every tool call. |
 
