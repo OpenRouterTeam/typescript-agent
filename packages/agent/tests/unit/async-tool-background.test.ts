@@ -480,6 +480,89 @@ describe('tool.background — placeholder & delivery', () => {
     expect(sawAbort).toBe(true);
   });
 
+  it("onRunEnd: 'drain' reports a task that settles during the last drain turn as dropped", async () => {
+    const first = makeControlledBackgroundTool('render_a');
+    const second = makeControlledBackgroundTool('render_b');
+
+    mockBetaResponsesSend
+      .mockResolvedValueOnce({
+        ok: true,
+        value: makeResponse('resp_1', [
+          functionCallItem('call_a', 'render_a', '{"script":"a"}'),
+          functionCallItem('call_b', 'render_b', '{"script":"b"}'),
+        ]),
+      })
+      .mockImplementationOnce(async () => {
+        first.release({
+          url: 'https://cdn/a.mp4',
+        });
+        return {
+          ok: true,
+          value: makeResponse('resp_2', [
+            messageItem('msg_1', 'both started'),
+          ]),
+        };
+      })
+      // The only drain turn (maxDrainTurns: 1) carries call_a; call_b
+      // settles while the model is still answering, after the loop has
+      // spent its last turn.
+      .mockImplementationOnce(async () => {
+        second.release({
+          url: 'https://cdn/b.mp4',
+        });
+        await new Promise((resolve) => setTimeout(resolve, 10));
+        return {
+          ok: true,
+          value: makeResponse('resp_3', [
+            messageItem('msg_2', 'a is done'),
+          ]),
+        };
+      });
+
+    const result = callModel(client, {
+      model: 'test-model',
+      input: 'render',
+      tools: [
+        first.tool,
+        second.tool,
+      ] as const,
+      asyncTools: {
+        onRunEnd: 'drain',
+        drainTimeoutMs: 5_000,
+        maxDrainTurns: 1,
+      },
+    });
+
+    const settled: Array<{
+      toolCallId: string;
+      delivery: string;
+    }> = [];
+    for await (const event of result.getFullResponsesStream()) {
+      if (isToolAsyncSettledEvent(event)) {
+        settled.push({
+          toolCallId: event.toolCallId,
+          delivery: event.delivery,
+        });
+      }
+    }
+
+    expect(mockBetaResponsesSend).toHaveBeenCalledTimes(3);
+    expect(settled).toEqual([
+      {
+        toolCallId: 'call_a',
+        delivery: 'injected',
+      },
+      {
+        toolCallId: 'call_b',
+        delivery: 'dropped',
+      },
+    ]);
+    expect(result.getAsyncTasks().map((t) => t.status)).toEqual([
+      'completed',
+      'completed',
+    ]);
+  });
+
   it('cancelTask(taskId) cancels a working background task', async () => {
     const controlled = makeControlledBackgroundTool('render_video');
 
