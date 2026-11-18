@@ -26,9 +26,10 @@ function requiredKeys(schema: Record<string, unknown>): Set<string> {
 }
 
 /**
- * Build a Zod object by converting each property independently, substituting
- * `z.unknown()` for any property Zod cannot represent. Always yields a
- * `$ZodObject`, which is what `callModel`'s `tool()` factory requires.
+ * Build a Zod object by converting each root property independently,
+ * substituting `z.unknown()` for any property Zod cannot represent. Always
+ * yields a `$ZodObject`, which is what `callModel`'s `tool()` factory requires.
+ * Keys outside the root `properties` are kept, unvalidated.
  */
 function buildObjectFromProperties(
   jsonSchema: Record<string, unknown>,
@@ -53,7 +54,13 @@ function buildObjectFromProperties(
     shape[key] = required.has(key) ? zodProp : z.optional(zodProp);
   }
 
-  return z.object(shape);
+  // Loose, not `z.object`: this shape only knows the root-level `properties`,
+  // and the schemas that land here are exactly the ones declaring arguments
+  // elsewhere (a root `oneOf`/`anyOf`/`allOf`, `if`/`then`, a `$ref` Zod could
+  // not resolve). `z.object` strips unknown keys on parse, so the model — which
+  // is sent the server's own schema — would send valid arguments and the server
+  // would receive `{}`. Unknown keys pass through; the server stays the arbiter.
+  return z.looseObject(shape);
 }
 
 /**

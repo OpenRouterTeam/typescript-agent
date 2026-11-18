@@ -129,4 +129,52 @@ describe('MCP tool wire input schema', () => {
       type: 'object',
     });
   });
+
+  it('regenerates an open object for a non-object root, and never opts into strict', () => {
+    // No `type: 'object'` at the root, so the server's schema is not forwarded
+    // and the parameters come from the fallback Zod object. That object passes
+    // unknown keys through to the server, so the regenerated schema must not
+    // tell the model they are forbidden.
+    const [emitted] = convertToolsToAPIFormat([
+      wrapMcpTool(
+        {
+          name: 'lookup',
+          inputSchema: {
+            oneOf: [
+              {
+                type: 'object',
+                properties: {
+                  id: {
+                    type: 'string',
+                  },
+                },
+              },
+              {
+                type: 'object',
+                properties: {
+                  name: {
+                    type: 'string',
+                  },
+                },
+              },
+            ],
+          },
+        },
+        {
+          client: fakeClient(),
+        },
+      ),
+    ]);
+    if (emitted === undefined || !('parameters' in emitted)) {
+      throw new Error('expected a function tool');
+    }
+
+    expect(emitted.parameters).toMatchObject({
+      type: 'object',
+      additionalProperties: {},
+    });
+    // An open object is only a problem under OpenAI-style strict mode, which
+    // demands `additionalProperties: false`. MCP tools leave `strict` unset.
+    expect(emitted.strict).toBeNull();
+  });
 });
