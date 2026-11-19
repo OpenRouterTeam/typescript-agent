@@ -26,6 +26,8 @@ For new code, install the agent plus the optional MCP peer:
 pnpm add @openrouter/agent @modelcontextprotocol/client
 ```
 
+`@openrouter/agent` needs `@modelcontextprotocol/client` 2.2.0 or later.
+
 Existing applications can keep installing only the compatibility package; it retains `@modelcontextprotocol/client` as a dependency, so the prior transitive-install behavior is unchanged:
 
 ```bash
@@ -73,6 +75,24 @@ console.log(await result.getText());
 await mcp.close();
 ```
 
+## Tool list changes
+
+By default the handle re-lists its tools when the server sends `tools/list_changed`, and calls any
+`onToolsChanged` listener with the new set:
+
+```ts
+const stop = mcp.onToolsChanged((tools) => {
+  // pass `tools` to the next callModel()
+});
+```
+
+A server on protocol revision 2026-07-28 can only send that notification on a stream the client
+opens. When the server advertises `tools.listChanged`, the handle therefore holds one
+`subscriptions/listen` stream open in the background, and re-opens it if it drops. **That open
+stream keeps a Node process alive, so always `await mcp.close()` when you are done** — a script that
+never closes its handle will not exit. Pass `autoRefreshOnListChanged: false` to open no stream and
+call `mcp.refresh()` yourself.
+
 ## Authentication
 
 Auth is supplied once and reused for discovery and every call:
@@ -101,6 +121,8 @@ const snapshot = await mcp.serialize();   // plain JSON — store anywhere
 await mcp.close();
 
 const mcp2 = await rehydrateMCPTools({ snapshot, auth });
+// ... use mcp2.tools ...
+await mcp2.close();
 ```
 
 Or let a store manage it (rehydrate on hit, connect + write on miss):
@@ -115,6 +137,8 @@ const mcp = await createMCPTools({
   cache: { store, key: `mcp:${userId}:${url}` },
   staleness: { maxAgeMs: 60 * 60 * 1000 },
 });
+// ... use mcp.tools ...
+await mcp.close();
 ```
 
 Give each server its own key: include the server URL alongside the principal. An entry is only
@@ -143,6 +167,9 @@ const result = callModel(client, {
   input: 'Find the Linear issue linked to GitHub PR #42.',
   tools: [...github.tools, ...linear.tools],
 });
+
+console.log(await result.getText());
+await Promise.all([github.close(), linear.close()]);
 ```
 
 ## Options
@@ -158,7 +185,7 @@ const result = callModel(client, {
 | `cache` / `cacheCredentials` / `staleness` | Caching controls. |
 | `resources` | Expose synthetic `list_resources` / `read_resource` tools (default on). |
 | `emitProgress` | Stream MCP progress as generator-tool events (default on). |
-| `autoRefreshOnListChanged` | Re-list on `tools/list_changed` (default on). On 2026-07-28 servers this keeps a `subscriptions/listen` stream open until `close()`. |
+| `autoRefreshOnListChanged` | Re-list on `tools/list_changed` (default on). On 2026-07-28 servers this keeps a `subscriptions/listen` stream open until `close()` — see [Tool list changes](#tool-list-changes). |
 | `onElicitation` | Handle server elicitation requests; auto-declines when omitted. |
 | `signal` | Abort signal threaded into every tool call. |
 

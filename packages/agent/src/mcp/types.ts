@@ -117,9 +117,15 @@ export interface CreateMCPToolsOptions {
    *
    * A 2026-07-28 server can only deliver that notification on a stream the
    * client opens, so against one this holds a `subscriptions/listen` stream
-   * open (when the server advertises `tools.listChanged`) until `close()`, and
-   * re-opens it if it drops. Opening it never delays or fails the connect. Set
-   * `false` to open no stream and call `refresh()` yourself.
+   * open (when the server advertises `tools.listChanged`) until `close()`.
+   * **The open stream keeps a Node process alive, so call `close()` when
+   * done.** Opening it never delays or fails the connect.
+   *
+   * A stream that drops is re-opened with jittered backoff, and the tools are
+   * re-listed once it is back; the handle only changes if that listing does.
+   * It is not re-opened once the server has rejected the credentials.
+   *
+   * Set `false` to open no stream and call `refresh()` yourself.
    */
   autoRefreshOnListChanged?: boolean;
   /** Handler for server-initiated elicitation; auto-declines when omitted. */
@@ -148,11 +154,15 @@ export interface MCPToolsHandle {
   /** Force a fresh `listTools()` and rebuild the tool set. */
   refresh(): Promise<readonly Tool[]>;
   /**
-   * Subscribe to auto-refreshes: a `tools/list_changed` from the server, or a
-   * lost notification stream being re-established (the tools are re-listed
-   * then, since changes made while it was down were never announced).
+   * Subscribe to auto-refreshes. Called after every `tools/list_changed` from
+   * the server, and after a lost notification stream is re-established if the
+   * re-list done then finds a different tool set. Not called by `refresh()`.
    */
   onToolsChanged(listener: (tools: readonly Tool[]) => void): () => void;
-  /** Close the transport and underlying client. */
+  /**
+   * Close the transport and underlying client. Always call it: with
+   * auto-refresh on, a handle to a 2026-07-28 server holds a stream open that
+   * keeps a Node process alive until this runs.
+   */
   close(): Promise<void>;
 }
