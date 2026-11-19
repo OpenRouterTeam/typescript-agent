@@ -67,17 +67,31 @@ pnpm add @openrouter/agent @modelcontextprotocol/client
 
 Existing `@openrouter/mcp` imports remain supported as compatibility facades.
 
-A tool built by `createMCPTools` or `rehydrateMCPTools` carries the `annotations` its server reported in `tools/list`, and a cache snapshot keeps them. Only the five standard fields are kept (`readOnlyHint`, `destructiveHint`, `idempotentHint`, `openWorldHint`, `title`); any other key a server adds is dropped. The field is absent when the server sent none. They are hints from the server, not guarantees, and they are not sent to the model.
+A tool built by `createMCPTools` or `rehydrateMCPTools` carries the `annotations` its server reported in `tools/list`, and a cache snapshot keeps them. Only the five standard fields are kept (`readOnlyHint`, `destructiveHint`, `idempotentHint`, `openWorldHint`, `title`); any other key, from a server or from a snapshot, is dropped. The field is absent when the server sent none. They are not sent to the model.
+
+They are hints from the server, not guarantees. The MCP specification says a client should never make tool use decisions based on annotations received from an untrusted server. An absent hint has the specification's default, which is `true` for `destructiveHint` and `openWorldHint`, so compare against the default and not against `=== true`.
 
 ```typescript
-import { isMcpTool } from '@openrouter/agent';
+import { isMcpTool, type McpToolAnnotations } from '@openrouter/agent';
 import { createMCPTools } from '@openrouter/agent/mcp';
 
 const handle = await createMCPTools({ url: 'https://mcp.example.com/mcp' });
-const readOnlyTools = handle.tools.filter(
-  (tool) => isMcpTool(tool) && tool.annotations?.readOnlyHint === true,
+
+// new: `tool.annotations` holds the server's hints; absent when it sent none.
+// An absent hint has the MCP default, which is `true` for `destructiveHint`
+// and `openWorldHint`, so compare against the default, not `=== true`.
+const mayDestroy = (hints: McpToolAnnotations | undefined): boolean =>
+  hints?.readOnlyHint !== true && hints?.destructiveHint !== false;
+
+const needApproval = handle.tools.filter(
+  (tool) => isMcpTool(tool) && mayDestroy(tool.annotations),
 );
+
+// new: a snapshot stores the hints as `tools[].annotations` and restores them.
+const snapshot = await handle.serialize();
 ```
+
+A snapshot written before annotations were stored has none, so tools rebuilt from it have none until the server is listed again.
 
 ## Features
 

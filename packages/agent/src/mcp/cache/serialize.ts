@@ -1,6 +1,7 @@
 import type { OAuthClientProvider, StoredOAuthTokens } from '@modelcontextprotocol/client';
 import { resolveAuth } from '../auth/auth-resolver.js';
 import type { MCPAuth } from '../auth/auth-types.js';
+import { copyToolAnnotations } from '../tool-annotations.js';
 import type { McpToolDef } from '../tool-wrapper.js';
 import type { MCPTransportKind } from '../types.js';
 import type { SerializedMCPServer, SerializedTokenSet } from './cache-types.js';
@@ -106,7 +107,7 @@ export async function serializeServer(input: SerializeInput): Promise<Serialized
       outputSchema: def.outputSchema,
     }),
     ...(def.annotations !== undefined && {
-      annotations: def.annotations,
+      annotations: copyToolAnnotations(def.annotations),
     }),
     ...(def.loopKey !== undefined && {
       loopKey: def.loopKey,

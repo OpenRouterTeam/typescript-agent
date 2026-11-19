@@ -1069,15 +1069,32 @@ export type McpBranded<T extends Tool = Tool> = T & {
 
 /**
  * Behaviour hints an MCP server may attach to a tool definition (MCP
- * `ToolAnnotations`). Hints, not guarantees: a server can misreport them, so
- * treat them as untrusted unless the server is.
+ * `ToolAnnotations`). They are hints, not guarantees: a server can misreport
+ * them. The MCP specification says: "Clients should never make tool use
+ * decisions based on ToolAnnotations received from untrusted servers."
+ *
+ * An absent hint has the default the specification gives it, which is not
+ * always `false`. Compare against the default, not against `=== true`:
+ * `annotations?.destructiveHint === true` reads a tool with no annotations as
+ * not destructive, and the specification says it may be.
  */
 export interface McpToolAnnotations {
-  title?: string;
-  readOnlyHint?: boolean;
-  destructiveHint?: boolean;
-  idempotentHint?: boolean;
-  openWorldHint?: boolean;
+  /** A human-readable title for the tool. */
+  readonly title?: string;
+  /** The tool does not modify its environment. Absent means `false`. */
+  readonly readOnlyHint?: boolean;
+  /**
+   * The tool may perform destructive updates. Absent means `true`.
+   * Meaningful only when `readOnlyHint` is `false`.
+   */
+  readonly destructiveHint?: boolean;
+  /**
+   * Calling the tool again with the same arguments has no further effect.
+   * Absent means `false`. Meaningful only when `readOnlyHint` is `false`.
+   */
+  readonly idempotentHint?: boolean;
+  /** The tool may interact with external entities. Absent means `true`. */
+  readonly openWorldHint?: boolean;
 }
 
 /**

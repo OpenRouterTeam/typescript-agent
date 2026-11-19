@@ -1,4 +1,4 @@
-import type { McpToolAnnotations, Tool } from '../lib/tool-types.js';
+import type { Tool } from '../lib/tool-types.js';
 import type { BuildToolsOptions } from './build-tools.js';
 import { buildTools } from './build-tools.js';
 import type { SerializedMCPServer } from './cache/cache-types.js';
@@ -8,6 +8,7 @@ import { closeQuietly } from './close-quietly.js';
 import { MCPCacheWriteError } from './errors.js';
 import type { MCPConnection } from './mcp-connection.js';
 import { connect } from './mcp-connection.js';
+import { copyToolAnnotations } from './tool-annotations.js';
 import type { McpToolDef } from './tool-wrapper.js';
 import type { MCPTransportKind } from './transport-types.js';
 import type { CreateMCPToolsOptions, MCPToolsHandle } from './types.js';
@@ -112,7 +113,7 @@ export async function listToolDefs(
           outputSchema: t.outputSchema,
         }),
         ...(t.annotations !== undefined && {
-          annotations: toToolAnnotations(t.annotations),
+          annotations: copyToolAnnotations(t.annotations),
         }),
         ...(loopKey !== undefined && {
           loopKey,
@@ -128,31 +129,6 @@ export async function listToolDefs(
     cursor = next;
   }
   return collected;
-}
-
-/** Copies the defined hints only, so an absent hint stays absent on the tool and in a snapshot. */
-function toToolAnnotations(
-  reported: {
-    [K in keyof McpToolAnnotations]?: McpToolAnnotations[K] | undefined;
-  },
-): McpToolAnnotations {
-  return {
-    ...(reported.title !== undefined && {
-      title: reported.title,
-    }),
-    ...(reported.readOnlyHint !== undefined && {
-      readOnlyHint: reported.readOnlyHint,
-    }),
-    ...(reported.destructiveHint !== undefined && {
-      destructiveHint: reported.destructiveHint,
-    }),
-    ...(reported.idempotentHint !== undefined && {
-      idempotentHint: reported.idempotentHint,
-    }),
-    ...(reported.openWorldHint !== undefined && {
-      openWorldHint: reported.openWorldHint,
-    }),
-  };
 }
 
 function serverHasResources(connection: MCPConnection): boolean {

@@ -12,6 +12,7 @@ import type { ConnectOptions, MCPConnection } from './mcp-connection.js';
 import { connect, isAuthFailure } from './mcp-connection.js';
 import { loadMcpSdk } from './mcp-sdk.js';
 import type { UnconvertibleSchemaMode } from './schema/json-schema-to-zod.js';
+import { copyToolAnnotations } from './tool-annotations.js';
 import type { McpToolDef } from './tool-wrapper.js';
 import type {
   CreateMCPToolsOptions,
@@ -100,9 +101,7 @@ function snapshotToToolDefs(snapshot: SerializedMCPServer): McpToolDef[] {
       },
     }),
     ...(t.annotations !== undefined && {
-      annotations: {
-        ...t.annotations,
-      },
+      annotations: copyToolAnnotations(t.annotations),
     }),
     ...(t.loopKey !== undefined && {
       loopKey: t.loopKey,

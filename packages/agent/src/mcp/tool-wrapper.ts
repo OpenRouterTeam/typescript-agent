@@ -7,6 +7,7 @@ import { mapCallToolResult } from './result-mapper.js';
 import { isJsonSchemaObject } from './schema/json-schema-guards.js';
 import type { UnconvertibleSchemaMode } from './schema/json-schema-to-zod.js';
 import { convertMcpInputSchema } from './schema/json-schema-to-zod.js';
+import { copyToolAnnotations } from './tool-annotations.js';
 
 /** A discovered MCP tool definition (the fields we consume). */
 export interface McpToolDef {
@@ -100,7 +101,7 @@ function markOptionsFor(
       loopKey,
     }),
     ...(def.annotations !== undefined && {
-      annotations: def.annotations,
+      annotations: copyToolAnnotations(def.annotations),
     }),
     // A non-object root is not a usable tool schema; the Zod conversion
     // degrades it to an object, so that one is serialized instead.

@@ -172,6 +172,109 @@ describe('MCP tool annotations', () => {
     expect(annotationsByName(replayed.tools)).toStrictEqual(REPORTED);
   });
 
+  it('drops a key that is not a standard hint, from a server and from a snapshot', async () => {
+    listedTools = [
+      {
+        name: 'delete_record',
+        inputSchema: INPUT_SCHEMA,
+        annotations: {
+          destructiveHint: true,
+          vendorHint: {
+            nested: true,
+          },
+        },
+      },
+    ];
+    const live = await createMCPTools({
+      url: 'https://mcp.example.com/mcp',
+      resources: false,
+    });
+    const replayed = await rehydrateMCPTools({
+      // @ts-expect-error a snapshot read from a store can hold keys the type does not know
+      snapshot: snapshotWith({
+        destructiveHint: true,
+        vendorHint: {
+          nested: true,
+        },
+      }),
+      reconnectOnExpiry: false,
+      resources: false,
+    });
+
+    const kept = {
+      delete_record: {
+        destructiveHint: true,
+      },
+    };
+    expect(annotationsByName(live.tools)).toStrictEqual(kept);
+    expect(annotationsByName(replayed.tools)).toStrictEqual(kept);
+    expect((await replayed.serialize()).tools[0]?.annotations).toStrictEqual(kept.delete_record);
+  });
+
+  it.each([
+    [
+      'a live handle',
+      () =>
+        createMCPTools({
+          url: 'https://mcp.example.com/mcp',
+          resources: false,
+        }),
+    ],
+    [
+      'a handle rebuilt from a snapshot',
+      async () =>
+        rehydrateMCPTools({
+          snapshot: JSON.parse(
+            JSON.stringify(
+              await (
+                await createMCPTools({
+                  url: 'https://mcp.example.com/mcp',
+                  resources: false,
+                })
+              ).serialize(),
+            ),
+          ),
+          reconnectOnExpiry: false,
+          resources: false,
+        }),
+    ],
+  ])('keeps the hints of %s apart from its tools and its snapshots', async (_label, open) => {
+    const handle = await open();
+    const hintsOnTools = Object.values(annotationsByName(handle.tools));
+
+    // A consumer that changes the hints it read from a tool must not change what is persisted.
+    for (const hints of hintsOnTools) {
+      Object.assign(hints ?? {}, {
+        readOnlyHint: false,
+        destructiveHint: false,
+      });
+    }
+    const snapshot = await handle.serialize();
+    expect(
+      Object.fromEntries(
+        snapshot.tools.map((tool) => [
+          tool.name,
+          tool.annotations,
+        ]),
+      ),
+    ).toStrictEqual(REPORTED);
+
+    // And one that changes a snapshot it was given must not change the tools or a later snapshot.
+    for (const tool of snapshot.tools) {
+      Object.assign(tool.annotations ?? {}, {
+        title: 'changed',
+      });
+    }
+    expect(
+      Object.fromEntries(
+        (await handle.serialize()).tools.map((tool) => [
+          tool.name,
+          tool.annotations,
+        ]),
+      ),
+    ).toStrictEqual(REPORTED);
+  });
+
   it('refuses to build tools from a snapshot whose hint is not a boolean', async () => {
     await expect(
       rehydrateMCPTools({
