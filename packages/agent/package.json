@@ -182,7 +182,7 @@
     "zod": "^4.0.0"
   },
   "peerDependencies": {
-    "@modelcontextprotocol/client": "^2.0.0"
+    "@modelcontextprotocol/client": "^2.2.0"
   },
   "peerDependenciesMeta": {
     "@modelcontextprotocol/client": {
@@ -190,6 +190,6 @@
     }
   },
   "devDependencies": {
-    "@modelcontextprotocol/client": "^2.0.0"
+    "@modelcontextprotocol/client": "^2.2.0"
   }
 }
