@@ -265,6 +265,12 @@ async function connectWithNegotiation(
   const listChanged: MutableListChanged = {
     handler: undefined,
   };
+  const rejectedCredentials = (err: unknown): boolean =>
+    isAuthFailure({
+      err,
+      auth: options.auth,
+      UnauthorizedErrorType: sdk.UnauthorizedError,
+    });
 
   if (preferred === 'sse') {
     const client = makeClient(sdk, options, listChanged);
@@ -286,6 +292,7 @@ async function connectWithNegotiation(
       transport: 'sse',
       listChanged,
       signal: options.signal,
+      isAuthFailure: rejectedCredentials,
     });
   }
 
@@ -299,6 +306,7 @@ async function connectWithNegotiation(
       transport: 'streamableHttp',
       listChanged,
       signal: options.signal,
+      isAuthFailure: rejectedCredentials,
       ...(http.sessionId !== undefined && {
         sessionId: http.sessionId,
       }),
@@ -352,6 +360,7 @@ async function connectWithNegotiation(
         transport: 'sse',
         listChanged,
         signal: options.signal,
+        isAuthFailure: rejectedCredentials,
       });
     } catch (sseErr) {
       await closeQuietly(sseClient);
@@ -630,6 +639,8 @@ interface WrapArgs {
   listChanged: MutableListChanged;
   /** The connect signal; also ends the `tools/list_changed` subscription. */
   signal: AbortSignal | undefined;
+  /** {@link isAuthFailure}, bound to this connection's auth. */
+  isAuthFailure: (err: unknown) => boolean;
   sessionId?: string;
 }
 
@@ -655,6 +666,7 @@ function wrap(args: WrapArgs): MCPConnection {
       watch = watchToolListChanged({
         client,
         signal,
+        isAuthFailure: args.isAuthFailure,
         onResubscribed: () => listChanged.handler?.(),
       });
     },

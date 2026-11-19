@@ -24,6 +24,8 @@ interface WatchArgs {
   client: Client;
   /** Ends the subscription for good when aborted. */
   signal: AbortSignal | undefined;
+  /** Whether a failed open was the server rejecting the connection's credentials. */
+  isAuthFailure: (err: unknown) => boolean;
   /**
    * The stream was lost and has been re-established. Whatever changed in
    * between was never delivered, so the caller should re-list.
@@ -56,9 +58,11 @@ interface WatchArgs {
  * as long as the connection lives. A first subscription that is never
  * acknowledged is not retried: the likeliest reason is a server that does not
  * serve this, and asking again on a timer would only add load.
+ *
+ * One failure ends the watch outright: rejected credentials. See `open` below.
  */
 export function watchToolListChanged(args: WatchArgs): ToolListChangedWatch | undefined {
-  const { client, signal, onResubscribed } = args;
+  const { client, signal, isAuthFailure, onResubscribed } = args;
   if (
     client.getProtocolEra() !== 'modern' ||
     client.getServerCapabilities()?.tools?.listChanged !== true
@@ -82,9 +86,26 @@ export function watchToolListChanged(args: WatchArgs): ToolListChangedWatch | un
             }
           : undefined,
       );
-    } catch {
+    } catch (err) {
       // Refused, unanswered, or the connection went away. Nothing to report:
       // the subscription is an optimisation over calling `refresh()`.
+      //
+      // That every such failure arrives *here* depends on the SDK: before
+      // 2.2.0, `listen()` awaited the transport's send before anything observed
+      // its internal ack promise, so a close, an abort or the ack timeout
+      // during that send rejected a promise no caller could reach — an
+      // unhandled rejection, which ends a Node process. Hence the `^2.2.0`
+      // peer floor; there is nothing this `catch` could do about it.
+      if (isAuthFailure(err)) {
+        // Rejected credentials are final for this watch. Under OAuth the SDK
+        // has, by the time this throws, already run its authorization flow
+        // once — a saved PKCE verifier and a `redirectToAuthorization` — and
+        // every further attempt would run it again, from a timer, with nobody
+        // asking. `connect()` and `rehydrateMCPTools` refuse to retry for the
+        // same reason. That first run happens inside the SDK's send and cannot
+        // be prevented, so the bound is one.
+        stopped = true;
+      }
       return undefined;
     }
   };

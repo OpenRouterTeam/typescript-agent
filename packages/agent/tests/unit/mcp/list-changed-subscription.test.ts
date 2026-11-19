@@ -2,6 +2,7 @@ import { SUBSCRIPTION_ID_META_KEY } from '@modelcontextprotocol/client';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { Tool } from '../../../src/lib/tool-types.js';
 import { isClientTool } from '../../../src/lib/tool-types.js';
+import type { MCPOAuthClientProvider } from '../../../src/mcp/auth/auth-types.js';
 import { createMCPTools } from '../../../src/mcp/create-mcp-tools.js';
 import { rehydrateMCPTools } from '../../../src/mcp/rehydrate.js';
 
@@ -41,10 +42,18 @@ interface ServerBehavior {
   advertise?: boolean;
   /**
    * How `subscriptions/listen` is answered: acknowledged (default), refused
-   * with a JSON-RPC error, or accepted and then never acknowledged.
+   * with a JSON-RPC error, accepted and then never acknowledged, or left
+   * hanging with no response at all (`hang`).
    */
-  listen?: 'ack' | 'refuse' | 'silent';
+  listen?: 'ack' | 'refuse' | 'silent' | 'hang';
 }
+
+/**
+ * How long a hung request takes to reject after its caller gives up — a
+ * `fetch` wrapper that backs off before rethrowing. The gap matters: it is
+ * what leaves a rejection unobserved for a while.
+ */
+const LATE_REJECT_MS = 50;
 
 interface FakeServer {
   fetch: typeof fetch;
@@ -56,6 +65,8 @@ interface FakeServer {
   gets: PushStream[];
   /** Tool names `tools/list` currently answers with. */
   toolNames: string[];
+  /** Answer every MCP request with 401, as for a revoked or expired token. */
+  unauthorized: boolean;
   /** Change how later `subscriptions/listen` requests are answered. */
   setListen(mode: NonNullable<ServerBehavior['listen']>): void;
   count(entry: string): number;
@@ -137,12 +148,54 @@ function fakeServer(behavior: ServerBehavior): FakeServer {
     toolNames: [
       'a',
     ],
+    unauthorized: false,
     setListen: (mode) => {
       listenMode = mode;
     },
     count: (entry) => server.seen.filter((s) => s === entry).length,
-    fetch: (_input: RequestInfo | URL, init?: RequestInit) => {
+    fetch: (input: RequestInfo | URL, init?: RequestInit) => {
       const httpMethod = init?.method ?? 'GET';
+      const url = input instanceof Request ? input.url : String(input);
+      // OAuth discovery, reached only once a request has been answered 401: no
+      // protected-resource metadata, an authorization server that supports
+      // PKCE, and a token endpoint that grants nothing.
+      if (url.includes('/.well-known/oauth-protected-resource')) {
+        return Promise.resolve(
+          new Response(null, {
+            status: 404,
+          }),
+        );
+      }
+      if (url.includes('/.well-known/')) {
+        return Promise.resolve(
+          jsonResponse({
+            issuer: 'https://mcp.example.com',
+            authorization_endpoint: 'https://mcp.example.com/authorize',
+            token_endpoint: 'https://mcp.example.com/token',
+            response_types_supported: [
+              'code',
+            ],
+            code_challenge_methods_supported: [
+              'S256',
+            ],
+          }),
+        );
+      }
+      if (url.endsWith('/token')) {
+        return Promise.resolve(
+          new Response(
+            JSON.stringify({
+              error: 'invalid_grant',
+            }),
+            {
+              status: 400,
+              headers: {
+                'content-type': 'application/json',
+              },
+            },
+          ),
+        );
+      }
       if (httpMethod !== 'POST') {
         server.seen.push(httpMethod);
         // The standalone stream a 2025-era client opens after `initialized`.
@@ -158,6 +211,11 @@ function fakeServer(behavior: ServerBehavior): FakeServer {
         );
       }
 
+      // A real `fetch` rejects at once when its signal has already aborted,
+      // and the request never reaches the server.
+      if (init?.signal?.aborted === true) {
+        return Promise.reject(new DOMException('The operation was aborted.', 'AbortError'));
+      }
       const message: unknown = JSON.parse(String(init?.body));
       if (!isRecord(message) || typeof message['method'] !== 'string') {
         throw new Error('fake server: unexpected request body');
@@ -165,6 +223,16 @@ function fakeServer(behavior: ServerBehavior): FakeServer {
       const method = message['method'];
       const id = message['id'];
       server.seen.push(`POST ${method}`);
+      if (server.unauthorized) {
+        return Promise.resolve(
+          new Response('unauthorized', {
+            status: 401,
+            headers: {
+              'www-authenticate': 'Bearer error="invalid_token"',
+            },
+          }),
+        );
+      }
       // Notifications carry no id and expect no reply.
       if (id === undefined) {
         return Promise.resolve(
@@ -242,6 +310,15 @@ function fakeServer(behavior: ServerBehavior): FakeServer {
         if (listenMode === 'refuse' || typeof id !== 'string') {
           return methodNotFound();
         }
+        if (listenMode === 'hang') {
+          return new Promise<Response>((_resolve, reject) => {
+            init?.signal?.addEventListener('abort', () => {
+              setTimeout(() => {
+                reject(new DOMException('The operation was aborted.', 'AbortError'));
+              }, LATE_REJECT_MS);
+            });
+          });
+        }
         const { stream, response } = openStream(id, init?.signal);
         server.listens.push(stream);
         if (listenMode === 'ack') {
@@ -294,6 +371,86 @@ async function listening(server: FakeServer, count: number): Promise<void> {
   await vi.waitFor(() => {
     expect(server.listens).toHaveLength(count);
   });
+}
+
+interface OAuthProbe {
+  provider: MCPOAuthClientProvider;
+  /** Every `redirectToAuthorization` call. */
+  redirects: URL[];
+  /** Every `saveCodeVerifier` call. */
+  verifiers: string[];
+}
+
+/**
+ * An OAuth provider holding a valid access token and no refresh token, so a
+ * 401 leaves the SDK nothing to do but start a new authorization.
+ * `tokensDelayMs` makes `tokens()` asynchronous, as a keychain or database
+ * read is.
+ */
+function oauthProvider(tokensDelayMs?: number): OAuthProbe {
+  const redirects: URL[] = [];
+  const verifiers: string[] = [];
+  return {
+    redirects,
+    verifiers,
+    provider: {
+      get redirectUrl() {
+        return 'http://localhost:9999/callback';
+      },
+      get clientMetadata() {
+        return {
+          redirect_uris: [
+            'http://localhost:9999/callback',
+          ],
+        };
+      },
+      clientInformation: () => ({
+        client_id: 'test-client',
+      }),
+      tokens: async () => {
+        if (tokensDelayMs !== undefined) {
+          await sleep(tokensDelayMs);
+        }
+        return {
+          access_token: 'tok',
+          token_type: 'bearer',
+        };
+      },
+      saveTokens: () => {},
+      redirectToAuthorization: (authorizationUrl) => {
+        redirects.push(authorizationUrl);
+      },
+      saveCodeVerifier: (codeVerifier) => {
+        verifiers.push(codeVerifier);
+      },
+      codeVerifier: () => verifiers.at(-1) ?? '',
+    },
+  };
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
+}
+
+/**
+ * Run `scenario` and return every `unhandledRejection` the process raised
+ * meanwhile. Node raises one when a rejected promise still has no handler once
+ * the microtask queue drains, and by default exits on it.
+ */
+async function unhandledRejectionsDuring(scenario: () => Promise<void>): Promise<unknown[]> {
+  const raised: unknown[] = [];
+  const onRejection = (reason: unknown): void => {
+    raised.push(reason);
+  };
+  process.on('unhandledRejection', onRejection);
+  try {
+    await scenario();
+  } finally {
+    process.off('unhandledRejection', onRejection);
+  }
+  return raised;
 }
 
 afterEach(() => {
@@ -620,6 +777,58 @@ describe('re-listening after the stream ends', () => {
     await handle.close();
   });
 
+  it('stops for good when the server rejects the credentials on a re-open', async () => {
+    vi.useFakeTimers();
+    const server = fakeServer({
+      era: 'modern',
+    });
+    const oauth = oauthProvider();
+    const handle = await createMCPTools({
+      url: URL_,
+      fetch: server.fetch,
+      auth: {
+        kind: 'oauth',
+        provider: oauth.provider,
+      },
+    });
+    await listening(server, 1);
+    expect(oauth.redirects).toHaveLength(0);
+
+    // The token is revoked and the stream drops with it.
+    server.unauthorized = true;
+    server.listens[0]?.end();
+
+    // The first re-open is answered 401, and the SDK runs its authorization
+    // flow inside that request: one redirect that cannot be prevented.
+    await vi.advanceTimersByTimeAsync(1_000);
+    await vi.waitFor(() => {
+      expect(oauth.redirects).toHaveLength(1);
+    });
+
+    // Eleven more minutes of what would have been backoff periods. Each further
+    // attempt would save another PKCE verifier and redirect again.
+    for (const step of [
+      2_000,
+      4_000,
+      8_000,
+      16_000,
+      32_000,
+      60_000,
+      60_000,
+      60_000,
+      60_000,
+      60_000,
+      300_000,
+    ]) {
+      await vi.advanceTimersByTimeAsync(step);
+    }
+
+    expect(server.count('POST subscriptions/listen')).toBe(2);
+    expect(oauth.redirects).toHaveLength(1);
+    expect(oauth.verifiers).toHaveLength(1);
+    await handle.close();
+  });
+
   it('stops re-listening once the handle is closed', async () => {
     vi.useFakeTimers();
     const server = fakeServer({
@@ -638,6 +847,95 @@ describe('re-listening after the stream ends', () => {
 
     await vi.advanceTimersByTimeAsync(10 * 60_000);
     expect(server.count('POST subscriptions/listen')).toBe(1);
+  });
+});
+
+// The subscription is opened in the background, so a caller can close or abort
+// while the request for it is still in flight. Before SDK 2.2.0 `listen()`
+// awaited its send before anything observed the promise it rejects on, so
+// these raised an unhandled rejection — which, by default, exits Node. This is
+// why the peer floor is `^2.2.0`; nothing in this package can catch it.
+describe('ending the handle while the subscription is still opening', () => {
+  // An asynchronous `tokens()` is what holds the send open: the transport
+  // awaits it for the Authorization header before it issues the request.
+  const TOKENS_DELAY_MS = 5;
+
+  it('raises no unhandled rejection when closed straight after connecting', async () => {
+    const server = fakeServer({
+      era: 'modern',
+    });
+    let issuedBeforeClose: number | undefined;
+
+    const raised = await unhandledRejectionsDuring(async () => {
+      const handle = await createMCPTools({
+        url: URL_,
+        fetch: server.fetch,
+        auth: {
+          kind: 'oauth',
+          provider: oauthProvider(TOKENS_DELAY_MS).provider,
+        },
+      });
+      issuedBeforeClose = server.count('POST subscriptions/listen');
+      await handle.close();
+      await sleep(10 * TOKENS_DELAY_MS);
+    });
+
+    expect(raised).toEqual([]);
+    // The premise: the close landed while the request was still being prepared.
+    expect(issuedBeforeClose).toBe(0);
+    expect(server.count('POST subscriptions/listen')).toBe(0);
+  });
+
+  it('raises no unhandled rejection when the signal aborts straight after connecting', async () => {
+    const server = fakeServer({
+      era: 'modern',
+    });
+    const controller = new AbortController();
+    let issuedBeforeAbort: number | undefined;
+
+    const raised = await unhandledRejectionsDuring(async () => {
+      const handle = await createMCPTools({
+        url: URL_,
+        fetch: server.fetch,
+        signal: controller.signal,
+        auth: {
+          kind: 'oauth',
+          provider: oauthProvider(TOKENS_DELAY_MS).provider,
+        },
+      });
+      issuedBeforeAbort = server.count('POST subscriptions/listen');
+      controller.abort();
+      await sleep(10 * TOKENS_DELAY_MS);
+      await handle.close();
+    });
+
+    expect(raised).toEqual([]);
+    expect(issuedBeforeAbort).toBe(0);
+  });
+
+  it('raises no unhandled rejection when the acknowledgement times out on a hung request', async () => {
+    vi.useFakeTimers();
+    const server = fakeServer({
+      era: 'modern',
+      listen: 'hang',
+    });
+
+    const raised = await unhandledRejectionsDuring(async () => {
+      const handle = await createMCPTools({
+        url: URL_,
+        fetch: server.fetch,
+      });
+      await vi.waitFor(() => {
+        expect(server.count('POST subscriptions/listen')).toBe(1);
+      });
+      // The SDK gives up on the acknowledgement after its request timeout and
+      // aborts the request, which only rejects some time later.
+      await vi.advanceTimersByTimeAsync(60_000);
+      await vi.advanceTimersByTimeAsync(2 * LATE_REJECT_MS);
+      await handle.close();
+    });
+
+    expect(raised).toEqual([]);
   });
 });
 
