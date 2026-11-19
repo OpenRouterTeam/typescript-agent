@@ -69,7 +69,7 @@ interface FakeServer {
   /** Answer every MCP request with 401, as for a revoked or expired token. */
   unauthorized: boolean;
   /** Change how later `subscriptions/listen` requests are answered. */
-  setListen(mode: NonNullable<ServerBehavior['listen']>): void;
+  setListen(mode: 'ack' | 'refuse' | 'silent' | 'hang'): void;
   count(entry: string): number;
 }
 
@@ -122,151 +122,87 @@ function openStream(
   };
 }
 
-function jsonResponse(body: Record<string, unknown>): Response {
+function jsonResponse(body: Record<string, unknown>, status = 200): Response {
   return new Response(JSON.stringify(body), {
-    status: 200,
+    status,
     headers: {
       'content-type': 'application/json',
     },
   });
 }
 
-/** A minimal MCP server behind `fetch`, speaking either protocol revision. */
-function fakeServer(behavior: ServerBehavior): FakeServer {
-  let listenMode = behavior.listen ?? 'ack';
+function statusResponse(status: number): Response {
+  return new Response(null, {
+    status,
+  });
+}
+
+type ListenMode = NonNullable<ServerBehavior['listen']>;
+
+/** The settings one fake server answers from. */
+interface ServerSettings {
+  era: ServerBehavior['era'];
+  advertise: boolean;
+  listenMode: ListenMode;
+}
+
+/**
+ * OAuth discovery, reached only once a request has been answered 401: no
+ * protected-resource metadata, an authorization server that supports PKCE, and
+ * a token endpoint that grants nothing.
+ */
+function oauthEndpointResponse(url: string): Response | undefined {
+  if (url.includes('/.well-known/oauth-protected-resource')) {
+    return statusResponse(404);
+  }
+  if (url.includes('/.well-known/')) {
+    return jsonResponse({
+      issuer: 'https://mcp.example.com',
+      authorization_endpoint: 'https://mcp.example.com/authorize',
+      token_endpoint: 'https://mcp.example.com/token',
+      response_types_supported: [
+        'code',
+      ],
+      code_challenge_methods_supported: [
+        'S256',
+      ],
+    });
+  }
+  if (url.endsWith('/token')) {
+    return jsonResponse(
+      {
+        error: 'invalid_grant',
+      },
+      400,
+    );
+  }
+  return undefined;
+}
+
+/**
+ * The result of a plain request/response method, or undefined where the server
+ * answers "method not found": `server/discover` on a 2025-era server, and a
+ * `subscriptions/listen` it refuses.
+ */
+function rpcResult(
+  server: FakeServer,
+  settings: ServerSettings,
+  method: string,
+): Record<string, unknown> | undefined {
   const capabilities = {
-    tools:
-      (behavior.advertise ?? true)
-        ? {
-            listChanged: true,
-          }
-        : {},
+    tools: settings.advertise
+      ? {
+          listChanged: true,
+        }
+      : {},
   };
-  const server: FakeServer = {
-    seen: [],
-    listens: [],
-    gets: [],
-    toolNames: [
-      'a',
-    ],
-    unauthorized: false,
-    setListen: (mode) => {
-      listenMode = mode;
-    },
-    count: (entry) => server.seen.filter((s) => s === entry).length,
-    fetch: (input: RequestInfo | URL, init?: RequestInit) => {
-      const httpMethod = init?.method ?? 'GET';
-      const url = input instanceof Request ? input.url : String(input);
-      // OAuth discovery, reached only once a request has been answered 401: no
-      // protected-resource metadata, an authorization server that supports
-      // PKCE, and a token endpoint that grants nothing.
-      if (url.includes('/.well-known/oauth-protected-resource')) {
-        return Promise.resolve(
-          new Response(null, {
-            status: 404,
-          }),
-        );
-      }
-      if (url.includes('/.well-known/')) {
-        return Promise.resolve(
-          jsonResponse({
-            issuer: 'https://mcp.example.com',
-            authorization_endpoint: 'https://mcp.example.com/authorize',
-            token_endpoint: 'https://mcp.example.com/token',
-            response_types_supported: [
-              'code',
-            ],
-            code_challenge_methods_supported: [
-              'S256',
-            ],
-          }),
-        );
-      }
-      if (url.endsWith('/token')) {
-        return Promise.resolve(
-          new Response(
-            JSON.stringify({
-              error: 'invalid_grant',
-            }),
-            {
-              status: 400,
-              headers: {
-                'content-type': 'application/json',
-              },
-            },
-          ),
-        );
-      }
-      if (httpMethod !== 'POST') {
-        server.seen.push(httpMethod);
-        // The standalone stream a 2025-era client opens after `initialized`.
-        if (httpMethod === 'GET' && behavior.era === 'legacy') {
-          const { stream, response } = openStream(undefined, init?.signal);
-          server.gets.push(stream);
-          return Promise.resolve(response);
-        }
-        return Promise.resolve(
-          new Response(null, {
-            status: 405,
-          }),
-        );
-      }
-
-      // A real `fetch` rejects at once when its signal has already aborted,
-      // and the request never reaches the server.
-      if (init?.signal?.aborted === true) {
-        return Promise.reject(new DOMException('The operation was aborted.', 'AbortError'));
-      }
-      const message: unknown = JSON.parse(String(init?.body));
-      if (!isRecord(message) || typeof message['method'] !== 'string') {
-        throw new Error('fake server: unexpected request body');
-      }
-      const method = message['method'];
-      const id = message['id'];
-      server.seen.push(`POST ${method}`);
-      if (server.unauthorized) {
-        return Promise.resolve(
-          new Response('unauthorized', {
-            status: 401,
-            headers: {
-              'www-authenticate': 'Bearer error="invalid_token"',
-            },
-          }),
-        );
-      }
-      // Notifications carry no id and expect no reply.
-      if (id === undefined) {
-        return Promise.resolve(
-          new Response(null, {
-            status: 202,
-          }),
-        );
-      }
-      const reply = (result: Record<string, unknown>): Promise<Response> =>
-        Promise.resolve(
-          jsonResponse({
-            jsonrpc: '2.0',
-            id,
-            result,
-          }),
-        );
-      const methodNotFound = (): Promise<Response> =>
-        Promise.resolve(
-          jsonResponse({
-            jsonrpc: '2.0',
-            id,
-            error: {
-              code: -32601,
-              message: 'Method not found',
-            },
-          }),
-        );
-
-      if (method === 'server/discover') {
-        if (behavior.era === 'legacy') {
-          return methodNotFound();
-        }
-        return reply({
+  if (method === 'subscriptions/listen') {
+    return undefined;
+  }
+  if (method === 'server/discover') {
+    return settings.era === 'legacy'
+      ? undefined
+      : {
           resultType: 'complete',
           supportedVersions: [
             '2026-07-28',
@@ -278,69 +214,173 @@ function fakeServer(behavior: ServerBehavior): FakeServer {
               version: '9.9.9',
             },
           },
-        });
-      }
+        };
+  }
+  if (method === 'initialize') {
+    return {
+      protocolVersion: '2025-11-25',
+      serverInfo: {
+        name: 'fake-legacy',
+        version: '1.2.3',
+      },
+      capabilities,
+    };
+  }
+  if (method === 'tools/list') {
+    return {
+      resultType: 'complete',
+      ttlMs: 0,
+      cacheScope: 'public',
+      tools: server.toolNames.map((name) => ({
+        name,
+        inputSchema: {
+          type: 'object',
+          properties: {},
+        },
+      })),
+    };
+  }
+  return {
+    resultType: 'complete',
+  };
+}
 
-      if (method === 'initialize') {
-        return reply({
-          protocolVersion: '2025-11-25',
-          serverInfo: {
-            name: 'fake-legacy',
-            version: '1.2.3',
-          },
-          capabilities,
-        });
+function rpcReply(
+  id: unknown,
+  result: Record<string, unknown> | undefined,
+): Record<string, unknown> {
+  return result !== undefined
+    ? {
+        jsonrpc: '2.0',
+        id,
+        result,
       }
+    : {
+        jsonrpc: '2.0',
+        id,
+        error: {
+          code: -32601,
+          message: 'Method not found',
+        },
+      };
+}
 
-      if (method === 'tools/list') {
-        return reply({
-          resultType: 'complete',
-          ttlMs: 0,
-          cacheScope: 'public',
-          tools: server.toolNames.map((name) => ({
-            name,
-            inputSchema: {
-              type: 'object',
-              properties: {},
-            },
-          })),
-        });
+/** Answer a `subscriptions/listen` the server is not refusing. */
+function listenResponse(args: {
+  server: FakeServer;
+  mode: ListenMode;
+  id: string;
+  params: unknown;
+  signal: AbortSignal | null | undefined;
+}): Promise<Response> {
+  const { server, mode, id, params, signal } = args;
+  if (mode === 'hang') {
+    return new Promise<Response>((_resolve, reject) => {
+      signal?.addEventListener('abort', () => {
+        setTimeout(() => {
+          reject(new DOMException('The operation was aborted.', 'AbortError'));
+        }, LATE_REJECT_MS);
+      });
+    });
+  }
+  const { stream, response } = openStream(id, signal);
+  server.listens.push(stream);
+  if (mode === 'ack') {
+    stream.push({
+      jsonrpc: '2.0',
+      method: 'notifications/subscriptions/acknowledged',
+      params: {
+        _meta: {
+          [SUBSCRIPTION_ID_META_KEY]: id,
+        },
+        notifications: isRecord(params) ? params['notifications'] : {},
+      },
+    });
+  }
+  return Promise.resolve(response);
+}
+
+/** Answer one JSON-RPC POST. */
+function rpcResponse(
+  server: FakeServer,
+  settings: ServerSettings,
+  init: RequestInit | undefined,
+): Promise<Response> {
+  // A real `fetch` rejects at once when its signal has already aborted, and
+  // the request never reaches the server.
+  if (init?.signal?.aborted === true) {
+    return Promise.reject(new DOMException('The operation was aborted.', 'AbortError'));
+  }
+  const message: unknown = JSON.parse(String(init?.body));
+  if (!isRecord(message) || typeof message['method'] !== 'string') {
+    throw new Error('fake server: unexpected request body');
+  }
+  const method = message['method'];
+  const id = message['id'];
+  server.seen.push(`POST ${method}`);
+  if (server.unauthorized) {
+    return Promise.resolve(
+      new Response('unauthorized', {
+        status: 401,
+        headers: {
+          'www-authenticate': 'Bearer error="invalid_token"',
+        },
+      }),
+    );
+  }
+  // Notifications carry no id and expect no reply.
+  if (id === undefined) {
+    return Promise.resolve(statusResponse(202));
+  }
+  const accepted = settings.listenMode !== 'refuse' && typeof id === 'string';
+  if (method === 'subscriptions/listen' && accepted) {
+    return listenResponse({
+      server,
+      mode: settings.listenMode,
+      id: String(id),
+      params: message['params'],
+      signal: init?.signal,
+    });
+  }
+  return Promise.resolve(jsonResponse(rpcReply(id, rpcResult(server, settings, method))));
+}
+
+/** A minimal MCP server behind `fetch`, speaking either protocol revision. */
+function fakeServer(behavior: ServerBehavior): FakeServer {
+  const settings: ServerSettings = {
+    era: behavior.era,
+    advertise: behavior.advertise ?? true,
+    listenMode: behavior.listen ?? 'ack',
+  };
+  const server: FakeServer = {
+    seen: [],
+    listens: [],
+    gets: [],
+    toolNames: [
+      'a',
+    ],
+    unauthorized: false,
+    setListen: (mode) => {
+      settings.listenMode = mode;
+    },
+    count: (entry) => server.seen.filter((s) => s === entry).length,
+    fetch: (input: RequestInfo | URL, init?: RequestInit) => {
+      const oauth = oauthEndpointResponse(input instanceof Request ? input.url : String(input));
+      if (oauth !== undefined) {
+        return Promise.resolve(oauth);
       }
-
-      if (method === 'subscriptions/listen') {
-        if (listenMode === 'refuse' || typeof id !== 'string') {
-          return methodNotFound();
-        }
-        if (listenMode === 'hang') {
-          return new Promise<Response>((_resolve, reject) => {
-            init?.signal?.addEventListener('abort', () => {
-              setTimeout(() => {
-                reject(new DOMException('The operation was aborted.', 'AbortError'));
-              }, LATE_REJECT_MS);
-            });
-          });
-        }
-        const { stream, response } = openStream(id, init?.signal);
-        server.listens.push(stream);
-        if (listenMode === 'ack') {
-          const params = message['params'];
-          stream.push({
-            jsonrpc: '2.0',
-            method: 'notifications/subscriptions/acknowledged',
-            params: {
-              _meta: {
-                [SUBSCRIPTION_ID_META_KEY]: id,
-              },
-              notifications: isRecord(params) ? params['notifications'] : {},
-            },
-          });
-        }
+      const httpMethod = init?.method ?? 'GET';
+      if (httpMethod === 'POST') {
+        return rpcResponse(server, settings, init);
+      }
+      server.seen.push(httpMethod);
+      // The standalone stream a 2025-era client opens after `initialized`.
+      if (httpMethod === 'GET' && settings.era === 'legacy') {
+        const { stream, response } = openStream(undefined, init?.signal);
+        server.gets.push(stream);
         return Promise.resolve(response);
       }
-
-      return reply({
-        resultType: 'complete',
-      });
+      return Promise.resolve(statusResponse(405));
     },
   };
   return server;
