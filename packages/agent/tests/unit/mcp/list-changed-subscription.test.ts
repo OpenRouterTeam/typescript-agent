@@ -1,8 +1,9 @@
 import { SUBSCRIPTION_ID_META_KEY } from '@modelcontextprotocol/client';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Tool } from '../../../src/lib/tool-types.js';
 import { isClientTool } from '../../../src/lib/tool-types.js';
 import type { MCPOAuthClientProvider } from '../../../src/mcp/auth/auth-types.js';
+import { InMemoryMCPCacheStore } from '../../../src/mcp/cache/cache-store.js';
 import { createMCPTools } from '../../../src/mcp/create-mcp-tools.js';
 import { rehydrateMCPTools } from '../../../src/mcp/rehydrate.js';
 
@@ -453,7 +454,14 @@ async function unhandledRejectionsDuring(scenario: () => Promise<void>): Promise
   return raised;
 }
 
+beforeEach(() => {
+  // The re-listen delay is jittered. 0.5 is the midpoint, where a delay equals
+  // its nominal value, so the timing assertions below can be exact.
+  vi.spyOn(Math, 'random').mockReturnValue(0.5);
+});
+
 afterEach(() => {
+  vi.restoreAllMocks();
   vi.useRealTimers();
 });
 
@@ -756,15 +764,13 @@ describe('re-listening after the stream ends', () => {
       url: URL_,
       fetch: server.fetch,
     });
-    const changed = vi.fn();
-    handle.onToolsChanged(changed);
     await listening(server, 1);
 
     server.listens[0]?.end();
     await vi.advanceTimersByTimeAsync(1_000);
     // The re-list that follows a re-established stream marks it as open.
     await vi.waitFor(() => {
-      expect(changed).toHaveBeenCalledTimes(1);
+      expect(server.count('POST tools/list')).toBe(2);
     });
 
     // The second stream outlives the longest backoff, so its loss is a fresh
@@ -774,6 +780,99 @@ describe('re-listening after the stream ends', () => {
     await vi.advanceTimersByTimeAsync(1_000);
 
     expect(server.count('POST subscriptions/listen')).toBe(3);
+    await handle.close();
+  });
+
+  it('spreads each delay up to half its nominal value either way', async () => {
+    vi.useFakeTimers();
+    const listenRequests = (server: FakeServer): number =>
+      server.count('POST subscriptions/listen');
+
+    // Earliest: half the nominal 1s.
+    vi.mocked(Math.random).mockReturnValue(0);
+    const early = fakeServer({
+      era: 'modern',
+    });
+    const first = await createMCPTools({
+      url: URL_,
+      fetch: early.fetch,
+    });
+    await listening(early, 1);
+    early.listens[0]?.end();
+    await vi.advanceTimersByTimeAsync(499);
+    expect(listenRequests(early)).toBe(1);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(listenRequests(early)).toBe(2);
+    await first.close();
+
+    // Latest: just short of one and a half times it (timers run on whole
+    // milliseconds, so 1499.999 fires at 1499).
+    vi.mocked(Math.random).mockReturnValue(0.999999);
+    const late = fakeServer({
+      era: 'modern',
+    });
+    const second = await createMCPTools({
+      url: URL_,
+      fetch: late.fetch,
+    });
+    await listening(late, 1);
+    late.listens[0]?.end();
+    await vi.advanceTimersByTimeAsync(1_498);
+    expect(listenRequests(late)).toBe(1);
+    await vi.advanceTimersByTimeAsync(2);
+    expect(listenRequests(late)).toBe(2);
+    await second.close();
+  });
+
+  it('only re-lists when the tool set did not change while the stream was down', async () => {
+    vi.useFakeTimers();
+    const server = fakeServer({
+      era: 'modern',
+    });
+    const store = new InMemoryMCPCacheStore();
+    const write = vi.spyOn(store, 'set');
+    const handle = await createMCPTools({
+      url: URL_,
+      fetch: server.fetch,
+      cache: {
+        store,
+      },
+    });
+    const changed = vi.fn();
+    handle.onToolsChanged(changed);
+    await listening(server, 1);
+    const before = handle.tools;
+    const writesBefore = write.mock.calls.length;
+
+    // A stream that came back says only that a change could have been missed.
+    // Here none was: the re-list must be the whole cost.
+    server.listens[0]?.end();
+    await vi.advanceTimersByTimeAsync(1_000);
+    await vi.waitFor(() => {
+      expect(server.count('POST tools/list')).toBe(2);
+    });
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(handle.tools).toBe(before);
+    expect(write).toHaveBeenCalledTimes(writesBefore);
+    expect(changed).not.toHaveBeenCalled();
+
+    // A notification is different: the server says the set changed, so it is
+    // rebuilt, written and announced as before, identical listing or not.
+    announceToolsChanged(server.listens[1]);
+    await vi.waitFor(() => {
+      expect(changed).toHaveBeenCalledTimes(1);
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(changed).toHaveBeenCalledTimes(1);
+    expect(handle.tools).not.toBe(before);
+    expect(write).toHaveBeenCalledTimes(writesBefore + 1);
+
+    // So is an explicit refresh().
+    const afterNotification = handle.tools;
+    await handle.refresh();
+    expect(handle.tools).not.toBe(afterNotification);
+    expect(write).toHaveBeenCalledTimes(writesBefore + 2);
     await handle.close();
   });
 

@@ -110,11 +110,13 @@ export interface MCPConnection {
    * notification from a 2026-07-28 server, which can only deliver it on a
    * `subscriptions/listen` stream. The first call opens that stream in the
    * background — it never delays or fails the caller — and `close()` tears it
-   * down. A connection nobody registers on opens no stream. The callback also
-   * runs when a lost stream is re-established, since changes made in between
-   * were never delivered.
+   * down. A connection nobody registers on opens no stream.
+   *
+   * `onResubscribed` runs when a lost stream has been re-established. Changes
+   * made in between were never delivered, so it should re-list — but unlike
+   * `handler` it is not told that anything changed. Defaults to `handler`.
    */
-  setToolListChangedHandler(handler: () => void): void;
+  setToolListChangedHandler(handler: () => void, onResubscribed?: () => void): void;
   close(): Promise<void>;
 }
 
@@ -648,14 +650,16 @@ function wrap(args: WrapArgs): MCPConnection {
   const { client, transport, listChanged, signal, sessionId } = args;
   let subscribed = false;
   let watch: ToolListChangedWatch | undefined;
+  let resubscribed: (() => void) | undefined;
   return {
     client,
     transport,
     ...(sessionId !== undefined && {
       sessionId,
     }),
-    setToolListChangedHandler: (handler: () => void) => {
+    setToolListChangedHandler: (handler: () => void, onResubscribed: () => void = handler) => {
       listChanged.handler = handler;
+      resubscribed = onResubscribed;
       // Opened here rather than at connect so that a handle with
       // `autoRefreshOnListChanged: false` — which never registers — holds no
       // stream open. Once only: a replaced handler reuses the subscription.
@@ -667,7 +671,7 @@ function wrap(args: WrapArgs): MCPConnection {
         client,
         signal,
         isAuthFailure: args.isAuthFailure,
-        onResubscribed: () => listChanged.handler?.(),
+        onResubscribed: () => resubscribed?.(),
       });
     },
     close: () => {

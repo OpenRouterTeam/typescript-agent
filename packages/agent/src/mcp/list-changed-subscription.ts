@@ -1,6 +1,6 @@
 import type { Client, McpSubscription } from '@modelcontextprotocol/client';
 
-/** Delay before the first re-listen after a stream ends; doubles per attempt. */
+/** Nominal delay before the first re-listen after a stream ends; doubles per attempt. */
 const RELISTEN_BASE_DELAY_MS = 1_000;
 
 /**
@@ -9,6 +9,14 @@ const RELISTEN_BASE_DELAY_MS = 1_000;
  * longest wait is, by the only yardstick available here, a healthy one.
  */
 const RELISTEN_MAX_DELAY_MS = 60_000;
+
+/**
+ * Each delay is spread over this fraction either side of its nominal value.
+ * Streams are usually lost in bulk — one redeploy drops every client's at the
+ * same instant — and without a spread they would all come back, and re-list,
+ * on the same tick, then again in step at every later attempt.
+ */
+const RELISTEN_JITTER = 0.5;
 
 export interface ToolListChangedWatch {
   /**
@@ -54,8 +62,8 @@ interface WatchArgs {
  * The SDK does not re-listen when a stream ends, and streams do end — a proxy's
  * idle timeout, a redeploy. Left there, auto-refresh would work until the first
  * drop and then be silently dead again. So once the server has acknowledged a
- * subscription, a lost stream is re-opened with capped exponential backoff for
- * as long as the connection lives. A first subscription that is never
+ * subscription, a lost stream is re-opened with capped, jittered exponential
+ * backoff for as long as the connection lives. A first subscription that is never
  * acknowledged is not retried: the likeliest reason is a server that does not
  * serve this, and asking again on a timer would only add load.
  *
@@ -116,7 +124,8 @@ export function watchToolListChanged(args: WatchArgs): ToolListChangedWatch | un
     if (stopped || signal?.aborted === true || client.transport === undefined) {
       return;
     }
-    const delay = Math.min(RELISTEN_BASE_DELAY_MS * 2 ** attempt, RELISTEN_MAX_DELAY_MS);
+    const nominal = Math.min(RELISTEN_BASE_DELAY_MS * 2 ** attempt, RELISTEN_MAX_DELAY_MS);
+    const delay = nominal * (1 - RELISTEN_JITTER + Math.random() * 2 * RELISTEN_JITTER);
     attempt += 1;
     timer = setTimeout(() => {
       timer = undefined;
