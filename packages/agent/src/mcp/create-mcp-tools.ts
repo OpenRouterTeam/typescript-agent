@@ -31,11 +31,13 @@ export async function createMCPTools(options: CreateMCPToolsOptions): Promise<MC
 }
 
 // Option keys forwarded verbatim from a cache-hit `createMCPTools` call into
-// `rehydrateMCPTools`, so a warm handle applies the same auth, filters, prefix,
-// loop identities, and credential-caching behavior as a cold one. Anything
-// omitted here is SILENTLY DROPPED on a cache hit — when adding an option to
-// `CreateMCPToolsOptions` that rehydrate also honors, add it here too.
+// `rehydrateMCPTools`, so a warm handle applies the same transport pin, auth,
+// filters, prefix, loop identities, and credential-caching behavior as a cold
+// one. Anything omitted here is SILENTLY DROPPED on a cache hit — when adding
+// an option to `CreateMCPToolsOptions` that rehydrate also honors, add it here
+// too.
 const FORWARDED_REHYDRATE_KEYS = [
+  'transport',
   'auth',
   'fetch',
   'clientInfo',

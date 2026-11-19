@@ -46,7 +46,13 @@ export type ResourcesOption =
 export interface CreateMCPToolsOptions {
   /** Remote MCP server endpoint. */
   url: string | URL;
-  /** Transport to use; defaults to `streamableHttp` with SSE fallback. */
+  /**
+   * Transport to use; defaults to `streamableHttp` with SSE fallback.
+   *
+   * Applies on a cache hit too. Unset, a hit dials the transport recorded in the
+   * cached entry first and, if the server no longer accepts it, falls back to a
+   * fresh connect over the default ladder and rewrites the entry.
+   */
   transport?: MCPTransportKind;
   /** Authentication, supplied once and reused for discovery + every call. */
   auth?: MCPAuth;
@@ -106,7 +112,21 @@ export interface CreateMCPToolsOptions {
    * lists where possible.
    */
   loopKeys?: Readonly<Record<string, ToolLoopKey<Record<string, unknown>>>>;
-  /** Auto-refresh tools on `tools/list_changed`. Default true when connected. */
+  /**
+   * Auto-refresh tools on `tools/list_changed`. Default true when connected.
+   *
+   * A 2026-07-28 server can only deliver that notification on a stream the
+   * client opens, so against one this holds a `subscriptions/listen` stream
+   * open (when the server advertises `tools.listChanged`) until `close()`.
+   * **The open stream keeps a Node process alive, so call `close()` when
+   * done.** Opening it never delays or fails the connect.
+   *
+   * A stream that drops is re-opened with jittered backoff, and the tools are
+   * re-listed once it is back; the handle only changes if that listing does.
+   * It is not re-opened once the server has rejected the credentials.
+   *
+   * Set `false` to open no stream and call `refresh()` yourself.
+   */
   autoRefreshOnListChanged?: boolean;
   /** Handler for server-initiated elicitation; auto-declines when omitted. */
   onElicitation?: ElicitationHandler;
@@ -133,8 +153,16 @@ export interface MCPToolsHandle {
   serialize(): Promise<import('./cache/cache-types.js').SerializedMCPServer>;
   /** Force a fresh `listTools()` and rebuild the tool set. */
   refresh(): Promise<readonly Tool[]>;
-  /** Subscribe to auto-refreshes triggered by `tools/list_changed`. */
+  /**
+   * Subscribe to auto-refreshes. Called after every `tools/list_changed` from
+   * the server, and after a lost notification stream is re-established if the
+   * re-list done then finds a different tool set. Not called by `refresh()`.
+   */
   onToolsChanged(listener: (tools: readonly Tool[]) => void): () => void;
-  /** Close the transport and underlying client. */
+  /**
+   * Close the transport and underlying client. Always call it: with
+   * auto-refresh on, a handle to a 2026-07-28 server holds a stream open that
+   * keeps a Node process alive until this runs.
+   */
   close(): Promise<void>;
 }

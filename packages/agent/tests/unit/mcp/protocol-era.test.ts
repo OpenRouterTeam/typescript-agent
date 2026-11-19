@@ -384,9 +384,10 @@ describe('pinning', () => {
 });
 
 /**
- * The `tools/list_changed` wiring, end to end over a real transport.
+ * The `tools/list_changed` handler wiring: *dispatch* of a notification the
+ * client has already received.
  *
- * `mcp-connection.ts` registers the subscription with a bare string method name
+ * `mcp-connection.ts` registers the handler with a bare string method name
  * rather than an SDK schema value. The name itself is compile-checked — the
  * parameter is a `NotificationMethod` literal union, so a typo fails `tsc`
  * (verified: mutating it to `'notifications/tools/list_changedX'` produces
@@ -394,14 +395,17 @@ describe('pinning', () => {
  * notification actually reaches the callback registered via
  * `setToolListChangedHandler`.
  *
- * That gap matters because `autoRefreshOnListChanged` defaults to on, so a
- * broken dispatch path means tool-list refreshes silently never happen — the
- * same failure shape as the `callTool` arity bug this PR fixes, which was also
- * invisible to a green test suite.
- *
  * These drive the real `makeClient` from `mcp-connection.ts` (via the
  * `makeClientForTest` seam), not a locally-built `Client`, so the assertion
  * covers our registration rather than a restatement of the SDK's.
+ *
+ * **Dispatch is all this block proves.** The fake server pushes the
+ * notification unsolicited, which `InMemoryTransport` allows in either era. A
+ * real 2026-07-28 server over HTTP cannot: it has no channel to push on until
+ * the client opens a `subscriptions/listen` stream. The modern-era tests here
+ * once read as coverage for default-on `autoRefreshOnListChanged`, and stayed
+ * green while it was dead against every modern HTTP server. Delivery is covered
+ * in `list-changed-subscription.test.ts`, over the real HTTP transport.
  */
 describe('tools/list_changed dispatch', () => {
   async function connectRealClient(
@@ -442,6 +446,7 @@ describe('tools/list_changed dispatch', () => {
     };
   }
 
+  /** Push the notification unsolicited — an `InMemoryTransport` affordance. */
   async function emitListChanged(serverSide: Transport): Promise<void> {
     await serverSide.send({
       jsonrpc: '2.0',
@@ -452,7 +457,7 @@ describe('tools/list_changed dispatch', () => {
     await new Promise((resolve) => setImmediate(resolve));
   }
 
-  it('routes the notification to the registered handler in the modern era', async () => {
+  it('dispatches a delivered notification to the registered handler in the modern era', async () => {
     const { client, serverSide, fired } = await connectRealClient(true);
 
     expect(client.getProtocolEra()).toBe('modern');
@@ -464,7 +469,7 @@ describe('tools/list_changed dispatch', () => {
     await client.close();
   });
 
-  it('routes the notification to the registered handler in the legacy era', async () => {
+  it('dispatches a delivered notification to the registered handler in the legacy era', async () => {
     const { client, serverSide, fired } = await connectRealClient(false);
 
     expect(client.getProtocolEra()).toBe('legacy');
@@ -479,8 +484,8 @@ describe('tools/list_changed dispatch', () => {
 
   /**
    * The SDK keeps a per-client response cache (24h ceiling), and `makeClient`
-   * deliberately opts out of `ClientOptions.listChanged` so the handle's own
-   * `refresh()` owns the re-list. Devin raised the question that follows: if the
+   * deliberately opts out of `ClientOptions.listChanged`, leaving the re-list to
+   * the handle's own `refresh()`. Devin raised the question that follows: if the
    * cache were invalidated by the SDK's `listChanged` machinery — the machinery
    * we opt out of — then `refresh()`'s `listTools()` would be served from cache
    * and `autoRefreshOnListChanged` would silently do nothing.

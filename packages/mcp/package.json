@@ -67,7 +67,7 @@
     "compile": "tsc"
   },
   "dependencies": {
-    "@modelcontextprotocol/client": "^2.0.0",
+    "@modelcontextprotocol/client": "^2.2.0",
     "@openrouter/agent": "workspace:*"
   }
 }

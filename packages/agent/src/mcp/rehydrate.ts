@@ -18,6 +18,7 @@ import type {
   ElicitationHandler,
   MCPProtocolNegotiation,
   MCPToolsHandle,
+  MCPTransportKind,
   ResourcesOption,
 } from './types.js';
 
@@ -28,6 +29,19 @@ export interface RehydrateMCPToolsOptions {
   snapshot: SerializedMCPServer;
   /** Required when the snapshot carries no cached credentials. */
   auth?: MCPAuth;
+  /**
+   * Transport to dial, overriding the one recorded in the snapshot. Pins every
+   * attempt, exactly like `createMCPTools({ transport })`.
+   *
+   * Unset, the snapshot's transport is only a first-attempt hint: the replay
+   * dials it because it is what worked last time, and the fresh-connect
+   * fallback (see `reconnectOnExpiry`) walks the normal Streamable HTTP -> SSE
+   * ladder. A server that has since dropped the recorded transport therefore
+   * still connects, and the rewritten cache entry records the one that worked.
+   * With `reconnectOnExpiry: false` there is no fallback, so the recorded
+   * transport is the only one tried unless this is set.
+   */
+  transport?: MCPTransportKind;
   fetch?: typeof fetch;
   onUnconvertibleSchema?: UnconvertibleSchemaMode;
   onElicitation?: ElicitationHandler;
@@ -158,6 +172,7 @@ function authFromSnapshot(snapshot: SerializedMCPServer): MCPAuth | undefined {
  * fallback path has no snapshot to compare.
  */
 const PASS_THROUGH_CREATE_KEYS = [
+  'transport',
   'fetch',
   'onUnconvertibleSchema',
   'onElicitation',
@@ -181,9 +196,15 @@ function toCreateOptions(
   snapshot: SerializedMCPServer,
   effectiveAuth: MCPAuth | undefined,
 ): CreateMCPToolsOptions {
+  // `snapshot.transport` is deliberately not carried over. These options feed
+  // the fresh-connect fallback, where a pinned transport disables the
+  // Streamable HTTP -> SSE ladder: a server that dropped the recorded transport
+  // would fail the replay, fail the fallback the same way, and never get its
+  // entry rewritten — unreachable through a warm cache while the same call with
+  // no cache connects. The caller's own `transport` still arrives through the
+  // pass-through keys below.
   const out: CreateMCPToolsOptions = {
     url: snapshot.url,
-    transport: snapshot.transport,
     ...(effectiveAuth !== undefined && {
       auth: effectiveAuth,
     }),
@@ -208,10 +229,11 @@ function toCreateOptions(
  * Connect options for the snapshot-replay path.
  *
  * Distinct from {@link toCreateOptions}, which builds the *fallback*
- * `createMCPTools` options: this one carries the snapshot's own `transport` and
- * `sessionId` because the point is to re-establish the connection the snapshot
- * describes, and it deliberately omits the tool-shaping keys, which are applied
- * by `makeHandle` rather than at connect time.
+ * `createMCPTools` options: this one dials the snapshot's own `transport`
+ * (unless the caller named one) because the point is to re-establish the
+ * connection the snapshot describes, and it deliberately omits the
+ * tool-shaping keys, which are applied by `makeHandle` rather than at connect
+ * time.
  */
 function toReplayConnectOptions(args: {
   options: RehydrateMCPToolsOptions;
@@ -222,7 +244,7 @@ function toReplayConnectOptions(args: {
   const { options, snapshot, url, effectiveAuth } = args;
   return {
     url,
-    transport: snapshot.transport,
+    transport: options.transport ?? snapshot.transport,
     ...(effectiveAuth !== undefined && {
       auth: effectiveAuth,
     }),

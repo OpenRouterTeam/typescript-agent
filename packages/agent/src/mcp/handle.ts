@@ -8,6 +8,7 @@ import { closeQuietly } from './close-quietly.js';
 import { MCPCacheWriteError } from './errors.js';
 import type { MCPConnection } from './mcp-connection.js';
 import { connect } from './mcp-connection.js';
+import { sameToolDefs } from './tool-defs-equal.js';
 import type { McpToolDef } from './tool-wrapper.js';
 import type { MCPTransportKind } from './transport-types.js';
 import type { CreateMCPToolsOptions, MCPToolsHandle } from './types.js';
@@ -283,8 +284,8 @@ export async function makeHandle(args: MakeHandleArgs): Promise<MCPToolsHandle> 
   // inspecting the error — which no error-class check can do reliably, since
   // persistence can fail outside the store op too (the caller's own OAuth
   // provider rejecting inside `snapshot()`).
-  const refresh = async (): Promise<readonly Tool[]> => {
-    toolDefs = await listToolDefs(connection, options.signal);
+  const adopt = async (listed: McpToolDef[]): Promise<readonly Tool[]> => {
+    toolDefs = listed;
     // Re-listed, so the snapshot is genuinely current from here on.
     replayedCachedAt = undefined;
     tools = rebuild();
@@ -292,8 +293,24 @@ export async function makeHandle(args: MakeHandleArgs): Promise<MCPToolsHandle> 
     return tools;
   };
 
+  const refresh = async (): Promise<readonly Tool[]> =>
+    adopt(await listToolDefs(connection, options.signal));
+
+  // What a re-established notification stream runs instead of `refresh()`. A
+  // notification says the tool set changed; a stream coming back says only
+  // that a change could have gone unannounced — and behind a proxy that idles
+  // the stream out, it comes back every minute. So an identical listing is a
+  // no-op here: no rebuild, no cache write, and, because `tools` keeps its
+  // reference, no listener call.
+  const refreshIfChanged = async (): Promise<void> => {
+    const listed = await listToolDefs(connection, options.signal);
+    if (!sameToolDefs(listed, toolDefs)) {
+      await adopt(listed);
+    }
+  };
+
   if (options.autoRefreshOnListChanged ?? true) {
-    connection.setToolListChangedHandler(() => {
+    const relistAndAnnounce = (relist: () => Promise<unknown>): void => {
       // Fire-and-forget, but never let a failed refresh escape as an unhandled
       // rejection. Whether to announce is keyed on ADOPTION (the reference
       // swap above), not on error class: once `refresh()` has swapped `tools`,
@@ -303,7 +320,7 @@ export async function makeHandle(args: MakeHandleArgs): Promise<MCPToolsHandle> 
       // little. On a failed re-list the reference is untouched and subscribers
       // correctly keep the last good set.
       const before = tools;
-      void refresh()
+      void relist()
         .catch(() => undefined)
         .then(() => {
           if (tools === before) {
@@ -314,7 +331,11 @@ export async function makeHandle(args: MakeHandleArgs): Promise<MCPToolsHandle> 
           }
         })
         .catch(() => {});
-    });
+    };
+    connection.setToolListChangedHandler(
+      () => relistAndAnnounce(refresh),
+      () => relistAndAnnounce(refreshIfChanged),
+    );
   }
 
   // Skipped entirely on a replay: with `replayedCachedAt` carried forward the
