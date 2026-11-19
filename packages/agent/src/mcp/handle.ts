@@ -8,6 +8,7 @@ import { closeQuietly } from './close-quietly.js';
 import { MCPCacheWriteError } from './errors.js';
 import type { MCPConnection } from './mcp-connection.js';
 import { connect } from './mcp-connection.js';
+import { copyToolAnnotations } from './tool-annotations.js';
 import type { McpToolDef } from './tool-wrapper.js';
 import type { MCPTransportKind } from './transport-types.js';
 import type { CreateMCPToolsOptions, MCPToolsHandle } from './types.js';
@@ -110,6 +111,9 @@ export async function listToolDefs(
         inputSchema: t.inputSchema,
         ...(t.outputSchema !== undefined && {
           outputSchema: t.outputSchema,
+        }),
+        ...(t.annotations !== undefined && {
+          annotations: copyToolAnnotations(t.annotations),
         }),
         ...(loopKey !== undefined && {
           loopKey,

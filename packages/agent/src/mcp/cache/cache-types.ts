@@ -1,3 +1,4 @@
+import type { McpToolAnnotations } from '../../lib/tool-types.js';
 import { isJsonSchemaObject } from '../schema/json-schema-guards.js';
 import type { MCPTransportKind } from '../transport-types.js';
 
@@ -7,6 +8,8 @@ export interface SerializedMCPToolDef {
   description?: string;
   inputSchema: Readonly<Record<string, unknown>>;
   outputSchema?: Readonly<Record<string, unknown>>;
+  /** The server's behaviour hints for the tool, if it reported any. */
+  annotations?: McpToolAnnotations;
   /** Server-advertised doom-loop identity (field list or `false`), if any. */
   loopKey?: readonly string[] | false;
 }
@@ -87,7 +90,30 @@ function isSerializedToolDef(value: unknown): value is SerializedMCPToolDef {
     loopKey === false ||
     (Array.isArray(loopKey) && loopKey.every((field) => typeof field === 'string'));
   return (
-    typeof value['name'] === 'string' && isJsonSchemaObject(value['inputSchema']) && hasValidLoopKey
+    typeof value['name'] === 'string' &&
+    isJsonSchemaObject(value['inputSchema']) &&
+    hasValidLoopKey &&
+    (value['annotations'] === undefined || isToolAnnotations(value['annotations']))
+  );
+}
+
+const ANNOTATION_HINTS = [
+  'readOnlyHint',
+  'destructiveHint',
+  'idempotentHint',
+  'openWorldHint',
+] as const;
+
+/* A consumer may gate approval on a hint, so a hint of the wrong type rejects
+ * the entry instead of being read as truthy. */
+function isToolAnnotations(value: unknown): value is McpToolAnnotations {
+  if (!isJsonSchemaObject(value)) {
+    return false;
+  }
+  const { title } = value;
+  return (
+    (title === undefined || typeof title === 'string') &&
+    ANNOTATION_HINTS.every((hint) => value[hint] === undefined || typeof value[hint] === 'boolean')
   );
 }
 
