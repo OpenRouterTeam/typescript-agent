@@ -120,7 +120,11 @@ export interface EmitResult<R, P> {
   readonly pending: Promise<void>[];
   /** The payload after all mutation piping has been applied. */
   readonly finalPayload: P;
-  /** True if any handler triggered a block/reject short-circuit. */
+  /**
+   * True if any handler triggered a block/reject short-circuit, or if the
+   * chain of a blocking hook (PreToolUse, UserPromptSubmit) was aborted
+   * before every handler ran.
+   */
   readonly blocked: boolean;
   /**
    * True if any handler's result actually piped a mutation into the payload
