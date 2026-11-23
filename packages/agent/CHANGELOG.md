@@ -1,5 +1,37 @@
 # @openrouter/agent
 
+## 1.3.0
+
+### Minor Changes
+
+- [#148](https://github.com/OpenRouterTeam/typescript-agent/pull/148) [`733b6fe`](https://github.com/OpenRouterTeam/typescript-agent/commit/733b6fe6e22fa0b77fa1c9afb8fbab819092a281) Thanks [@w0nche0l](https://github.com/w0nche0l)! - MCP tools now keep the `annotations` their server reports in `tools/list` (`readOnlyHint`, `destructiveHint`, `idempotentHint`, `openWorldHint`, `title`). Read them from `tool.annotations` on a tool returned by `createMCPTools` or `rehydrateMCPTools`; cache snapshots store and restore them in the new `SerializedMCPToolDef.annotations` field. The field is absent when the server sent none, and any other key is dropped. `McpToolAnnotations` is exported from the package root.
+
+  ```ts
+  import { isMcpTool, type McpToolAnnotations } from "@openrouter/agent";
+  import { createMCPTools } from "@openrouter/agent/mcp";
+
+  const handle = await createMCPTools({ url: "https://mcp.example.com/mcp" });
+
+  // new: `tool.annotations` holds the server's hints; absent when it sent none.
+  // An absent hint has the MCP default, which is `true` for `destructiveHint`
+  // and `openWorldHint`, so compare against the default, not `=== true`.
+  const mayDestroy = (hints: McpToolAnnotations | undefined): boolean =>
+    hints?.readOnlyHint !== true && hints?.destructiveHint !== false;
+
+  const needApproval = handle.tools.filter(
+    (tool) => isMcpTool(tool) && mayDestroy(tool.annotations)
+  );
+
+  // new: a snapshot stores the hints as `tools[].annotations` and restores them.
+  const snapshot = await handle.serialize();
+  ```
+
+  A snapshot written by an earlier version has no annotations, so tools rebuilt from it have none until the server is listed again (`handle.refresh()`, or a `staleness.maxAgeMs` that has passed).
+
+### Patch Changes
+
+- [#160](https://github.com/OpenRouterTeam/typescript-agent/pull/160) [`afb2641`](https://github.com/OpenRouterTeam/typescript-agent/commit/afb2641fe48def3c6a1353ffd3871e611ab4713b) Thanks [@alexb-openrouter](https://github.com/alexb-openrouter)! - Fail closed when a blocking hook chain is aborted. If a `PreToolUse` or `UserPromptSubmit` chain stops early because its signal was aborted (an `asyncTimeout` on detached work expiring, or `abortInflight()`), the emit result now reports `blocked: true` instead of `blocked: false`, so handlers that never ran (for example a later deny guard) can no longer be skipped into an approval.
+
 ## 1.2.2
 
 ### Patch Changes
