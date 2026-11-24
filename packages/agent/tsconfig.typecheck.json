@@ -3,6 +3,7 @@
   "compilerOptions": { "noEmit": true, "rootDir": "." },
   "include": [
     "src/**/*.ts",
+    "tests/unit/consumer-type-ergonomics.test-d.ts",
     "tests/unit/context-schema-inference.test-d.ts",
     "tests/unit/message-compat-types.test-d.ts",
     "tests/unit/filter-tools-by-ids.test-d.ts",
