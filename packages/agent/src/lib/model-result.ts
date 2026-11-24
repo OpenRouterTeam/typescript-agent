@@ -35,6 +35,7 @@ import {
   normalizeInputToArray,
   outputToInputItems,
   partitionToolCalls,
+  stringifyToolOutput,
   toolRequiresApproval,
   unsentResultsToAPIFormat,
   updateState,
@@ -3651,7 +3652,7 @@ export class ModelResult<
     }
 
     if (!isAutoResolvableTool(value.tool) || !value.tool.function.toModelOutput) {
-      return JSON.stringify(value.result.result);
+      return stringifyToolOutput(value.result.result);
     }
 
     // `toolCall.arguments` is the JSON-parsed wire payload. Parse it with the
@@ -3673,7 +3674,7 @@ export class ModelResult<
     if (modelOutputResult.type === 'content') {
       return modelOutputResult.value;
     }
-    return JSON.stringify(value.result.result);
+    return stringifyToolOutput(value.result.result);
   }
 
   /**
