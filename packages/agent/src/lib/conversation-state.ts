@@ -452,6 +452,15 @@ export function isContentArray(
 }
 
 /**
+ * Serialize a tool result for a `function_call_output`. `JSON.stringify`
+ * returns `undefined` (not a string) for `undefined`, which is what a tool
+ * whose `execute` returns nothing produces; the API requires a string.
+ */
+export function stringifyToolOutput(value: unknown): string {
+  return JSON.stringify(value) ?? 'null';
+}
+
+/**
  * Convert unsent tool results to API format for sending to the model.
  *
  * Supports two output formats:
@@ -475,7 +484,7 @@ export function unsentResultsToAPIFormat(
       // Pass through content arrays directly (images, text blocks, files)
       output = r.output;
     } else {
-      output = JSON.stringify(r.output);
+      output = stringifyToolOutput(r.output);
     }
 
     return {

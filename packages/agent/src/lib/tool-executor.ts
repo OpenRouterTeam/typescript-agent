@@ -1,7 +1,7 @@
 import type * as models from '@openrouter/sdk/models';
 import * as z4 from 'zod/v4';
 import type { $ZodObject, $ZodShape, $ZodType } from 'zod/v4/core';
-import { isContentArray } from './conversation-state.js';
+import { isContentArray, stringifyToolOutput } from './conversation-state.js';
 import { isFunctionCallItem, isFunctionCallOutputItem } from './stream-type-guards.js';
 import type { ToolContextStore, ToolExecutionExtras } from './tool-context.js';
 import { buildToolExecuteContext, buildToolRunContext } from './tool-context.js';
@@ -813,7 +813,7 @@ export function formatToolResultForModel(result: ToolExecutionResult<Tool>): str
     });
   }
 
-  return JSON.stringify(result.result);
+  return stringifyToolOutput(result.result);
 }
 
 /**
@@ -855,7 +855,7 @@ function toFunctionCallOutputValue(
   if (isContentArray(value)) {
     return value;
   }
-  return JSON.stringify(value);
+  return stringifyToolOutput(value);
 }
 
 /**
