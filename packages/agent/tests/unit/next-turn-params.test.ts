@@ -275,43 +275,60 @@ describe('executeNextTurnParamsFunctions', () => {
     expect(result).toEqual({});
   });
 
-  it('throws a descriptive error when tool call arguments are not an object', async () => {
-    const strictTool = tool({
-      name: 'strict',
-      inputSchema: z.object({}),
+  it('skips the hook for a call whose arguments are not an object and still runs it for valid calls', async () => {
+    const seenParams: unknown[] = [];
+    const searchTool = tool({
+      name: 'search',
+      inputSchema: z.object({
+        pattern: z.string(),
+      }),
       execute: async () => 'done',
       nextTurnParams: {
-        temperature: () => 0.5,
+        temperature: (params) => {
+          seenParams.push(params);
+          return 0.5;
+        },
       },
     });
 
-    await expect(
-      executeNextTurnParamsFunctions(
-        [
-          createToolCall('strict', [
-            'not',
-            'an',
-            'object',
-          ]),
-        ],
-        [
-          strictTool,
-        ],
-        createRequest(),
-      ),
-    ).rejects.toThrow('Tool call arguments for strict must be an object, got array');
+    const malformedOnly = await executeNextTurnParamsFunctions(
+      [
+        createToolCall('search', '{"pattern": "weath'),
+      ],
+      [
+        searchTool,
+      ],
+      createRequest(),
+    );
 
-    await expect(
-      executeNextTurnParamsFunctions(
-        [
-          createToolCall('strict', 'a-string'),
-        ],
-        [
-          strictTool,
-        ],
-        createRequest(),
-      ),
-    ).rejects.toThrow('Tool call arguments for strict must be an object, got string');
+    expect(malformedOnly).toEqual({});
+    expect(seenParams).toEqual([]);
+
+    const mixed = await executeNextTurnParamsFunctions(
+      [
+        createToolCall('search', [
+          'not',
+          'an',
+          'object',
+        ]),
+        createToolCall('search', {
+          pattern: 'weather',
+        }),
+      ],
+      [
+        searchTool,
+      ],
+      createRequest(),
+    );
+
+    expect(mixed).toEqual({
+      temperature: 0.5,
+    });
+    expect(seenParams).toEqual([
+      {
+        pattern: 'weather',
+      },
+    ]);
   });
 
   it('warns and skips invalid nextTurnParams keys outside production', async () => {

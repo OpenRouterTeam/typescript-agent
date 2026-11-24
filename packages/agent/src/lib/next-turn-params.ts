@@ -69,12 +69,11 @@ export async function executeNextTurnParamsFunctions(
       // We need to process each key individually to maintain type safety
       const nextParams = tool.function.nextTurnParams;
 
-      // Validate that call.arguments is a record using type guard
+      // Malformed arguments (e.g. truncated JSON kept as a raw string) skip
+      // the hook. The tool's execute path already returned a structured error
+      // for this call, so the request continues with its current parameters.
       if (!isRecord(call.arguments)) {
-        const typeStr = Array.isArray(call.arguments) ? 'array' : typeof call.arguments;
-        throw new Error(
-          `Tool call arguments for ${tool.function.name} must be an object, got ${typeStr}`,
-        );
+        continue;
       }
 
       // Process each parameter key with proper typing
