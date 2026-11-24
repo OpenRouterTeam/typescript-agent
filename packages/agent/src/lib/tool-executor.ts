@@ -855,7 +855,7 @@ function toFunctionCallOutputValue(
   if (isContentArray(value)) {
     return value;
   }
-  return JSON.stringify(value);
+  return stringifyToolOutput(value);
 }
 
 /**
