@@ -389,4 +389,64 @@ describe('per-request timeoutMs composition', () => {
     expect(text).toBe('done');
     expect(mockBetaResponsesSend).toHaveBeenCalledTimes(2);
   });
+
+  it('does not emit unhandledRejection when aborting a tool-enabled stream', async () => {
+    const unhandledRejections: unknown[] = [];
+    const onUnhandled = (err: unknown) => {
+      unhandledRejections.push(err);
+    };
+    process.on('unhandledRejection', onUnhandled);
+
+    try {
+      const controller = new AbortController();
+      let streamController!: ReadableStreamDefaultController<models.StreamEvents>;
+      const stream = new ReadableStream<models.StreamEvents>({
+        start(c) {
+          streamController = c;
+        },
+      });
+
+      mockBetaResponsesSend.mockImplementation(async (_client, _req, options) => {
+        options.signal?.addEventListener('abort', () => {
+          streamController.error(options.signal?.reason ?? new Error('Aborted'));
+        });
+        return {
+          ok: true,
+          value: stream,
+        };
+      });
+
+      const result = callModel(client, {
+        model: 'test-model',
+        input: 'hello',
+        tools: [
+          echoTool,
+        ],
+        signal: controller.signal,
+      });
+
+      let streamError: unknown;
+      try {
+        streamController.enqueue({
+          type: 'response.output_text.delta',
+          delta: 'chunk',
+          sequenceNumber: 0,
+        } as models.StreamEvents);
+
+        for await (const _event of result.getFullResponsesStream()) {
+          controller.abort(new DOMException('This operation was aborted', 'AbortError'));
+        }
+      } catch (err) {
+        streamError = err;
+      }
+
+      expect(streamError).toBeDefined();
+
+      await new Promise((resolve) => setTimeout(resolve, 50));
+
+      expect(unhandledRejections).toHaveLength(0);
+    } finally {
+      process.off('unhandledRejection', onUnhandled);
+    }
+  });
 });
