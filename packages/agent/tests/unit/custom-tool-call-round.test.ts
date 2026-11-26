@@ -11,6 +11,7 @@ vi.mock('@openrouter/sdk/funcs/betaResponsesSend', () => ({
 
 import { callModel } from '../../src/inner-loop/call-model.js';
 import { customTool } from '../../src/lib/tool.js';
+import { executeToolLoop } from '../../src/lib/tool-orchestrator.js';
 import type { ConversationState, StateAccessor, Tool } from '../../src/lib/tool-types.js';
 import { ToolType } from '../../src/lib/tool-types.js';
 
@@ -331,5 +332,41 @@ describe('custom tool calls in the tool loop', () => {
 
     expect(response.id).toBe('resp_mixed');
     expect(mockBetaResponsesSend).toHaveBeenCalledTimes(1);
+  });
+
+  it('executeToolLoop runs the auto call of a mixed round and returns the custom call unexecuted', async () => {
+    const mixed = makeResponse('resp_mixed', [
+      functionCallItem('call_auto_1', 'auto_search', '{"query":"docs"}'),
+      customToolCallItem('call_sql', 'run_sql', 'SELECT users;'),
+    ]);
+    const sendRequest = vi.fn(async () => mixed);
+
+    const result = await executeToolLoop(
+      sendRequest,
+      'do both things',
+      {
+        model: 'test-model',
+        input: 'do both things',
+      },
+      [
+        autoTool,
+        sqlTool,
+      ],
+      [],
+    );
+
+    expect(sendRequest).toHaveBeenCalledTimes(1);
+    expect(result.finalResponse.id).toBe('resp_mixed');
+    expect(
+      result.toolExecutionResults.map((r) => [
+        r.toolCallId,
+        r.error,
+      ]),
+    ).toEqual([
+      [
+        'call_auto_1',
+        undefined,
+      ],
+    ]);
   });
 });

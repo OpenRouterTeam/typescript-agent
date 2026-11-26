@@ -158,8 +158,8 @@ export async function executeToolLoop(
       conversationInput = currentRequest.input ?? conversationInput;
     }
 
-    // Custom tool calls are caller-executed: stop rather than continue with
-    // a call that has no output.
+    // A custom call is caller-executed and has no output yet; a follow-up
+    // request would carry it unpaired.
     if (toolCalls.some((toolCall) => toolCall.kind === 'custom')) {
       break;
     }
@@ -260,6 +260,10 @@ async function executeOrchestratedCall(
     onPreliminaryResult: ((toolCallId: string, result: unknown) => void) | undefined;
   },
 ): Promise<ToolExecutionResult<Tool> | AsyncToolInvocation | null> {
+  if (toolCall.kind === 'custom') {
+    return null;
+  }
+
   const tool = findToolByName(round.tools, toolCall.name);
 
   if (!tool) {
