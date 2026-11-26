@@ -857,7 +857,7 @@ export class ModelResult<
   /** Per-tool concurrency gate, created on first use. */
   private perToolGate(toolName: string): ToolSemaphore | undefined {
     const tool = this.options.tools?.find((t) => isClientTool(t) && t.function.name === toolName);
-    if (!tool || isServerTool(tool)) {
+    if (!tool || !isClientTool(tool)) {
       return undefined;
     }
     const limit = tool.function.maxConcurrency;
@@ -890,7 +890,7 @@ export class ModelResult<
   } {
     const tool = this.options.tools?.find((t) => isClientTool(t) && t.function.name === toolName);
     const timeoutMs =
-      tool && !isServerTool(tool)
+      tool && isClientTool(tool)
         ? (tool.function.timeoutMs ?? this.options.toolTimeoutMs)
         : this.options.toolTimeoutMs;
 
@@ -1468,16 +1468,18 @@ export class ModelResult<
    * @returns True if at least one tool call is auto-resolvable
    */
   private hasExecutableToolCalls(toolCalls: ParsedToolCall<Tool>[]): boolean {
-    return toolCalls.some((toolCall) => {
-      // The universal task tool is engine-intercepted — always executable.
-      if (toolCall.name === TASK_TOOL_NAME && this.taskToolActive()) {
-        return true;
-      }
-      const tool = this.options.tools?.find(
-        (t) => isClientTool(t) && t.function.name === toolCall.name,
-      );
-      return tool && isAutoResolvableTool(tool);
-    });
+    return toolCalls.some((toolCall) => this.isExecutableToolCall(toolCall));
+  }
+
+  private isExecutableToolCall(toolCall: ParsedToolCall<Tool>): boolean {
+    // The universal task tool is engine-intercepted — always executable.
+    if (toolCall.name === TASK_TOOL_NAME && this.taskToolActive()) {
+      return true;
+    }
+    const tool = this.options.tools?.find(
+      (t) => isClientTool(t) && t.function.name === toolCall.name,
+    );
+    return tool !== undefined && isAutoResolvableTool(tool);
   }
 
   /**
@@ -6655,7 +6657,8 @@ export class ModelResult<
           // surface the response instead, so the caller can execute the manual
           // calls and continue — mirroring the all-manual behavior of the
           // `hasExecutableToolCalls` guards. Also covers calls to tool names
-          // not present in `options.tools` at all.
+          // not present in `options.tools` at all, and `custom_tool_call`
+          // items, which never match an executable tool.
           const resolvedCallIds = new Set(toolResults.map((r) => r.callId));
           const unresolvedToolCalls = currentToolCalls.filter((tc) => !resolvedCallIds.has(tc.id));
           if (unresolvedToolCalls.length > 0) {
@@ -6727,7 +6730,10 @@ export class ModelResult<
           stoppedByStopWhen &&
           finalResponseEnabled &&
           pendingToolCalls.length > 0 &&
-          this.hasExecutableToolCalls(pendingToolCalls)
+          this.hasExecutableToolCalls(pendingToolCalls) &&
+          // Manual function calls get stub outputs in the final-response
+          // request; a custom call cannot, so leave it for the caller.
+          !pendingToolCalls.some((tc) => tc.kind === 'custom')
         ) {
           const turnNumber = currentRound + 1;
 

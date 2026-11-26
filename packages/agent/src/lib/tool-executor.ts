@@ -20,6 +20,8 @@ import type {
 import {
   findDuplicateClientToolName,
   hasExecuteFunction,
+  isClientTool,
+  isCustomTool,
   isDeferredHandle,
   isGeneratorTool,
   isHITLTool,
@@ -122,7 +124,7 @@ export function convertToolsToAPIFormat(
   tools: readonly Tool[],
 ): Array<models.ResponsesRequestToolUnion> {
   return tools.map((tool) => {
-    if (isServerTool(tool)) {
+    if (isServerTool(tool) || isCustomTool(tool)) {
       return tool.config;
     }
     const apiTool: APITool = {
@@ -780,7 +782,7 @@ export async function executeTool(
  */
 export function findToolByName(tools: Tool[], name: string): ClientTool | undefined {
   return tools.find(
-    (tool): tool is ClientTool => !isServerTool(tool) && tool.function.name === name,
+    (tool): tool is ClientTool => isClientTool(tool) && tool.function.name === name,
   );
 }
 

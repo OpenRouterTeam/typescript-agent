@@ -158,6 +158,12 @@ export async function executeToolLoop(
       conversationInput = currentRequest.input ?? conversationInput;
     }
 
+    // A custom call is caller-executed and has no output yet; a follow-up
+    // request would carry it unpaired.
+    if (toolCalls.some((toolCall) => toolCall.kind === 'custom')) {
+      break;
+    }
+
     // Build array input with all output from previous response plus tool results
     // The API expects continuation via previousResponseId, not by including outputs
     // For now, we'll keep the conversation going via previousResponseId
@@ -254,6 +260,10 @@ async function executeOrchestratedCall(
     onPreliminaryResult: ((toolCallId: string, result: unknown) => void) | undefined;
   },
 ): Promise<ToolExecutionResult<Tool> | AsyncToolInvocation | null> {
+  if (toolCall.kind === 'custom') {
+    return null;
+  }
+
   const tool = findToolByName(round.tools, toolCall.name);
 
   if (!tool) {

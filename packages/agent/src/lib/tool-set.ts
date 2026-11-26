@@ -23,7 +23,7 @@ import type {
   WidenedSituationMap,
 } from './tool-set-types.js';
 import type { ServerToolBase, Tool } from './tool-types.js';
-import { isServerTool } from './tool-types.js';
+import { isCustomTool, isServerTool } from './tool-types.js';
 
 type ActivationEntry<TShared extends Record<string, unknown>> =
   | {
@@ -83,8 +83,10 @@ function toolId(tool: Tool): string {
   if (isServerTool(tool)) {
     return defaultServerId(tool);
   }
-  // After the ServerToolBase narrow, remaining tools are client tools with function.name.
-  return (tool as Exclude<Tool, ServerToolBase>).function.name;
+  if (isCustomTool(tool)) {
+    return tool.config.name;
+  }
+  return tool.function.name;
 }
 
 function indexTools<TTools extends readonly Tool[]>(tools: TTools): IndexedTools<TTools> {

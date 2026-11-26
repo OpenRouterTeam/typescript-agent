@@ -9,6 +9,8 @@ import type { TaskLogLimits } from './tool-task.js';
 import type {
   AsyncToolAck,
   ContextFromSchema,
+  CustomTool,
+  CustomToolConfig,
   DeferredHandle,
   HITLTool,
   ManualTool,
@@ -1087,6 +1089,37 @@ export function serverTool<T extends ServerToolType, TId extends string = `serve
     _brand: 'server-tool',
     config,
     id,
+  };
+}
+
+/**
+ * Create a custom (freeform-grammar) tool. It is sent to the model as a native
+ * Responses `type: 'custom'` tool, `format` included, so the provider can
+ * constrain the model's `input` to the grammar. The caller always executes it:
+ * a `custom_tool_call` pauses the loop like a manual tool call (it appears in
+ * `getPendingToolCalls()` with `kind: 'custom'` and the raw `input` string as
+ * `arguments`), and the caller resumes by sending a `custom_tool_call_output`.
+ *
+ * @example
+ * ```typescript
+ * const sql = customTool({
+ *   name: 'run_sql',
+ *   description: 'Run a SQL query.',
+ *   format: { type: 'grammar', syntax: 'lark', definition: 'start: "SELECT " /[a-z]+/ ";"' },
+ * });
+ * ```
+ */
+export function customTool<const TName extends string>(
+  config: Omit<CustomToolConfig, 'type' | 'name'> & {
+    name: TName;
+  },
+): CustomTool<TName> {
+  return {
+    _brand: 'custom-tool',
+    config: {
+      ...config,
+      type: 'custom',
+    },
   };
 }
 

@@ -8,6 +8,7 @@ import type {
 } from '../api-shape-helpers/claude-message.js';
 import type { ReusableReadableStream } from './reusable-stream.js';
 import {
+  isCustomToolCallItem,
   isFileCitationAnnotation,
   isFilePathAnnotation,
   isFileSearchCallOutputItem,
@@ -861,6 +862,13 @@ export function extractToolCallsFromResponse(
           arguments: item.arguments as unknown, // Keep as string if parsing fails
         } as ParsedToolCall<Tool>);
       }
+    } else if (isCustomToolCallItem(item)) {
+      toolCalls.push({
+        id: item.callId,
+        name: item.name,
+        arguments: item.input,
+        kind: 'custom',
+      });
     }
   }
 
@@ -996,7 +1004,7 @@ export function responseHasToolCalls(response: models.OpenResponsesResult): bool
   if (isTruncatedAtMaxOutputTokens(response)) {
     return false;
   }
-  return response.output.some((item) => 'type' in item && item.type === 'function_call');
+  return response.output.some((item) => isFunctionCallItem(item) || isCustomToolCallItem(item));
 }
 
 /**
