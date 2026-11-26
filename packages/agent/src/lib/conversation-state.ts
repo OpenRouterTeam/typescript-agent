@@ -6,6 +6,7 @@ import type * as models from '@openrouter/sdk/models';
 // create an import cycle.
 import * as z4 from 'zod/v4';
 import type {
+  ClientTool,
   ConversationState,
   ParsedToolCall,
   Tool,
@@ -278,14 +279,7 @@ export async function toolRequiresApproval<TTools extends readonly Tool[]>(
   ) => boolean | Promise<boolean>,
 ): Promise<boolean> {
   const tool = tools.find(
-    (
-      t,
-    ): t is Exclude<
-      Tool,
-      {
-        _brand: 'server-tool';
-      }
-    > => isClientTool(t) && t.function.name === toolCall.name,
+    (t): t is ClientTool => isClientTool(t) && t.function.name === toolCall.name,
   );
   // Call-level checks always take precedence. Pass a normalized copy when
   // parsing succeeds, or the raw call when it does not.

@@ -10,7 +10,8 @@ vi.mock('@openrouter/sdk/funcs/betaResponsesSend', () => ({
 }));
 
 import { callModel } from '../../src/inner-loop/call-model.js';
-import { serverTool } from '../../src/lib/tool.js';
+import { customTool } from '../../src/lib/tool.js';
+import type { ConversationState, StateAccessor, Tool } from '../../src/lib/tool-types.js';
 import { ToolType } from '../../src/lib/tool-types.js';
 
 function functionCallItem(
@@ -104,8 +105,7 @@ const autoTool = {
   },
 } as const;
 
-const sqlTool = serverTool({
-  type: 'custom',
+const sqlTool = customTool({
   name: 'run_sql',
   description: 'Run a SQL query.',
   format: {
@@ -116,6 +116,22 @@ const sqlTool = serverTool({
 });
 
 const client = {} as OpenRouterCore;
+
+function createMemoryAccessor<TTools extends readonly Tool[]>(): {
+  accessor: StateAccessor<TTools>;
+  get: () => ConversationState<TTools> | null;
+} {
+  let state: ConversationState<TTools> | null = null;
+  return {
+    accessor: {
+      load: async () => state,
+      save: async (next) => {
+        state = next;
+      },
+    },
+    get: () => state,
+  };
+}
 
 function sentRequest(callIndex: number): models.ResponsesRequest | undefined {
   return mockBetaResponsesSend.mock.calls[callIndex]?.[1]?.responsesRequest;
@@ -226,5 +242,94 @@ describe('custom tool calls in the tool loop', () => {
 
     expect(response.id).toBe('resp_custom');
     expect(mockBetaResponsesSend).toHaveBeenCalledTimes(2);
+  });
+
+  it('persists the custom call as pending and resumes from a custom_tool_call_output', async () => {
+    mockBetaResponsesSend
+      .mockResolvedValueOnce({
+        ok: true,
+        value: makeResponse('resp_mixed', [
+          functionCallItem('call_auto_1', 'auto_search', '{"query":"docs"}'),
+          customToolCallItem('call_sql', 'run_sql', 'SELECT users;'),
+        ]),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        value: textResponse('resp_final', 'done'),
+      });
+    const tools = [
+      autoTool,
+      sqlTool,
+    ] as const;
+    const memory = createMemoryAccessor<typeof tools>();
+
+    const first = callModel(client, {
+      model: 'test-model',
+      input: 'do both things',
+      tools,
+      state: memory.accessor,
+    });
+    await first.getResponse();
+
+    expect(await first.getPendingToolCalls()).toEqual([
+      {
+        id: 'call_sql',
+        name: 'run_sql',
+        arguments: 'SELECT users;',
+        kind: 'custom',
+      },
+    ]);
+    expect(memory.get()?.status).toBe('awaiting_client_tools');
+
+    const resumed = callModel(client, {
+      model: 'test-model',
+      input: [
+        {
+          type: 'custom_tool_call_output',
+          callId: 'call_sql',
+          output: '[{"id":1}]',
+        },
+      ],
+      tools,
+      state: memory.accessor,
+    });
+    const final = await resumed.getResponse();
+
+    expect(final.id).toBe('resp_final');
+    expect(mockBetaResponsesSend).toHaveBeenCalledTimes(2);
+    const resumedInput = sentRequest(1)?.input;
+    expect(Array.isArray(resumedInput) ? resumedInput : []).toContainEqual(
+      expect.objectContaining({
+        type: 'custom_tool_call_output',
+        callId: 'call_sql',
+      }),
+    );
+    expect(memory.get()?.status).not.toBe('awaiting_client_tools');
+    expect(memory.get()?.pendingToolCalls ?? []).toEqual([]);
+  });
+
+  it('does not coerce a final response when stopWhen halts a turn with a custom call', async () => {
+    mockBetaResponsesSend.mockResolvedValueOnce({
+      ok: true,
+      value: makeResponse('resp_mixed', [
+        functionCallItem('call_auto_1', 'auto_search', '{"query":"docs"}'),
+        customToolCallItem('call_sql', 'run_sql', 'SELECT users;'),
+      ]),
+    });
+
+    const result = callModel(client, {
+      model: 'test-model',
+      input: 'do both things',
+      tools: [
+        autoTool,
+        sqlTool,
+      ] as const,
+      stopWhen: () => true,
+    });
+
+    const response = await result.getResponse();
+
+    expect(response.id).toBe('resp_mixed');
+    expect(mockBetaResponsesSend).toHaveBeenCalledTimes(1);
   });
 });

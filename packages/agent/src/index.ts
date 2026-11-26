@@ -233,7 +233,7 @@ export type {
   ServerToolOptions,
 } from './lib/tool.js';
 // Tool creation helpers (tool also carries tool.background / tool.deferred)
-export { markMcp, serverTool, tool } from './lib/tool.js';
+export { customTool, markMcp, serverTool, tool } from './lib/tool.js';
 // Universal task-tool helpers
 export type { TaskToolInput } from './lib/tool-check.js';
 export { TASK_TOOL_NAME, TaskToolInputSchema } from './lib/tool-check.js';
@@ -267,6 +267,8 @@ export type {
   CorrelatedToolResultEvent,
   CorrelatedToolStreamEvent,
   CorrelatedToolStreamPreliminaryUnion,
+  CustomTool,
+  CustomToolConfig,
   DeferOptions,
   DeferredHandle,
   HasApprovalTools,
@@ -338,6 +340,7 @@ export {
   isAgentTool,
   isAutoResolvableTool,
   isClientTool,
+  isCustomTool,
   isDeferredHandle,
   isGeneratorTool,
   isHITLTool,

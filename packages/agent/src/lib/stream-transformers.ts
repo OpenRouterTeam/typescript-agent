@@ -8,6 +8,7 @@ import type {
 } from '../api-shape-helpers/claude-message.js';
 import type { ReusableReadableStream } from './reusable-stream.js';
 import {
+  isCustomToolCallItem,
   isFileCitationAnnotation,
   isFilePathAnnotation,
   isFileSearchCallOutputItem,
@@ -861,6 +862,13 @@ export function extractToolCallsFromResponse(
           arguments: item.arguments as unknown, // Keep as string if parsing fails
         } as ParsedToolCall<Tool>);
       }
+    } else if (isCustomToolCallItem(item)) {
+      toolCalls.push({
+        id: item.callId,
+        name: item.name,
+        arguments: item.input,
+        kind: 'custom',
+      });
     }
   }
 
@@ -996,22 +1004,7 @@ export function responseHasToolCalls(response: models.OpenResponsesResult): bool
   if (isTruncatedAtMaxOutputTokens(response)) {
     return false;
   }
-  return response.output.some(
-    (item) => 'type' in item && (item.type === 'function_call' || item.type === 'custom_tool_call'),
-  );
-}
-
-/**
- * Check if a response contains `custom_tool_call` items. Custom
- * (freeform-grammar) tools are always executed by the caller, so the loop
- * must stop and surface the response rather than send a follow-up whose
- * input carries a call with no matching output.
- */
-export function responseHasCustomToolCalls(response: models.OpenResponsesResult): boolean {
-  if (isTruncatedAtMaxOutputTokens(response)) {
-    return false;
-  }
-  return response.output.some((item) => 'type' in item && item.type === 'custom_tool_call');
+  return response.output.some((item) => isFunctionCallItem(item) || isCustomToolCallItem(item));
 }
 
 /**

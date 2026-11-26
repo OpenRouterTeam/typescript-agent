@@ -77,7 +77,6 @@ import {
   extractToolCallsFromResponse,
   extractToolDeltas,
   itemsStreamHandlers,
-  responseHasCustomToolCalls,
   responseHasToolCalls,
   streamTerminationEvents,
   tryExtractCompletionFromBuffer,
@@ -858,7 +857,7 @@ export class ModelResult<
   /** Per-tool concurrency gate, created on first use. */
   private perToolGate(toolName: string): ToolSemaphore | undefined {
     const tool = this.options.tools?.find((t) => isClientTool(t) && t.function.name === toolName);
-    if (!tool || isServerTool(tool)) {
+    if (!tool || !isClientTool(tool)) {
       return undefined;
     }
     const limit = tool.function.maxConcurrency;
@@ -891,7 +890,7 @@ export class ModelResult<
   } {
     const tool = this.options.tools?.find((t) => isClientTool(t) && t.function.name === toolName);
     const timeoutMs =
-      tool && !isServerTool(tool)
+      tool && isClientTool(tool)
         ? (tool.function.timeoutMs ?? this.options.toolTimeoutMs)
         : this.options.toolTimeoutMs;
 
@@ -6541,7 +6540,7 @@ export class ModelResult<
           }
 
           const currentToolCalls = extractToolCallsFromResponse(currentResponse);
-          if (currentToolCalls.length === 0 && !responseHasCustomToolCalls(currentResponse)) {
+          if (currentToolCalls.length === 0) {
             break;
           }
 
@@ -6657,10 +6656,10 @@ export class ModelResult<
           // calls and continue — mirroring the all-manual behavior of the
           // `hasExecutableToolCalls` guards. Also covers calls to tool names
           // not present in `options.tools` at all, and `custom_tool_call`
-          // items, which the caller always executes.
+          // items, which never match an executable tool.
           const resolvedCallIds = new Set(toolResults.map((r) => r.callId));
           const unresolvedToolCalls = currentToolCalls.filter((tc) => !resolvedCallIds.has(tc.id));
-          if (unresolvedToolCalls.length > 0 || responseHasCustomToolCalls(currentResponse)) {
+          if (unresolvedToolCalls.length > 0) {
             // Mixed auto + manual (or unknown-name) round — regular tool
             // outputs were already persisted via saveToolResultsToState above;
             // surface the unresolved calls on pendingToolCalls and stop.
@@ -6730,7 +6729,7 @@ export class ModelResult<
           finalResponseEnabled &&
           pendingToolCalls.length > 0 &&
           this.hasExecutableToolCalls(pendingToolCalls) &&
-          !responseHasCustomToolCalls(currentResponse)
+          !pendingToolCalls.some((tc) => tc.kind === 'custom')
         ) {
           const turnNumber = currentRound + 1;
 

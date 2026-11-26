@@ -9,7 +9,7 @@ import { ModelResult } from '../lib/model-result.js';
 import { buildTaskToolApiDefinition, needsTaskTool } from '../lib/tool-check.js';
 import { convertToolsToAPIFormat, convertZodToJsonSchema } from '../lib/tool-executor.js';
 import type { Tool } from '../lib/tool-types.js';
-import { isServerTool } from '../lib/tool-types.js';
+import { isClientTool } from '../lib/tool-types.js';
 
 // Re-export CallModelInput for convenience
 export type { CallModelInput } from '../lib/async-params.js';
@@ -125,7 +125,7 @@ export function callModel<
   // tools and the executor does not carry orphaned definitions.
   const activeSet = activeTools ? new Set(activeTools) : undefined;
   const activeFilteredTools = activeSet
-    ? tools?.filter((t) => isServerTool(t) || activeSet.has(t.function.name))
+    ? tools?.filter((t) => !isClientTool(t) || activeSet.has(t.function.name))
     : tools;
 
   // Collapse a filtered-to-empty (or explicitly empty) tools list to

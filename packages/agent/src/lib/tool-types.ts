@@ -853,9 +853,33 @@ export type ClientTool =
 export type ServerToolConfig = Exclude<
   models.ResponsesRequestToolUnion,
   {
-    type: 'function';
+    type: 'function' | 'custom';
   }
 >;
+
+/**
+ * Wire config of a caller-executed custom (freeform-grammar) tool: the
+ * Responses `type: 'custom'` request tool, including its grammar `format`.
+ */
+export type CustomToolConfig = Extract<
+  models.ResponsesRequestToolUnion,
+  {
+    type: 'custom';
+  }
+>;
+
+/**
+ * A custom (freeform-grammar) tool, built with {@link customTool}. It is sent
+ * to the model as a native `type: 'custom'` tool and is always executed by the
+ * caller: a `custom_tool_call` pauses the loop like a manual tool call, and the
+ * caller resumes by sending a `custom_tool_call_output` item as input.
+ */
+export interface CustomTool<TName extends string = string> {
+  readonly _brand: 'custom-tool';
+  readonly config: CustomToolConfig & {
+    name: TName;
+  };
+}
 
 /**
  * The discriminator literals for every server tool known to the SDK
@@ -919,7 +943,7 @@ export interface ServerTool<
  * The server branch is the structural base; specific `ServerTool<T>`
  * values flow in via interface extension.
  */
-export type Tool = ClientTool | ServerToolBase;
+export type Tool = ClientTool | ServerToolBase | CustomTool;
 
 /**
  * Server-tool output items that appear in `response.output`. Derived from
@@ -953,15 +977,17 @@ export type ToolResultItem = models.FunctionCallOutputItem | ServerToolResultIte
 /**
  * Extracts the input type from a tool definition
  */
-export type InferToolInput<T> = T extends {
-  function: {
-    inputSchema: infer S;
-  };
-}
-  ? S extends $ZodType
-    ? zodInfer<S>
-    : unknown
-  : unknown;
+export type InferToolInput<T> = T extends CustomTool
+  ? string
+  : T extends {
+        function: {
+          inputSchema: infer S;
+        };
+      }
+    ? S extends $ZodType
+      ? zodInfer<S>
+      : unknown
+    : unknown;
 
 /**
  * Extracts the output type from a tool definition
@@ -1059,7 +1085,7 @@ export function isServerTool(tool: Tool): tool is ServerToolBase {
 export function findDuplicateClientToolName(tools: readonly Tool[]): string | undefined {
   const seen = new Set<string>();
   for (const tool of tools) {
-    if (isServerTool(tool)) {
+    if (!isClientTool(tool)) {
       continue;
     }
     const name = tool.function.name;
@@ -1134,14 +1160,23 @@ export function isMcpTool(tool: Tool): tool is McpBranded {
  * Type guard: true if the tool is a client-executed tool (function, generator, or manual).
  */
 export function isClientTool(tool: Tool): tool is ClientTool {
-  return !isServerTool(tool);
+  return !isServerTool(tool) && !isCustomTool(tool);
+}
+
+/**
+ * Type guard for a custom (freeform-grammar) tool built with {@link customTool}.
+ */
+export function isCustomTool(tool: Tool): tool is CustomTool {
+  return (
+    typeof tool === 'object' && tool !== null && '_brand' in tool && tool._brand === 'custom-tool'
+  );
 }
 
 /**
  * Type guard to check if a tool is a unified `run`-based tool
  */
 export function isUnifiedTool(tool: Tool): tool is UnifiedTool {
-  if (isServerTool(tool)) {
+  if (!isClientTool(tool)) {
     return false;
   }
   return 'run' in tool.function && typeof tool.function.run === 'function';
@@ -1170,7 +1205,7 @@ export function isAgentTool(tool: Tool): boolean {
  * dispatch and this guard's predicate would misclassify them.
  */
 export function hasExecuteFunction(tool: Tool): tool is ToolWithExecute | ToolWithGenerator {
-  if (isServerTool(tool) || isUnifiedTool(tool)) {
+  if (!isClientTool(tool) || isUnifiedTool(tool)) {
     return false;
   }
   return 'execute' in tool.function && typeof tool.function.execute === 'function';
@@ -1182,7 +1217,7 @@ export function hasExecuteFunction(tool: Tool): tool is ToolWithExecute | ToolWi
  * legacy generator tools.
  */
 export function isGeneratorTool(tool: Tool): tool is ToolWithGenerator {
-  if (isServerTool(tool) || isUnifiedTool(tool)) {
+  if (!isClientTool(tool) || isUnifiedTool(tool)) {
     return false;
   }
   return 'eventSchema' in tool.function;
@@ -1199,7 +1234,7 @@ export function isRegularExecuteTool(tool: Tool): tool is ToolWithExecute {
  * Type guard to check if a tool is a manual tool (no execute, no onToolCalled, no run)
  */
 export function isManualTool(tool: Tool): tool is ManualTool {
-  if (isServerTool(tool)) {
+  if (!isClientTool(tool)) {
     return false;
   }
   return (
@@ -1211,7 +1246,7 @@ export function isManualTool(tool: Tool): tool is ManualTool {
  * Type guard to check if a tool is a human-in-the-loop tool (has onToolCalled)
  */
 export function isHITLTool(tool: Tool): tool is HITLTool {
-  if (isServerTool(tool)) {
+  if (!isClientTool(tool)) {
     return false;
   }
   return 'onToolCalled' in tool.function && typeof tool.function.onToolCalled === 'function';
@@ -1243,6 +1278,12 @@ export interface ParsedToolCall<T extends Tool> {
     ? N
     : string;
   arguments: InferToolInput<T>; // Typed based on tool's inputSchema
+  /**
+   * `'custom'` for a `custom_tool_call`: `arguments` is the model's raw
+   * freeform `input` string, and the caller executes the call. Absent for
+   * function calls.
+   */
+  kind?: 'custom';
 }
 
 export type PendingToolCall<T extends Tool> = ParsedToolCall<T> & {
@@ -2038,7 +2079,7 @@ export type HasApprovalTools<TTools extends readonly Tool[]> = TTools extends re
  * Type guard to check if a tool has approval configured at runtime
  */
 export function toolHasApprovalConfigured(tool: Tool): boolean {
-  if (isServerTool(tool)) {
+  if (!isClientTool(tool)) {
     return false;
   }
   const requireApproval = tool.function.requireApproval;

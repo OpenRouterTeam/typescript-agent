@@ -3,11 +3,7 @@ import {
   applyNextTurnParamsToRequest,
   executeNextTurnParamsFunctions,
 } from './next-turn-params.js';
-import {
-  extractToolCallsFromResponse,
-  responseHasCustomToolCalls,
-  responseHasToolCalls,
-} from './stream-transformers.js';
+import { extractToolCallsFromResponse, responseHasToolCalls } from './stream-transformers.js';
 import { isFunctionCallItem } from './stream-type-guards.js';
 import type { AsyncToolInvocation } from './tool-executor.js';
 import { executeTool, findToolByName, isAsyncToolInvocation } from './tool-executor.js';
@@ -164,7 +160,7 @@ export async function executeToolLoop(
 
     // Custom tool calls are caller-executed: stop rather than continue with
     // a call that has no output.
-    if (responseHasCustomToolCalls(currentResponse)) {
+    if (toolCalls.some((toolCall) => toolCall.kind === 'custom')) {
       break;
     }
 
