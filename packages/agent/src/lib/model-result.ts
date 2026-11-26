@@ -77,6 +77,7 @@ import {
   extractToolCallsFromResponse,
   extractToolDeltas,
   itemsStreamHandlers,
+  responseHasCustomToolCalls,
   responseHasToolCalls,
   streamTerminationEvents,
   tryExtractCompletionFromBuffer,
@@ -6540,7 +6541,7 @@ export class ModelResult<
           }
 
           const currentToolCalls = extractToolCallsFromResponse(currentResponse);
-          if (currentToolCalls.length === 0) {
+          if (currentToolCalls.length === 0 && !responseHasCustomToolCalls(currentResponse)) {
             break;
           }
 
@@ -6655,10 +6656,11 @@ export class ModelResult<
           // surface the response instead, so the caller can execute the manual
           // calls and continue — mirroring the all-manual behavior of the
           // `hasExecutableToolCalls` guards. Also covers calls to tool names
-          // not present in `options.tools` at all.
+          // not present in `options.tools` at all, and `custom_tool_call`
+          // items, which the caller always executes.
           const resolvedCallIds = new Set(toolResults.map((r) => r.callId));
           const unresolvedToolCalls = currentToolCalls.filter((tc) => !resolvedCallIds.has(tc.id));
-          if (unresolvedToolCalls.length > 0) {
+          if (unresolvedToolCalls.length > 0 || responseHasCustomToolCalls(currentResponse)) {
             // Mixed auto + manual (or unknown-name) round — regular tool
             // outputs were already persisted via saveToolResultsToState above;
             // surface the unresolved calls on pendingToolCalls and stop.
@@ -6727,7 +6729,8 @@ export class ModelResult<
           stoppedByStopWhen &&
           finalResponseEnabled &&
           pendingToolCalls.length > 0 &&
-          this.hasExecutableToolCalls(pendingToolCalls)
+          this.hasExecutableToolCalls(pendingToolCalls) &&
+          !responseHasCustomToolCalls(currentResponse)
         ) {
           const turnNumber = currentRound + 1;
 

@@ -71,6 +71,12 @@ export function isFunctionCallItem(item: unknown): item is models.OutputFunction
   );
 }
 
+export function isCustomToolCallItem(item: unknown): item is models.OutputCustomToolCallItem {
+  return (
+    typeof item === 'object' && item !== null && 'type' in item && item.type === 'custom_tool_call'
+  );
+}
+
 export function isReasoningOutputItem(item: unknown): item is models.OutputReasoningItem {
   return typeof item === 'object' && item !== null && 'type' in item && item.type === 'reasoning';
 }
@@ -110,13 +116,14 @@ export function isFunctionCallOutputItem(item: unknown): item is models.Function
 }
 
 /**
- * Client-owned output item `type` literals — the three variants we
- * explicitly treat as NOT server-tool results. Server-tool variants are
+ * Client-owned output item `type` literals — the variants we explicitly
+ * treat as NOT server-tool results. `custom_tool_call` is a call to a
+ * caller-executed custom (freeform-grammar) tool. Server-tool variants are
  * every other `OutputItems` discriminator, including the SDK's forward-
  * compat `Unknown<"type">` catch-all. Listed as a named union so the
  * assertion below can detect SDK drift (rename/removal).
  */
-type ClientOutputItemType = 'message' | 'reasoning' | 'function_call';
+type ClientOutputItemType = 'message' | 'reasoning' | 'function_call' | 'custom_tool_call';
 
 /**
  * Compile-time check: each client-owned `type` literal must still be a
@@ -152,6 +159,7 @@ export function isServerToolResultItem(item: models.OutputItems): item is Exclud
     case 'message':
     case 'reasoning':
     case 'function_call':
+    case 'custom_tool_call':
       return false;
     default:
       // Every remaining variant — per-tool server output (web_search_call,
